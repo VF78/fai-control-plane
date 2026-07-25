@@ -49,6 +49,8 @@ import {
   type TrackerSnapshotProjectionResult,
   type TrackerSnapshotProjector,
   type TrackerSnapshotPullRequestBinding,
+  type TrackerRepositoryReadScopeAuthorizer,
+  type TrackerRepositorySnapshot,
   type TrustedActorContext,
   type UnitOfWork,
   type WorkItem
@@ -145,7 +147,9 @@ export type TrackerRepositorySnapshotOrchestrationResult =
         | 'invalid_input'
         | 'adapter_capability_unavailable'
         | 'adapter_provider_mismatch'
+        | 'repository_scope_authorization_failed'
         | 'repository_read_failed'
+        | 'invalid_repository_snapshot'
         | 'snapshot_projection_failed';
     }>;
 
@@ -156,6 +160,7 @@ export interface TrackerRepositorySnapshotOrchestrationService {
 export type CreateTrackerRepositorySnapshotOrchestrationServiceInput = Readonly<{
   adapter: TrackerAdapter;
   projector: TrackerSnapshotProjector;
+  scopeAuthorizer: TrackerRepositoryReadScopeAuthorizer;
 }>;
 
 type Target = Readonly<{
@@ -316,6 +321,44 @@ const snapshotPullRequestBindings = (
   return bindings;
 };
 
+const snapshotFromRepositoryRead = (
+  value: unknown,
+  request: ValidTrackerRepositorySnapshotOrchestrationInput,
+  repositoryExternalId: string
+): TrackerRepositorySnapshot | null => {
+  const snapshot = dataObjectWithAllowedKeys(value, [
+    'repository', 'externalVersion', 'workItems', 'pullRequests', 'checks'
+  ]);
+  if (snapshot === null) return null;
+  const repository = dataObjectWithAllowedKeys(snapshot.repository, [
+    'externalId', 'externalVersion', 'owner', 'name'
+  ]);
+  if (repository === null) return null;
+  const externalId = boundedSnapshotIdentifier(repository.externalId, 512);
+  const repositoryExternalVersion = boundedSnapshotIdentifier(repository.externalVersion, 512);
+  const externalVersion = boundedSnapshotIdentifier(snapshot.externalVersion, 512);
+  if (
+    externalId === null || repositoryExternalVersion === null || externalVersion === null ||
+    repository.owner !== request.repository.owner || repository.name !== request.repository.repository ||
+    externalId !== repositoryExternalId || !isDenseArray(snapshot.workItems) ||
+    !isDenseArray(snapshot.pullRequests) || !isDenseArray(snapshot.checks) ||
+    snapshot.workItems.length > 10_000 || snapshot.pullRequests.length > 10_000 ||
+    snapshot.checks.length > 10_000
+  ) return null;
+  return {
+    repository: {
+      externalId,
+      externalVersion: repositoryExternalVersion,
+      owner: repository.owner,
+      name: repository.name
+    },
+    externalVersion,
+    workItems: [...snapshot.workItems] as TrackerRepositorySnapshot['workItems'],
+    pullRequests: [...snapshot.pullRequests] as TrackerRepositorySnapshot['pullRequests'],
+    checks: [...snapshot.checks] as TrackerRepositorySnapshot['checks']
+  };
+};
+
 type ValidTrackerRepositorySnapshotOrchestrationInput =
   | (TrackerRepositorySnapshotOrchestrationBase &
       Readonly<{mode: 'bootstrap'; pullRequestBindings: readonly TrackerSnapshotPullRequestBinding[]}>)
@@ -402,6 +445,21 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
     const writeAuthorization = authorize(request.actor, trackerProjectionWritePolicy);
     if (!writeAuthorization.ok) return deniedTrackerSnapshotResult(authorizationDenialCode(writeAuthorization.error.code));
 
+    let scopeAuthorization: Awaited<ReturnType<TrackerRepositoryReadScopeAuthorizer['authorize']>>;
+    try {
+      scopeAuthorization = await dependencies.scopeAuthorizer.authorize({
+        workspaceId: request.workspaceId,
+        projectId: request.projectId,
+        actorId: request.actor.actorId,
+        provider: request.expectedProvider,
+        repository: request.repository,
+        credentialRef: request.credentialRef
+      });
+    } catch {
+      return failedTrackerSnapshotResult('repository_scope_authorization_failed');
+    }
+    if (scopeAuthorization.status !== 'authorized') return deniedTrackerSnapshotResult('POLICY_DENIED');
+
     let reader: NonNullable<TrackerAdapter['readRepositorySnapshot']>;
     try {
       if (
@@ -421,15 +479,21 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
       return failedTrackerSnapshotResult('adapter_capability_unavailable');
     }
 
-    let snapshot;
+    let readSnapshot;
     try {
-      snapshot = await reader({
+      readSnapshot = await reader({
         repository: request.repository,
         credentialRef: request.credentialRef
       });
     } catch {
       return failedTrackerSnapshotResult('repository_read_failed');
     }
+    const snapshot = snapshotFromRepositoryRead(
+      readSnapshot,
+      request,
+      scopeAuthorization.repositoryExternalId
+    );
+    if (snapshot === null) return failedTrackerSnapshotResult('invalid_repository_snapshot');
 
     try {
       return request.mode === 'bootstrap'

@@ -6,6 +6,9 @@ export * from './schema';
 export {createPostgresUnitOfWork} from './persistence';
 export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
 export {
+  createPostgresTrackerRepositoryReadScopeAuthorizer
+} from './tracker-repository-read-authorizer';
+export {
   createPostgresIncomingEventProcessor
 } from './incoming-event-consumer';
 export {

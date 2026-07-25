@@ -5,6 +5,7 @@ import {
   type OpaqueSecretRef,
   type TrackerAdapter,
   type TrackerRepositorySnapshot,
+  type TrackerRepositoryReadScopeAuthorizer,
   type TrackerSnapshotProjector
 } from '@fai-control-plane/domain';
 import {createTrackerRepositorySnapshotOrchestrationService} from './index';
@@ -67,6 +68,10 @@ const fakes = () => {
     calls.push('read');
     return snapshot;
   });
+  const authorizeScope = vi.fn<TrackerRepositoryReadScopeAuthorizer['authorize']>(async () => {
+    calls.push('scope');
+    return {status: 'authorized' as const, repositoryExternalId: snapshot.repository.externalId};
+  });
   const bootstrap = vi.fn(async () => {
     calls.push('bootstrap');
     return applied;
@@ -83,7 +88,8 @@ const fakes = () => {
     readRepositorySnapshot: reader
   };
   const projector: TrackerSnapshotProjector = {bootstrap, synchronize};
-  return {calls, reader, bootstrap, synchronize, adapter, projector};
+  const scopeAuthorizer: TrackerRepositoryReadScopeAuthorizer = {authorize: authorizeScope};
+  return {calls, reader, authorizeScope, bootstrap, synchronize, adapter, projector, scopeAuthorizer};
 };
 
 describe('tracker repository snapshot orchestration', () => {
@@ -94,6 +100,29 @@ describe('tracker repository snapshot orchestration', () => {
     await expect(service.orchestrate(input({
       actor: actorFor(['write:tracker:development'])
     }))).resolves.toEqual({status: 'denied', code: 'CAPABILITY_DENIED'});
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('denies a read-only actor missing tracker write before scope authorization', async () => {
+    const fake = fakes();
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input({
+      actor: actorFor(['read:repository:development'])
+    }))).resolves.toEqual({status: 'denied', code: 'CAPABILITY_DENIED'});
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('denies a forged actor before scope authorization', async () => {
+    const fake = fakes();
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input({
+      actor: {
+        kind: 'trusted_user', actorId: id(), actorType: 'human',
+        capabilities: ['read:repository:development', 'write:tracker:development']
+      }
+    }))).resolves.toEqual({status: 'denied', code: 'INVALID_ACTOR_CONTEXT'});
     expect(fake.calls).toEqual([]);
   });
 
@@ -121,7 +150,7 @@ describe('tracker repository snapshot orchestration', () => {
     await expect(service.orchestrate(input())).resolves.toEqual({
       status: 'failed', code: 'adapter_capability_unavailable'
     });
-    expect(fake.calls).toEqual([]);
+    expect(fake.calls).toEqual(['scope']);
   });
 
   it('checks the provider and projects a bootstrap snapshot exactly once', async () => {
@@ -130,7 +159,7 @@ describe('tracker repository snapshot orchestration', () => {
     const request = input();
 
     await expect(service.orchestrate(request)).resolves.toEqual(applied);
-    expect(fake.calls).toEqual(['read', 'bootstrap']);
+    expect(fake.calls).toEqual(['scope', 'read', 'bootstrap']);
     expect(fake.reader).toHaveBeenCalledTimes(1);
     expect(fake.reader).toHaveBeenCalledWith({
       repository: request.repository, credentialRef: request.credentialRef
@@ -159,7 +188,7 @@ describe('tracker repository snapshot orchestration', () => {
     });
 
     await expect(service.orchestrate(request)).resolves.toEqual(applied);
-    expect(fake.calls).toEqual(['read', 'synchronize']);
+    expect(fake.calls).toEqual(['scope', 'read', 'synchronize']);
     expect(fake.reader).toHaveBeenCalledTimes(1);
     expect(fake.synchronize).toHaveBeenCalledWith(expect.objectContaining({
       expectedPreviousExternalVersion: 'provider:snapshot:v0',
@@ -197,6 +226,49 @@ describe('tracker repository snapshot orchestration', () => {
     await expect(service.orchestrate(input())).resolves.toEqual({
       status: 'failed', code: 'adapter_provider_mismatch'
     });
+    expect(fake.calls).toEqual(['scope']);
+  });
+
+  it('denies an unconfigured cross-workspace scope before reading', async () => {
+    const fake = fakes();
+    fake.authorizeScope.mockResolvedValueOnce({status: 'denied'});
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+    const request = input({workspaceId: id(), projectId: id()});
+
+    await expect(service.orchestrate(request)).resolves.toEqual({
+      status: 'denied', code: 'POLICY_DENIED'
+    });
+    expect(fake.authorizeScope).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: request.workspaceId, projectId: request.projectId
+    }));
+    expect(fake.reader).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes scope authorization failures before reading', async () => {
+    const fake = fakes();
+    fake.authorizeScope.mockRejectedValueOnce(new Error('database connection details'));
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input())).resolves.toEqual({
+      status: 'failed', code: 'repository_scope_authorization_failed'
+    });
     expect(fake.calls).toEqual([]);
+    expect(fake.reader).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched reader snapshot before projection', async () => {
+    const fake = fakes();
+    fake.reader.mockResolvedValueOnce({
+      ...snapshot,
+      repository: {...snapshot.repository, name: 'other-repository'}
+    });
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input())).resolves.toEqual({
+      status: 'failed', code: 'invalid_repository_snapshot'
+    });
+    expect(fake.authorizeScope).toHaveBeenCalledTimes(1);
+    expect(fake.reader).toHaveBeenCalledTimes(1);
+    expect(fake.bootstrap).not.toHaveBeenCalled();
   });
 });

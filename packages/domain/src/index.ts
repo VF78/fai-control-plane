@@ -946,6 +946,23 @@ export type TrackerRepositoryReadInput = Readonly<{
   repository: TrackerRepositoryRef;
   credentialRef: OpaqueSecretRef;
 }>;
+export type TrackerRepositoryReadScopeAuthorizationInput = Readonly<{
+  workspaceId: string;
+  projectId: string;
+  actorId: string;
+  provider: string;
+  repository: TrackerRepositoryRef;
+  credentialRef: OpaqueSecretRef;
+}>;
+export type TrackerRepositoryReadScopeAuthorization =
+  | Readonly<{status: 'authorized'; repositoryExternalId: string}>
+  | Readonly<{status: 'denied'}>;
+/** Authorizes a configured project repository scope before any provider read. */
+export interface TrackerRepositoryReadScopeAuthorizer {
+  authorize(
+    input: TrackerRepositoryReadScopeAuthorizationInput
+  ): Promise<TrackerRepositoryReadScopeAuthorization>;
+}
 export type TrackerAdapter = Readonly<{
   provider: string;
   capabilities: TrackerCapabilities;

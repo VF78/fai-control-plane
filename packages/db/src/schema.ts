@@ -661,6 +661,41 @@ export const secretRefs = pgTable(
   ]
 );
 
+/** Immutable configured repository identity used to authorize tracker reads before bootstrap. */
+export const projectTrackerRepositoryScopes = pgTable(
+  'project_tracker_repository_scopes',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'cascade'}),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'cascade'}),
+    provider: text('provider').notNull(),
+    repositoryOwner: text('repository_owner').notNull(),
+    repositoryName: text('repository_name').notNull(),
+    repositoryExternalId: text('repository_external_id').notNull(),
+    credentialRefId: uuid('credential_ref_id')
+      .notNull()
+      .references(() => secretRefs.id, {onDelete: 'restrict'}),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('project_tracker_repository_scopes_config_unique').on(
+      table.projectId,
+      table.provider,
+      table.repositoryOwner,
+      table.repositoryName
+    ),
+    uniqueIndex('project_tracker_repository_scopes_external_unique').on(
+      table.projectId,
+      table.provider,
+      table.repositoryExternalId
+    )
+  ]
+);
+
 export const taskPackets = pgTable(
   'task_packets',
   {
