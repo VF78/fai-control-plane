@@ -4,6 +4,7 @@ import {
   startTelemetry,
   stopTelemetry
 } from '@fai-control-plane/observability';
+import {INCOMING_EVENT_QUEUE} from '@fai-control-plane/db';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
@@ -55,6 +56,7 @@ const server = createServer((request, response) => {
 
 server.listen(port, '0.0.0.0');
 await boss.start();
+await boss.createQueue(INCOMING_EVENT_QUEUE);
 ready = true;
 
 async function shutdown(signal: NodeJS.Signals) {

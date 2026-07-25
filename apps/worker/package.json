@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fai-control-plane/db": "workspace:*",
     "@fai-control-plane/observability": "workspace:*",
     "pg-boss": "12.26.3"
   }

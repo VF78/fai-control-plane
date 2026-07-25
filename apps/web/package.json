@@ -10,11 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fai-control-plane/application": "workspace:*",
     "@fai-control-plane/db": "workspace:*",
+    "@fai-control-plane/domain": "workspace:*",
+    "@fai-control-plane/integrations": "workspace:*",
     "@fai-control-plane/observability": "workspace:*",
     "drizzle-orm": "0.45.2",
     "next": "16.2.11",
     "pg": "8.22.0",
+    "pg-boss": "12.26.3",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   }

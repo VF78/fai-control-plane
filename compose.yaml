@@ -6,9 +6,15 @@ x-runtime-environment: &runtime-environment
   OTEL_SERVICE_NAMESPACE: ${OTEL_SERVICE_NAMESPACE:-fai-control-plane}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
   GITHUB_SYNC_ENABLED: ${GITHUB_SYNC_ENABLED:-false}
+  GITHUB_INGRESS_ENABLED: ${GITHUB_INGRESS_ENABLED:-false}
   GITHUB_APP_ID: ${GITHUB_APP_ID:-}
   GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-}
-  GITHUB_WEBHOOK_SECRET_FILE: ${GITHUB_WEBHOOK_SECRET_FILE:-}
+  GITHUB_WEBHOOK_SECRET_FILE: ${GITHUB_WEBHOOK_SECRET_FILE:-/run/secrets/github-webhook}
+  FCP_WORKSPACE_ID: ${FCP_WORKSPACE_ID:-}
+  GITHUB_MSA_PROJECT_ID: ${GITHUB_MSA_PROJECT_ID:-}
+  GITHUB_MSA_INSTALLATION_ID: ${GITHUB_MSA_INSTALLATION_ID:-}
+  GITHUB_ASCON_PROJECT_ID: ${GITHUB_ASCON_PROJECT_ID:-}
+  GITHUB_ASCON_INSTALLATION_ID: ${GITHUB_ASCON_INSTALLATION_ID:-}
   RUNNER_ENABLED: ${RUNNER_ENABLED:-false}
   RUNNER_NETWORK_MODE: ${RUNNER_NETWORK_MODE:-none}
   ARTIFACTS_ROOT: ${ARTIFACTS_ROOT:-/var/lib/fai/artifacts}
@@ -64,11 +70,18 @@ services:
       PORT: "3000"
     ports:
       - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - type: bind
+        source: ${GITHUB_WEBHOOK_SECRET_HOST_FILE:-./infra/compose/secrets/github-webhook.disabled}
+        target: ${GITHUB_WEBHOOK_SECRET_FILE:-/run/secrets/github-webhook}
+        read_only: true
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      worker:
+        condition: service_healthy
     healthcheck:
       test:
         [

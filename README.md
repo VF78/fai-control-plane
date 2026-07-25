@@ -85,6 +85,12 @@ GitHub synchronization and runner execution are disabled by default. Enabling
 either requires explicit local configuration and must not put secret values in
 PostgreSQL.
 
+The committed webhook secret mount is a non-secret disabled placeholder.
+Before enabling GitHub ingestion, point `GITHUB_WEBHOOK_SECRET_HOST_FILE` at a
+real host file with mode `0600`. Keep `GITHUB_INGRESS_ENABLED=false` until the
+incoming-event consumer is deployed; the webhook route returns `404` while
+either synchronization or ingress is disabled.
+
 ### Verify
 
 ```bash

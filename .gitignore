@@ -10,3 +10,5 @@ coverage/
 .pnpm-store/
 artifacts/
 .worktrees/
+infra/compose/secrets/*
+!infra/compose/secrets/*.disabled

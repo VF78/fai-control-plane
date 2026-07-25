@@ -44,9 +44,18 @@ importers:
 
   apps/web:
     dependencies:
+      '@fai-control-plane/application':
+        specifier: workspace:*
+        version: link:../../packages/application
       '@fai-control-plane/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@fai-control-plane/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@fai-control-plane/integrations':
+        specifier: workspace:*
+        version: link:../../packages/integrations
       '@fai-control-plane/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -59,6 +68,9 @@ importers:
       pg:
         specifier: 8.22.0
         version: 8.22.0
+      pg-boss:
+        specifier: 12.26.3
+        version: 12.26.3
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -68,6 +80,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@fai-control-plane/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@fai-control-plane/observability':
         specifier: workspace:*
         version: link:../../packages/observability
