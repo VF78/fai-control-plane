@@ -177,20 +177,18 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
         return {status: 'conflict', code: 'idempotency_key_reused'};
       }
 
-      const [[projectRow], [actorRow]] = await Promise.all([
-        tx.select({id: schema.projects.id})
-          .from(schema.projects)
-          .where(and(
-            eq(schema.projects.id, input.projectId),
-            eq(schema.projects.workspaceId, input.workspaceId)
-          )),
-        tx.select({id: schema.actors.id})
-          .from(schema.actors)
-          .where(and(
-            eq(schema.actors.id, input.actorId),
-            eq(schema.actors.workspaceId, input.workspaceId)
-          ))
-      ]);
+      const [projectRow] = await tx.select({id: schema.projects.id})
+        .from(schema.projects)
+        .where(and(
+          eq(schema.projects.id, input.projectId),
+          eq(schema.projects.workspaceId, input.workspaceId)
+        ));
+      const [actorRow] = await tx.select({id: schema.actors.id})
+        .from(schema.actors)
+        .where(and(
+          eq(schema.actors.id, input.actorId),
+          eq(schema.actors.workspaceId, input.workspaceId)
+        ));
       if (projectRow === undefined || actorRow === undefined) {
         throw new Error('tracker_snapshot_scope_invalid');
       }
