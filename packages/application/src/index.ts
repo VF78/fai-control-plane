@@ -42,7 +42,14 @@ import {
   type PolicyRequest,
   type ReceiptClaimToken,
   type TaskPacket,
+  type OpaqueSecretRef,
+  type TrackerAdapter,
   type TrackerCheckStatus,
+  type TrackerRepositoryRef,
+  type TrackerSnapshotProjectionResult,
+  type TrackerSnapshotProjector,
+  type TrackerSnapshotPullRequestBinding,
+  type TrustedActorContext,
   type UnitOfWork,
   type WorkItem
 } from '@fai-control-plane/domain';
@@ -104,6 +111,53 @@ export type CreateCanonicalCommandServiceInput = Readonly<{
   clock?: Clock;
 }>;
 
+type TrackerRepositorySnapshotOrchestrationBase = Readonly<{
+  actor: TrustedActorContext;
+  workspaceId: string;
+  projectId: string;
+  operationId: string;
+  correlationId: string;
+  expectedProvider: string;
+  repository: TrackerRepositoryRef;
+  credentialRef: OpaqueSecretRef;
+}>;
+export type TrackerRepositorySnapshotOrchestrationInput =
+  | (TrackerRepositorySnapshotOrchestrationBase & Readonly<{
+      mode: 'bootstrap';
+      expectedPreviousExternalVersion?: never;
+      pullRequestBindings?: readonly TrackerSnapshotPullRequestBinding[];
+    }>)
+  | (TrackerRepositorySnapshotOrchestrationBase & Readonly<{
+      mode: 'synchronize';
+      expectedPreviousExternalVersion: string;
+      pullRequestBindings?: never;
+    }>);
+
+export type TrackerRepositorySnapshotOrchestrationResult =
+  | TrackerSnapshotProjectionResult
+  | Readonly<{
+      status: 'denied';
+      code: 'INVALID_ACTOR_CONTEXT' | 'CAPABILITY_DENIED' | 'POLICY_DENIED' | 'APPROVAL_REQUIRED';
+    }>
+  | Readonly<{
+      status: 'failed';
+      code:
+        | 'invalid_input'
+        | 'adapter_capability_unavailable'
+        | 'adapter_provider_mismatch'
+        | 'repository_read_failed'
+        | 'snapshot_projection_failed';
+    }>;
+
+export interface TrackerRepositorySnapshotOrchestrationService {
+  orchestrate(input: unknown): Promise<TrackerRepositorySnapshotOrchestrationResult>;
+}
+
+export type CreateTrackerRepositorySnapshotOrchestrationServiceInput = Readonly<{
+  adapter: TrackerAdapter;
+  projector: TrackerSnapshotProjector;
+}>;
+
 type Target = Readonly<{
   aggregateType: string;
   aggregateId: string;
@@ -159,6 +213,7 @@ const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const decimalIdentifierPattern = /^[1-9][0-9]{0,19}$/;
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const gitShaPattern = /^[0-9a-f]{40}$/;
+const snapshotOperationIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
 const requiredBoundedIdentifier = (
   value: unknown,
@@ -182,6 +237,227 @@ const requiredPositiveInteger = (value: unknown, field: string): number => {
   }
   return value;
 };
+
+const boundedSnapshotIdentifier = (value: unknown, maximumLength: number): string | null =>
+  typeof value === 'string' && value.length > 0 && value.length <= maximumLength &&
+    snapshotOperationIdentifierPattern.test(value)
+    ? value
+    : null;
+
+const dataObjectWithAllowedKeys = (
+  value: unknown,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[] = []
+): Record<string, unknown> | null => {
+  if (!isPlainObject(value)) return null;
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    const allowedKeys = new Set([...requiredKeys, ...optionalKeys]);
+    if (
+      keys.some((key) => typeof key !== 'string' || !allowedKeys.has(key)) ||
+      requiredKeys.some((key) => descriptors[key] === undefined) ||
+      keys.some((key) => {
+        const descriptor = descriptors[key as string];
+        return descriptor === undefined || descriptor.enumerable !== true || !('value' in descriptor);
+      })
+    ) {
+      return null;
+    }
+    const result: Record<string, unknown> = {};
+    for (const key of [...requiredKeys, ...optionalKeys]) {
+      const descriptor = descriptors[key];
+      if (descriptor !== undefined && 'value' in descriptor) result[key] = descriptor.value;
+    }
+    return result;
+  } catch {
+    return null;
+  }
+};
+
+const snapshotRepositoryRef = (value: unknown): TrackerRepositoryRef | null => {
+  const record = dataObjectWithAllowedKeys(value, ['owner', 'repository']);
+  if (record === null) return null;
+  const owner = boundedSnapshotIdentifier(record.owner, 255);
+  const repository = boundedSnapshotIdentifier(record.repository, 255);
+  return owner === null || repository === null ? null : {owner, repository};
+};
+
+const snapshotCredentialRef = (value: unknown): OpaqueSecretRef | null => {
+  const record = dataObjectWithAllowedKeys(value, ['provider', 'reference', 'scope']);
+  if (record === null || !isDenseArray(record.scope) || record.scope.length > 32) return null;
+  const provider = boundedSnapshotIdentifier(record.provider, 64);
+  const reference = boundedSnapshotIdentifier(record.reference, 512);
+  const scope = record.scope.map((entry) => boundedSnapshotIdentifier(entry, 255));
+  return provider === null || reference === null || scope.some((entry) => entry === null)
+    ? null
+    : {provider, reference, scope: scope as string[]};
+};
+
+const snapshotPullRequestBindings = (
+  value: unknown
+): readonly TrackerSnapshotPullRequestBinding[] | null => {
+  if (value === undefined) return [];
+  if (!isDenseArray(value) || value.length > 10_000) return null;
+  const bindings: TrackerSnapshotPullRequestBinding[] = [];
+  const pullRequestExternalIds = new Set<string>();
+  for (const entry of value) {
+    const record = dataObjectWithAllowedKeys(entry, ['pullRequestExternalId', 'workItemExternalId']);
+    if (record === null) return null;
+    const pullRequestExternalId = boundedSnapshotIdentifier(record.pullRequestExternalId, 512);
+    const workItemExternalId = boundedSnapshotIdentifier(record.workItemExternalId, 512);
+    if (
+      pullRequestExternalId === null || workItemExternalId === null ||
+      pullRequestExternalIds.has(pullRequestExternalId)
+    ) return null;
+    pullRequestExternalIds.add(pullRequestExternalId);
+    bindings.push({pullRequestExternalId, workItemExternalId});
+  }
+  return bindings;
+};
+
+type ValidTrackerRepositorySnapshotOrchestrationInput =
+  | (TrackerRepositorySnapshotOrchestrationBase &
+      Readonly<{mode: 'bootstrap'; pullRequestBindings: readonly TrackerSnapshotPullRequestBinding[]}>)
+  | (TrackerRepositorySnapshotOrchestrationBase &
+      Readonly<{mode: 'synchronize'; expectedPreviousExternalVersion: string}>);
+
+const validateTrackerRepositorySnapshotOrchestrationInput = (
+  value: unknown
+): ValidTrackerRepositorySnapshotOrchestrationInput | null => {
+  const baseKeys = [
+    'actor', 'workspaceId', 'projectId', 'operationId', 'correlationId',
+    'expectedProvider', 'repository', 'credentialRef', 'mode'
+  ];
+  const base = dataObjectWithAllowedKeys(
+    value,
+    baseKeys,
+    ['expectedPreviousExternalVersion', 'pullRequestBindings']
+  );
+  if (base === null || (base.mode !== 'bootstrap' && base.mode !== 'synchronize')) return null;
+  const actor = base.actor;
+  const workspaceId = boundedSnapshotIdentifier(base.workspaceId, 128);
+  const projectId = boundedSnapshotIdentifier(base.projectId, 128);
+  const operationId = boundedSnapshotIdentifier(base.operationId, 128);
+  const correlationId = boundedSnapshotIdentifier(base.correlationId, 128);
+  const expectedProvider = boundedSnapshotIdentifier(base.expectedProvider, 64);
+  const repository = snapshotRepositoryRef(base.repository);
+  const credentialRef = snapshotCredentialRef(base.credentialRef);
+  if (
+    workspaceId === null || projectId === null || operationId === null ||
+    correlationId === null || expectedProvider === null || repository === null ||
+    credentialRef === null
+  ) return null;
+  if (base.mode === 'bootstrap') {
+    if (base.expectedPreviousExternalVersion !== undefined) return null;
+    const pullRequestBindings = snapshotPullRequestBindings(base.pullRequestBindings);
+    return pullRequestBindings === null ? null : {
+      actor: actor as TrustedActorContext, workspaceId, projectId, operationId, correlationId,
+      expectedProvider, repository, credentialRef, mode: 'bootstrap', pullRequestBindings
+    };
+  }
+  if (base.pullRequestBindings !== undefined) return null;
+  const expectedPreviousExternalVersion = boundedSnapshotIdentifier(
+    base.expectedPreviousExternalVersion,
+    512
+  );
+  return expectedPreviousExternalVersion === null ? null : {
+    actor: actor as TrustedActorContext, workspaceId, projectId, operationId, correlationId,
+    expectedProvider, repository, credentialRef, mode: 'synchronize', expectedPreviousExternalVersion
+  };
+};
+
+const trackerRepositoryReadPolicy: PolicyRequest = {
+  actionCategory: 'read', surface: 'repository', environment: 'development'
+};
+const trackerProjectionWritePolicy: PolicyRequest = {
+  actionCategory: 'write', surface: 'tracker', environment: 'development'
+};
+
+const deniedTrackerSnapshotResult = (
+  code: 'INVALID_ACTOR_CONTEXT' | 'CAPABILITY_DENIED' | 'POLICY_DENIED' | 'APPROVAL_REQUIRED'
+): TrackerRepositorySnapshotOrchestrationResult => ({status: 'denied', code});
+
+const authorizationDenialCode = (
+  code: CommandError['code']
+): 'INVALID_ACTOR_CONTEXT' | 'CAPABILITY_DENIED' | 'POLICY_DENIED' | 'APPROVAL_REQUIRED' =>
+  code === 'INVALID_ACTOR_CONTEXT' || code === 'CAPABILITY_DENIED' ||
+  code === 'APPROVAL_REQUIRED' ? code : 'POLICY_DENIED';
+
+const failedTrackerSnapshotResult = (
+  code: Extract<TrackerRepositorySnapshotOrchestrationResult, {status: 'failed'}>['code']
+): TrackerRepositorySnapshotOrchestrationResult => ({status: 'failed', code});
+
+/** Reads one provider-neutral repository snapshot and applies it through one canonical projector method. */
+export const createTrackerRepositorySnapshotOrchestrationService = (
+  dependencies: CreateTrackerRepositorySnapshotOrchestrationServiceInput
+): TrackerRepositorySnapshotOrchestrationService => ({
+  async orchestrate(input: unknown): Promise<TrackerRepositorySnapshotOrchestrationResult> {
+    const request = validateTrackerRepositorySnapshotOrchestrationInput(input);
+    if (request === null) return failedTrackerSnapshotResult('invalid_input');
+    if (!isTrustedActorContext(request.actor)) return deniedTrackerSnapshotResult('INVALID_ACTOR_CONTEXT');
+
+    const readAuthorization = authorize(request.actor, trackerRepositoryReadPolicy);
+    if (!readAuthorization.ok) return deniedTrackerSnapshotResult(authorizationDenialCode(readAuthorization.error.code));
+    const writeAuthorization = authorize(request.actor, trackerProjectionWritePolicy);
+    if (!writeAuthorization.ok) return deniedTrackerSnapshotResult(authorizationDenialCode(writeAuthorization.error.code));
+
+    let reader: NonNullable<TrackerAdapter['readRepositorySnapshot']>;
+    try {
+      if (
+        dependencies.adapter.provider !== request.expectedProvider ||
+        !dependencies.adapter.capabilities.readWorkItems ||
+        !dependencies.adapter.capabilities.readPullRequests ||
+        !dependencies.adapter.capabilities.readChecks
+      ) {
+        return dependencies.adapter.provider !== request.expectedProvider
+          ? failedTrackerSnapshotResult('adapter_provider_mismatch')
+          : failedTrackerSnapshotResult('adapter_capability_unavailable');
+      }
+      const candidate = dependencies.adapter.readRepositorySnapshot;
+      if (typeof candidate !== 'function') return failedTrackerSnapshotResult('adapter_capability_unavailable');
+      reader = candidate;
+    } catch {
+      return failedTrackerSnapshotResult('adapter_capability_unavailable');
+    }
+
+    let snapshot;
+    try {
+      snapshot = await reader({
+        repository: request.repository,
+        credentialRef: request.credentialRef
+      });
+    } catch {
+      return failedTrackerSnapshotResult('repository_read_failed');
+    }
+
+    try {
+      return request.mode === 'bootstrap'
+        ? await dependencies.projector.bootstrap({
+            operationId: request.operationId,
+            workspaceId: request.workspaceId,
+            projectId: request.projectId,
+            actorId: request.actor.actorId,
+            correlationId: request.correlationId,
+            provider: request.expectedProvider,
+            snapshot,
+            pullRequestBindings: request.pullRequestBindings
+          })
+        : await dependencies.projector.synchronize({
+            operationId: request.operationId,
+            workspaceId: request.workspaceId,
+            projectId: request.projectId,
+            actorId: request.actor.actorId,
+            correlationId: request.correlationId,
+            provider: request.expectedProvider,
+            snapshot,
+            expectedPreviousExternalVersion: request.expectedPreviousExternalVersion
+          });
+    } catch {
+      return failedTrackerSnapshotResult('snapshot_projection_failed');
+    }
+  }
+});
 
 const exactObject = (
   value: unknown,

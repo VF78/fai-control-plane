@@ -892,14 +892,17 @@ export type TrackerSnapshotProjectionBase = Readonly<{
   correlationId: string;
   provider: string;
   snapshot: TrackerRepositorySnapshot;
-  pullRequestBindings?: readonly TrackerSnapshotPullRequestBinding[];
 }>;
 export type TrackerSnapshotBootstrapInput = TrackerSnapshotProjectionBase &
-  Readonly<{mode: 'bootstrap'}>;
+  Readonly<{
+    mode: 'bootstrap';
+    pullRequestBindings?: readonly TrackerSnapshotPullRequestBinding[];
+  }>;
 export type TrackerSnapshotSynchronizationInput = TrackerSnapshotProjectionBase &
   Readonly<{
     mode: 'synchronize';
     expectedPreviousExternalVersion: string;
+    pullRequestBindings?: never;
   }>;
 export type TrackerSnapshotProjectionInput =
   | TrackerSnapshotBootstrapInput
@@ -930,6 +933,15 @@ export type TrackerSnapshotProjectionResult =
         | 'stale_snapshot';
       currentExternalVersion?: string;
     }>;
+/** Canonical persistence boundary for a fully-read tracker repository snapshot. */
+export type TrackerSnapshotProjector = Readonly<{
+  bootstrap: (
+    input: Omit<TrackerSnapshotBootstrapInput, 'mode'>
+  ) => Promise<TrackerSnapshotProjectionResult>;
+  synchronize: (
+    input: Omit<TrackerSnapshotSynchronizationInput, 'mode'>
+  ) => Promise<TrackerSnapshotProjectionResult>;
+}>;
 export type TrackerRepositoryReadInput = Readonly<{
   repository: TrackerRepositoryRef;
   credentialRef: OpaqueSecretRef;

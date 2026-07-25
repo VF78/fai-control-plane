@@ -1,0 +1,202 @@
+import {randomUUID} from 'node:crypto';
+import {describe, expect, it, vi} from 'vitest';
+import {
+  createActorContextIssuer,
+  type OpaqueSecretRef,
+  type TrackerAdapter,
+  type TrackerRepositorySnapshot,
+  type TrackerSnapshotProjector
+} from '@fai-control-plane/domain';
+import {createTrackerRepositorySnapshotOrchestrationService} from './index';
+
+const id = (): string => randomUUID();
+const credentialRef: OpaqueSecretRef = {
+  provider: 'test-secrets', reference: 'tracker/read', scope: ['repository:read']
+};
+const snapshot: TrackerRepositorySnapshot = {
+  repository: {
+    externalId: 'provider:repository:1', externalVersion: 'provider:repository:v1',
+    owner: 'owner', name: 'repository'
+  },
+  externalVersion: 'provider:snapshot:v1', workItems: [], pullRequests: [], checks: []
+};
+const applied = {
+  status: 'applied' as const,
+  snapshotExternalVersion: snapshot.externalVersion,
+  createdWorkItems: 0,
+  updatedWorkItems: 0,
+  projectedPullRequests: 0,
+  projectedChecks: 0,
+  unknownWorkItemExternalIds: [],
+  unmappablePullRequestExternalIds: [],
+  unknownCheckExternalIds: []
+};
+
+const actorFor = (capabilities: readonly string[]) => {
+  const actorId = id();
+  const issuer = createActorContextIssuer({
+    users: [{actorId, capabilities: capabilities as never}], agents: [], systems: []
+  });
+  if (!issuer.ok) throw new Error('Test issuer did not initialize.');
+  const actor = issuer.value.issueUser(actorId);
+  if (!actor.ok) throw new Error('Test actor did not initialize.');
+  return actor.value;
+};
+
+const authorizedActor = () => actorFor([
+  'read:repository:development', 'write:tracker:development'
+]);
+
+const input = (overrides: Record<string, unknown> = {}) => ({
+  actor: authorizedActor(),
+  workspaceId: id(),
+  projectId: id(),
+  operationId: id(),
+  correlationId: id(),
+  expectedProvider: 'test-tracker',
+  repository: {owner: 'owner', repository: 'repository'},
+  credentialRef,
+  mode: 'bootstrap' as const,
+  pullRequestBindings: [{pullRequestExternalId: 'provider:pr:1', workItemExternalId: 'provider:issue:1'}],
+  ...overrides
+});
+
+const fakes = () => {
+  const calls: string[] = [];
+  const reader = vi.fn(async () => {
+    calls.push('read');
+    return snapshot;
+  });
+  const bootstrap = vi.fn(async () => {
+    calls.push('bootstrap');
+    return applied;
+  });
+  const synchronize = vi.fn(async () => {
+    calls.push('synchronize');
+    return applied;
+  });
+  const adapter: TrackerAdapter = {
+    provider: 'test-tracker',
+    capabilities: {
+      readWorkItems: true, writeWorkItems: false, readPullRequests: true, readChecks: true
+    },
+    readRepositorySnapshot: reader
+  };
+  const projector: TrackerSnapshotProjector = {bootstrap, synchronize};
+  return {calls, reader, bootstrap, synchronize, adapter, projector};
+};
+
+describe('tracker repository snapshot orchestration', () => {
+  it('denies an unauthorized actor before reading', async () => {
+    const fake = fakes();
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input({
+      actor: actorFor(['write:tracker:development'])
+    }))).resolves.toEqual({status: 'denied', code: 'CAPABILITY_DENIED'});
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('rejects invalid mode-specific input before reading', async () => {
+    const fake = fakes();
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input({workspaceId: 'not valid'}))).resolves.toEqual({
+      status: 'failed', code: 'invalid_input'
+    });
+    await expect(service.orchestrate(input({
+      mode: 'synchronize', pullRequestBindings: [], expectedPreviousExternalVersion: 'provider:v1'
+    }))).resolves.toEqual({status: 'failed', code: 'invalid_input'});
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('fails closed for missing reader capabilities before reading', async () => {
+    const fake = fakes();
+    fake.adapter = {
+      ...fake.adapter,
+      capabilities: {...fake.adapter.capabilities, readChecks: false}
+    };
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input())).resolves.toEqual({
+      status: 'failed', code: 'adapter_capability_unavailable'
+    });
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('checks the provider and projects a bootstrap snapshot exactly once', async () => {
+    const fake = fakes();
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+    const request = input();
+
+    await expect(service.orchestrate(request)).resolves.toEqual(applied);
+    expect(fake.calls).toEqual(['read', 'bootstrap']);
+    expect(fake.reader).toHaveBeenCalledTimes(1);
+    expect(fake.reader).toHaveBeenCalledWith({
+      repository: request.repository, credentialRef: request.credentialRef
+    });
+    expect(fake.bootstrap).toHaveBeenCalledTimes(1);
+    expect(fake.bootstrap).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: request.operationId,
+      workspaceId: request.workspaceId,
+      projectId: request.projectId,
+      actorId: request.actor.actorId,
+      correlationId: request.correlationId,
+      provider: request.expectedProvider,
+      snapshot,
+      pullRequestBindings: request.pullRequestBindings
+    }));
+    expect(fake.synchronize).not.toHaveBeenCalled();
+  });
+
+  it('projects a synchronization snapshot exactly once with its expected version', async () => {
+    const fake = fakes();
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+    const request = input({
+      mode: 'synchronize',
+      expectedPreviousExternalVersion: 'provider:snapshot:v0',
+      pullRequestBindings: undefined
+    });
+
+    await expect(service.orchestrate(request)).resolves.toEqual(applied);
+    expect(fake.calls).toEqual(['read', 'synchronize']);
+    expect(fake.reader).toHaveBeenCalledTimes(1);
+    expect(fake.synchronize).toHaveBeenCalledWith(expect.objectContaining({
+      expectedPreviousExternalVersion: 'provider:snapshot:v0',
+      provider: 'test-tracker', snapshot
+    }));
+    expect(fake.bootstrap).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes adapter and projector failures without duplicate calls', async () => {
+    const readerFailure = fakes();
+    readerFailure.reader.mockRejectedValueOnce(new Error('credential=secret-value'));
+    const readerService = createTrackerRepositorySnapshotOrchestrationService(readerFailure);
+    await expect(readerService.orchestrate(input())).resolves.toEqual({
+      status: 'failed', code: 'repository_read_failed'
+    });
+    expect(readerFailure.reader).toHaveBeenCalledTimes(1);
+    expect(readerFailure.bootstrap).not.toHaveBeenCalled();
+
+    const projectorFailure = fakes();
+    projectorFailure.bootstrap.mockRejectedValueOnce(new Error('provider body: sensitive'));
+    const projectorService = createTrackerRepositorySnapshotOrchestrationService(projectorFailure);
+    await expect(projectorService.orchestrate(input())).resolves.toEqual({
+      status: 'failed', code: 'snapshot_projection_failed'
+    });
+    expect(projectorFailure.reader).toHaveBeenCalledTimes(1);
+    expect(projectorFailure.bootstrap).toHaveBeenCalledTimes(1);
+    expect(projectorFailure.synchronize).not.toHaveBeenCalled();
+  });
+
+  it('does not read when the adapter provider differs from the requested provider', async () => {
+    const fake = fakes();
+    fake.adapter = {...fake.adapter, provider: 'other-tracker'};
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input())).resolves.toEqual({
+      status: 'failed', code: 'adapter_provider_mismatch'
+    });
+    expect(fake.calls).toEqual([]);
+  });
+});

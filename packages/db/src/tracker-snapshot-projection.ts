@@ -4,6 +4,7 @@ import type {
   TrackerPullRequestSnapshot,
   TrackerRepositorySnapshot,
   TrackerSnapshotBootstrapInput,
+  TrackerSnapshotProjector,
   TrackerSnapshotProjectionInput,
   TrackerSnapshotProjectionResult,
   TrackerSnapshotSynchronizationInput,
@@ -119,7 +120,9 @@ const advisoryLock = async (
   );
 };
 
-export const createPostgresTrackerSnapshotProjector = (db: Database) => {
+export const createPostgresTrackerSnapshotProjector = (
+  db: Database
+): TrackerSnapshotProjector => {
   const project = async (
     input: TrackerSnapshotProjectionInput
   ): Promise<TrackerSnapshotProjectionResult> => {
