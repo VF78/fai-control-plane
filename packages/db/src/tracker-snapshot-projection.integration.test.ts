@@ -285,6 +285,251 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     });
   });
 
+  it('serializes simultaneous identical bootstrap and synchronize operations', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Concurrent', $3)`,
+      [projectId, ids.workspace, `concurrent-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const initial = snapshot('concurrent:1', {
+      repository: {
+        externalId: 'test:repository:concurrent',
+        externalVersion: 'test:repository:concurrent:1',
+        owner: 'Test',
+        name: 'Concurrent'
+      },
+      workItems: [issue('test:issue:2001')],
+      pullRequests: [],
+      checks: []
+    });
+    const bootstrap = {
+      ...operation(initial),
+      projectId,
+      provider: 'test-concurrency'
+    };
+    const bootstrapResults = await Promise.all([
+      projector.bootstrap(bootstrap),
+      projector.bootstrap(bootstrap)
+    ]);
+    expect(bootstrapResults.map(({status}) => status).sort()).toEqual([
+      'applied',
+      'replayed'
+    ]);
+    expect(await db.select().from(workItems)
+      .where(eq(workItems.projectId, projectId))).toHaveLength(1);
+
+    const next = {
+      ...initial,
+      externalVersion: 'concurrent:2',
+      workItems: [issue('test:issue:2001', 'Concurrent update')]
+    };
+    const synchronization = {
+      ...operation(next),
+      projectId,
+      provider: 'test-concurrency',
+      expectedPreviousExternalVersion: 'concurrent:1'
+    };
+    const synchronizationResults = await Promise.all([
+      projector.synchronize(synchronization),
+      projector.synchronize(synchronization)
+    ]);
+    expect(synchronizationResults.map(({status}) => status).sort()).toEqual([
+      'applied',
+      'replayed'
+    ]);
+    expect(await db.select().from(trackerSnapshotOperations)
+      .where(eq(trackerSnapshotOperations.projectId, projectId)))
+      .toHaveLength(2);
+    expect(await db.select().from(auditEvents)
+      .where(eq(auditEvents.projectId, projectId))).toHaveLength(2);
+  });
+
+  it('audits idempotency-key reuse without replacing the original receipt', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Reuse', $3)`,
+      [projectId, ids.workspace, `reuse-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const initial = snapshot('reuse:1', {
+      repository: {
+        externalId: 'test:repository:reuse',
+        externalVersion: 'test:repository:reuse:1',
+        owner: 'Test',
+        name: 'Reuse'
+      },
+      workItems: [],
+      pullRequests: [],
+      checks: []
+    });
+    const bootstrap = {
+      ...operation(initial),
+      projectId,
+      provider: 'test-reuse'
+    };
+    await projector.bootstrap(bootstrap);
+    const [originalReceipt] = await db.select()
+      .from(trackerSnapshotOperations)
+      .where(eq(trackerSnapshotOperations.id, bootstrap.operationId));
+
+    const reused = {
+      ...bootstrap,
+      snapshot: {...initial, externalVersion: 'reuse:changed'}
+    };
+    await expect(projector.bootstrap(reused)).resolves.toEqual({
+      status: 'conflict',
+      code: 'idempotency_key_reused'
+    });
+    await projector.bootstrap(reused);
+
+    const [persistedReceipt] = await db.select()
+      .from(trackerSnapshotOperations)
+      .where(eq(trackerSnapshotOperations.id, bootstrap.operationId));
+    expect(persistedReceipt).toEqual(originalReceipt);
+    const reuseAudits = await db.select()
+      .from(auditEvents)
+      .where(and(
+        eq(auditEvents.projectId, projectId),
+        eq(auditEvents.action, 'tracker_snapshot.idempotency_reuse')
+      ));
+    expect(reuseAudits).toHaveLength(1);
+    expect(reuseAudits[0]).toMatchObject({
+      actorId: null,
+      outcome: 'rejected',
+      reasonCode: 'IDEMPOTENCY_KEY_REUSED',
+      targetId: 'test:repository:reuse'
+    });
+    expect(reuseAudits[0]?.commandId).not.toContain('reuse:changed');
+  });
+
+  it('refreshes repository names and PR repository refs for a stable external ID', async () => {
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const renamed = snapshot('github:sha256:snapshot-renamed', {
+      repository: {
+        externalId: 'github:repository:1278325372',
+        externalVersion: 'github:sha256:repository-renamed',
+        owner: 'VF78-renamed',
+        name: 'MSA-renamed'
+      },
+      workItems: [issue('github:issue:1', 'Updated provider title')]
+    });
+    const result = await projector.synchronize({
+      ...operation(renamed),
+      expectedPreviousExternalVersion: 'github:sha256:snapshot-2'
+    });
+    expect(result.status).toBe('applied');
+
+    const [repositoryBinding] = await db.select()
+      .from(trackerBindings)
+      .where(and(
+        eq(trackerBindings.projectId, ids.project),
+        eq(trackerBindings.surface, 'repository')
+      ));
+    expect(repositoryBinding?.externalId)
+      .toBe('github:repository:1278325372');
+    expect(repositoryBinding?.metadata).toMatchObject({
+      owner: 'VF78-renamed',
+      name: 'MSA-renamed'
+    });
+    const [pullRequestRow] = await db.select().from(prLinks)
+      .where(eq(prLinks.externalId, 'github:pull_request:10'));
+    expect(pullRequestRow?.repositoryRef).toBe('VF78-renamed/MSA-renamed');
+  });
+
+  it('does not advance orphan PR/check bindings or projection counters after cascade deletion', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Orphans', $3)`,
+      [projectId, ids.workspace, `orphans-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const initial = snapshot('orphans:1', {
+      repository: {
+        externalId: 'test:repository:orphans',
+        externalVersion: 'test:repository:orphans:1',
+        owner: 'Test',
+        name: 'Orphans'
+      },
+      workItems: [issue('test:issue:3001')],
+      pullRequests: [pullRequest('test:pull_request:3010')],
+      checks: [check('test:check:3100', 'test:pull_request:3010')]
+    });
+    await projector.bootstrap({
+      ...operation(initial),
+      projectId,
+      provider: 'test-orphans',
+      pullRequestBindings: [{
+        pullRequestExternalId: 'test:pull_request:3010',
+        workItemExternalId: 'test:issue:3001'
+      }]
+    });
+    const before = await db.select({
+      surface: trackerBindings.surface,
+      externalId: trackerBindings.externalId,
+      lastInboundVersion: trackerBindings.lastInboundVersion
+    }).from(trackerBindings).where(and(
+      eq(trackerBindings.projectId, projectId),
+      eq(trackerBindings.provider, 'test-orphans')
+    ));
+    await db.delete(workItems).where(eq(workItems.projectId, projectId));
+    expect(await db.select().from(prLinks)
+      .where(eq(prLinks.externalId, 'test:pull_request:3010'))).toHaveLength(0);
+    expect(await db.select().from(buildChecks)
+      .where(eq(buildChecks.externalId, 'test:check:3100'))).toHaveLength(0);
+
+    const next = snapshot('orphans:2', {
+      repository: {
+        ...initial.repository,
+        externalVersion: 'test:repository:orphans:2'
+      },
+      workItems: [{
+        ...issue('test:issue:3001'),
+        externalVersion: 'test:issue:3001:2'
+      }],
+      pullRequests: [{
+        ...pullRequest('test:pull_request:3010'),
+        externalVersion: 'test:pull_request:3010:2'
+      }],
+      checks: [{
+        ...check('test:check:3100', 'test:pull_request:3010'),
+        externalVersion: 'test:check:3100:2'
+      }]
+    });
+    const result = await projector.synchronize({
+      ...operation(next),
+      projectId,
+      provider: 'test-orphans',
+      expectedPreviousExternalVersion: 'orphans:1'
+    });
+    expect(result).toMatchObject({
+      status: 'applied',
+      createdWorkItems: 0,
+      updatedWorkItems: 0,
+      projectedPullRequests: 0,
+      projectedChecks: 0,
+      unknownWorkItemExternalIds: ['test:issue:3001'],
+      unmappablePullRequestExternalIds: ['test:pull_request:3010'],
+      unknownCheckExternalIds: ['test:check:3100']
+    });
+
+    const after = await db.select({
+      surface: trackerBindings.surface,
+      externalId: trackerBindings.externalId,
+      lastInboundVersion: trackerBindings.lastInboundVersion
+    }).from(trackerBindings).where(and(
+      eq(trackerBindings.projectId, projectId),
+      eq(trackerBindings.provider, 'test-orphans')
+    ));
+    for (const surface of ['issue', 'pull_request', 'check']) {
+      expect(after.find((binding) => binding.surface === surface))
+        .toEqual(before.find((binding) => binding.surface === surface));
+    }
+  });
+
   it('rolls back the entire bootstrap snapshot when an immutable binding collides', async () => {
     await db.insert(trackerBindings).values({
       projectId: ids.otherProject,

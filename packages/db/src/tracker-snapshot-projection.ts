@@ -9,7 +9,7 @@ import type {
   TrackerSnapshotSynchronizationInput,
   TrackerWorkItemSnapshot
 } from '@fai-control-plane/domain';
-import {and, eq} from 'drizzle-orm';
+import {and, eq, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -110,6 +110,15 @@ const validateInput = (input: TrackerSnapshotProjectionInput): void => {
 const storedResult = (value: unknown): AppliedResult | ConflictResult =>
   value as AppliedResult | ConflictResult;
 
+const advisoryLock = async (
+  tx: Parameters<Parameters<Database['transaction']>[0]>[0],
+  scope: string
+): Promise<void> => {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${scope}, 0))`
+  );
+};
+
 export const createPostgresTrackerSnapshotProjector = (db: Database) => {
   const project = async (
     input: TrackerSnapshotProjectionInput
@@ -119,10 +128,17 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
 
     try {
       return await db.transaction(async (tx) => {
+      await advisoryLock(
+        tx,
+        `tracker-snapshot-operation:${input.workspaceId}:${input.operationId}`
+      );
       const [previousOperation] = await tx
         .select({
           requestHash: schema.trackerSnapshotOperations.requestHash,
-          result: schema.trackerSnapshotOperations.result
+          result: schema.trackerSnapshotOperations.result,
+          projectId: schema.trackerSnapshotOperations.projectId,
+          repositoryExternalId:
+            schema.trackerSnapshotOperations.repositoryExternalId
         })
         .from(schema.trackerSnapshotOperations)
         .where(and(
@@ -130,9 +146,35 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           eq(schema.trackerSnapshotOperations.id, input.operationId)
         ));
       if (previousOperation !== undefined) {
-        return previousOperation.requestHash === requestHash
-          ? {status: 'replayed', result: storedResult(previousOperation.result)}
-          : {status: 'conflict', code: 'idempotency_key_reused'};
+        if (previousOperation.requestHash === requestHash) {
+          return {
+            status: 'replayed',
+            result: storedResult(previousOperation.result)
+          };
+        }
+        const reuseCommandId =
+          `tracker-snapshot-reuse:${input.operationId}:${requestHash}`;
+        await tx.insert(schema.auditEvents).values({
+          id: randomUUID(),
+          workspaceId: input.workspaceId,
+          projectId: previousOperation.projectId,
+          actorId: null,
+          commandId: reuseCommandId,
+          actionCategory: 'write',
+          action: 'tracker_snapshot.idempotency_reuse',
+          targetType: 'tracker_repository',
+          targetId: previousOperation.repositoryExternalId,
+          outcome: 'rejected',
+          reasonCode: 'IDEMPOTENCY_KEY_REUSED',
+          correlationId: input.correlationId,
+          occurredAt: new Date()
+        }).onConflictDoNothing({
+          target: [
+            schema.auditEvents.workspaceId,
+            schema.auditEvents.commandId
+          ]
+        });
+        return {status: 'conflict', code: 'idempotency_key_reused'};
       }
 
       const [[projectRow], [actorRow]] = await Promise.all([
@@ -153,6 +195,17 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
         throw new Error('tracker_snapshot_scope_invalid');
       }
 
+      await advisoryLock(
+        tx,
+        [
+          'tracker-snapshot-repository',
+          input.workspaceId,
+          input.projectId,
+          input.provider,
+          input.snapshot.repository.externalId
+        ].join(':')
+      );
+
       const [repositoryBinding] = await tx
         .select()
         .from(schema.trackerBindings)
@@ -165,14 +218,8 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
         ))
         .for('update');
 
-      const currentRepositoryMetadata =
-        repositoryBinding?.metadata as Record<string, unknown> | undefined;
       const repositoryIdentityMatches = repositoryBinding === undefined ||
-        (
-          repositoryBinding.externalId === input.snapshot.repository.externalId &&
-          currentRepositoryMetadata?.owner === input.snapshot.repository.owner &&
-          currentRepositoryMetadata?.name === input.snapshot.repository.name
-        );
+        repositoryBinding.externalId === input.snapshot.repository.externalId;
 
       let conflict: ConflictResult | undefined;
       if (!repositoryIdentityMatches) {
@@ -260,8 +307,33 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           eq(schema.trackerBindings.surface, 'issue'),
           eq(schema.trackerBindings.entityType, 'work_item')
         ));
+      const canonicalIssueBindings = await tx
+        .select({
+          externalId: schema.trackerBindings.externalId,
+          entityId: schema.trackerBindings.entityId
+        })
+        .from(schema.trackerBindings)
+        .innerJoin(
+          schema.workItems,
+          and(
+            eq(schema.workItems.id, schema.trackerBindings.entityId),
+            eq(schema.workItems.projectId, input.projectId)
+          )
+        )
+        .where(and(
+          eq(schema.trackerBindings.projectId, input.projectId),
+          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.surface, 'issue'),
+          eq(schema.trackerBindings.entityType, 'work_item')
+        ))
+        .for('update');
+      const rawWorkItemExternalIds = new Set(
+        issueBindings.map(({externalId}) => externalId)
+      );
       const workItemIds = new Map(
-        issueBindings.map((binding) => [binding.externalId, binding.entityId])
+        canonicalIssueBindings.map(
+          (binding) => [binding.externalId, binding.entityId]
+        )
       );
       let createdWorkItems = 0;
       let updatedWorkItems = 0;
@@ -269,7 +341,11 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
 
       for (const item of input.snapshot.workItems) {
         let workItemId = workItemIds.get(item.externalId);
-        if (workItemId === undefined && input.mode === 'bootstrap') {
+        if (
+          workItemId === undefined &&
+          input.mode === 'bootstrap' &&
+          !rawWorkItemExternalIds.has(item.externalId)
+        ) {
           workItemId = randomUUID();
           await tx.insert(schema.workItems).values({
             id: workItemId,
@@ -306,22 +382,35 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           unknownWorkItemExternalIds.push(item.externalId);
           continue;
         }
-        if (workItem.title !== item.title) {
-          await tx.update(schema.workItems)
-            .set({title: item.title, updatedAt: new Date()})
-            .where(eq(schema.workItems.id, workItemId));
-          updatedWorkItems += 1;
-        }
-        await tx.update(schema.trackerBindings).set({
+        const [updatedBinding] = await tx.update(schema.trackerBindings).set({
           externalVersion: item.externalVersion,
           lastInboundVersion: item.externalVersion,
           metadata: issueMetadata(input.snapshot, item),
           updatedAt: new Date()
         }).where(and(
+          eq(schema.trackerBindings.projectId, input.projectId),
           eq(schema.trackerBindings.provider, input.provider),
           eq(schema.trackerBindings.surface, 'issue'),
-          eq(schema.trackerBindings.externalId, item.externalId)
-        ));
+          eq(schema.trackerBindings.externalId, item.externalId),
+          eq(schema.trackerBindings.entityId, workItemId)
+        )).returning({id: schema.trackerBindings.id});
+        if (updatedBinding === undefined) {
+          unknownWorkItemExternalIds.push(item.externalId);
+          continue;
+        }
+        if (workItem.title !== item.title) {
+          const [updatedWorkItem] = await tx.update(schema.workItems)
+            .set({title: item.title, updatedAt: new Date()})
+            .where(and(
+              eq(schema.workItems.id, workItemId),
+              eq(schema.workItems.projectId, input.projectId)
+            ))
+            .returning({id: schema.workItems.id});
+          if (updatedWorkItem === undefined) {
+            throw new Error('tracker_snapshot_work_item_disappeared');
+          }
+          updatedWorkItems += 1;
+        }
       }
 
       const pullRequestBindings = await tx
@@ -333,8 +422,37 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           eq(schema.trackerBindings.surface, 'pull_request'),
           eq(schema.trackerBindings.entityType, 'pr_link')
         ));
+      const canonicalPullRequestBindings = await tx
+        .select({
+          externalId: schema.trackerBindings.externalId,
+          entityId: schema.trackerBindings.entityId
+        })
+        .from(schema.trackerBindings)
+        .innerJoin(
+          schema.prLinks,
+          eq(schema.prLinks.id, schema.trackerBindings.entityId)
+        )
+        .innerJoin(
+          schema.workItems,
+          and(
+            eq(schema.workItems.id, schema.prLinks.workItemId),
+            eq(schema.workItems.projectId, input.projectId)
+          )
+        )
+        .where(and(
+          eq(schema.trackerBindings.projectId, input.projectId),
+          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.surface, 'pull_request'),
+          eq(schema.trackerBindings.entityType, 'pr_link')
+        ))
+        .for('update');
+      const rawPullRequestExternalIds = new Set(
+        pullRequestBindings.map(({externalId}) => externalId)
+      );
       const pullRequestIds = new Map(
-        pullRequestBindings.map((binding) => [binding.externalId, binding.entityId])
+        canonicalPullRequestBindings.map(
+          (binding) => [binding.externalId, binding.entityId]
+        )
       );
       const requestedMappings = new Map(
         (input.pullRequestBindings ?? []).map((mapping) => [
@@ -347,7 +465,11 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
 
       for (const pullRequest of input.snapshot.pullRequests) {
         let prLinkId = pullRequestIds.get(pullRequest.externalId);
-        if (prLinkId === undefined && input.mode === 'bootstrap') {
+        if (
+          prLinkId === undefined &&
+          input.mode === 'bootstrap' &&
+          !rawPullRequestExternalIds.has(pullRequest.externalId)
+        ) {
           const mappedWorkItemId = workItemIds.get(
             requestedMappings.get(pullRequest.externalId) ?? ''
           );
@@ -384,24 +506,39 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           unmappablePullRequestExternalIds.push(pullRequest.externalId);
           continue;
         }
-        await tx.update(schema.prLinks).set({
+        const [updatedPullRequest] = await tx.update(schema.prLinks).set({
+          repositoryRef:
+            `${input.snapshot.repository.owner}/${input.snapshot.repository.name}`,
           url: pullRequest.url,
           headRef: pullRequest.headRef,
           baseRef: pullRequest.baseRef,
           state: pullRequest.state,
           draft: pullRequest.draft,
           updatedAt: new Date()
-        }).where(eq(schema.prLinks.id, prLinkId));
-        await tx.update(schema.trackerBindings).set({
+        }).where(eq(schema.prLinks.id, prLinkId))
+          .returning({id: schema.prLinks.id});
+        if (updatedPullRequest === undefined) {
+          unmappablePullRequestExternalIds.push(pullRequest.externalId);
+          pullRequestIds.delete(pullRequest.externalId);
+          continue;
+        }
+        const [updatedBinding] = await tx.update(schema.trackerBindings).set({
           externalVersion: pullRequest.externalVersion,
           lastInboundVersion: pullRequest.externalVersion,
           metadata: pullRequestMetadata(input.snapshot, pullRequest),
           updatedAt: new Date()
         }).where(and(
+          eq(schema.trackerBindings.projectId, input.projectId),
           eq(schema.trackerBindings.provider, input.provider),
           eq(schema.trackerBindings.surface, 'pull_request'),
-          eq(schema.trackerBindings.externalId, pullRequest.externalId)
-        ));
+          eq(schema.trackerBindings.externalId, pullRequest.externalId),
+          eq(schema.trackerBindings.entityId, prLinkId)
+        )).returning({id: schema.trackerBindings.id});
+        if (updatedBinding === undefined) {
+          unmappablePullRequestExternalIds.push(pullRequest.externalId);
+          pullRequestIds.delete(pullRequest.externalId);
+          continue;
+        }
         projectedPullRequests += 1;
       }
 
@@ -414,8 +551,41 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           eq(schema.trackerBindings.surface, 'check'),
           eq(schema.trackerBindings.entityType, 'build_check')
         ));
+      const canonicalCheckBindings = await tx
+        .select({
+          externalId: schema.trackerBindings.externalId,
+          entityId: schema.trackerBindings.entityId
+        })
+        .from(schema.trackerBindings)
+        .innerJoin(
+          schema.buildChecks,
+          eq(schema.buildChecks.id, schema.trackerBindings.entityId)
+        )
+        .innerJoin(
+          schema.prLinks,
+          eq(schema.prLinks.id, schema.buildChecks.prLinkId)
+        )
+        .innerJoin(
+          schema.workItems,
+          and(
+            eq(schema.workItems.id, schema.prLinks.workItemId),
+            eq(schema.workItems.projectId, input.projectId)
+          )
+        )
+        .where(and(
+          eq(schema.trackerBindings.projectId, input.projectId),
+          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.surface, 'check'),
+          eq(schema.trackerBindings.entityType, 'build_check')
+        ))
+        .for('update');
+      const rawCheckExternalIds = new Set(
+        checkBindings.map(({externalId}) => externalId)
+      );
       const checkIds = new Map(
-        checkBindings.map((binding) => [binding.externalId, binding.entityId])
+        canonicalCheckBindings.map(
+          (binding) => [binding.externalId, binding.entityId]
+        )
       );
       const unknownCheckExternalIds: string[] = [];
       let projectedChecks = 0;
@@ -427,6 +597,10 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           continue;
         }
         let checkId = checkIds.get(check.externalId);
+        if (checkId === undefined && rawCheckExternalIds.has(check.externalId)) {
+          unknownCheckExternalIds.push(check.externalId);
+          continue;
+        }
         if (checkId === undefined) {
           checkId = randomUUID();
           await tx.insert(schema.buildChecks).values({
@@ -452,24 +626,35 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           });
           checkIds.set(check.externalId, checkId);
         } else {
-          await tx.update(schema.buildChecks).set({
+          const [updatedCheck] = await tx.update(schema.buildChecks).set({
             prLinkId,
             name: check.name,
             status: check.status,
             conclusion: check.conclusion,
             detailsUrl: check.detailsUrl,
             updatedAt: new Date()
-          }).where(eq(schema.buildChecks.id, checkId));
-          await tx.update(schema.trackerBindings).set({
+          }).where(eq(schema.buildChecks.id, checkId))
+            .returning({id: schema.buildChecks.id});
+          if (updatedCheck === undefined) {
+            unknownCheckExternalIds.push(check.externalId);
+            continue;
+          }
+          const [updatedBinding] = await tx.update(schema.trackerBindings).set({
             externalVersion: check.externalVersion,
             lastInboundVersion: check.externalVersion,
             metadata: checkMetadata(input.snapshot, check),
             updatedAt: new Date()
           }).where(and(
+            eq(schema.trackerBindings.projectId, input.projectId),
             eq(schema.trackerBindings.provider, input.provider),
             eq(schema.trackerBindings.surface, 'check'),
-            eq(schema.trackerBindings.externalId, check.externalId)
-          ));
+            eq(schema.trackerBindings.externalId, check.externalId),
+            eq(schema.trackerBindings.entityId, checkId)
+          )).returning({id: schema.trackerBindings.id});
+          if (updatedBinding === undefined) {
+            unknownCheckExternalIds.push(check.externalId);
+            continue;
+          }
         }
         projectedChecks += 1;
       }
