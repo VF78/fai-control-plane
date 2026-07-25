@@ -1,0 +1,120 @@
+name: fai-control-plane
+
+x-runtime-environment: &runtime-environment
+  DATABASE_URL: ${DATABASE_URL:-postgresql://fai:fai@postgres:5432/fai_control_plane}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  OTEL_SERVICE_NAMESPACE: ${OTEL_SERVICE_NAMESPACE:-fai-control-plane}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  GITHUB_SYNC_ENABLED: ${GITHUB_SYNC_ENABLED:-false}
+  GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+  GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-}
+  GITHUB_WEBHOOK_SECRET_FILE: ${GITHUB_WEBHOOK_SECRET_FILE:-}
+  RUNNER_ENABLED: ${RUNNER_ENABLED:-false}
+  RUNNER_NETWORK_MODE: ${RUNNER_NETWORK_MODE:-none}
+  ARTIFACTS_ROOT: ${ARTIFACTS_ROOT:-/var/lib/fai/artifacts}
+  AUTH_ENABLED: ${AUTH_ENABLED:-false}
+  AUTH_ISSUER: ${AUTH_ISSUER:-}
+  AUTH_CLIENT_ID: ${AUTH_CLIENT_ID:-}
+  AUTH_CLIENT_SECRET_FILE: ${AUTH_CLIENT_SECRET_FILE:-}
+  AUTH_SESSION_SECRET_FILE: ${AUTH_SESSION_SECRET_FILE:-}
+  PUBLIC_SHARING_ENABLED: ${PUBLIC_SHARING_ENABLED:-false}
+  SHARE_SIGNING_KEY_FILE: ${SHARE_SIGNING_KEY_FILE:-}
+
+x-app-build: &app-build
+  context: .
+  dockerfile: infra/compose/Dockerfile
+  target: runtime
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: fai_control_plane
+      POSTGRES_USER: fai
+      POSTGRES_PASSWORD: fai
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U fai -d fai_control_plane",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build: *app-build
+    command: ["node", "packages/db/dist/migrate.js"]
+    environment: *runtime-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  web:
+    build: *app-build
+    command: ["node", "apps/web/.next/standalone/apps/web/server.js"]
+    environment:
+      <<: *runtime-environment
+      PORT: "3000"
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    init: true
+    restart: unless-stopped
+
+  worker:
+    build: *app-build
+    command: ["node", "apps/worker/dist/index.js"]
+    environment:
+      <<: *runtime-environment
+      PORT: "3001"
+    ports:
+      - "${WORKER_PORT:-3001}:3001"
+    volumes:
+      - artifacts:/var/lib/fai/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  artifacts:
