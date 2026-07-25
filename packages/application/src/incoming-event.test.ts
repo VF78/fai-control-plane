@@ -6,6 +6,7 @@ import type {
 } from '@fai-control-plane/domain';
 import {describe, expect, it, vi} from 'vitest';
 import {
+  createIncomingEventQueueConsumer,
   createIncomingEventIngestionService,
   type VerifiedIncomingEventInput
 } from './index';
@@ -81,5 +82,21 @@ describe('incoming event ingestion', () => {
 
     await expect(service.ingest(candidate)).rejects.toBeInstanceOf(TypeError);
     expect(inbox.accept).not.toHaveBeenCalled();
+  });
+
+  it('accepts only an event ID queue payload and delegates it unchanged', async () => {
+    const eventId = randomUUID();
+    const processor = {
+      process: vi.fn(async () => ({status: 'processed' as const, eventId}))
+    };
+    const consumer = createIncomingEventQueueConsumer({processor});
+
+    await expect(consumer.consume({eventId})).resolves.toEqual({
+      status: 'processed',
+      eventId
+    });
+    expect(processor.process).toHaveBeenCalledWith(eventId);
+    await expect(consumer.consume({eventId, projection: {issue: {id: 1}}}))
+      .rejects.toThrow('Incoming event queue payload contains unsupported fields.');
   });
 });

@@ -5,6 +5,9 @@ import * as schema from './schema';
 export * from './schema';
 export {createPostgresUnitOfWork} from './persistence';
 export {
+  createPostgresIncomingEventProcessor
+} from './incoming-event-consumer';
+export {
   createPostgresIncomingEventInbox,
   INCOMING_EVENT_QUEUE
 } from './incoming-event-inbox';

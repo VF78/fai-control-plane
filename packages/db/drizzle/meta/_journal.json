@@ -43,6 +43,13 @@
       "when": 1785004424449,
       "tag": "0005_incoming_event_inbox",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785052800000,
+      "tag": "0006_incoming_event_consumer",
+      "breakpoints": true
     }
   ]
 }

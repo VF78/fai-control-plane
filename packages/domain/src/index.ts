@@ -595,6 +595,22 @@ export interface IncomingEventInbox {
 
 export type IncomingEventQueuePayload = Readonly<{eventId: string}>;
 
+export type IncomingEventProcessingResult =
+  | Readonly<{status: 'processed'; eventId: string}>
+  | Readonly<{status: 'replayed'; eventId: string}>;
+
+/**
+ * Persists a sanitized inbox event as its sole canonical observation.
+ * Implementations may reject while a live processor lease owns the event.
+ */
+export interface IncomingEventProcessor {
+  process(eventId: string): Promise<IncomingEventProcessingResult>;
+}
+
+export interface IncomingEventQueueConsumer {
+  consume(payload: unknown): Promise<IncomingEventProcessingResult>;
+}
+
 export type OpaqueSecretRef = Readonly<{
   provider: string;
   reference: string;

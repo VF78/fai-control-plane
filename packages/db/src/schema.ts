@@ -475,6 +475,10 @@ export const incomingEvents = pgTable(
       .notNull(),
     status: eventStatusEnum('status').default('pending').notNull(),
     attemptCount: integer('attempt_count').default(0).notNull(),
+    processingToken: uuid('processing_token'),
+    processingLeaseExpiresAt: timestamp('processing_lease_expires_at', {
+      withTimezone: true
+    }),
     receivedAt: timestamp('received_at', {withTimezone: true})
       .defaultNow()
       .notNull(),
@@ -489,6 +493,22 @@ export const incomingEvents = pgTable(
     index('incoming_events_status_received_idx').on(
       table.status,
       table.receivedAt
+    ),
+    index('incoming_events_processing_lease_idx').on(
+      table.status,
+      table.processingLeaseExpiresAt
+    ).where(sql`${table.status} = 'processing'`),
+    check(
+      'incoming_events_processing_claim_valid',
+      sql`(
+        ${table.status} = 'processing'
+        and ${table.processingToken} is not null
+        and ${table.processingLeaseExpiresAt} is not null
+      ) or (
+        ${table.status} <> 'processing'
+        and ${table.processingToken} is null
+        and ${table.processingLeaseExpiresAt} is null
+      )`
     ),
     index('incoming_events_project_received_idx').on(
       table.projectId,
@@ -566,6 +586,9 @@ export const canonicalEvents = pgTable(
       table.workspaceId,
       table.deduplicationKey
     ),
+    uniqueIndex('canonical_events_incoming_event_unique')
+      .on(table.incomingEventId)
+      .where(sql`${table.incomingEventId} is not null`),
     index('canonical_events_aggregate_idx').on(
       table.aggregateType,
       table.aggregateId,

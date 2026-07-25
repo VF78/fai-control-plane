@@ -17,8 +17,9 @@ import {
   createPostgresIncomingEventInbox,
   INCOMING_EVENT_QUEUE
 } from './incoming-event-inbox';
+import {createPostgresIncomingEventProcessor} from './incoming-event-consumer';
 import {createDatabase} from './index';
-import {incomingEvents} from './schema';
+import {canonicalEvents, incomingEvents} from './schema';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (process.env.CI && databaseUrl === undefined) {
@@ -293,6 +294,191 @@ describePostgres(
       await expect(inbox.accept(event({
         workspaceId: randomUUID()
       }))).rejects.toThrow('Incoming event project scope is invalid.');
+    });
+
+    it('creates one canonical observation and replays duplicate queue work', async () => {
+      const candidate = event();
+      const inbox = createPostgresIncomingEventInbox(testDb, boss);
+      const processor = createPostgresIncomingEventProcessor(testDb);
+      await inbox.accept(candidate);
+
+      await expect(processor.process(candidate.eventId)).resolves.toEqual({
+        status: 'processed',
+        eventId: candidate.eventId
+      });
+      await expect(processor.process(candidate.eventId)).resolves.toEqual({
+        status: 'replayed',
+        eventId: candidate.eventId
+      });
+      const observations = await testDb
+        .select()
+        .from(canonicalEvents)
+        .where(eq(canonicalEvents.incomingEventId, candidate.eventId));
+      expect(observations).toHaveLength(1);
+      expect(observations[0]).toMatchObject({
+        projectId: fixture.projectId,
+        eventType: 'incoming_event.observed',
+        aggregateType: 'project',
+        aggregateId: fixture.projectId,
+        deduplicationKey: `incoming-event:${candidate.eventId}`,
+        payload: {
+          provider: 'github',
+          deliveryId: candidate.deliveryId,
+          projection: candidate.projection
+        }
+      });
+    });
+
+    it('rolls back the canonical observation when terminal inbox marking fails', async () => {
+      const candidate = event();
+      const inbox = createPostgresIncomingEventInbox(testDb, boss);
+      const processor = createPostgresIncomingEventProcessor(testDb);
+      await inbox.accept(candidate);
+      await testPool.query(`
+        CREATE FUNCTION fail_incoming_event_completion()
+        RETURNS trigger AS $$
+        BEGIN
+          IF NEW.status = 'processed' THEN
+            RAISE EXCEPTION 'test terminal update failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER fail_incoming_event_completion
+          BEFORE UPDATE OF status ON incoming_events
+          FOR EACH ROW EXECUTE FUNCTION fail_incoming_event_completion();
+      `);
+
+      try {
+        await expect(processor.process(candidate.eventId)).rejects.toThrow();
+        const observations = await testDb
+          .select({id: canonicalEvents.id})
+          .from(canonicalEvents)
+          .where(eq(canonicalEvents.incomingEventId, candidate.eventId));
+        expect(observations).toHaveLength(0);
+        const [inboxRow] = await testDb
+          .select({
+            status: incomingEvents.status,
+            processedAt: incomingEvents.processedAt
+          })
+          .from(incomingEvents)
+          .where(eq(incomingEvents.id, candidate.eventId));
+        expect(inboxRow).toEqual({status: 'processing', processedAt: null});
+      } finally {
+        await testPool.query(`
+          DROP TRIGGER fail_incoming_event_completion ON incoming_events;
+          DROP FUNCTION fail_incoming_event_completion();
+        `);
+      }
+    });
+
+    it('recovers a stale lease and retries it into one observation', async () => {
+      const candidate = event();
+      const inbox = createPostgresIncomingEventInbox(testDb, boss);
+      const processor = createPostgresIncomingEventProcessor(testDb);
+      await inbox.accept(candidate);
+      await testPool.query(
+        `UPDATE incoming_events
+         SET status = 'processing',
+             processing_token = gen_random_uuid(),
+             processing_lease_expires_at = now() - interval '1 second'
+         WHERE id = $1`,
+        [candidate.eventId]
+      );
+
+      await expect(processor.process(candidate.eventId)).resolves.toEqual({
+        status: 'processed',
+        eventId: candidate.eventId
+      });
+      const [row] = await testDb
+        .select({
+          status: incomingEvents.status,
+          attemptCount: incomingEvents.attemptCount,
+          processingToken: incomingEvents.processingToken,
+          processingLeaseExpiresAt: incomingEvents.processingLeaseExpiresAt
+        })
+        .from(incomingEvents)
+        .where(eq(incomingEvents.id, candidate.eventId));
+      expect(row).toEqual({
+        status: 'processed',
+        attemptCount: 1,
+        processingToken: null,
+        processingLeaseExpiresAt: null
+      });
+    });
+
+    it('does not mutate terminal replay state or unrelated business tables', async () => {
+      const candidate = event();
+      const inbox = createPostgresIncomingEventInbox(testDb, boss);
+      const processor = createPostgresIncomingEventProcessor(testDb);
+      await inbox.accept(candidate);
+
+      await testPool.query(`
+        CREATE FUNCTION reject_non_event_mutation()
+        RETURNS trigger AS $$
+        BEGIN
+          RAISE EXCEPTION 'unexpected business mutation';
+        END;
+        $$ LANGUAGE plpgsql;
+        DO $$
+        DECLARE target record;
+        BEGIN
+          FOR target IN
+            SELECT quote_ident(tablename) AS name
+            FROM pg_tables
+            WHERE schemaname = 'public'
+              AND tablename NOT IN ('incoming_events', 'canonical_events')
+          LOOP
+            EXECUTE format(
+              'CREATE TRIGGER reject_non_event_mutation BEFORE INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE FUNCTION reject_non_event_mutation()',
+              target.name
+            );
+          END LOOP;
+        END;
+        $$;
+      `);
+      try {
+        await expect(processor.process(candidate.eventId)).resolves.toEqual({
+          status: 'processed',
+          eventId: candidate.eventId
+        });
+        const [beforeReplay] = await testDb
+          .select({
+            attemptCount: incomingEvents.attemptCount,
+            processedAt: incomingEvents.processedAt
+          })
+          .from(incomingEvents)
+          .where(eq(incomingEvents.id, candidate.eventId));
+        await expect(processor.process(candidate.eventId)).resolves.toEqual({
+          status: 'replayed',
+          eventId: candidate.eventId
+        });
+        const [afterReplay] = await testDb
+          .select({
+            attemptCount: incomingEvents.attemptCount,
+            processedAt: incomingEvents.processedAt
+          })
+          .from(incomingEvents)
+          .where(eq(incomingEvents.id, candidate.eventId));
+        expect(afterReplay).toEqual(beforeReplay);
+      } finally {
+        await testPool.query(`
+          DO $$
+          DECLARE target record;
+          BEGIN
+            FOR target IN
+              SELECT quote_ident(tablename) AS name
+              FROM pg_tables
+              WHERE schemaname = 'public'
+                AND tablename NOT IN ('incoming_events', 'canonical_events')
+            LOOP
+              EXECUTE format('DROP TRIGGER reject_non_event_mutation ON %s', target.name);
+            END LOOP;
+          END;
+          $$;
+          DROP FUNCTION reject_non_event_mutation();
+        `);
+      }
     });
   }
 );

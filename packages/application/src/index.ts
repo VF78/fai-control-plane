@@ -31,6 +31,9 @@ import {
   type IncomingEvent,
   type IncomingEventAcceptance,
   type IncomingEventInbox,
+  type IncomingEventProcessingResult,
+  type IncomingEventProcessor,
+  type IncomingEventQueueConsumer,
   type NonApprovalAuditEvent,
   type NonApprovalCommandOutcome,
   type NonApprovalReceipt,
@@ -79,6 +82,10 @@ export type CreateIncomingEventIngestionServiceInput = Readonly<{
   inbox: IncomingEventInbox;
   idGenerator?: IdGenerator;
   clock?: Clock;
+}>;
+
+export type CreateIncomingEventQueueConsumerInput = Readonly<{
+  processor: IncomingEventProcessor;
 }>;
 
 export type CanonicalCommandExecution =
@@ -465,6 +472,23 @@ export const createIncomingEventIngestionService = (
     }
   };
 };
+
+export const createIncomingEventQueueConsumer = (
+  options: CreateIncomingEventQueueConsumerInput
+): IncomingEventQueueConsumer => ({
+  async consume(payload: unknown): Promise<IncomingEventProcessingResult> {
+    const value = exactObject(payload, 'incoming event queue payload', [
+      'eventId'
+    ]);
+    if (
+      typeof value.eventId !== 'string' ||
+      !canonicalUuidPattern.test(value.eventId)
+    ) {
+      throw new TypeError('Incoming event queue payload eventId must be a UUID.');
+    }
+    return options.processor.process(value.eventId);
+  }
+});
 
 const isCommandShape = (value: unknown): value is CanonicalCommand => {
   if (!isPlainObject(value) || !hasExactKeys(value, [
