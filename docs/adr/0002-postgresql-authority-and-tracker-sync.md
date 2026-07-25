@@ -49,6 +49,9 @@ control plane's own writes. Reconciliation polling repairs missed webhooks.
 
 An authority classification is required before adding a synchronized field.
 There is no generic merge and no timestamp-only last-writer-wins policy.
+Read adapters may return an explicitly defined subset of provider-owned fields;
+the initial repository snapshot omits issue and pull request bodies until a
+consumer requires and secures that untrusted, potentially sensitive content.
 
 ## Failure Semantics
 

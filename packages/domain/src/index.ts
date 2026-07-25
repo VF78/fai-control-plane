@@ -787,11 +787,90 @@ export const createTaskPacket = (packetId: string, content: TaskPacketContent): 
   return succeeded(deepFreeze({packetId, content: immutableContent, canonicalJson: serialized, contentHash}));
 };
 
+export type TrackerCapabilities = Readonly<{
+  readWorkItems: boolean;
+  writeWorkItems: boolean;
+  readPullRequests: boolean;
+  readChecks: boolean;
+}>;
+export type TrackerRepositoryRef = Readonly<{
+  owner: string;
+  repository: string;
+}>;
+export type TrackerIdentity = Readonly<{
+  externalId: string;
+  login: string;
+}>;
+export type TrackerLabel = Readonly<{
+  externalId: string;
+  name: string;
+  color: string;
+}>;
+export type TrackerMilestone = Readonly<{
+  externalId: string;
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+}>;
+export type TrackerWorkItemSnapshot = Readonly<{
+  externalId: string;
+  externalVersion: string;
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  labels: readonly TrackerLabel[];
+  assignees: readonly TrackerIdentity[];
+  milestone: TrackerMilestone | null;
+}>;
+export type TrackerPullRequestSnapshot = Readonly<{
+  externalId: string;
+  externalVersion: string;
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  draft: boolean;
+  merged: boolean;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  labels: readonly TrackerLabel[];
+  assignees: readonly TrackerIdentity[];
+  milestone: TrackerMilestone | null;
+}>;
+export type TrackerCheckSnapshot = Readonly<{
+  externalId: string;
+  externalVersion: string;
+  pullRequestExternalId: string;
+  name: string;
+  status: 'queued' | 'in_progress' | 'completed' | 'waiting' | 'requested' | 'pending';
+  conclusion: string | null;
+  detailsUrl: string | null;
+}>;
+export type TrackerRepositorySnapshot = Readonly<{
+  repository: Readonly<{
+    externalId: string;
+    externalVersion: string;
+    owner: string;
+    name: string;
+  }>;
+  externalVersion: string;
+  workItems: readonly TrackerWorkItemSnapshot[];
+  pullRequests: readonly TrackerPullRequestSnapshot[];
+  checks: readonly TrackerCheckSnapshot[];
+}>;
+export type TrackerRepositoryReadInput = Readonly<{
+  repository: TrackerRepositoryRef;
+  credential: string;
+}>;
 export type TrackerAdapter = Readonly<{
   provider: string;
-  transitionWorkItem(input: Readonly<{
+  capabilities: TrackerCapabilities;
+  readRepositorySnapshot?: (
+    input: TrackerRepositoryReadInput
+  ) => Promise<TrackerRepositorySnapshot>;
+  transitionWorkItem?: (input: Readonly<{
     bindingId: string; expectedVersion: string; status: WorkItemStatus; idempotencyKey: string;
-  }>): Promise<Readonly<{externalVersion: string}>>;
+  }>) => Promise<Readonly<{externalVersion: string}>>;
 }>;
 export type ChatAdapter = Readonly<{
   provider: string;
