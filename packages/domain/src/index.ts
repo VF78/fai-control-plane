@@ -880,6 +880,56 @@ export type TrackerRepositorySnapshot = Readonly<{
   pullRequests: readonly TrackerPullRequestSnapshot[];
   checks: readonly TrackerCheckSnapshot[];
 }>;
+export type TrackerSnapshotPullRequestBinding = Readonly<{
+  pullRequestExternalId: string;
+  workItemExternalId: string;
+}>;
+export type TrackerSnapshotProjectionBase = Readonly<{
+  operationId: string;
+  workspaceId: string;
+  projectId: string;
+  actorId: string;
+  correlationId: string;
+  provider: string;
+  snapshot: TrackerRepositorySnapshot;
+  pullRequestBindings?: readonly TrackerSnapshotPullRequestBinding[];
+}>;
+export type TrackerSnapshotBootstrapInput = TrackerSnapshotProjectionBase &
+  Readonly<{mode: 'bootstrap'}>;
+export type TrackerSnapshotSynchronizationInput = TrackerSnapshotProjectionBase &
+  Readonly<{
+    mode: 'synchronize';
+    expectedPreviousExternalVersion: string;
+  }>;
+export type TrackerSnapshotProjectionInput =
+  | TrackerSnapshotBootstrapInput
+  | TrackerSnapshotSynchronizationInput;
+export type TrackerSnapshotProjectionResult =
+  | Readonly<{
+      status: 'applied';
+      snapshotExternalVersion: string;
+      createdWorkItems: number;
+      updatedWorkItems: number;
+      projectedPullRequests: number;
+      projectedChecks: number;
+      unknownWorkItemExternalIds: readonly string[];
+      unmappablePullRequestExternalIds: readonly string[];
+      unknownCheckExternalIds: readonly string[];
+    }>
+  | Readonly<{
+      status: 'replayed';
+      result: Exclude<TrackerSnapshotProjectionResult, {status: 'replayed'}>;
+    }>
+  | Readonly<{
+      status: 'conflict';
+      code:
+        | 'bootstrap_already_completed'
+        | 'bootstrap_required'
+        | 'idempotency_key_reused'
+        | 'repository_identity_conflict'
+        | 'stale_snapshot';
+      currentExternalVersion?: string;
+    }>;
 export type TrackerRepositoryReadInput = Readonly<{
   repository: TrackerRepositoryRef;
   credentialRef: OpaqueSecretRef;

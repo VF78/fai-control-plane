@@ -53,6 +53,17 @@ Read adapters may return an explicitly defined subset of provider-owned fields;
 the initial repository snapshot omits issue and pull request bodies until a
 consumer requires and secures that untrusted, potentially sensitive content.
 
+Repository snapshot ingestion has two distinct operations. An explicit,
+audited, idempotent bootstrap may create canonical WorkItems and immutable
+tracker bindings. Steady-state synchronization requires the repository
+binding's prior snapshot version, updates only existing WorkItem bindings and
+provider-owned mirror fields, and reports unknown or unmappable tracker
+objects. It never infers or silently creates a canonical WorkItem. Each
+repository snapshot, including its issue, pull request, and check projections,
+is committed in one PostgreSQL transaction. Snapshot operation receipts store
+only structured identifiers, versions, counters, and reason codes; raw GitHub
+bodies and credential material are not persisted.
+
 ## Failure Semantics
 
 - A database commit may succeed while GitHub is unavailable; the outbox keeps

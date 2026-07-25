@@ -336,6 +336,43 @@ export const trackerBindings = pgTable(
   ]
 );
 
+export const trackerSnapshotOperations = pgTable(
+  'tracker_snapshot_operations',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    provider: text('provider').notNull(),
+    repositoryExternalId: text('repository_external_id').notNull(),
+    mode: text('mode').notNull(),
+    requestHash: text('request_hash').notNull(),
+    previousExternalVersion: text('previous_external_version'),
+    snapshotExternalVersion: text('snapshot_external_version').notNull(),
+    result: jsonb('result').$type<Record<string, unknown>>().notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('tracker_snapshot_operations_workspace_id_unique').on(
+      table.workspaceId,
+      table.id
+    ),
+    index('tracker_snapshot_operations_repository_idx').on(
+      table.projectId,
+      table.provider,
+      table.repositoryExternalId,
+      table.createdAt
+    ),
+    check(
+      'tracker_snapshot_operations_mode_valid',
+      sql`${table.mode} in ('bootstrap', 'synchronize')`
+    )
+  ]
+);
+
 export const prLinks = pgTable(
   'pr_links',
   {

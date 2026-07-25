@@ -4,6 +4,7 @@ import * as schema from './schema';
 
 export * from './schema';
 export {createPostgresUnitOfWork} from './persistence';
+export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
 export {
   createPostgresIncomingEventProcessor
 } from './incoming-event-consumer';
