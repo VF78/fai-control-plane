@@ -4,7 +4,7 @@ import {
   startTelemetry,
   stopTelemetry
 } from '@fai-control-plane/observability';
-import {INCOMING_EVENT_QUEUE} from '@fai-control-plane/db';
+import {INCOMING_EVENT_QUEUE} from '@fai-control-plane/db/runtime';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
