@@ -346,6 +346,69 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       .where(eq(auditEvents.projectId, projectId))).toHaveLength(2);
   });
 
+  it('serializes competing first bootstraps at the project/provider identity boundary', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Competing bootstrap', $3)`,
+      [projectId, ids.workspace, `competing-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const first = snapshot('competing:first', {
+      repository: {
+        externalId: 'test:repository:first',
+        externalVersion: 'test:repository:first:1',
+        owner: 'Test',
+        name: 'First'
+      },
+      workItems: [issue('test:issue:2101')],
+      pullRequests: [],
+      checks: []
+    });
+    const second = snapshot('competing:second', {
+      repository: {
+        externalId: 'test:repository:second',
+        externalVersion: 'test:repository:second:1',
+        owner: 'Test',
+        name: 'Second'
+      },
+      workItems: [issue('test:issue:2102')],
+      pullRequests: [],
+      checks: []
+    });
+    const results = await Promise.all([
+      projector.bootstrap({
+        ...operation(first),
+        projectId,
+        provider: 'test-competing'
+      }),
+      projector.bootstrap({
+        ...operation(second),
+        projectId,
+        provider: 'test-competing'
+      })
+    ]);
+
+    expect(results.filter(({status}) => status === 'applied')).toHaveLength(1);
+    expect(results.filter(({status}) => status === 'conflict')).toHaveLength(1);
+    expect(results).toContainEqual({
+      status: 'conflict',
+      code: 'repository_identity_conflict'
+    });
+    expect(await db.select().from(workItems)
+      .where(eq(workItems.projectId, projectId))).toHaveLength(1);
+    expect(await db.select().from(trackerBindings).where(and(
+      eq(trackerBindings.projectId, projectId),
+      eq(trackerBindings.provider, 'test-competing'),
+      eq(trackerBindings.surface, 'repository')
+    ))).toHaveLength(1);
+    expect(await db.select().from(trackerSnapshotOperations)
+      .where(eq(trackerSnapshotOperations.projectId, projectId)))
+      .toHaveLength(2);
+    expect(await db.select().from(auditEvents)
+      .where(eq(auditEvents.projectId, projectId))).toHaveLength(2);
+  });
+
   it('audits idempotency-key reuse without replacing the original receipt', async () => {
     const projectId = randomUUID();
     await testPool.query(

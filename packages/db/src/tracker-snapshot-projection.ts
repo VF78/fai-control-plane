@@ -201,8 +201,7 @@ export const createPostgresTrackerSnapshotProjector = (db: Database) => {
           'tracker-snapshot-repository',
           input.workspaceId,
           input.projectId,
-          input.provider,
-          input.snapshot.repository.externalId
+          input.provider
         ].join(':')
       );
 
