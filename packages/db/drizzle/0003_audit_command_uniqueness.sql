@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "audit_events_workspace_command_unique" ON "audit_events" USING btree ("workspace_id","command_id");

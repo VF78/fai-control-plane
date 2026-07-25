@@ -3,6 +3,7 @@ import {Pool} from 'pg';
 import * as schema from './schema';
 
 export * from './schema';
+export {createPostgresUnitOfWork} from './persistence';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});
