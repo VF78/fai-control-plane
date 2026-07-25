@@ -1,24 +1,15 @@
 import {createHash, createHmac, timingSafeEqual} from 'node:crypto';
-import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
+import type {
+  OpaqueSecretRef,
+  SecretsProvider,
+  TrackerCheckConclusion
+} from '@fai-control-plane/domain';
+import {
+  githubCheckRunConclusions,
+  githubRepositoryScopeDefinitions
+} from './github-contract';
 
 export const MAX_GITHUB_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024;
-
-const githubRepositoryScopeDefinitions = [
-  {
-    repositoryId: 1278325372,
-    fullName: 'VF78/MSA',
-    ownerId: 75837222,
-    projectNumber: 3,
-    projectNodeId: 'PVT_kwHOBIUvJs4Bbefq'
-  },
-  {
-    repositoryId: 1279114011,
-    fullName: 'VF78/ascon',
-    ownerId: 75837222,
-    projectNumber: 4,
-    projectNodeId: 'PVT_kwHOBIUvJs4Bbi0Q'
-  }
-] as const;
 
 const supportedActions = {
   issues: new Set([
@@ -53,27 +44,6 @@ const supportedEvents = new Set<GitHubWebhookEvent>([
   'installation_repositories',
   'ping'
 ]);
-type CheckRunConclusion =
-  | 'action_required'
-  | 'cancelled'
-  | 'failure'
-  | 'neutral'
-  | 'skipped'
-  | 'stale'
-  | 'success'
-  | 'timed_out';
-
-const checkRunConclusions = new Set<CheckRunConclusion>([
-  'action_required',
-  'cancelled',
-  'failure',
-  'neutral',
-  'skipped',
-  'stale',
-  'success',
-  'timed_out'
-]);
-
 const canonicalUuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const githubDeliveryIdPattern =
@@ -186,7 +156,7 @@ export type GitHubWebhookProjection =
         checkRun: Readonly<{
           id: number;
           status: 'queued' | 'in_progress' | 'completed';
-          conclusion: CheckRunConclusion | null;
+          conclusion: TrackerCheckConclusion | null;
           headSha: string;
         }>;
       }>)
@@ -664,8 +634,9 @@ function getRequiredString(value: Record<string, unknown>, key: string, maximumL
     : null;
 }
 
-function isCheckRunConclusion(value: unknown): value is CheckRunConclusion {
-  return typeof value === 'string' && checkRunConclusions.has(value as CheckRunConclusion);
+function isCheckRunConclusion(value: unknown): value is TrackerCheckConclusion {
+  return typeof value === 'string' &&
+    githubCheckRunConclusions.includes(value as TrackerCheckConclusion);
 }
 
 function getScope(

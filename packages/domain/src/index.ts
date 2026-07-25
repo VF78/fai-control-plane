@@ -841,13 +841,22 @@ export type TrackerPullRequestSnapshot = Readonly<{
   assignees: readonly TrackerIdentity[];
   milestone: TrackerMilestone | null;
 }>;
+export type TrackerCheckConclusion =
+  | 'action_required'
+  | 'cancelled'
+  | 'failure'
+  | 'neutral'
+  | 'skipped'
+  | 'stale'
+  | 'success'
+  | 'timed_out';
 export type TrackerCheckSnapshot = Readonly<{
   externalId: string;
   externalVersion: string;
   pullRequestExternalId: string;
   name: string;
   status: 'queued' | 'in_progress' | 'completed' | 'waiting' | 'requested' | 'pending';
-  conclusion: string | null;
+  conclusion: TrackerCheckConclusion | null;
   detailsUrl: string | null;
 }>;
 export type TrackerRepositorySnapshot = Readonly<{

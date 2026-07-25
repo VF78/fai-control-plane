@@ -6,6 +6,7 @@ export type {
   ChatAdapter,
   TrackerAdapter,
   TrackerCapabilities,
+  TrackerCheckConclusion,
   TrackerCheckSnapshot,
   TrackerIdentity,
   TrackerLabel,
