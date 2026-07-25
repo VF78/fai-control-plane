@@ -39,6 +39,7 @@ let adminPool: Pool;
 let testPool: Pool;
 let testDb: ReturnType<typeof createDatabase>['db'];
 let boss: PgBoss;
+let testDatabaseUrl: string;
 
 const event = (overrides: Partial<IncomingEvent> = {}): IncomingEvent => ({
   eventId: randomUUID(),
@@ -65,6 +66,21 @@ const jobs = async () => boss.findJobs<{eventId: string}>(
   INCOMING_EVENT_QUEUE
 );
 
+const waitFor = async <T>(
+  read: () => Promise<T>,
+  matches: (value: T) => boolean,
+  timeoutMs = 10_000
+): Promise<T> => {
+  const deadline = Date.now() + timeoutMs;
+  let latest = await read();
+  while (!matches(latest)) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for test state.');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    latest = await read();
+  }
+  return latest;
+};
+
 describePostgres(
   databaseUrl === undefined
     ? 'incoming event inbox integration (skipped: DATABASE_URL is absent)'
@@ -75,7 +91,8 @@ describePostgres(
       adminPool = new Pool({connectionString: sourceUrl.toString()});
       await adminPool.query(`CREATE DATABASE "${databaseName}"`);
       sourceUrl.pathname = `/${databaseName}`;
-      const created = createDatabase(sourceUrl.toString());
+      testDatabaseUrl = sourceUrl.toString();
+      const created = createDatabase(testDatabaseUrl);
       testPool = created.pool;
       testDb = created.db;
       await migrate(testDb, {
@@ -371,6 +388,153 @@ describePostgres(
         processingToken: null
       });
     });
+
+    it('fences a stale owner after a lease takeover', async () => {
+      const candidate = event();
+      const inbox = createPostgresIncomingEventInbox(testDb, boss);
+      const processor = createPostgresIncomingEventProcessor(testDb);
+      const lockPool = new Pool({connectionString: testDatabaseUrl});
+      const advisoryLock = 9_874_321;
+      let oldOwner: Promise<unknown> | undefined;
+      let newOwner: Promise<unknown> | undefined;
+      let locked = false;
+
+      await inbox.accept(candidate);
+      await testPool.query(`
+        CREATE TABLE incoming_event_fencing_guard (
+          incoming_event_id uuid PRIMARY KEY,
+          processing_token uuid NOT NULL
+        );
+        CREATE FUNCTION pause_canonical_observation()
+        RETURNS trigger AS $$
+        BEGIN
+          IF NEW.incoming_event_id = '${candidate.eventId}'::uuid THEN
+            PERFORM pg_advisory_xact_lock(${advisoryLock});
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE FUNCTION require_current_processing_token()
+        RETURNS trigger AS $$
+        DECLARE expected_token uuid;
+        BEGIN
+          IF NEW.status = 'processed' THEN
+            SELECT processing_token INTO expected_token
+            FROM incoming_event_fencing_guard
+            WHERE incoming_event_id = NEW.id;
+            IF expected_token IS NOT NULL
+              AND OLD.processing_token <> expected_token THEN
+              RAISE EXCEPTION 'stale owner attempted finalization';
+            END IF;
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER pause_canonical_observation
+          BEFORE INSERT ON canonical_events
+          FOR EACH ROW EXECUTE FUNCTION pause_canonical_observation();
+        CREATE TRIGGER require_current_processing_token
+          BEFORE UPDATE OF status ON incoming_events
+          FOR EACH ROW EXECUTE FUNCTION require_current_processing_token();
+      `);
+
+      try {
+        await lockPool.query('SELECT pg_advisory_lock($1)', [advisoryLock]);
+        locked = true;
+        oldOwner = processor.process(candidate.eventId);
+        const firstClaim = await waitFor(
+          async () => (await testPool.query(
+            `SELECT attempt_count, processing_token, status
+             FROM incoming_events WHERE id = $1`,
+            [candidate.eventId]
+          )).rows[0] as {
+            attempt_count: number;
+            processing_token: string;
+            status: string;
+          },
+          (row) => row.attempt_count === 1 && row.status === 'processing'
+        );
+        await waitFor(
+          async () => Number((await testPool.query(
+            `SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database()
+               AND wait_event_type = 'Lock'
+               AND wait_event = 'advisory'`
+          )).rows[0]?.count),
+          (count) => count > 0
+        );
+        await testPool.query(
+          `UPDATE incoming_events
+           SET processing_lease_expires_at = now() - interval '1 second'
+           WHERE id = $1 AND processing_token = $2::uuid`,
+          [candidate.eventId, firstClaim.processing_token]
+        );
+
+        newOwner = processor.process(candidate.eventId);
+        const secondClaim = await waitFor(
+          async () => (await testPool.query(
+            `SELECT attempt_count, processing_token, status
+             FROM incoming_events WHERE id = $1`,
+            [candidate.eventId]
+          )).rows[0] as {
+            attempt_count: number;
+            processing_token: string;
+            status: string;
+          },
+          (row) =>
+            row.attempt_count === 2 &&
+            row.status === 'processing' &&
+            row.processing_token !== firstClaim.processing_token
+        );
+        await testPool.query(
+          `INSERT INTO incoming_event_fencing_guard (
+             incoming_event_id, processing_token
+           ) VALUES ($1, $2::uuid)`,
+          [candidate.eventId, secondClaim.processing_token]
+        );
+        await lockPool.query('SELECT pg_advisory_unlock($1)', [advisoryLock]);
+        locked = false;
+
+        await expect(oldOwner).rejects.toThrow('Incoming event processing failed.');
+        await expect(newOwner).resolves.toEqual({
+          status: 'processed',
+          eventId: candidate.eventId
+        });
+        const [inboxRow] = await testDb
+          .select({
+            status: incomingEvents.status,
+            attemptCount: incomingEvents.attemptCount,
+            processingToken: incomingEvents.processingToken
+          })
+          .from(incomingEvents)
+          .where(eq(incomingEvents.id, candidate.eventId));
+        expect(inboxRow).toEqual({
+          status: 'processed',
+          attemptCount: 2,
+          processingToken: null
+        });
+        const observations = await testDb
+          .select({id: canonicalEvents.id})
+          .from(canonicalEvents)
+          .where(eq(canonicalEvents.incomingEventId, candidate.eventId));
+        expect(observations).toHaveLength(1);
+      } finally {
+        if (locked) {
+          await lockPool.query('SELECT pg_advisory_unlock($1)', [advisoryLock]);
+        }
+        await Promise.allSettled([oldOwner, newOwner].filter(
+          (owner): owner is Promise<unknown> => owner !== undefined
+        ));
+        await testPool.query(`
+          DROP TRIGGER IF EXISTS require_current_processing_token ON incoming_events;
+          DROP TRIGGER IF EXISTS pause_canonical_observation ON canonical_events;
+          DROP FUNCTION IF EXISTS require_current_processing_token();
+          DROP FUNCTION IF EXISTS pause_canonical_observation();
+          DROP TABLE IF EXISTS incoming_event_fencing_guard;
+        `);
+        await lockPool.end();
+      }
+    }, 30_000);
 
     it('rolls back the canonical observation when terminal inbox marking fails', async () => {
       const candidate = event();
