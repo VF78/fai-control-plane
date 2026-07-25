@@ -46,6 +46,7 @@ export const policyDecisions = ['allow', 'ask', 'deny'] as const;
 export type PolicyDecision = (typeof policyDecisions)[number];
 
 export const commandErrorCodes = [
+  'INVALID_COMMAND',
   'INVALID_TRANSITION',
   'WORK_ITEM_BLOCKED',
   'POLICY_DENIED',
@@ -87,8 +88,12 @@ export type AgentRun = Readonly<{
   idempotencyKey: string;
   version: number;
 }>;
+export type AgentRunView = Readonly<{
+  aggregate: AgentRun;
+  projectId: string;
+}>;
 
-type ApprovalTarget =
+export type ApprovalTarget =
   | Readonly<{workItemId: string; agentRunId?: never}>
   | Readonly<{workItemId?: never; agentRunId: string}>;
 export type Approval = Readonly<{
@@ -519,7 +524,7 @@ export type TransitionAgentRunCommand = CanonicalCommandEnvelope<
 >;
 export type RequestApprovalCommand = CanonicalCommandEnvelope<
   'approval.request',
-  Readonly<{approvalId: string; action: PolicyRequest; workItemId?: string; agentRunId?: string}>
+  Readonly<{approvalId: string; action: PolicyRequest; target: ApprovalTarget}>
 >;
 export type DecideApprovalCommand = CanonicalCommandEnvelope<
   'approval.decide',
@@ -802,6 +807,7 @@ declare const persistedMutationBrand: unique symbol;
 declare const auditAppendTokenBrand: unique symbol;
 declare const receiptCompletionBrand: unique symbol;
 declare const approvalRequiredCompletionBrand: unique symbol;
+declare const noMutationCompletionBrand: unique symbol;
 
 /** Opaque capability returned only by a successful idempotency claim. */
 export type ReceiptClaimToken = Readonly<{readonly [receiptClaimTokenBrand]: true}>;
@@ -922,7 +928,17 @@ export type CanonicalCommandOutcome = NonApprovalCommandOutcome | ApprovalRequir
  * receipt handling.
  */
 export interface CanonicalCommandTransaction {
-  claimReceipt(claim: CommandReceiptClaim): Promise<CommandReceiptClaimResult>;
+  /** Loads only aggregates visible to the workspace bound to this command receipt. */
+  loadWorkItem(claimToken: ReceiptClaimToken, workItemId: string): Promise<WorkItem | null>;
+  loadAgentRun(
+    claimToken: ReceiptClaimToken,
+    agentRunId: string
+  ): Promise<AgentRunView | null>;
+  loadApproval(claimToken: ReceiptClaimToken, approvalId: string): Promise<Approval | null>;
+  loadAccessRequest(
+    claimToken: ReceiptClaimToken,
+    accessRequestId: string
+  ): Promise<AccessRequest | null>;
   /** Atomically compare-and-swaps the aggregate and appends its audit event. */
   persistAuditedMutation(input: Readonly<{
     claimToken: ReceiptClaimToken;
@@ -938,6 +954,12 @@ export interface CanonicalCommandTransaction {
     receipt: NonApprovalReceipt;
     mutation: PersistedCanonicalMutation;
   }>): Promise<CompletedCanonicalMutation>;
+  /** Atomically appends an audit event and completes a receipt when no aggregate changes. */
+  completeAuditedReceipt(input: Readonly<{
+    claimToken: ReceiptClaimToken;
+    audit: NonApprovalAuditEvent;
+    receipt: NonApprovalReceipt;
+  }>): Promise<CompletedAuditedReceipt>;
 }
 export type CompletedCanonicalMutation = Readonly<{
   cas: PersistedVersionCas;
@@ -956,18 +978,38 @@ export type CompletedApprovalRequiredCommand = Readonly<{
   receipt: CommandReceiptCompletion;
   readonly [approvalRequiredCompletionBrand]: true;
 }>;
+export type CompletedAuditedReceipt = Readonly<{
+  audit: AuditAppendToken;
+  receipt: CommandReceiptCompletion;
+  readonly [noMutationCompletionBrand]: true;
+}>;
+export type CompletedNoMutationCommand<T> = Readonly<{
+  kind: 'no_mutation';
+  value: T;
+  completion: CompletedAuditedReceipt;
+}>;
 export type ApprovalRequiredMutationResult =
   | Readonly<{status: 'completed'; command: CompletedApprovalRequiredCommand}>
+  | Readonly<{status: 'not_found'}>
   | Readonly<{status: 'version_conflict'; expectedPersistedVersion: number | null; persistedVersion: number | null}>;
 export type CompletedCanonicalCommand<T> =
   | CompletedNonApprovalCommand<T>
-  | CompletedApprovalRequiredCommand;
+  | CompletedApprovalRequiredCommand
+  | CompletedNoMutationCommand<T>;
+export type CommandExecutionResult<T> =
+  | Readonly<{status: 'completed'; command: CompletedCanonicalCommand<T>}>
+  | Readonly<{status: 'replayed'; receipt: CommandReceipt}>
+  | Readonly<{status: 'key_reused'; existingRequestHash: string}>;
 export interface UnitOfWork {
   /**
    * Runs one command callback atomically. A successful callback result must carry
    * the receipt completion, which requires a claim token, persisted CAS result, and audit append token.
    */
   executeCommand<T>(
-    work: (transaction: CanonicalCommandTransaction) => Promise<CompletedCanonicalCommand<T>>
-  ): Promise<CompletedCanonicalCommand<T>>;
+    claim: CommandReceiptClaim,
+    work: (
+      transaction: CanonicalCommandTransaction,
+      claimToken: ReceiptClaimToken
+    ) => Promise<CompletedCanonicalCommand<T>>
+  ): Promise<CommandExecutionResult<T>>;
 }

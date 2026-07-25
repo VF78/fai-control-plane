@@ -44,6 +44,9 @@ const fixture = {
   workItemId: randomUUID(),
   eventId: randomUUID(),
   packetId: randomUUID(),
+  runId: randomUUID(),
+  approvalId: randomUUID(),
+  accessRequestId: randomUUID(),
   otherWorkspaceId: randomUUID(),
   otherProjectId: randomUUID(),
   otherActorId: randomUUID(),
@@ -153,13 +156,12 @@ const taskPacketContent = (
 const completeApproval = async (
   transaction: CanonicalCommandTransaction,
   receiptClaim: CommandReceiptClaim,
+  claimToken: import('@fai-control-plane/domain').ReceiptClaimToken,
   onClaimed?: () => void
 ) => {
-  const claimed = await transaction.claimReceipt(receiptClaim);
-  if (claimed.status !== 'claimed') throw claimed;
   onClaimed?.();
   const persisted = await transaction.persistApprovalRequired({
-    claimToken: claimed.token,
+    claimToken,
     outcome: approvalOutcome(receiptClaim)
   });
   if (persisted.status !== 'completed') throw persisted;
@@ -208,6 +210,41 @@ const workItemOutcome = (
       occurredAt: new Date().toISOString()
     }
   };
+};
+
+const completeNoMutation = async <T>(
+  transaction: CanonicalCommandTransaction,
+  receiptClaim: CommandReceiptClaim,
+  claimToken: import('@fai-control-plane/domain').ReceiptClaimToken,
+  value: T,
+  input: {outcome?: 'succeeded' | 'failed' | 'rejected'; reasonCode?: 'NOT_FOUND' | 'POLICY_DENIED'} = {}
+) => {
+  const completion = await transaction.completeAuditedReceipt({
+    claimToken,
+    audit: {
+      id: randomUUID(),
+      workspaceId: receiptClaim.workspaceId,
+      commandId: receiptClaim.commandId,
+      correlationId: receiptClaim.correlationId,
+      actorId: fixture.actorId,
+      actionCategory: 'write',
+      action: 'work_item.set_blocked',
+      targetType: 'work_item',
+      targetId: fixture.workItemId,
+      outcome: input.outcome ?? 'succeeded',
+      ...(input.reasonCode === undefined ? {} : {reasonCode: input.reasonCode}),
+      occurredAt: new Date().toISOString()
+    },
+    receipt: {
+      ...receiptClaim,
+      aggregateType: 'work_item',
+      aggregateId: fixture.workItemId,
+      result: input.reasonCode === undefined
+        ? {ok: true, value: null}
+        : {ok: false, error: {code: input.reasonCode, message: 'Command did not mutate.'}}
+    }
+  });
+  return {kind: 'no_mutation' as const, value, completion};
 };
 
 const agentRunOutcome = (
@@ -426,6 +463,25 @@ describePostgres(
           `other-run-${randomUUID()}`
         ]
       );
+      await testPool.query(
+        `INSERT INTO agent_runs (
+           id, task_packet_id, agent_profile_id, status, idempotency_key, version
+         ) VALUES ($1, $2, $3, 'queued', $4, 1)`,
+        [fixture.runId, fixture.packetId, fixture.profileId, `run-${randomUUID()}`]
+      );
+      await testPool.query(
+        `INSERT INTO approval_requests (
+           id, project_id, work_item_id, action_category, surface, environment,
+           status, requested_by_actor_id, version
+         ) VALUES ($1, $2, $3, 'deploy', 'runner', 'production', 'pending', $4, 1)`,
+        [fixture.approvalId, fixture.projectId, fixture.workItemId, fixture.actorId]
+      );
+      await testPool.query(
+        `INSERT INTO access_requests (
+           id, workspace_id, requester_actor_id, target_surface, requested_scope, status, version
+         ) VALUES ($1, $2, $3, 'repository', ARRAY['contents:read'], 'pending', 1)`,
+        [fixture.accessRequestId, fixture.workspaceId, fixture.actorId]
+      );
     }, 30_000);
 
     afterAll(async () => {
@@ -448,45 +504,131 @@ describePostgres(
       let claimantCount = 0;
 
       const results = await Promise.allSettled([
-        unitOfWork.executeCommand((transaction) =>
-          completeApproval(transaction, receiptClaim, () => {
+        unitOfWork.executeCommand(receiptClaim, (transaction, claimToken) =>
+          completeApproval(transaction, receiptClaim, claimToken, () => {
             claimantCount += 1;
           })
         ),
-        unitOfWork.executeCommand((transaction) =>
-          completeApproval(transaction, receiptClaim, () => {
+        unitOfWork.executeCommand(receiptClaim, (transaction, claimToken) =>
+          completeApproval(transaction, receiptClaim, claimToken, () => {
             claimantCount += 1;
           })
         )
       ]);
 
       expect(claimantCount).toBe(1);
-      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-      const replay = results.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === 'rejected'
-      )?.reason as {status?: string};
-      expect(replay.status).toBe('replayed');
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(2);
+      expect(results.map((result) => result.status === 'fulfilled' && result.value.status).sort())
+        .toEqual(['completed', 'replayed']);
     });
 
     it('reports reuse of a completed key with a different request hash', async () => {
       const unitOfWork = createPostgresUnitOfWork(testDb);
       const first = claim(`reused-${randomUUID()}`, 'hash:first');
-      await unitOfWork.executeCommand((transaction) =>
-        completeApproval(transaction, first)
+      await unitOfWork.executeCommand(first, (transaction, claimToken) =>
+        completeApproval(transaction, first, claimToken)
       );
 
       const reused = {...claim(first.idempotencyKey, 'hash:second')};
-      const result = await unitOfWork
-        .executeCommand(async (transaction) => {
-          throw await transaction.claimReceipt(reused);
-        })
-        .catch((error: unknown) => error as {status: string; existingRequestHash: string});
+      const result = await unitOfWork.executeCommand(reused, async () => {
+        throw new Error('A reused idempotency key must not run the callback.');
+      });
 
       expect(result).toEqual({
         status: 'key_reused',
         existingRequestHash: 'hash:first'
       });
+    });
+
+    it('derives all aggregate reads from the claimed workspace', async () => {
+      const unitOfWork = createPostgresUnitOfWork(testDb);
+      const receiptClaim = claim(`scoped-loaders-${randomUUID()}`);
+      const result = await unitOfWork.executeCommand(
+        receiptClaim,
+        async (transaction, claimToken) => {
+          const value = await Promise.all([
+            transaction.loadWorkItem(claimToken, fixture.workItemId),
+            transaction.loadWorkItem(claimToken, fixture.otherWorkItemId),
+            transaction.loadWorkItem(claimToken, 'not-a-uuid'),
+            transaction.loadAgentRun(claimToken, fixture.runId),
+            transaction.loadAgentRun(claimToken, fixture.otherRunId),
+            transaction.loadAgentRun(claimToken, randomUUID()),
+            transaction.loadAgentRun(claimToken, 'not-a-uuid'),
+            transaction.loadApproval(claimToken, fixture.approvalId),
+            transaction.loadApproval(claimToken, randomUUID()),
+            transaction.loadAccessRequest(claimToken, fixture.accessRequestId),
+            transaction.loadAccessRequest(claimToken, 'not-a-uuid')
+          ]);
+          return completeNoMutation(transaction, receiptClaim, claimToken, value);
+        }
+      );
+
+      expect(result.status).toBe('completed');
+      if (result.status !== 'completed' || result.command.kind !== 'no_mutation') return;
+      const [
+        item,
+        otherItem,
+        invalidItem,
+        run,
+        otherRun,
+        missingRun,
+        invalidRun,
+        approval,
+        missingApproval,
+        access,
+        invalidAccess
+      ] = result.command.value;
+      expect(item).toMatchObject({id: fixture.workItemId, projectId: fixture.projectId});
+      expect(otherItem).toBeNull();
+      expect(invalidItem).toBeNull();
+      expect(run).toEqual({
+        aggregate: {
+          id: fixture.runId,
+          taskPacketId: fixture.packetId,
+          agentProfileId: fixture.profileId,
+          status: 'queued',
+          idempotencyKey: expect.any(String),
+          version: 1
+        },
+        projectId: fixture.projectId
+      });
+      expect(otherRun).toBeNull();
+      expect(missingRun).toBeNull();
+      expect(invalidRun).toBeNull();
+      expect(approval).toMatchObject({id: fixture.approvalId, workItemId: fixture.workItemId});
+      expect(missingApproval).toBeNull();
+      expect(access).toMatchObject({id: fixture.accessRequestId, workspaceId: fixture.workspaceId});
+      expect(invalidAccess).toBeNull();
+    });
+
+    it('records and completes no-op outcomes without mutating an aggregate', async () => {
+      const unitOfWork = createPostgresUnitOfWork(testDb);
+      const receiptClaim = {
+        ...claim(`no-op-${randomUUID()}`),
+        commandType: 'work_item.set_blocked' as const
+      };
+      const result = await unitOfWork.executeCommand(
+        receiptClaim,
+        (transaction, claimToken) => completeNoMutation(
+          transaction,
+          receiptClaim,
+          claimToken,
+          'already blocked'
+        )
+      );
+
+      expect(result).toMatchObject({status: 'completed', command: {kind: 'no_mutation'}});
+      const [audit] = await testDb
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.commandId, receiptClaim.commandId));
+      const [receipt] = await testDb
+        .select()
+        .from(commandReceipts)
+        .where(eq(commandReceipts.commandId, receiptClaim.commandId));
+      expect(audit).toMatchObject({outcome: 'succeeded', targetId: fixture.workItemId});
+      expect(receipt).toMatchObject({state: 'completed', aggregateId: fixture.workItemId});
+      expect(receipt?.result).toEqual({ok: true, value: null});
     });
 
     it('returns an explicit conflict for stale compare-and-swap updates', async () => {
@@ -526,11 +668,9 @@ describePostgres(
       };
 
       const conflict = await unitOfWork
-        .executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(receiptClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        .executeCommand(receiptClaim, async (transaction, claimToken) => {
           throw await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome
           });
         })
@@ -550,11 +690,9 @@ describePostgres(
         commandType: 'work_item.set_blocked' as const
       };
       const aggregateResult = await unitOfWork
-        .executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(aggregateClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        .executeCommand(aggregateClaim, async (transaction, claimToken) => {
           throw await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome: workItemOutcome(aggregateClaim, {
               id: fixture.otherWorkItemId,
               projectId: fixture.otherProjectId
@@ -569,11 +707,9 @@ describePostgres(
         commandType: 'work_item.set_blocked' as const
       };
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(actorClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(actorClaim, async (transaction, claimToken) => {
           const result = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome: workItemOutcome(actorClaim, {
               actorId: fixture.otherActorId
             })
@@ -583,7 +719,7 @@ describePostgres(
       ).rejects.toThrow('Actor does not belong to claim workspace');
     });
 
-    it('rejects a task packet secret reference owned by another workspace', async () => {
+    it('reports a cross-workspace task packet secret reference as not found', async () => {
       const unitOfWork = createPostgresUnitOfWork(testDb);
       const receiptClaim = {
         ...claim(`cross-workspace-secret-${randomUUID()}`),
@@ -625,17 +761,16 @@ describePostgres(
         }
       };
 
-      await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(receiptClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+      const result = await unitOfWork
+        .executeCommand(receiptClaim, async (transaction, claimToken) => {
           const result = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome
           });
           throw result;
         })
-      ).rejects.toThrow('secret reference is outside claim workspace');
+        .catch((error: unknown) => error);
+      expect(result).toEqual({status: 'not_found'});
     });
 
     it('rejects a deserialized TaskPacket update mode before audit or SQL', async () => {
@@ -674,11 +809,9 @@ describePostgres(
       } as unknown as NonApprovalCommandOutcome;
 
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(receiptClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(receiptClaim, async (transaction, claimToken) => {
           const result = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome: malformedOutcome
           });
           throw result;
@@ -716,11 +849,9 @@ describePostgres(
       } as unknown as ApprovalRequiredCommandOutcome;
 
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(receiptClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(receiptClaim, async (transaction, claimToken) => {
           const result = await transaction.persistApprovalRequired({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome: malformedOutcome
           });
           throw result;
@@ -756,11 +887,9 @@ describePostgres(
         commandType: 'work_item.set_blocked' as const
       };
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(jumpClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(jumpClaim, async (transaction, claimToken) => {
           const result = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome: workItemOutcome(jumpClaim, {expectedVersion: 2, version: 7})
           });
           throw result;
@@ -777,11 +906,9 @@ describePostgres(
         mutation: {...mismatch.mutation, aggregateId: randomUUID()}
       } as NonApprovalCommandOutcome;
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(mismatchClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(mismatchClaim, async (transaction, claimToken) => {
           const result = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome: mismatchedOutcome
           });
           throw result;
@@ -789,7 +916,7 @@ describePostgres(
       ).rejects.toThrow('must equal the aggregate identifier');
     });
 
-    it('requires an authoritative in-workspace agent profile', async () => {
+    it('reports a missing in-workspace agent profile as not found', async () => {
       const unitOfWork = createPostgresUnitOfWork(testDb);
       const receiptClaim = {
         ...claim(`required-profile-${randomUUID()}`),
@@ -803,17 +930,16 @@ describePostgres(
         idempotencyKey: `run-${randomUUID()}`,
         version: 1
       };
-      await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(receiptClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+      const result = await unitOfWork
+        .executeCommand(receiptClaim, async (transaction, claimToken) => {
           const result = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome: agentRunOutcome(receiptClaim, aggregate)
           });
           throw result;
         })
-      ).rejects.toThrow('profile is outside claim workspace');
+        .catch((error: unknown) => error);
+      expect(result).toEqual({status: 'not_found'});
       expect(
         await testDb
           .select()
@@ -842,11 +968,9 @@ describePostgres(
         audit: {...invalidAudit.audit, correlationId: randomUUID()}
       } as NonApprovalCommandOutcome;
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(auditClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(auditClaim, async (transaction, claimToken) => {
           const result = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome: invalidAuditOutcome
           });
           throw result;
@@ -858,17 +982,15 @@ describePostgres(
         commandType: 'work_item.set_blocked' as const
       };
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(receiptClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(receiptClaim, async (transaction, claimToken) => {
           const outcome = workItemOutcome(receiptClaim);
           const persisted = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome
           });
           if (persisted.status !== 'persisted') throw persisted;
           return transaction.completeReceipt({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             mutation: persisted.mutation,
             receipt: {
               ...receiptClaim,
@@ -921,11 +1043,9 @@ describePostgres(
       };
 
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(receiptClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(receiptClaim, async (transaction, claimToken) => {
           const persisted = await transaction.persistAuditedMutation({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome
           });
           if (persisted.status !== 'persisted') throw persisted;
@@ -959,11 +1079,9 @@ describePostgres(
       const outcome = approvalOutcome(receiptClaim, approvalId);
 
       await expect(
-        unitOfWork.executeCommand(async (transaction) => {
-          const claimed = await transaction.claimReceipt(receiptClaim);
-          if (claimed.status !== 'claimed') throw claimed;
+        unitOfWork.executeCommand(receiptClaim, async (transaction, claimToken) => {
           const persisted = await transaction.persistApprovalRequired({
-            claimToken: claimed.token,
+            claimToken: claimToken,
             outcome
           });
           if (persisted.status !== 'completed') throw persisted;
@@ -1008,8 +1126,8 @@ describePostgres(
     it('rejects audit event updates and deletes', async () => {
       const unitOfWork = createPostgresUnitOfWork(testDb);
       const receiptClaim = claim(`immutable-audit-${randomUUID()}`);
-      await unitOfWork.executeCommand((transaction) =>
-        completeApproval(transaction, receiptClaim)
+      await unitOfWork.executeCommand(receiptClaim, (transaction, claimToken) =>
+        completeApproval(transaction, receiptClaim, claimToken)
       );
       const [audit] = await testDb
         .select({id: auditEvents.id})
@@ -1035,11 +1153,9 @@ describePostgres(
       const receiptClaim = claim(`approval-atomic-${randomUUID()}`);
       const approvalId = randomUUID();
 
-      await unitOfWork.executeCommand(async (transaction) => {
-        const claimed = await transaction.claimReceipt(receiptClaim);
-        if (claimed.status !== 'claimed') throw claimed;
+      await unitOfWork.executeCommand(receiptClaim, async (transaction, claimToken) => {
         const persisted = await transaction.persistApprovalRequired({
-          claimToken: claimed.token,
+          claimToken: claimToken,
           outcome: approvalOutcome(receiptClaim, approvalId)
         });
         if (persisted.status !== 'completed') throw persisted;

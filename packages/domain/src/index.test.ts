@@ -19,7 +19,9 @@ import {
   type AccessRequestStatus,
   type AccessRequest,
   type AgentRun,
+  type AgentRunView,
   type Approval,
+  type ApprovalTarget,
   type ApprovalRequiredCommandOutcome,
   type ApprovalRequiredAuditEvent,
   type AgentRunStatus,
@@ -28,11 +30,15 @@ import {
   type CanonicalMutation,
   type CanonicalCommandTransaction,
   type CommandReceiptCompletion,
+  type CommandReceiptClaim,
+  type CommandExecutionResult,
   type CompletedCanonicalCommand,
   type CompletedCanonicalMutation,
+  type CompletedAuditedReceipt,
   type NonApprovalAuditEvent,
   type PersistedCanonicalMutation,
   type ReceiptClaimToken,
+  type RequestApprovalCommand,
   type TaskPacketContent,
   type UnitOfWork,
   type WorkItemStatus,
@@ -438,17 +444,48 @@ describe('canonical command transaction contract', () => {
     expect(invalidPacketUpdate.aggregateType).toBe('task_packet');
   });
 
-  it('requires a claim, persisted CAS mutation, and audit append to complete a receipt', () => {
+  it('keeps claims internal and requires transaction-bound completions', () => {
     type CompletionInput = Parameters<CanonicalCommandTransaction['completeReceipt']>[0];
+    type NoMutationInput = Parameters<CanonicalCommandTransaction['completeAuditedReceipt']>[0];
     expectTypeOf<CompletionInput['claimToken']>().toEqualTypeOf<ReceiptClaimToken>();
     expectTypeOf<CompletionInput['mutation']>().toEqualTypeOf<PersistedCanonicalMutation>();
     expectTypeOf<CompletionInput['mutation']['audit']>().not.toMatchTypeOf<ReceiptClaimToken>();
+    expectTypeOf<NoMutationInput['claimToken']>().toEqualTypeOf<ReceiptClaimToken>();
+    expectTypeOf<Awaited<ReturnType<CanonicalCommandTransaction['completeAuditedReceipt']>>>()
+      .toEqualTypeOf<CompletedAuditedReceipt>();
     expectTypeOf<ApprovalRequiredAuditEvent['policyDecision']>().toEqualTypeOf<'ask'>();
     expectTypeOf<ApprovalRequiredAuditEvent['outcome']>().toEqualTypeOf<'approval_required'>();
-    expectTypeOf<Parameters<UnitOfWork['executeCommand']>[0]>().toMatchTypeOf<(
-      transaction: CanonicalCommandTransaction
+    expectTypeOf<Parameters<UnitOfWork['executeCommand']>[0]>().toEqualTypeOf<CommandReceiptClaim>();
+    expectTypeOf<Parameters<UnitOfWork['executeCommand']>[1]>().toMatchTypeOf<(
+      transaction: CanonicalCommandTransaction,
+      claimToken: ReceiptClaimToken
     ) => Promise<CompletedCanonicalCommand<unknown>>>();
+    expectTypeOf<Parameters<CanonicalCommandTransaction['loadWorkItem']>[0]>()
+      .toEqualTypeOf<ReceiptClaimToken>();
+    expectTypeOf<Parameters<CanonicalCommandTransaction['loadAgentRun']>>()
+      .toEqualTypeOf<[ReceiptClaimToken, string]>();
+    expectTypeOf<ReturnType<CanonicalCommandTransaction['loadAgentRun']>>()
+      .toEqualTypeOf<Promise<AgentRunView | null>>();
+    expectTypeOf<ReturnType<UnitOfWork['executeCommand']>>()
+      .toMatchTypeOf<Promise<CommandExecutionResult<unknown>>>();
     expectTypeOf<CompletedCanonicalMutation['receipt']>().toEqualTypeOf<CommandReceiptCompletion>();
+
+    expectTypeOf<CanonicalCommandTransaction>().not.toMatchTypeOf<{
+      claimReceipt(claim: CommandReceiptClaim): unknown;
+    }>();
+  });
+
+  it('exports a single approval target for approval commands', () => {
+    type Payload = RequestApprovalCommand['payload'];
+    expectTypeOf<Payload['target']>().toEqualTypeOf<ApprovalTarget>();
+    const target: ApprovalTarget = {workItemId: 'work-item'};
+    // @ts-expect-error Approval commands cannot name both targets.
+    const invalid: ApprovalTarget = {
+      workItemId: 'work-item',
+      agentRunId: 'agent-run'
+    };
+    expect(target).toEqual({workItemId: 'work-item'});
+    expect(invalid.workItemId).toBe('work-item');
   });
 
   it('excludes approval-required audits from the generic persistence path', () => {

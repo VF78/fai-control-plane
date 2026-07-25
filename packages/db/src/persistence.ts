@@ -1,5 +1,7 @@
 import type {
+  AccessRequest,
   AgentRun,
+  AgentRunView,
   Approval,
   ApprovalRequiredMutationResult,
   AuditAppendToken,
@@ -10,16 +12,20 @@ import type {
   CommandReceipt,
   CommandReceiptClaim,
   CommandReceiptClaimResult,
+  CommandExecutionResult,
   CommandReceiptCompletion,
   CompletedApprovalRequiredCommand,
   CompletedCanonicalCommand,
   CompletedCanonicalMutation,
+  CompletedAuditedReceipt,
   NonApprovalAuditEvent,
+  NonApprovalReceipt,
   PersistedCanonicalMutation,
   PersistedVersionCas,
   ReceiptClaimToken,
   TaskPacket,
-  UnitOfWork
+  UnitOfWork,
+  WorkItem
 } from '@fai-control-plane/domain';
 import {and, eq, sql} from 'drizzle-orm';
 import type {ExtractTablesWithRelations, SQL} from 'drizzle-orm';
@@ -59,6 +65,8 @@ type PersistenceFailure =
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const isUuid = (value: string): boolean => uuidPattern.test(value);
+
 const invariant: (
   condition: unknown,
   message: string
@@ -67,7 +75,7 @@ const invariant: (
 };
 
 const uuid = (value: string, field: string): void => {
-  invariant(uuidPattern.test(value), `${field} must be a UUID.`);
+  invariant(isUuid(value), `${field} must be a UUID.`);
 };
 
 const date = (value: string, field: string): Date => {
@@ -286,11 +294,58 @@ const validateReceipt = (
   );
 };
 
-const actorBelongsToWorkspace = async (
+const validateNoMutationAuditEnvelope = (
+  audit: NonApprovalAuditEvent,
+  claim: CommandReceiptClaim
+): void => {
+  uuid(audit.id, 'audit.id');
+  uuid(audit.actorId, 'audit.actorId');
+  date(audit.occurredAt, 'audit.occurredAt');
+  invariant(audit.workspaceId === claim.workspaceId, 'Audit workspace does not match claim.');
+  invariant(audit.commandId === claim.commandId, 'Audit command does not match claim.');
+  invariant(
+    audit.correlationId === claim.correlationId,
+    'Audit correlation does not match claim.'
+  );
+};
+
+const validateNoMutationReceipt = (
+  receipt: NonApprovalReceipt,
+  audit: NonApprovalAuditEvent,
+  claim: CommandReceiptClaim
+): void => {
+  invariant(receipt.commandId === claim.commandId, 'Receipt command does not match claim.');
+  invariant(receipt.workspaceId === claim.workspaceId, 'Receipt workspace does not match claim.');
+  invariant(
+    receipt.correlationId === claim.correlationId,
+    'Receipt correlation does not match claim.'
+  );
+  invariant(
+    receipt.idempotencyKey === claim.idempotencyKey &&
+      receipt.requestHash === claim.requestHash &&
+      receipt.commandType === claim.commandType,
+    'Receipt idempotency facts do not match claim.'
+  );
+  const hasAggregate = receipt.aggregateType !== undefined || receipt.aggregateId !== undefined;
+  invariant(
+    !hasAggregate || (
+      receipt.aggregateType === audit.targetType && receipt.aggregateId === audit.targetId
+    ),
+    'Receipt aggregate does not match audit target.'
+  );
+  if (receipt.aggregateId !== undefined) uuid(receipt.aggregateId, 'receipt.aggregateId');
+  invariant(
+    receipt.expectedVersion === audit.expectedVersion &&
+      receipt.resultVersion === audit.resultVersion,
+    'Receipt version facts do not match audit.'
+  );
+};
+
+const workspaceHasActor = async (
   tx: Transaction,
   workspaceId: string,
   actorId: string
-): Promise<void> => {
+): Promise<boolean> => {
   const [actor] = await tx
     .select({id: schema.actors.id})
     .from(schema.actors)
@@ -300,14 +355,22 @@ const actorBelongsToWorkspace = async (
         eq(schema.actors.workspaceId, workspaceId)
       )
     );
-  invariant(actor !== undefined, 'Actor does not belong to claim workspace.');
+  return actor !== undefined;
 };
 
-const projectBelongsToWorkspace = async (
+const actorBelongsToWorkspace = async (
+  tx: Transaction,
+  workspaceId: string,
+  actorId: string
+): Promise<void> => {
+  invariant(await workspaceHasActor(tx, workspaceId, actorId), 'Actor does not belong to claim workspace.');
+};
+
+const workspaceHasProject = async (
   tx: Transaction,
   workspaceId: string,
   projectId: string
-): Promise<void> => {
+): Promise<boolean> => {
   const [project] = await tx
     .select({id: schema.projects.id})
     .from(schema.projects)
@@ -317,7 +380,7 @@ const projectBelongsToWorkspace = async (
         eq(schema.projects.workspaceId, workspaceId)
       )
     );
-  invariant(project !== undefined, 'Project does not belong to claim workspace.');
+  return project !== undefined;
 };
 
 const workItemScope = (workspaceId: string): SQL =>
@@ -462,9 +525,9 @@ const validateTaskPacketOwnership = async (
   tx: Transaction,
   workspaceId: string,
   packet: TaskPacket
-): Promise<string | null> => {
+): Promise<Readonly<{status: 'found'; secretRefId: string | null}> | Readonly<{status: 'not_found'}>> => {
   const content = packet.content;
-  await projectBelongsToWorkspace(tx, workspaceId, content.projectId);
+  if (!await workspaceHasProject(tx, workspaceId, content.projectId)) return {status: 'not_found'};
   const [item] = await tx
     .select({id: schema.workItems.id})
     .from(schema.workItems)
@@ -475,10 +538,10 @@ const validateTaskPacketOwnership = async (
         workItemScope(workspaceId)
       )
     );
-  invariant(item !== undefined, 'Task packet WorkItem is outside claim workspace or project.');
-  await actorBelongsToWorkspace(tx, workspaceId, content.reviewerActorId);
-  await actorBelongsToWorkspace(tx, workspaceId, content.approverActorId);
-  await actorBelongsToWorkspace(tx, workspaceId, content.createdByActorId);
+  if (item === undefined) return {status: 'not_found'};
+  if (!await workspaceHasActor(tx, workspaceId, content.reviewerActorId) ||
+    !await workspaceHasActor(tx, workspaceId, content.approverActorId) ||
+    !await workspaceHasActor(tx, workspaceId, content.createdByActorId)) return {status: 'not_found'};
   const [event] = await tx
     .select({id: schema.canonicalEvents.id})
     .from(schema.canonicalEvents)
@@ -489,8 +552,8 @@ const validateTaskPacketOwnership = async (
         eq(schema.canonicalEvents.projectId, content.projectId)
       )
     );
-  invariant(event !== undefined, 'Task packet source event is outside claim workspace or project.');
-  if (content.secretsRef === null) return null;
+  if (event === undefined) return {status: 'not_found'};
+  if (content.secretsRef === null) return {status: 'found', secretRefId: null};
   const [secretRef] = await tx
     .select({id: schema.secretRefs.id})
     .from(schema.secretRefs)
@@ -501,8 +564,9 @@ const validateTaskPacketOwnership = async (
         eq(schema.secretRefs.reference, content.secretsRef.reference)
       )
     );
-  invariant(secretRef !== undefined, 'Task packet secret reference is outside claim workspace.');
-  return secretRef.id;
+  return secretRef === undefined
+    ? {status: 'not_found'}
+    : {status: 'found', secretRefId: secretRef.id};
 };
 
 const persistTaskPacket = async (
@@ -512,7 +576,8 @@ const persistTaskPacket = async (
 ): Promise<PersistedAggregate | PersistenceFailure> => {
   const packet = mutation.aggregate;
   const content = packet.content;
-  const secretRefId = await validateTaskPacketOwnership(tx, workspaceId, packet);
+  const ownership = await validateTaskPacketOwnership(tx, workspaceId, packet);
+  if (ownership.status === 'not_found') return ownership;
   const [row] = await tx
     .insert(schema.taskPackets)
     .values({
@@ -534,7 +599,7 @@ const persistTaskPacket = async (
       approverActorId: content.approverActorId,
       runtimeProfile: content.runtimeProfile,
       authMode: content.authMode,
-      secretRefId,
+      secretRefId: ownership.secretRefId,
       createdFromEventId: content.createdFromEventId,
       contentHash: packet.contentHash,
       createdByActorId: content.createdByActorId
@@ -554,7 +619,7 @@ const validateAgentRunOwnership = async (
   tx: Transaction,
   workspaceId: string,
   aggregate: AgentRun
-): Promise<string> => {
+): Promise<Readonly<{status: 'found'; projectId: string}> | Readonly<{status: 'not_found'}>> => {
   const [packet] = await tx
     .select({projectId: schema.taskPackets.projectId})
     .from(schema.taskPackets)
@@ -564,7 +629,7 @@ const validateAgentRunOwnership = async (
         taskPacketScope(workspaceId)
       )
     );
-  invariant(packet !== undefined, 'AgentRun task packet is outside claim workspace.');
+  if (packet === undefined) return {status: 'not_found'};
   const [profile] = await tx
     .select({id: schema.agentProfiles.id})
     .from(schema.agentProfiles)
@@ -579,8 +644,9 @@ const validateAgentRunOwnership = async (
         eq(schema.actors.workspaceId, workspaceId)
       )
     );
-  invariant(profile !== undefined, 'AgentRun profile is outside claim workspace.');
-  return packet.projectId;
+  return profile === undefined
+    ? {status: 'not_found'}
+    : {status: 'found', projectId: packet.projectId};
 };
 
 const persistAgentRun = async (
@@ -589,7 +655,9 @@ const persistAgentRun = async (
   mutation: Extract<CanonicalMutation, {aggregateType: 'agent_run'}>
 ): Promise<PersistedAggregate | PersistenceFailure> => {
   const aggregate = mutation.aggregate;
-  const projectId = await validateAgentRunOwnership(tx, workspaceId, aggregate);
+  const ownership = await validateAgentRunOwnership(tx, workspaceId, aggregate);
+  if (ownership.status === 'not_found') return ownership;
+  const {projectId} = ownership;
   if (mutation.expectedPersistedVersion === null) {
     const [row] = await tx
       .insert(schema.agentRuns)
@@ -645,9 +713,9 @@ const validateApprovalOwnership = async (
   tx: Transaction,
   workspaceId: string,
   aggregate: Approval
-): Promise<void> => {
-  await projectBelongsToWorkspace(tx, workspaceId, aggregate.projectId);
-  await actorBelongsToWorkspace(tx, workspaceId, aggregate.requestedByActorId);
+): Promise<boolean> => {
+  if (!await workspaceHasProject(tx, workspaceId, aggregate.projectId) ||
+    !await workspaceHasActor(tx, workspaceId, aggregate.requestedByActorId)) return false;
   if (aggregate.workItemId !== undefined) {
     const [item] = await tx
       .select({id: schema.workItems.id})
@@ -659,7 +727,7 @@ const validateApprovalOwnership = async (
           workItemScope(workspaceId)
         )
       );
-    invariant(item !== undefined, 'Approval WorkItem is outside claim workspace or project.');
+    return item !== undefined;
   } else {
     const [run] = await tx
       .select({id: schema.agentRuns.id})
@@ -675,7 +743,7 @@ const validateApprovalOwnership = async (
           agentRunScope(workspaceId)
         )
       );
-    invariant(run !== undefined, 'Approval AgentRun is outside claim workspace or project.');
+    return run !== undefined;
   }
 };
 
@@ -685,7 +753,7 @@ const persistApproval = async (
   mutation: Extract<CanonicalMutation, {aggregateType: 'approval'}>
 ): Promise<PersistedAggregate | PersistenceFailure> => {
   const aggregate = mutation.aggregate;
-  await validateApprovalOwnership(tx, workspaceId, aggregate);
+  if (!await validateApprovalOwnership(tx, workspaceId, aggregate)) return {status: 'not_found'};
   if (mutation.expectedPersistedVersion === null) {
     const [row] = await tx
       .insert(schema.approvalRequests)
@@ -762,7 +830,7 @@ const persistAccessRequest = async (
     aggregate.workspaceId === workspaceId,
     'AccessRequest workspace does not match claim.'
   );
-  await actorBelongsToWorkspace(tx, workspaceId, aggregate.requesterActorId);
+  if (!await workspaceHasActor(tx, workspaceId, aggregate.requesterActorId)) return {status: 'not_found'};
   if (mutation.expectedPersistedVersion === null) {
     const [row] = await tx
       .insert(schema.accessRequests)
@@ -853,6 +921,47 @@ const persistAggregate = (
   }
 };
 
+const auditProjectId = async (
+  tx: Transaction,
+  workspaceId: string,
+  audit: NonApprovalAuditEvent
+): Promise<string | null> => {
+  if (!isUuid(audit.targetId)) return null;
+  switch (audit.targetType) {
+    case 'work_item': {
+      const [row] = await tx
+        .select({projectId: schema.workItems.projectId})
+        .from(schema.workItems)
+        .where(and(eq(schema.workItems.id, audit.targetId), workItemScope(workspaceId)));
+      return row?.projectId ?? null;
+    }
+    case 'task_packet': {
+      const [row] = await tx
+        .select({projectId: schema.taskPackets.projectId})
+        .from(schema.taskPackets)
+        .where(and(eq(schema.taskPackets.id, audit.targetId), taskPacketScope(workspaceId)));
+      return row?.projectId ?? null;
+    }
+    case 'agent_run': {
+      const [row] = await tx
+        .select({projectId: schema.taskPackets.projectId})
+        .from(schema.agentRuns)
+        .innerJoin(schema.taskPackets, eq(schema.taskPackets.id, schema.agentRuns.taskPacketId))
+        .where(and(eq(schema.agentRuns.id, audit.targetId), agentRunScope(workspaceId)));
+      return row?.projectId ?? null;
+    }
+    case 'approval': {
+      const [row] = await tx
+        .select({projectId: schema.approvalRequests.projectId})
+        .from(schema.approvalRequests)
+        .where(and(eq(schema.approvalRequests.id, audit.targetId), approvalScope(workspaceId)));
+      return row?.projectId ?? null;
+    }
+    default:
+      return null;
+  }
+};
+
 const appendAudit = async (
   tx: Transaction,
   audit: AuditEvent | NonApprovalAuditEvent,
@@ -886,10 +995,12 @@ const appendAudit = async (
 
 export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
   executeCommand<T>(
+    claim: CommandReceiptClaim,
     work: (
-      transaction: CanonicalCommandTransaction
+      transaction: CanonicalCommandTransaction,
+      claimToken: ReceiptClaimToken
     ) => Promise<CompletedCanonicalCommand<T>>
-  ): Promise<CompletedCanonicalCommand<T>> {
+  ): Promise<CommandExecutionResult<T>> {
     return db.transaction(async (tx) => {
       const claims = new WeakMap<object, ClaimState>();
       const mutations = new WeakMap<object, MutationState>();
@@ -904,14 +1015,59 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
         return state;
       };
 
+      const claimReceipt = async (): Promise<CommandReceiptClaimResult> => {
+        validateClaim(claim);
+        const [workspace] = await tx
+          .select({id: schema.workspaces.id})
+          .from(schema.workspaces)
+          .where(eq(schema.workspaces.id, claim.workspaceId));
+        invariant(workspace !== undefined, 'Claim workspace does not exist.');
+        const [inserted] = await tx
+          .insert(schema.commandReceipts)
+          .values({
+            workspaceId: claim.workspaceId,
+            idempotencyKey: claim.idempotencyKey,
+            requestHash: claim.requestHash,
+            commandId: claim.commandId,
+            correlationId: claim.correlationId,
+            state: 'claimed',
+            commandType: claim.commandType,
+            createdAt: date(claim.createdAt, 'claim.createdAt')
+          })
+          .onConflictDoNothing({
+            target: [
+              schema.commandReceipts.workspaceId,
+              schema.commandReceipts.idempotencyKey
+            ]
+          })
+          .returning({id: schema.commandReceipts.id});
+        if (inserted !== undefined) {
+          const token = claimToken();
+          claims.set(token as object, {rowId: inserted.id, claim});
+          return {status: 'claimed', token};
+        }
+        const [existing] = await tx
+          .select()
+          .from(schema.commandReceipts)
+          .where(
+            and(
+              eq(schema.commandReceipts.workspaceId, claim.workspaceId),
+              eq(schema.commandReceipts.idempotencyKey, claim.idempotencyKey)
+            )
+          )
+          .for('update');
+        invariant(existing !== undefined, 'Conflicting receipt disappeared during claim.');
+        if (existing.requestHash !== claim.requestHash) {
+          return {status: 'key_reused', existingRequestHash: existing.requestHash};
+        }
+        return {status: 'replayed', receipt: mapReceipt(existing)};
+      };
+
       const completeReceipt = async (
         token: ReceiptClaimToken,
-        receipt: CommandReceipt,
-        mutation: CanonicalMutation,
-        cas: PersistedVersionCas
+        receipt: CommandReceipt
       ): Promise<CommandReceiptCompletion> => {
         const state = requireClaim(token);
-        validateReceipt(receipt, state.claim, mutation, cas);
         const [row] = await tx
           .update(schema.commandReceipts)
           .set({
@@ -936,55 +1092,114 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
       };
 
       const transaction: CanonicalCommandTransaction = {
-        async claimReceipt(claim): Promise<CommandReceiptClaimResult> {
-          validateClaim(claim);
-          const [workspace] = await tx
-            .select({id: schema.workspaces.id})
-            .from(schema.workspaces)
-            .where(eq(schema.workspaces.id, claim.workspaceId));
-          invariant(workspace !== undefined, 'Claim workspace does not exist.');
-          const [inserted] = await tx
-            .insert(schema.commandReceipts)
-            .values({
-              workspaceId: claim.workspaceId,
-              idempotencyKey: claim.idempotencyKey,
-              requestHash: claim.requestHash,
-              commandId: claim.commandId,
-              correlationId: claim.correlationId,
-              state: 'claimed',
-              commandType: claim.commandType,
-              createdAt: date(claim.createdAt, 'claim.createdAt')
+        async loadWorkItem(token, workItemId): Promise<WorkItem | null> {
+          const state = requireClaim(token);
+          if (!isUuid(workItemId)) return null;
+          const [row] = await tx
+            .select({
+              id: schema.workItems.id,
+              projectId: schema.workItems.projectId,
+              status: schema.workItems.status,
+              blocked: schema.workItems.blocked,
+              version: schema.workItems.version
             })
-            .onConflictDoNothing({
-              target: [
-                schema.commandReceipts.workspaceId,
-                schema.commandReceipts.idempotencyKey
-              ]
+            .from(schema.workItems)
+            .where(and(eq(schema.workItems.id, workItemId), workItemScope(state.claim.workspaceId)));
+          return row === undefined ? null : {
+            ...row,
+            status: row.status as WorkItem['status']
+          };
+        },
+
+        async loadAgentRun(token, agentRunId): Promise<AgentRunView | null> {
+          const state = requireClaim(token);
+          if (!isUuid(agentRunId)) return null;
+          const [row] = await tx
+            .select({
+              id: schema.agentRuns.id,
+              taskPacketId: schema.agentRuns.taskPacketId,
+              agentProfileId: schema.agentRuns.agentProfileId,
+              status: schema.agentRuns.status,
+              idempotencyKey: schema.agentRuns.idempotencyKey,
+              version: schema.agentRuns.version,
+              projectId: schema.taskPackets.projectId
             })
-            .returning({id: schema.commandReceipts.id});
-          if (inserted !== undefined) {
-            const token = claimToken();
-            claims.set(token as object, {rowId: inserted.id, claim});
-            return {status: 'claimed', token};
-          }
-          const [existing] = await tx
-            .select()
-            .from(schema.commandReceipts)
-            .where(
-              and(
-                eq(schema.commandReceipts.workspaceId, claim.workspaceId),
-                eq(schema.commandReceipts.idempotencyKey, claim.idempotencyKey)
-              )
-            )
-            .for('update');
-          invariant(existing !== undefined, 'Conflicting receipt disappeared during claim.');
-          if (existing.requestHash !== claim.requestHash) {
-            return {
-              status: 'key_reused',
-              existingRequestHash: existing.requestHash
-            };
-          }
-          return {status: 'replayed', receipt: mapReceipt(existing)};
+            .from(schema.agentRuns)
+            .innerJoin(schema.taskPackets, eq(schema.taskPackets.id, schema.agentRuns.taskPacketId))
+            .where(and(
+              eq(schema.agentRuns.id, agentRunId),
+              agentRunScope(state.claim.workspaceId)
+            ));
+          return row === undefined ? null : {
+            aggregate: {
+              id: row.id,
+              taskPacketId: row.taskPacketId,
+              agentProfileId: row.agentProfileId,
+              status: row.status as AgentRun['status'],
+              idempotencyKey: row.idempotencyKey,
+              version: row.version
+            },
+            projectId: row.projectId
+          };
+        },
+
+        async loadApproval(token, approvalId): Promise<Approval | null> {
+          const state = requireClaim(token);
+          if (!isUuid(approvalId)) return null;
+          const [row] = await tx
+            .select({
+              id: schema.approvalRequests.id,
+              projectId: schema.approvalRequests.projectId,
+              workItemId: schema.approvalRequests.workItemId,
+              agentRunId: schema.approvalRequests.agentRunId,
+              actionCategory: schema.approvalRequests.actionCategory,
+              surface: schema.approvalRequests.surface,
+              environment: schema.approvalRequests.environment,
+              requestedByActorId: schema.approvalRequests.requestedByActorId,
+              status: schema.approvalRequests.status,
+              version: schema.approvalRequests.version
+            })
+            .from(schema.approvalRequests)
+            .where(and(eq(schema.approvalRequests.id, approvalId), approvalScope(state.claim.workspaceId)));
+          if (row === undefined) return null;
+          const common = {
+            id: row.id,
+            projectId: row.projectId,
+            actionCategory: row.actionCategory as Approval['actionCategory'],
+            surface: row.surface as Approval['surface'],
+            environment: row.environment as Approval['environment'],
+            requestedByActorId: row.requestedByActorId,
+            status: row.status as Approval['status'],
+            version: row.version
+          };
+          return row.workItemId === null
+            ? {...common, agentRunId: row.agentRunId!}
+            : {...common, workItemId: row.workItemId};
+        },
+
+        async loadAccessRequest(token, accessRequestId): Promise<AccessRequest | null> {
+          const state = requireClaim(token);
+          if (!isUuid(accessRequestId)) return null;
+          const [row] = await tx
+            .select({
+              id: schema.accessRequests.id,
+              workspaceId: schema.accessRequests.workspaceId,
+              requesterActorId: schema.accessRequests.requesterActorId,
+              targetSurface: schema.accessRequests.targetSurface,
+              requestedScope: schema.accessRequests.requestedScope,
+              status: schema.accessRequests.status,
+              version: schema.accessRequests.version
+            })
+            .from(schema.accessRequests)
+            .where(and(
+              eq(schema.accessRequests.id, accessRequestId),
+              eq(schema.accessRequests.workspaceId, state.claim.workspaceId)
+            ));
+          return row === undefined ? null : {
+            ...row,
+            targetSurface: row.targetSurface as AccessRequest['targetSurface'],
+            status: row.status as AccessRequest['status']
+          };
         },
 
         async persistAuditedMutation({claimToken: token, outcome}) {
@@ -1040,21 +1255,11 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             state.claim.workspaceId,
             outcome.approval
           );
-          if (persisted.status !== 'persisted') {
-            return persisted.status === 'not_found'
-              ? {
-                  status: 'version_conflict',
-                  expectedPersistedVersion: null,
-                  persistedVersion: null
-                }
-              : persisted;
-          }
+          if (persisted.status !== 'persisted') return persisted;
           const appended = await appendAudit(tx, outcome.audit, persisted.projectId);
           const receipt = await completeReceipt(
             token,
-            outcome.receipt,
-            outcome.approval,
-            persisted.cas
+            outcome.receipt
           );
           const command = {
             kind: 'approval_required',
@@ -1083,11 +1288,10 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               version: state.cas.persistedVersion
             }
           } as unknown as CanonicalMutation;
+          validateReceipt(receipt, requireClaim(token).claim, canonicalMutation, state.cas);
           const receiptToken = await completeReceipt(
             token,
-            receipt,
-            canonicalMutation,
-            state.cas
+            receipt
           );
           const result: CompletedCanonicalMutation = {
             cas: state.cas,
@@ -1096,17 +1300,39 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
           };
           completed.add(result as object);
           return result;
+        },
+
+        async completeAuditedReceipt({claimToken: token, audit, receipt}) {
+          const state = requireClaim(token);
+          validateNoMutationAuditEnvelope(audit, state.claim);
+          validateNoMutationReceipt(receipt, audit, state.claim);
+          await actorBelongsToWorkspace(tx, state.claim.workspaceId, audit.actorId);
+          const appended = await appendAudit(
+            tx,
+            audit,
+            await auditProjectId(tx, state.claim.workspaceId, audit)
+          );
+          const receiptToken = await completeReceipt(token, receipt);
+          const result = {audit: appended, receipt: receiptToken} as CompletedAuditedReceipt;
+          completed.add(result as object);
+          return result;
         }
       };
 
-      const result = await work(transaction);
+      const claimed = await claimReceipt();
+      if (claimed.status === 'replayed' || claimed.status === 'key_reused') return claimed;
+      const result = await work(transaction, claimed.token);
       const completion =
-        result.kind === 'approval_required' ? result : result.mutation;
+        result.kind === 'approval_required'
+          ? result
+          : result.kind === 'no_mutation'
+            ? result.completion
+            : result.mutation;
       invariant(
         completed.has(completion as object),
         'Command transaction returned without a transaction-scoped receipt completion.'
       );
-      return result;
+      return {status: 'completed', command: result};
     });
   }
 });
