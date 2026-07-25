@@ -815,6 +815,8 @@ export type TrackerMilestone = Readonly<{
 export type TrackerWorkItemSnapshot = Readonly<{
   externalId: string;
   externalVersion: string;
+  url: string;
+  htmlUrl: string;
   number: number;
   title: string;
   state: 'open' | 'closed';
@@ -825,6 +827,8 @@ export type TrackerWorkItemSnapshot = Readonly<{
 export type TrackerPullRequestSnapshot = Readonly<{
   externalId: string;
   externalVersion: string;
+  url: string;
+  htmlUrl: string;
   number: number;
   title: string;
   state: 'open' | 'closed';
@@ -860,7 +864,7 @@ export type TrackerRepositorySnapshot = Readonly<{
 }>;
 export type TrackerRepositoryReadInput = Readonly<{
   repository: TrackerRepositoryRef;
-  credential: string;
+  credentialRef: OpaqueSecretRef;
 }>;
 export type TrackerAdapter = Readonly<{
   provider: string;

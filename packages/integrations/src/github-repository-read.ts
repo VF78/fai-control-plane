@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import type {
+  SecretsProvider,
   TrackerAdapter,
   TrackerCheckSnapshot,
   TrackerIdentity,
@@ -13,6 +14,7 @@ import type {
 const allowedRepositories = new Set(['VF78/MSA', 'VF78/ascon']);
 const pageSize = 100;
 const maximumPages = 10;
+const credentialPurpose = 'github_repository_snapshot_read';
 
 export type GitHubFetch = (
   input: string,
@@ -63,6 +65,21 @@ const nullableString = (value: unknown): string | null => {
   return string(value);
 };
 
+const httpsUrl = (value: unknown, expectedHost: string): string => {
+  const serialized = string(value);
+  let parsed: URL;
+  try {
+    parsed = new URL(serialized);
+  } catch {
+    return fail('github_response_invalid');
+  }
+  if (parsed.protocol !== 'https:' || parsed.hostname !== expectedHost ||
+    parsed.username !== '' || parsed.password !== '') {
+    return fail('github_response_invalid');
+  }
+  return serialized;
+};
+
 const integer = (value: unknown): number => {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     return fail('github_response_invalid');
@@ -109,6 +126,21 @@ const stableVersion = (value: unknown): string => {
   return `github:sha256:${createHash('sha256').update(canonical(value)).digest('hex')}`;
 };
 
+const byStableId = <T extends Readonly<{externalId: string}>>(
+  values: readonly T[]
+): readonly T[] => [...values].sort((left, right) => {
+  const identityOrder = left.externalId.localeCompare(right.externalId);
+  return identityOrder === 0
+    ? stableVersion(left).localeCompare(stableVersion(right))
+    : identityOrder;
+});
+
+const byNumber = <T extends Readonly<{number: number; externalId: string}>>(
+  values: readonly T[]
+): readonly T[] => [...values].sort((left, right) =>
+  left.number - right.number || left.externalId.localeCompare(right.externalId)
+);
+
 const identity = (value: unknown): TrackerIdentity => {
   const source = object(value);
   return {
@@ -142,11 +174,13 @@ const workItem = (value: unknown): TrackerWorkItemSnapshot | null => {
   if (source.pull_request !== undefined) return null;
   const snapshot = {
     externalId: stableId('issue', integer(source.id)),
+    url: httpsUrl(source.url, 'api.github.com'),
+    htmlUrl: httpsUrl(source.html_url, 'github.com'),
     number: integer(source.number),
     title: string(source.title),
     state: state(source.state),
-    labels: array(source.labels).map(label),
-    assignees: array(source.assignees).map(identity),
+    labels: byStableId(array(source.labels).map(label)),
+    assignees: byStableId(array(source.assignees).map(identity)),
     milestone: milestone(source.milestone)
   };
   return {...snapshot, externalVersion: stableVersion(snapshot)};
@@ -156,18 +190,21 @@ const pullRequest = (value: unknown): TrackerPullRequestSnapshot => {
   const source = object(value);
   const head = object(source.head);
   const base = object(source.base);
+  const mergedAt = nullableString(source.merged_at);
   const snapshot = {
     externalId: stableId('pull-request', integer(source.id)),
+    url: httpsUrl(source.url, 'api.github.com'),
+    htmlUrl: httpsUrl(source.html_url, 'github.com'),
     number: integer(source.number),
     title: string(source.title),
     state: state(source.state),
     draft: boolean(source.draft),
-    merged: source.merged_at !== null,
+    merged: mergedAt !== null,
     headRef: string(head.ref),
     headSha: string(head.sha),
     baseRef: string(base.ref),
-    labels: array(source.labels).map(label),
-    assignees: array(source.assignees).map(identity),
+    labels: byStableId(array(source.labels).map(label)),
+    assignees: byStableId(array(source.assignees).map(identity)),
     milestone: milestone(source.milestone)
   };
   return {...snapshot, externalVersion: stableVersion(snapshot)};
@@ -192,6 +229,7 @@ const check = (
 const requestHeaders = (credential: string): Readonly<Record<string, string>> => ({
   accept: 'application/vnd.github+json',
   authorization: `Bearer ${credential}`,
+  'user-agent': 'fai-control-plane-repository-reader/0.1',
   'x-github-api-version': '2022-11-28'
 });
 
@@ -210,6 +248,7 @@ const createClient = (fetch: GitHubFetch, credential: string) => {
       typeof response.json !== 'function') {
       return fail('github_response_invalid');
     }
+    if (response.status === 401) return fail('github_credential_invalid');
     if (response.status < 200 || response.status >= 300) {
       return fail('github_provider_rejected');
     }
@@ -238,9 +277,10 @@ const createClient = (fetch: GitHubFetch, credential: string) => {
   return {get, pages};
 };
 
-export const createGitHubRepositoryReadAdapter = (
-  fetch: GitHubFetch
-): TrackerAdapter => ({
+export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
+  fetch: GitHubFetch;
+  secretsProvider: SecretsProvider;
+}>): TrackerAdapter => ({
   provider: 'github',
   capabilities: {
     readWorkItems: true,
@@ -253,11 +293,21 @@ export const createGitHubRepositoryReadAdapter = (
     if (!allowedRepositories.has(fullName)) {
       return fail('github_repository_not_allowed');
     }
-    if (typeof input.credential !== 'string' || input.credential.length === 0) {
+    let credential: string;
+    try {
+      const resolved = await dependencies.secretsProvider.resolve(
+        input.credentialRef,
+        credentialPurpose
+      );
+      credential = resolved.value;
+    } catch {
+      return fail('github_credential_invalid');
+    }
+    if (typeof credential !== 'string' || credential.length === 0) {
       return fail('github_credential_invalid');
     }
 
-    const client = createClient(fetch, input.credential);
+    const client = createClient(dependencies.fetch, credential);
     const repositoryPayload = object(await client.get(`/repos/${fullName}`));
     if (string(repositoryPayload.full_name) !== fullName) {
       return fail('github_response_invalid');
@@ -276,16 +326,17 @@ export const createGitHubRepositoryReadAdapter = (
       `/repos/${fullName}/issues?state=all`,
       array
     );
-    const workItems = issuePayloads.map(workItem).filter(
+    const workItems = byNumber(issuePayloads.map(workItem).filter(
       (item): item is TrackerWorkItemSnapshot => item !== null
-    );
+    ));
     const pullRequestPayloads = await client.pages(
       `/repos/${fullName}/pulls?state=all`,
       array
     );
-    const pullRequests = pullRequestPayloads.map(pullRequest);
+    const pullRequests = byNumber(pullRequestPayloads.map(pullRequest));
     const checks: TrackerCheckSnapshot[] = [];
-    for (const pullRequestModel of pullRequests) {
+    // Check runs are current execution state, so bound fanout to open PRs.
+    for (const pullRequestModel of pullRequests.filter(({state}) => state === 'open')) {
       const checkPayloads = await client.pages(
         `/repos/${fullName}/commits/${encodeURIComponent(pullRequestModel.headSha)}/check-runs`,
         (payload) => array(object(payload).check_runs)
@@ -299,7 +350,7 @@ export const createGitHubRepositoryReadAdapter = (
       repository: repositoryModel,
       workItems,
       pullRequests,
-      checks
+      checks: byStableId(checks)
     };
     return {
       ...snapshotContent,
