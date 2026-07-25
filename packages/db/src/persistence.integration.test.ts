@@ -249,7 +249,8 @@ const completeNoMutation = async <T>(
 
 const agentRunOutcome = (
   receiptClaim: CommandReceiptClaim,
-  aggregate: AgentRun
+  aggregate: AgentRun,
+  actorId = fixture.actorId
 ): NonApprovalCommandOutcome => ({
   kind: 'non_approval',
   mutation: {
@@ -263,7 +264,7 @@ const agentRunOutcome = (
     workspaceId: receiptClaim.workspaceId,
     commandId: receiptClaim.commandId,
     correlationId: receiptClaim.correlationId,
-    actorId: fixture.actorId,
+    actorId,
     actionCategory: 'write',
     action: 'agent_run.queue',
     targetType: 'agent_run',
@@ -272,6 +273,37 @@ const agentRunOutcome = (
     occurredAt: new Date().toISOString()
   }
 });
+
+const completeNonApproval = async (
+  transaction: CanonicalCommandTransaction,
+  receiptClaim: CommandReceiptClaim,
+  claimToken: import('@fai-control-plane/domain').ReceiptClaimToken,
+  outcome: NonApprovalCommandOutcome
+) => {
+  const persisted = await transaction.persistAuditedMutation({
+    claimToken,
+    outcome
+  });
+  if (persisted.status !== 'persisted') throw persisted;
+  const mutation = outcome.mutation;
+  const resultVersion =
+    mutation.aggregateType === 'task_packet' ? 1 : mutation.aggregate.version;
+  const completed = await transaction.completeReceipt({
+    claimToken,
+    mutation: persisted.mutation,
+    receipt: {
+      ...receiptClaim,
+      aggregateType: mutation.aggregateType,
+      aggregateId: mutation.aggregateId,
+      ...(mutation.expectedPersistedVersion === null
+        ? {}
+        : {expectedVersion: mutation.expectedPersistedVersion}),
+      resultVersion,
+      result: {ok: true, value: null}
+    }
+  });
+  return {kind: 'non_approval' as const, value: null, mutation: completed};
+};
 
 const expectImmutableRejection = async (
   operation: Promise<unknown>,
@@ -771,6 +803,241 @@ describePostgres(
         })
         .catch((error: unknown) => error);
       expect(result).toEqual({status: 'not_found'});
+    });
+
+    it('reports duplicate task packet content as a version conflict', async () => {
+      const unitOfWork = createPostgresUnitOfWork(testDb);
+      const content = taskPacketContent({
+        goal: `Duplicate content ${randomUUID()}`
+      });
+      const firstId = randomUUID();
+      const secondId = randomUUID();
+      const firstPacket = createTaskPacket(firstId, content);
+      const secondPacket = createTaskPacket(secondId, content);
+      expect(firstPacket.ok && secondPacket.ok).toBe(true);
+      if (!firstPacket.ok || !secondPacket.ok) return;
+
+      const firstClaim = {
+        ...claim(`packet-content-first-${randomUUID()}`),
+        commandType: 'task_packet.create' as const
+      };
+      const firstOutcome: NonApprovalCommandOutcome = {
+        kind: 'non_approval',
+        mutation: {
+          aggregateType: 'task_packet',
+          aggregateId: firstId,
+          expectedPersistedVersion: null,
+          aggregate: firstPacket.value
+        },
+        audit: {
+          id: randomUUID(),
+          workspaceId: firstClaim.workspaceId,
+          commandId: firstClaim.commandId,
+          correlationId: firstClaim.correlationId,
+          actorId: fixture.actorId,
+          actionCategory: 'write',
+          action: 'task_packet.create',
+          targetType: 'task_packet',
+          targetId: firstId,
+          resultVersion: 1,
+          occurredAt: new Date().toISOString()
+        }
+      };
+      await unitOfWork.executeCommand(firstClaim, (transaction, claimToken) =>
+        completeNonApproval(
+          transaction,
+          firstClaim,
+          claimToken,
+          firstOutcome
+        )
+      );
+
+      const secondClaim = {
+        ...claim(`packet-content-second-${randomUUID()}`),
+        commandType: 'task_packet.create' as const
+      };
+      const secondOutcome: NonApprovalCommandOutcome = {
+        kind: 'non_approval',
+        mutation: {
+          aggregateType: 'task_packet',
+          aggregateId: secondId,
+          expectedPersistedVersion: null,
+          aggregate: secondPacket.value
+        },
+        audit: {
+          ...firstOutcome.audit,
+          id: randomUUID(),
+          commandId: secondClaim.commandId,
+          correlationId: secondClaim.correlationId,
+          targetId: secondId
+        }
+      };
+      const conflict = await unitOfWork
+        .executeCommand(secondClaim, async (transaction, claimToken) => {
+          throw await transaction.persistAuditedMutation({
+            claimToken,
+            outcome: secondOutcome
+          });
+        })
+        .catch((cause: unknown) => cause);
+
+      expect(conflict).toEqual({
+        status: 'version_conflict',
+        expectedPersistedVersion: null,
+        persistedVersion: null
+      });
+      expect(
+        await testDb
+          .select({id: taskPackets.id})
+          .from(taskPackets)
+          .where(eq(taskPackets.contentHash, firstPacket.value.contentHash))
+      ).toHaveLength(1);
+    });
+
+    it('namespaces AgentRun idempotency keys by workspace', async () => {
+      const unitOfWork = createPostgresUnitOfWork(testDb);
+      const userKey = `shared-run-key-${randomUUID()}`;
+      const firstRun: AgentRun = {
+        id: randomUUID(),
+        taskPacketId: fixture.packetId,
+        agentProfileId: fixture.profileId,
+        status: 'queued',
+        idempotencyKey: userKey,
+        version: 1
+      };
+      const secondRun: AgentRun = {
+        id: randomUUID(),
+        taskPacketId: fixture.otherPacketId,
+        agentProfileId: fixture.otherProfileId,
+        status: 'queued',
+        idempotencyKey: userKey,
+        version: 1
+      };
+      const firstClaim = {
+        ...claim(`workspace-run-first-${randomUUID()}`),
+        commandType: 'agent_run.queue' as const
+      };
+      const secondClaim = {
+        ...claim(`workspace-run-second-${randomUUID()}`),
+        workspaceId: fixture.otherWorkspaceId,
+        commandType: 'agent_run.queue' as const
+      };
+
+      await unitOfWork.executeCommand(firstClaim, (transaction, claimToken) =>
+        completeNonApproval(
+          transaction,
+          firstClaim,
+          claimToken,
+          agentRunOutcome(firstClaim, firstRun)
+        )
+      );
+      await unitOfWork.executeCommand(secondClaim, (transaction, claimToken) =>
+        completeNonApproval(
+          transaction,
+          secondClaim,
+          claimToken,
+          agentRunOutcome(secondClaim, secondRun, fixture.otherActorId)
+        )
+      );
+
+      const rows = await testDb
+        .select({
+          id: agentRuns.id,
+          idempotencyKey: agentRuns.idempotencyKey
+        })
+        .from(agentRuns);
+      const inserted = rows.filter((row) =>
+        row.id === firstRun.id || row.id === secondRun.id
+      );
+      expect(inserted).toHaveLength(2);
+      expect(new Set(inserted.map((row) => row.idempotencyKey)).size).toBe(2);
+      expect(inserted.every((row) =>
+        row.idempotencyKey.startsWith('workspace-sha256:')
+      )).toBe(true);
+    });
+
+    it('reports invalid approval and access insert ownership as not found', async () => {
+      const unitOfWork = createPostgresUnitOfWork(testDb);
+      const approvalClaim = claim(
+        `cross-workspace-approval-insert-${randomUUID()}`
+      );
+      const invalidApproval = approvalOutcome(
+        approvalClaim,
+        randomUUID()
+      );
+      const crossWorkspaceApproval: ApprovalRequiredCommandOutcome = {
+        ...invalidApproval,
+        approval: {
+          ...invalidApproval.approval,
+          aggregate: {
+            id: invalidApproval.approval.aggregate.id,
+            projectId: fixture.otherProjectId,
+            workItemId: fixture.otherWorkItemId,
+            actionCategory:
+              invalidApproval.approval.aggregate.actionCategory,
+            surface: invalidApproval.approval.aggregate.surface,
+            environment: invalidApproval.approval.aggregate.environment,
+            requestedByActorId:
+              invalidApproval.approval.aggregate.requestedByActorId,
+            status: invalidApproval.approval.aggregate.status,
+            version: invalidApproval.approval.aggregate.version
+          }
+        }
+      };
+      const approvalResult = await unitOfWork
+        .executeCommand(approvalClaim, async (transaction, claimToken) => {
+          throw await transaction.persistApprovalRequired({
+            claimToken,
+            outcome: crossWorkspaceApproval
+          });
+        })
+        .catch((cause: unknown) => cause);
+      expect(approvalResult).toEqual({status: 'not_found'});
+
+      const accessClaim = {
+        ...claim(`missing-access-actor-${randomUUID()}`),
+        commandType: 'access_request.request' as const
+      };
+      const requestId = randomUUID();
+      const accessOutcome: NonApprovalCommandOutcome = {
+        kind: 'non_approval',
+        mutation: {
+          aggregateType: 'access_request',
+          aggregateId: requestId,
+          expectedPersistedVersion: null,
+          aggregate: {
+            id: requestId,
+            workspaceId: fixture.workspaceId,
+            requesterActorId: randomUUID(),
+            targetSurface: 'repository',
+            requestedScope: ['contents:read'],
+            status: 'pending',
+            version: 1
+          }
+        },
+        audit: {
+          id: randomUUID(),
+          workspaceId: fixture.workspaceId,
+          commandId: accessClaim.commandId,
+          correlationId: accessClaim.correlationId,
+          actorId: fixture.actorId,
+          actionCategory: 'write',
+          action: 'access_request.request',
+          targetType: 'access_request',
+          targetId: requestId,
+          resultVersion: 1,
+          occurredAt: new Date().toISOString()
+        }
+      };
+      const accessResult = await unitOfWork
+        .executeCommand(accessClaim, async (transaction, claimToken) => {
+          throw await transaction.persistAuditedMutation({
+            claimToken,
+            outcome: accessOutcome
+          });
+        })
+        .catch((cause: unknown) => cause);
+      expect(accessResult).toEqual({status: 'not_found'});
     });
 
     it('rejects a deserialized TaskPacket update mode before audit or SQL', async () => {

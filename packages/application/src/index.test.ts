@@ -1,0 +1,316 @@
+import {randomUUID} from 'node:crypto';
+import {describe, expect, it} from 'vitest';
+import {
+  createActorContextIssuer,
+  type AccessRequest,
+  type AgentRunView,
+  type Approval,
+  type CanonicalCommand,
+  type CanonicalCommandTransaction,
+  type CommandReceipt,
+  type CommandReceiptClaim,
+  type CommandExecutionResult,
+  type CompletedCanonicalCommand,
+  type ReceiptClaimToken,
+  type UnitOfWork,
+  type WorkItem
+} from '@fai-control-plane/domain';
+import {
+  createCanonicalCommandService,
+  hashCanonicalCommandRequest,
+  type Clock,
+  type IdGenerator
+} from './index';
+
+const id = (): string => randomUUID();
+const fixedClock: Clock = {now: () => new Date('2026-07-25T12:00:00.000Z')};
+const fixedIds: IdGenerator = {next: () => id()};
+const actorId = id();
+const workspaceId = id();
+const projectId = id();
+const issuerResult = createActorContextIssuer({
+  users: [{actorId, capabilities: ['write:control_plane:development', 'deploy:runner:development']}],
+  agents: [], systems: []
+});
+if (!issuerResult.ok) throw new Error('Test actor issuer did not initialize.');
+const actor = issuerResult.value.issueUser(actorId);
+if (!actor.ok) throw new Error('Test actor did not initialize.');
+
+const packetContent = () => ({
+  projectId,
+  workItemId: id(),
+  goal: 'Test packet',
+  acceptanceCriteria: ['works'],
+  inScope: ['packages/application/**'],
+  outOfScope: ['apps/**'],
+  relevantLinks: [],
+  relevantFiles: ['packages/application/src/index.ts'],
+  allowedTools: ['pnpm test'],
+  forbiddenSurfaces: ['production'],
+  dataPolicy: {},
+  timeboxMinutes: 10,
+  expectedOutputSchema: {},
+  reviewerActorId: actorId,
+  approverActorId: actorId,
+  runtimeProfile: 'test',
+  authMode: 'user' as const,
+  secretsRef: null,
+  createdFromEventId: id(),
+  createdByActorId: actorId
+});
+
+const command = <T extends CanonicalCommand['type']>(type: T, payload: Extract<CanonicalCommand, {type: T}>['payload']) => ({
+  commandId: id(), workspaceId, correlationId: id(), idempotencyKey: `key-${id()}`,
+  issuedAt: '2026-07-25T11:00:00.000Z', actor: actor.value, type, payload
+}) as Extract<CanonicalCommand, {type: T}>;
+
+class FakeUnitOfWork implements UnitOfWork {
+  readonly workItems = new Map<string, WorkItem>();
+  readonly agentRuns = new Map<string, AgentRunView>();
+  readonly approvals = new Map<string, Approval>();
+  readonly accessRequests = new Map<string, AccessRequest>();
+  readonly receipts = new Map<string, CommandReceipt>();
+  readonly audits: unknown[] = [];
+  readonly mutations: unknown[] = [];
+  executions = 0;
+  failure: 'not_found' | 'version_conflict' | undefined;
+  failCompletion = false;
+  approvalCalls = 0;
+
+  async executeCommand<T>(claim: CommandReceiptClaim, work: (
+    transaction: CanonicalCommandTransaction, claimToken: ReceiptClaimToken
+  ) => Promise<CompletedCanonicalCommand<T>>): Promise<CommandExecutionResult<T>> {
+    this.executions += 1;
+    const existing = this.receipts.get(`${claim.workspaceId}:${claim.idempotencyKey}`);
+    if (existing !== undefined) return existing.requestHash === claim.requestHash
+      ? {status: 'replayed', receipt: existing}
+      : {status: 'key_reused', existingRequestHash: existing.requestHash};
+    const workItems = new Map(this.workItems);
+    const agentRuns = new Map(this.agentRuns);
+    const approvals = new Map(this.approvals);
+    const accessRequests = new Map(this.accessRequests);
+    let completedReceipt: CommandReceipt | undefined;
+    const token = {} as ReceiptClaimToken;
+    const transaction: CanonicalCommandTransaction = {
+      loadWorkItem: async (_token, value) => this.workItems.get(value) ?? null,
+      loadAgentRun: async (_token, value) => this.agentRuns.get(value) ?? null,
+      loadApproval: async (_token, value) => this.approvals.get(value) ?? null,
+      loadAccessRequest: async (_token, value) => this.accessRequests.get(value) ?? null,
+      persistAuditedMutation: async ({outcome}) => {
+        this.mutations.push(outcome);
+        if (this.failure === 'not_found') return {status: 'not_found'} as const;
+        if (this.failure === 'version_conflict') return {status: 'version_conflict' as const, expectedPersistedVersion: 1, persistedVersion: 2};
+        const mutation = outcome.mutation;
+        if (mutation.aggregateType === 'work_item') this.workItems.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'agent_run') this.agentRuns.set(mutation.aggregateId, {aggregate: mutation.aggregate, projectId});
+        if (mutation.aggregateType === 'approval') this.approvals.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'access_request') this.accessRequests.set(mutation.aggregateId, mutation.aggregate);
+        return {status: 'persisted' as const, mutation: {cas: {expectedPersistedVersion: mutation.expectedPersistedVersion, persistedVersion: mutation.aggregateType === 'task_packet' ? 1 : mutation.aggregate.version}, audit: {} as never} as never};
+      },
+      persistApprovalRequired: async ({outcome}) => {
+        this.approvalCalls += 1;
+        this.approvals.set(outcome.approval.aggregateId, outcome.approval.aggregate);
+        this.audits.push(outcome.audit);
+        completedReceipt = outcome.receipt;
+        return {status: 'completed' as const, command: {kind: 'approval_required' as const, approval: {expectedPersistedVersion: null, persistedVersion: 1}, audit: {} as never, receipt: {} as never} as never};
+      },
+      completeReceipt: async ({receipt}) => {
+        if (this.failCompletion) throw new Error('completion failed');
+        completedReceipt = receipt;
+        return {cas: {expectedPersistedVersion: receipt.expectedVersion ?? null, persistedVersion: receipt.resultVersion!}, audit: {} as never, receipt: {} as never} as never;
+      },
+      completeAuditedReceipt: async ({audit, receipt}) => {
+        this.audits.push(audit);
+        completedReceipt = receipt;
+        return {audit: {} as never, receipt: {} as never} as never;
+      }
+    };
+    let result: CompletedCanonicalCommand<T>;
+    try {
+      result = await work(transaction, token);
+    } catch (cause) {
+      this.workItems.clear(); workItems.forEach((value, key) => this.workItems.set(key, value));
+      this.agentRuns.clear(); agentRuns.forEach((value, key) => this.agentRuns.set(key, value));
+      this.approvals.clear(); approvals.forEach((value, key) => this.approvals.set(key, value));
+      this.accessRequests.clear(); accessRequests.forEach((value, key) => this.accessRequests.set(key, value));
+      throw cause;
+    }
+    if (completedReceipt === undefined) throw new Error('Command did not complete a receipt.');
+    this.receipts.set(`${claim.workspaceId}:${claim.idempotencyKey}`, completedReceipt);
+    return {status: 'completed', command: result};
+  }
+}
+
+const serviceFor = (uow: FakeUnitOfWork) => createCanonicalCommandService({unitOfWork: uow, clock: fixedClock, idGenerator: fixedIds});
+const item = (overrides: Partial<WorkItem> = {}): WorkItem => ({id: id(), projectId, status: 'ready', blocked: false, version: 1, ...overrides});
+
+describe('canonical command service', () => {
+  it('hashes key ordering deterministically and normalizes actor capabilities', () => {
+    const workItemId = id();
+    const first = command('work_item.transition', {workItemId, status: 'in_dev', expectedVersion: 1});
+    const reordered = {...first, payload: {expectedVersion: 1, status: 'in_dev' as const, workItemId}};
+    expect(hashCanonicalCommandRequest(first)).toBe(hashCanonicalCommandRequest(reordered));
+    const secondIssuer = createActorContextIssuer({
+      users: [{actorId, capabilities: ['deploy:runner:development', 'write:control_plane:development']}],
+      agents: [], systems: []
+    });
+    if (!secondIssuer.ok) throw new Error('Second issuer did not initialize.');
+    const secondActor = secondIssuer.value.issueUser(actorId);
+    if (!secondActor.ok) throw new Error('Second actor did not initialize.');
+    expect(hashCanonicalCommandRequest({...first, actor: secondActor.value})).toBe(hashCanonicalCommandRequest(first));
+  });
+
+  it.each([
+    ['work_item.transition', (uow: FakeUnitOfWork) => {
+      const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
+      return command('work_item.transition', {workItemId: aggregate.id, status: 'in_dev', expectedVersion: 1});
+    }],
+    ['work_item.set_blocked', (uow: FakeUnitOfWork) => {
+      const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
+      return command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 1});
+    }],
+    ['task_packet.create', () => command('task_packet.create', {packetId: id(), content: packetContent()})],
+    ['agent_run.queue', () => command('agent_run.queue', {agentRunId: id(), taskPacketId: id(), agentProfileId: id()})],
+    ['agent_run.transition', (uow: FakeUnitOfWork) => {
+      const aggregate = {id: id(), taskPacketId: id(), agentProfileId: id(), status: 'queued' as const, idempotencyKey: 'run', version: 1};
+      uow.agentRuns.set(aggregate.id, {aggregate, projectId});
+      return command('agent_run.transition', {agentRunId: aggregate.id, status: 'running', expectedVersion: 1});
+    }],
+    ['approval.request', (uow: FakeUnitOfWork) => {
+      const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
+      return command('approval.request', {approvalId: id(), action: {actionCategory: 'deploy', surface: 'runner', environment: 'development'}, target: {workItemId: aggregate.id}});
+    }],
+    ['approval.decide', (uow: FakeUnitOfWork) => {
+      const approval: Approval = {id: id(), projectId, workItemId: id(), actionCategory: 'deploy', surface: 'runner', environment: 'development', requestedByActorId: actorId, status: 'pending', version: 1};
+      uow.approvals.set(approval.id, approval);
+      return command('approval.decide', {approvalId: approval.id, status: 'approved', expectedVersion: 1});
+    }],
+    ['access_request.request', () => command('access_request.request', {requestId: id(), targetSurface: 'repository', requestedScope: ['read']})],
+    ['access_request.decide', (uow: FakeUnitOfWork) => {
+      const request: AccessRequest = {id: id(), workspaceId, requesterActorId: actorId, targetSurface: 'repository', requestedScope: ['read'], status: 'pending', version: 1};
+      uow.accessRequests.set(request.id, request);
+      return command('access_request.decide', {requestId: request.id, status: 'granted', expectedVersion: 1});
+    }]
+  ])('executes %s through an audited receipt', async (_name, make) => {
+    const uow = new FakeUnitOfWork();
+    const result = await serviceFor(uow).execute(make(uow));
+    expect(result.status).toBe('completed');
+    if (result.status !== 'completed') return;
+    expect(JSON.stringify(result.receipt)).not.toContain('secretsRef');
+    expect(result.receipt.result.ok).toBe(_name !== 'approval.request');
+  });
+
+  it('persists an approval-required receipt atomically', async () => {
+    const uow = new FakeUnitOfWork();
+    const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
+    const result = await serviceFor(uow).execute(command('approval.request', {
+      approvalId: id(), action: {actionCategory: 'deploy', surface: 'runner', environment: 'development'}, target: {workItemId: aggregate.id}
+    }));
+    expect(result).toMatchObject({status: 'completed', receipt: {result: {ok: false, error: {code: 'APPROVAL_REQUIRED'}}}});
+    expect(uow.approvalCalls).toBe(1);
+  });
+
+  it('records transition, authorization, no-op, conflict, and secret validation errors in receipts', async () => {
+    const uow = new FakeUnitOfWork();
+    const aggregate = item({status: 'done'}); uow.workItems.set(aggregate.id, aggregate);
+    const invalidTransition = await serviceFor(uow).execute(command('work_item.transition', {workItemId: aggregate.id, status: 'ready', expectedVersion: 1}));
+    expect(invalidTransition).toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    const noOp = await serviceFor(uow).execute(command('work_item.set_blocked', {workItemId: aggregate.id, blocked: false, expectedVersion: 1}));
+    expect(noOp).toMatchObject({receipt: {resultVersion: 1, result: {ok: true}}});
+    const conflict = await serviceFor(uow).execute(command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 2}));
+    expect(conflict).toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    const secret = packetContent(); (secret as Record<string, unknown>).apiKey = 'never-return-this';
+    const packet = await serviceFor(uow).execute(command('task_packet.create', {packetId: id(), content: secret}));
+    expect(packet).toMatchObject({receipt: {result: {error: {code: 'SECRET_VALUE_FORBIDDEN'}}}});
+    expect(JSON.stringify(packet)).not.toContain('never-return-this');
+  });
+
+  it('records invalid transitions for every transition aggregate and a CAS race', async () => {
+    const uow = new FakeUnitOfWork();
+    const run = {id: id(), taskPacketId: id(), agentProfileId: id(), status: 'queued' as const, idempotencyKey: 'run', version: 1};
+    const approval: Approval = {id: id(), projectId, workItemId: id(), actionCategory: 'deploy', surface: 'runner', environment: 'development', requestedByActorId: actorId, status: 'approved', version: 1};
+    const request: AccessRequest = {id: id(), workspaceId, requesterActorId: actorId, targetSurface: 'repository', requestedScope: ['read'], status: 'granted', version: 1};
+    uow.agentRuns.set(run.id, {aggregate: run, projectId}); uow.approvals.set(approval.id, approval); uow.accessRequests.set(request.id, request);
+    await expect(serviceFor(uow).execute(command('agent_run.transition', {agentRunId: run.id, status: 'done', expectedVersion: 1})))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    await expect(serviceFor(uow).execute(command('approval.decide', {approvalId: approval.id, status: 'rejected', expectedVersion: 1})))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    await expect(serviceFor(uow).execute(command('access_request.decide', {requestId: request.id, status: 'rejected', expectedVersion: 1})))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    const aggregate = item(); uow.workItems.set(aggregate.id, aggregate); uow.failure = 'version_conflict';
+    await expect(serviceFor(uow).execute(command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 1})))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+  });
+
+  it('does not create approvals for allowed actions and audits routine capability denial', async () => {
+    const uow = new FakeUnitOfWork();
+    const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
+    const allowed = await serviceFor(uow).execute(command('approval.request', {
+      approvalId: id(), action: {actionCategory: 'write', surface: 'control_plane', environment: 'development'}, target: {workItemId: aggregate.id}
+    }));
+    expect(allowed).toMatchObject({receipt: {result: {error: {code: 'INVALID_COMMAND'}}}});
+    expect(uow.approvalCalls).toBe(0);
+    const deniedActorId = id();
+    const deniedIssuer = createActorContextIssuer({users: [{actorId: deniedActorId, capabilities: []}], agents: [], systems: []});
+    if (!deniedIssuer.ok) throw new Error('Denied issuer did not initialize.');
+    const deniedActor = deniedIssuer.value.issueUser(deniedActorId);
+    if (!deniedActor.ok) throw new Error('Denied actor did not initialize.');
+    const denied = await serviceFor(uow).execute({...command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 1}), actor: deniedActor.value});
+    expect(denied).toMatchObject({receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}});
+    const policyActorId = id();
+    const policyIssuer = createActorContextIssuer({users: [{
+      actorId: policyActorId,
+      capabilities: ['write:control_plane:development', 'write:control_plane:production']
+    }], agents: [], systems: []});
+    if (!policyIssuer.ok) throw new Error('Policy issuer did not initialize.');
+    const policyActor = policyIssuer.value.issueUser(policyActorId);
+    if (!policyActor.ok) throw new Error('Policy actor did not initialize.');
+    const policyDenied = await serviceFor(uow).execute({...command('approval.request', {
+      approvalId: id(), action: {actionCategory: 'write', surface: 'control_plane', environment: 'production'}, target: {workItemId: aggregate.id}
+    }), actor: policyActor.value});
+    expect(policyDenied).toMatchObject({receipt: {result: {error: {code: 'POLICY_DENIED'}}}});
+  });
+
+  it('relies on the UoW transaction to roll back when receipt completion fails', async () => {
+    const uow = new FakeUnitOfWork();
+    const aggregate = item(); uow.workItems.set(aggregate.id, aggregate); uow.failCompletion = true;
+    await expect(serviceFor(uow).execute(command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 1})))
+      .rejects.toThrow('completion failed');
+    expect(uow.workItems.get(aggregate.id)).toEqual(aggregate);
+  });
+
+  it('replays a matching key, rejects reuse, and rejects undefined or sparse payloads before UoW', async () => {
+    const uow = new FakeUnitOfWork();
+    const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
+    const first = command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 1});
+    const service = serviceFor(uow);
+    await service.execute(first);
+    const replay = await service.execute({...first, commandId: id(), correlationId: id(), issuedAt: '2026-07-25T13:00:00.000Z'});
+    expect(replay.status).toBe('replayed');
+    const reused = await service.execute({...first, payload: {...first.payload, blocked: false}});
+    expect(reused).toMatchObject({status: 'key_reused', error: {code: 'IDEMPOTENCY_KEY_REUSED'}});
+    const unsafe = {...first, idempotencyKey: `unsafe-${id()}`, payload: {...first.payload, blocked: undefined}};
+    expect(await service.execute(unsafe as unknown as CanonicalCommand)).toMatchObject({status: 'rejected', error: {code: 'INVALID_COMMAND'}});
+    const sparse = {...first, idempotencyKey: `sparse-${id()}`, payload: {packetId: id(), content: packetContent()}} as unknown as CanonicalCommand;
+    (sparse.payload as unknown as {content: {acceptanceCriteria: string[]}}).content.acceptanceCriteria = new Array(1);
+    expect(await service.execute(sparse)).toMatchObject({status: 'rejected', error: {code: 'INVALID_COMMAND'}});
+  });
+
+  it('rejects forged task packet provenance before claiming a receipt', async () => {
+    const uow = new FakeUnitOfWork();
+    const forged = packetContent();
+    forged.createdByActorId = id();
+    const result = await serviceFor(uow).execute(
+      command('task_packet.create', {packetId: id(), content: forged})
+    );
+
+    expect(result).toMatchObject({
+      status: 'rejected',
+      error: {code: 'INVALID_COMMAND'}
+    });
+    expect(uow.executions).toBe(0);
+    expect(uow.mutations).toHaveLength(0);
+    expect(uow.audits).toHaveLength(0);
+    expect(uow.receipts).toHaveLength(0);
+  });
+});

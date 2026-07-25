@@ -75,6 +75,22 @@ importers:
         specifier: 12.26.3
         version: 12.26.3
 
+  packages/application:
+    dependencies:
+      '@fai-control-plane/domain':
+        specifier: workspace:*
+        version: link:../domain
+    devDependencies:
+      '@fai-control-plane/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: 0.45.2
+        version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(pg@8.22.0)
+      pg:
+        specifier: 8.22.0
+        version: 8.22.0
+
   packages/db:
     dependencies:
       '@fai-control-plane/domain':

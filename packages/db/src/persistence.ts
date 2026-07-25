@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import type {
   AccessRequest,
   AgentRun,
@@ -89,6 +90,15 @@ const auditToken = (): AuditAppendToken => ({}) as AuditAppendToken;
 const completionToken = (): CommandReceiptCompletion =>
   ({}) as CommandReceiptCompletion;
 const jsonObject = (value: unknown): JsonObject => value as JsonObject;
+const agentRunIdempotencyKey = (
+  workspaceId: string,
+  idempotencyKey: string
+): string =>
+  `workspace-sha256:${createHash('sha256')
+    .update(workspaceId)
+    .update('\0')
+    .update(idempotencyKey)
+    .digest('hex')}`;
 
 const mapReceipt = (
   row: typeof schema.commandReceipts.$inferSelect
@@ -604,7 +614,7 @@ const persistTaskPacket = async (
       contentHash: packet.contentHash,
       createdByActorId: content.createdByActorId
     })
-    .onConflictDoNothing({target: schema.taskPackets.id})
+    .onConflictDoNothing()
     .returning({id: schema.taskPackets.id, projectId: schema.taskPackets.projectId});
   return row === undefined
     ? conflictOrNotFound(tx, workspaceId, mutation)
@@ -666,10 +676,13 @@ const persistAgentRun = async (
         taskPacketId: aggregate.taskPacketId,
         agentProfileId: aggregate.agentProfileId,
         status: aggregate.status,
-        idempotencyKey: aggregate.idempotencyKey,
+        idempotencyKey: agentRunIdempotencyKey(
+          workspaceId,
+          aggregate.idempotencyKey
+        ),
         version: 1
       })
-      .onConflictDoNothing({target: schema.agentRuns.id})
+      .onConflictDoNothing()
       .returning({version: schema.agentRuns.version});
     return row === undefined
       ? conflictOrNotFound(tx, workspaceId, mutation)

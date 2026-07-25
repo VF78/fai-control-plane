@@ -17,6 +17,7 @@
     "exactOptionalPropertyTypes": true,
     "baseUrl": ".",
     "paths": {
+      "@fai-control-plane/application": ["packages/application/src/index.ts"],
       "@fai-control-plane/domain": ["packages/domain/src/index.ts"],
       "@fai-control-plane/db": ["packages/db/src/index.ts"],
       "@fai-control-plane/integrations": ["packages/integrations/src/index.ts"],

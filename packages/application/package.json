@@ -1,0 +1,26 @@
+{
+  "name": "@fai-control-plane/application",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. packages/application/src/index.test.ts",
+    "test:integration": "vitest run --root ../.. packages/application/src/postgres.integration.test.ts"
+  },
+  "dependencies": {
+    "@fai-control-plane/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "@fai-control-plane/db": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "pg": "8.22.0"
+  }
+}
