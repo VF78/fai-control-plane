@@ -445,11 +445,19 @@ export const incomingEvents = pgTable(
     deliveryId: text('delivery_id').notNull(),
     eventType: text('event_type').notNull(),
     action: text('action'),
-    headers: jsonb('headers')
-      .$type<Record<string, string>>()
-      .default(sql`'{}'::jsonb`)
+    verification: jsonb('verification')
+      .$type<
+        | {outcome: 'unverified'; method: 'none'}
+        | {
+            outcome: 'verified' | 'rejected';
+            method: 'hmac-sha256' | 'signature-sha256' | 'shared-token';
+          }
+      >()
+      .default(sql`'{"outcome":"unverified","method":"none"}'::jsonb`)
       .notNull(),
-    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    sanitizedPayload: jsonb('sanitized_payload')
+      .$type<Record<string, unknown>>()
+      .notNull(),
     status: eventStatusEnum('status').default('pending').notNull(),
     attemptCount: integer('attempt_count').default(0).notNull(),
     receivedAt: timestamp('received_at', {withTimezone: true})
@@ -466,6 +474,22 @@ export const incomingEvents = pgTable(
     index('incoming_events_status_received_idx').on(
       table.status,
       table.receivedAt
+    ),
+    check(
+      'incoming_events_verification_envelope_valid',
+      sql`${table.verification} in (
+        '{"outcome":"unverified","method":"none"}'::jsonb,
+        '{"outcome":"verified","method":"hmac-sha256"}'::jsonb,
+        '{"outcome":"verified","method":"signature-sha256"}'::jsonb,
+        '{"outcome":"verified","method":"shared-token"}'::jsonb,
+        '{"outcome":"rejected","method":"hmac-sha256"}'::jsonb,
+        '{"outcome":"rejected","method":"signature-sha256"}'::jsonb,
+        '{"outcome":"rejected","method":"shared-token"}'::jsonb
+      )`
+    ),
+    check(
+      'incoming_events_sanitized_payload_object',
+      sql`jsonb_typeof(${table.sanitizedPayload}) = 'object'`
     )
   ]
 );

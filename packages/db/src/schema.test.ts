@@ -72,4 +72,15 @@ describe('canonical schema foundation', () => {
     expect(columnNames).not.toContain('secret_value');
     expect(columnNames).not.toContain('value');
   });
+
+  it('does not expose raw headers on incoming event persistence', () => {
+    const incomingEventColumns = Object.values(
+      getTableColumns(schema.incomingEvents)
+    ).map((column) => column.name);
+
+    expect(incomingEventColumns).not.toContain('headers');
+    expect(incomingEventColumns).not.toContain('payload');
+    expect(incomingEventColumns).toContain('verification');
+    expect(incomingEventColumns).toContain('sanitized_payload');
+  });
 });

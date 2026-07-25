@@ -78,6 +78,87 @@ jobs:
       - name: Build
         run: pnpm build
 
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COMPOSE_PROJECT_NAME: fai-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      POSTGRES_PORT: 55432
+      WEB_PORT: 53000
+      WORKER_PORT: 53001
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compose smoke test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          diagnostics() {
+            docker compose ps --all || true
+            docker compose logs --no-color || true
+          }
+
+          cleanup() {
+            docker compose down --volumes --remove-orphans || true
+          }
+
+          on_exit() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              diagnostics
+            fi
+            cleanup
+            exit "$status"
+          }
+
+          wait_for_health() {
+            local service=$1
+            local deadline=$((SECONDS + 90))
+            local container
+
+            container=$(docker compose ps -q "$service")
+            until [ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy ]; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "Timed out waiting for $service to become healthy" >&2
+                return 1
+              fi
+              sleep 2
+            done
+          }
+
+          wait_for_endpoint() {
+            local name=$1
+            local url=$2
+            local expected=$3
+            local deadline=$((SECONDS + 120))
+            local body
+
+            while true; do
+              body=$(curl --fail --silent --show-error --max-time 3 "$url" || true)
+              if printf '%s' "$body" | grep --fixed-strings --quiet "$expected"; then
+                return 0
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "Timed out waiting for $name at $url; last response: $body" >&2
+                return 1
+              fi
+              sleep 2
+            done
+          }
+
+          trap on_exit EXIT
+
+          docker compose build
+          docker compose up -d postgres
+          wait_for_health postgres
+          docker compose up --no-deps --abort-on-container-exit --exit-code-from migrate migrate
+          docker compose up -d web worker
+          wait_for_endpoint web "http://127.0.0.1:${WEB_PORT}/api/ready" '"status":"ready"'
+          wait_for_endpoint worker-health "http://127.0.0.1:${WORKER_PORT}/health" '"status":"ok"'
+          wait_for_endpoint worker-ready "http://127.0.0.1:${WORKER_PORT}/ready" '"status":"ready"'
+
   secret-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10

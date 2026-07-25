@@ -1,5 +1,7 @@
 import type {WorkItemStatus} from '@fai-control-plane/domain';
 
+export * from './inbound-events';
+
 export type TrackerCapabilities = {
   readWorkItems: boolean;
   writeWorkItems: boolean;
