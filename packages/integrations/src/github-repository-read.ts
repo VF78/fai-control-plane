@@ -3,6 +3,7 @@ import type {
   SecretsProvider,
   TrackerAdapter,
   TrackerCheckConclusion,
+  TrackerCheckStatus,
   TrackerCheckSnapshot,
   TrackerIdentity,
   TrackerLabel,
@@ -11,6 +12,7 @@ import type {
   TrackerRepositorySnapshot,
   TrackerWorkItemSnapshot
 } from '@fai-control-plane/domain';
+import {trackerCheckStatuses} from '@fai-control-plane/domain';
 import {
   githubCheckRunConclusions,
   githubRepositoryScopeDefinitions,
@@ -144,13 +146,12 @@ const state = (value: unknown): 'open' | 'closed' => {
 
 const checkStatus = (
   value: unknown
-): TrackerCheckSnapshot['status'] => {
-  if (!['queued', 'in_progress', 'completed', 'waiting', 'requested', 'pending'].includes(
-    value as string
-  )) {
+): TrackerCheckStatus => {
+  if (typeof value !== 'string' ||
+    !trackerCheckStatuses.includes(value as TrackerCheckStatus)) {
     return fail('github_response_invalid');
   }
-  return value as TrackerCheckSnapshot['status'];
+  return value as TrackerCheckStatus;
 };
 
 const stableId = (kind: string, id: number): string => `github:${kind}:${id}`;
@@ -249,6 +250,12 @@ const workItem = (
   if (source.pull_request !== undefined) return null;
   const id = positiveInteger(source.id);
   const number = positiveInteger(source.number);
+  const providerLabels = array(source.labels).map(label);
+  const providerAssignees = array(source.assignees).map(identity);
+  assertUnique(providerLabels, ({externalId}) => externalId);
+  assertUnique(providerAssignees, ({externalId}) => externalId);
+  const labels = byStableId(providerLabels);
+  const assignees = byStableId(providerAssignees);
   const snapshot = {
     externalId: stableId('issue', id),
     url: entityUrl(
@@ -264,8 +271,8 @@ const workItem = (
     number,
     title: boundedString(source.title, 1_024),
     state: state(source.state),
-    labels: byStableId(array(source.labels).map(label)),
-    assignees: byStableId(array(source.assignees).map(identity)),
+    labels,
+    assignees,
     milestone: milestone(source.milestone)
   };
   return {...snapshot, externalVersion: stableVersion(snapshot)};
@@ -281,6 +288,12 @@ const pullRequest = (
   const id = positiveInteger(source.id);
   const number = positiveInteger(source.number);
   const mergedAt = nullableBoundedString(source.merged_at, 64);
+  const providerLabels = array(source.labels).map(label);
+  const providerAssignees = array(source.assignees).map(identity);
+  assertUnique(providerLabels, ({externalId}) => externalId);
+  assertUnique(providerAssignees, ({externalId}) => externalId);
+  const labels = byStableId(providerLabels);
+  const assignees = byStableId(providerAssignees);
   const snapshot = {
     externalId: stableId('pull-request', id),
     url: entityUrl(
@@ -301,8 +314,8 @@ const pullRequest = (
     headRef: boundedString(head.ref, 512),
     headSha: headSha(head.sha),
     baseRef: boundedString(base.ref, 512),
-    labels: byStableId(array(source.labels).map(label)),
-    assignees: byStableId(array(source.assignees).map(identity)),
+    labels,
+    assignees,
     milestone: milestone(source.milestone)
   };
   return {...snapshot, externalVersion: stableVersion(snapshot)};

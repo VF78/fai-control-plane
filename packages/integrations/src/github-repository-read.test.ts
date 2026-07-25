@@ -1,5 +1,9 @@
 import {describe, expect, it, vi} from 'vitest';
-import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
+import {
+  trackerCheckStatuses,
+  type OpaqueSecretRef,
+  type SecretsProvider
+} from '@fai-control-plane/domain';
 import {
   createGitHubRepositoryReadAdapter,
   GitHubRepositoryReadError,
@@ -592,6 +596,67 @@ describe('GitHub repository read adapter', () => {
 
   it.each([
     {
+      name: 'issue label IDs',
+      item: issue(1, {
+        labels: [
+          {id: 11, name: 'first', color: '111111'},
+          {id: 11, name: 'duplicate', color: '222222'}
+        ]
+      }),
+      pull: null
+    },
+    {
+      name: 'issue assignee IDs',
+      item: issue(1, {
+        assignees: [
+          {id: 21, login: 'first'},
+          {id: 21, login: 'duplicate'}
+        ]
+      }),
+      pull: null
+    },
+    {
+      name: 'pull request label IDs',
+      item: null,
+      pull: pullRequest(1, {
+        labels: [
+          {id: 31, name: 'first', color: '111111'},
+          {id: 31, name: 'duplicate', color: '222222'}
+        ]
+      })
+    },
+    {
+      name: 'pull request assignee IDs',
+      item: null,
+      pull: pullRequest(1, {
+        assignees: [
+          {id: 41, login: 'first'},
+          {id: 41, login: 'duplicate'}
+        ]
+      })
+    }
+  ])('rejects duplicate nested $name', async ({item, pull}) => {
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/repos/VF78/MSA') {
+        return jsonResponse(repositoryPayload());
+      }
+      if (url.pathname.endsWith('/issues')) {
+        return jsonResponse(item === null ? [] : [item]);
+      }
+      if (url.pathname.endsWith('/pulls')) {
+        return jsonResponse(pull === null ? [] : [pull]);
+      }
+      throw new Error(`Unexpected route ${url.pathname}`);
+    });
+
+    await expect(readMsa(fetch)).rejects.toMatchObject({
+      code: 'github_response_invalid',
+      message: 'github_response_invalid'
+    });
+  });
+
+  it.each([
+    {
       name: 'missing merged_at',
       pull: pullRequest(8, {merged_at: undefined})
     },
@@ -715,6 +780,33 @@ describe('GitHub repository read adapter', () => {
     await expect(readMsa(fetch)).rejects.toMatchObject({
       code: 'github_response_invalid',
       message: 'github_response_invalid'
+    });
+  });
+
+  it.each(trackerCheckStatuses)('accepts the %s check-run status', async (status) => {
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/repos/VF78/MSA') {
+        return jsonResponse(repositoryPayload());
+      }
+      if (url.pathname.endsWith('/issues')) return jsonResponse([]);
+      if (url.pathname.endsWith('/pulls')) return jsonResponse([pullRequest(8)]);
+      if (url.pathname.endsWith('/check-runs')) {
+        return jsonResponse({
+          total_count: 1,
+          check_runs: [{
+            id: 44,
+            name: 'test',
+            status,
+            conclusion: 'success',
+            details_url: null
+          }]
+        });
+      }
+      throw new Error(`Unexpected route ${url.pathname}`);
+    });
+
+    await expect(readMsa(fetch)).resolves.toMatchObject({
+      checks: [expect.objectContaining({status})]
     });
   });
 

@@ -850,12 +850,21 @@ export type TrackerCheckConclusion =
   | 'stale'
   | 'success'
   | 'timed_out';
+export const trackerCheckStatuses = Object.freeze([
+  'queued',
+  'in_progress',
+  'completed',
+  'waiting',
+  'requested',
+  'pending'
+] as const);
+export type TrackerCheckStatus = (typeof trackerCheckStatuses)[number];
 export type TrackerCheckSnapshot = Readonly<{
   externalId: string;
   externalVersion: string;
   pullRequestExternalId: string;
   name: string;
-  status: 'queued' | 'in_progress' | 'completed' | 'waiting' | 'requested' | 'pending';
+  status: TrackerCheckStatus;
   conclusion: TrackerCheckConclusion | null;
   detailsUrl: string | null;
 }>;

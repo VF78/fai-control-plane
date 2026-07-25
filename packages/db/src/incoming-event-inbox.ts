@@ -1,8 +1,9 @@
-import type {
-  IncomingEvent,
-  IncomingEventAcceptance,
-  IncomingEventInbox,
-  IncomingEventQueuePayload
+import {
+  trackerCheckStatuses,
+  type IncomingEvent,
+  type IncomingEventAcceptance,
+  type IncomingEventInbox,
+  type IncomingEventQueuePayload
 } from '@fai-control-plane/domain';
 import {and, eq, sql} from 'drizzle-orm';
 import type {ExtractTablesWithRelations} from 'drizzle-orm';
@@ -132,7 +133,6 @@ const assertSanitizedProjection = (event: IncomingEvent): void => {
     'id',
     'status'
   ]);
-  const statuses = new Set(['queued', 'in_progress', 'completed']);
   const conclusions = new Set([
     'action_required',
     'cancelled',
@@ -147,7 +147,7 @@ const assertSanitizedProjection = (event: IncomingEvent): void => {
     checkRun === null ||
     !positiveSafeInteger(checkRun.id) ||
     typeof checkRun.status !== 'string' ||
-    !statuses.has(checkRun.status) ||
+    !trackerCheckStatuses.includes(checkRun.status as (typeof trackerCheckStatuses)[number]) ||
     !(
       checkRun.conclusion === null ||
       (typeof checkRun.conclusion === 'string' &&

@@ -11,6 +11,7 @@ import {
   isTrustedActorContext,
   policySurfaces,
   setWorkItemBlocked,
+  trackerCheckStatuses,
   transitionAccessRequest,
   transitionAgentRun,
   transitionApproval,
@@ -41,6 +42,7 @@ import {
   type PolicyRequest,
   type ReceiptClaimToken,
   type TaskPacket,
+  type TrackerCheckStatus,
   type UnitOfWork,
   type WorkItem
 } from '@fai-control-plane/domain';
@@ -285,7 +287,6 @@ const cloneSafeProjection = (
     'id',
     'status'
   ]);
-  const statuses = ['queued', 'in_progress', 'completed'] as const;
   const conclusions = [
     'action_required',
     'cancelled',
@@ -298,7 +299,7 @@ const cloneSafeProjection = (
   ] as const;
   if (
     typeof checkRun.status !== 'string' ||
-    !statuses.includes(checkRun.status as (typeof statuses)[number]) ||
+    !trackerCheckStatuses.includes(checkRun.status as TrackerCheckStatus) ||
     !(
       checkRun.conclusion === null ||
       (

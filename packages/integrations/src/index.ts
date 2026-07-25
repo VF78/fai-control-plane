@@ -7,6 +7,7 @@ export type {
   TrackerAdapter,
   TrackerCapabilities,
   TrackerCheckConclusion,
+  TrackerCheckStatus,
   TrackerCheckSnapshot,
   TrackerIdentity,
   TrackerLabel,

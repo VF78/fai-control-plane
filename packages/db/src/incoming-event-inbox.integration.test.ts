@@ -1,7 +1,10 @@
 import {randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
-import type {IncomingEvent} from '@fai-control-plane/domain';
+import {
+  trackerCheckStatuses,
+  type IncomingEvent
+} from '@fai-control-plane/domain';
 import {eq} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {PgBoss} from 'pg-boss';
@@ -178,6 +181,55 @@ describePostgres(
             ?.data ?? {}
         )
       ).toEqual(['eventId']);
+    });
+
+    it.each(trackerCheckStatuses)(
+      'persists the %s check-run status',
+      async (status) => {
+        const candidate = event({
+          eventType: 'check_run',
+          action: 'created',
+          projection: {
+            checkRun: {
+              id: 503,
+              status,
+              conclusion: 'success',
+              headSha: 'a'.repeat(40)
+            }
+          }
+        });
+        const inbox = createPostgresIncomingEventInbox(testDb, boss);
+
+        await expect(inbox.accept(candidate)).resolves.toEqual({
+          status: 'accepted',
+          eventId: candidate.eventId
+        });
+        const [row] = await testDb
+          .select({sanitizedPayload: incomingEvents.sanitizedPayload})
+          .from(incomingEvents)
+          .where(eq(incomingEvents.id, candidate.eventId));
+        expect(row?.sanitizedPayload).toEqual(candidate.projection);
+      }
+    );
+
+    it('rejects an unknown check-run status before persistence', async () => {
+      const candidate = event({
+        eventType: 'check_run',
+        action: 'created',
+        projection: {
+          checkRun: {
+            id: 503,
+            status: 'unknown',
+            conclusion: 'success',
+            headSha: 'a'.repeat(40)
+          }
+        }
+      });
+      const inbox = createPostgresIncomingEventInbox(testDb, boss);
+
+      await expect(inbox.accept(candidate)).rejects.toThrow(
+        'Incoming event projection is not persistable.'
+      );
     });
 
     it('accepts one concurrent delivery, replays the other, and creates one job', async () => {

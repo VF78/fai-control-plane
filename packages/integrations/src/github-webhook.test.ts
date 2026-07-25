@@ -1,7 +1,10 @@
 import {createHash, createHmac} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {describe, expect, it, vi} from 'vitest';
-import type {SecretsProvider} from '@fai-control-plane/domain';
+import {
+  trackerCheckStatuses,
+  type SecretsProvider
+} from '@fai-control-plane/domain';
 import {
   createGitHubAppWebhookConfig,
   GitHubWebhookConfigError,
@@ -266,6 +269,38 @@ describe('GitHub App repository webhook boundary', () => {
       expect(result.outcome).toBe('accepted');
       if (result.outcome === 'accepted') expect(result.projection.action).toBe(action);
     }
+  });
+
+  it.each(trackerCheckStatuses)('accepts the %s check-run status', async (status) => {
+    const result = await verify('check_run', {
+      ...standardPayload('check_run', 'created'),
+      check_run: {
+        id: 503,
+        status,
+        conclusion: 'success',
+        head_sha: 'a'.repeat(40)
+      }
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'accepted',
+      projection: {eventType: 'check_run', checkRun: {status}}
+    });
+  });
+
+  it('rejects an unknown check-run status', async () => {
+    await expect(verify('check_run', {
+      ...standardPayload('check_run', 'created'),
+      check_run: {
+        id: 503,
+        status: 'unknown',
+        conclusion: 'success',
+        head_sha: 'a'.repeat(40)
+      }
+    })).resolves.toEqual({
+      outcome: 'rejected',
+      code: 'github_payload_invalid'
+    });
   });
 
   it.each([

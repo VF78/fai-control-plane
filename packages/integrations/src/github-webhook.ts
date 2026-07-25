@@ -2,8 +2,10 @@ import {createHash, createHmac, timingSafeEqual} from 'node:crypto';
 import type {
   OpaqueSecretRef,
   SecretsProvider,
-  TrackerCheckConclusion
+  TrackerCheckConclusion,
+  TrackerCheckStatus
 } from '@fai-control-plane/domain';
+import {trackerCheckStatuses} from '@fai-control-plane/domain';
 import {
   githubCheckRunConclusions,
   githubRepositoryScopeDefinitions
@@ -155,7 +157,7 @@ export type GitHubWebhookProjection =
         eventType: 'check_run';
         checkRun: Readonly<{
           id: number;
-          status: 'queued' | 'in_progress' | 'completed';
+          status: TrackerCheckStatus;
           conclusion: TrackerCheckConclusion | null;
           headSha: string;
         }>;
@@ -639,6 +641,11 @@ function isCheckRunConclusion(value: unknown): value is TrackerCheckConclusion {
     githubCheckRunConclusions.includes(value as TrackerCheckConclusion);
 }
 
+function isTrackerCheckStatus(value: unknown): value is TrackerCheckStatus {
+  return typeof value === 'string' &&
+    trackerCheckStatuses.includes(value as TrackerCheckStatus);
+}
+
 function getScope(
   config: GitHubAppWebhookConfig,
   installationId: number,
@@ -748,7 +755,7 @@ function projectCheckRun(
   const headSha = getRequiredString(checkRun, 'head_sha', 128);
   if (
     id === null ||
-    (status !== 'queued' && status !== 'in_progress' && status !== 'completed') ||
+    !isTrackerCheckStatus(status) ||
     !(conclusion === null || isCheckRunConclusion(conclusion)) ||
     headSha === null
   ) {

@@ -1,8 +1,9 @@
 import {randomUUID} from 'node:crypto';
-import type {
-  IncomingEvent,
-  IncomingEventAcceptance,
-  IncomingEventInbox
+import {
+  trackerCheckStatuses,
+  type IncomingEvent,
+  type IncomingEventAcceptance,
+  type IncomingEventInbox
 } from '@fai-control-plane/domain';
 import {describe, expect, it, vi} from 'vitest';
 import {
@@ -63,10 +64,56 @@ describe('incoming event ingestion', () => {
     expect(Object.keys(accepted?.projection ?? {})).toEqual(['issue']);
   });
 
+  it.each(trackerCheckStatuses)(
+    'accepts the %s check-run status into the canonical inbox',
+    async (status) => {
+      let accepted: IncomingEvent | undefined;
+      const inbox: IncomingEventInbox = {
+        accept: async (event) => {
+          accepted = event;
+          return {status: 'accepted', eventId: event.eventId};
+        }
+      };
+      const service = createIncomingEventIngestionService({inbox});
+
+      await expect(service.ingest(input({
+        eventType: 'check_run',
+        action: 'created',
+        projection: {
+          checkRun: {
+            id: 503,
+            status,
+            conclusion: 'success',
+            headSha: 'a'.repeat(40)
+          }
+        }
+      }))).resolves.toMatchObject({status: 'accepted'});
+      expect(accepted?.projection).toEqual({
+        checkRun: {
+          id: 503,
+          status,
+          conclusion: 'success',
+          headSha: 'a'.repeat(40)
+        }
+      });
+    }
+  );
+
   it.each([
     ['unverified input', {verification: {outcome: 'unverified', method: 'none'}}],
     ['raw payload', {rawPayload: {issue: {title: 'untrusted'}}}],
     ['uppercase hash', {payloadSha256: 'A'.repeat(64)}],
+    ['unknown check status', {
+      eventType: 'check_run',
+      projection: {
+        checkRun: {
+          id: 503,
+          status: 'unknown',
+          conclusion: 'success',
+          headSha: 'a'.repeat(40)
+        }
+      }
+    }],
     ['free-text projection field', {
       projection: {issue: {id: 1, number: 2, state: 'open', title: 'untrusted'}}
     }]
