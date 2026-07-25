@@ -1,0 +1,21 @@
+{
+  "name": "@fai-control-plane/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0 --port 3000",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0 --port 3000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fai-control-plane/db": "workspace:*",
+    "@fai-control-plane/observability": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "next": "16.2.11",
+    "pg": "8.22.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  }
+}

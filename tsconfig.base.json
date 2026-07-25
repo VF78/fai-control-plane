@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowJs": false,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "baseUrl": ".",
+    "paths": {
+      "@fai-control-plane/domain": ["packages/domain/src/index.ts"],
+      "@fai-control-plane/db": ["packages/db/src/index.ts"],
+      "@fai-control-plane/integrations": ["packages/integrations/src/index.ts"],
+      "@fai-control-plane/runners": ["packages/runners/src/index.ts"],
+      "@fai-control-plane/observability": ["packages/observability/src/index.ts"]
+    }
+  }
+}
