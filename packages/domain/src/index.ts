@@ -880,6 +880,273 @@ export type TrackerRepositorySnapshot = Readonly<{
   pullRequests: readonly TrackerPullRequestSnapshot[];
   checks: readonly TrackerCheckSnapshot[];
 }>;
+export type TrackerRepositorySnapshotValidationInput = Readonly<{
+  snapshot: unknown;
+  repository: TrackerRepositoryRef;
+  repositoryExternalId: string;
+}>;
+
+const trackerSnapshotIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const trackerCheckConclusions = [
+  'action_required', 'cancelled', 'failure', 'neutral', 'skipped', 'stale', 'success', 'timed_out'
+] as const satisfies readonly TrackerCheckConclusion[];
+
+const trackerSnapshotObject = (
+  value: unknown,
+  keys: readonly string[]
+): Record<string, unknown> | null => {
+  if (!isPlainObject(value)) return null;
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const actualKeys = Reflect.ownKeys(descriptors);
+    if (
+      actualKeys.length !== keys.length ||
+      actualKeys.some((key) => typeof key !== 'string' || !keys.includes(key))
+    ) return null;
+    const result: Record<string, unknown> = {};
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (
+        descriptor === undefined || descriptor.enumerable !== true ||
+        !('value' in descriptor)
+      ) return null;
+      result[key] = descriptor.value;
+    }
+    return result;
+  } catch {
+    return null;
+  }
+};
+
+const trackerSnapshotIdentifier = (value: unknown, maximumLength: number): string | null =>
+  typeof value === 'string' && value.length > 0 && value.length <= maximumLength &&
+    trackerSnapshotIdentifierPattern.test(value)
+    ? value
+    : null;
+
+const trackerSnapshotString = (value: unknown, maximumLength: number): string | null =>
+  typeof value === 'string' && value.trim().length > 0 && value.length <= maximumLength
+    ? value
+    : null;
+
+const trackerSnapshotUrl = (value: unknown, nullable = false): string | null => {
+  if (nullable && value === null) return null;
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) return null;
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+      parsed.username === '' && parsed.password === ''
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const trackerSnapshotPositiveInteger = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+
+const trackerSnapshotArray = (value: unknown, maximumLength: number): readonly unknown[] | null =>
+  isDenseArray(value) && value.length <= maximumLength ? value : null;
+
+const trackerSnapshotUnique = <T>(values: readonly T[], identity: (value: T) => string): boolean =>
+  new Set(values.map(identity)).size === values.length;
+
+const trackerSnapshotIdentity = (value: unknown): TrackerIdentity | null => {
+  const record = trackerSnapshotObject(value, ['externalId', 'login']);
+  if (record === null) return null;
+  const externalId = trackerSnapshotIdentifier(record.externalId, 512);
+  const login = trackerSnapshotString(record.login, 255);
+  return externalId === null || login === null ? null : {externalId, login};
+};
+
+const trackerSnapshotLabel = (value: unknown): TrackerLabel | null => {
+  const record = trackerSnapshotObject(value, ['externalId', 'name', 'color']);
+  if (record === null) return null;
+  const externalId = trackerSnapshotIdentifier(record.externalId, 512);
+  const name = trackerSnapshotString(record.name, 255);
+  const color = trackerSnapshotString(record.color, 64);
+  return externalId === null || name === null || color === null ? null : {externalId, name, color};
+};
+
+const trackerSnapshotMilestone = (value: unknown): TrackerMilestone | null => {
+  if (value === null) return null;
+  const record = trackerSnapshotObject(value, ['externalId', 'number', 'title', 'state']);
+  if (record === null || (record.state !== 'open' && record.state !== 'closed')) return null;
+  const externalId = trackerSnapshotIdentifier(record.externalId, 512);
+  const number = trackerSnapshotPositiveInteger(record.number);
+  const title = trackerSnapshotString(record.title, 1_024);
+  return externalId === null || number === null || title === null
+    ? null
+    : {externalId, number, title, state: record.state};
+};
+
+const trackerSnapshotLabels = (value: unknown): readonly TrackerLabel[] | null => {
+  const values = trackerSnapshotArray(value, 100);
+  if (values === null) return null;
+  const labels: TrackerLabel[] = [];
+  for (const value of values) {
+    const label = trackerSnapshotLabel(value);
+    if (label === null) return null;
+    labels.push(label);
+  }
+  return trackerSnapshotUnique(labels, (label) => label.externalId) ? labels : null;
+};
+
+const trackerSnapshotAssignees = (value: unknown): readonly TrackerIdentity[] | null => {
+  const values = trackerSnapshotArray(value, 100);
+  if (values === null) return null;
+  const assignees: TrackerIdentity[] = [];
+  for (const value of values) {
+    const assignee = trackerSnapshotIdentity(value);
+    if (assignee === null) return null;
+    assignees.push(assignee);
+  }
+  return trackerSnapshotUnique(assignees, (assignee) => assignee.externalId)
+    ? assignees
+    : null;
+};
+
+const trackerSnapshotWorkItem = (value: unknown): TrackerWorkItemSnapshot | null => {
+  const record = trackerSnapshotObject(value, [
+    'externalId', 'externalVersion', 'url', 'htmlUrl', 'number', 'title', 'state',
+    'labels', 'assignees', 'milestone'
+  ]);
+  if (record === null || (record.state !== 'open' && record.state !== 'closed')) return null;
+  const externalId = trackerSnapshotIdentifier(record.externalId, 512);
+  const externalVersion = trackerSnapshotIdentifier(record.externalVersion, 512);
+  const url = trackerSnapshotUrl(record.url);
+  const htmlUrl = trackerSnapshotUrl(record.htmlUrl);
+  const number = trackerSnapshotPositiveInteger(record.number);
+  const title = trackerSnapshotString(record.title, 1_024);
+  const labels = trackerSnapshotLabels(record.labels);
+  const assignees = trackerSnapshotAssignees(record.assignees);
+  const milestone = trackerSnapshotMilestone(record.milestone);
+  return externalId === null || externalVersion === null || url === null || htmlUrl === null ||
+    number === null || title === null || labels === null || assignees === null ||
+    (record.milestone !== null && milestone === null)
+    ? null
+    : {externalId, externalVersion, url, htmlUrl, number, title, state: record.state, labels, assignees, milestone};
+};
+
+const trackerSnapshotPullRequest = (value: unknown): TrackerPullRequestSnapshot | null => {
+  const record = trackerSnapshotObject(value, [
+    'externalId', 'externalVersion', 'url', 'htmlUrl', 'number', 'title', 'state', 'draft',
+    'merged', 'headRef', 'headSha', 'baseRef', 'labels', 'assignees', 'milestone'
+  ]);
+  if (
+    record === null || (record.state !== 'open' && record.state !== 'closed') ||
+    typeof record.draft !== 'boolean' || typeof record.merged !== 'boolean'
+  ) return null;
+  const externalId = trackerSnapshotIdentifier(record.externalId, 512);
+  const externalVersion = trackerSnapshotIdentifier(record.externalVersion, 512);
+  const url = trackerSnapshotUrl(record.url);
+  const htmlUrl = trackerSnapshotUrl(record.htmlUrl);
+  const number = trackerSnapshotPositiveInteger(record.number);
+  const title = trackerSnapshotString(record.title, 1_024);
+  const headRef = trackerSnapshotIdentifier(record.headRef, 255);
+  const headSha = trackerSnapshotIdentifier(record.headSha, 255);
+  const baseRef = trackerSnapshotIdentifier(record.baseRef, 255);
+  const labels = trackerSnapshotLabels(record.labels);
+  const assignees = trackerSnapshotAssignees(record.assignees);
+  const milestone = trackerSnapshotMilestone(record.milestone);
+  return externalId === null || externalVersion === null || url === null || htmlUrl === null ||
+    number === null || title === null || headRef === null || headSha === null || baseRef === null ||
+    labels === null || assignees === null || (record.milestone !== null && milestone === null)
+    ? null
+    : {
+        externalId, externalVersion, url, htmlUrl, number, title, state: record.state,
+        draft: record.draft, merged: record.merged, headRef, headSha, baseRef, labels, assignees,
+        milestone
+      };
+};
+
+const trackerSnapshotCheck = (value: unknown): TrackerCheckSnapshot | null => {
+  const record = trackerSnapshotObject(value, [
+    'externalId', 'externalVersion', 'pullRequestExternalId', 'name', 'status', 'conclusion', 'detailsUrl'
+  ]);
+  if (record === null) return null;
+  const status = record.status;
+  const conclusion = record.conclusion;
+  if (!isTrackerSnapshotCheckStatus(status) || !isTrackerSnapshotCheckConclusion(conclusion)) return null;
+  const externalId = trackerSnapshotIdentifier(record.externalId, 512);
+  const externalVersion = trackerSnapshotIdentifier(record.externalVersion, 512);
+  const pullRequestExternalId = trackerSnapshotIdentifier(record.pullRequestExternalId, 512);
+  const name = trackerSnapshotString(record.name, 512);
+  const detailsUrl = trackerSnapshotUrl(record.detailsUrl, true);
+  return externalId === null || externalVersion === null || pullRequestExternalId === null ||
+    name === null || (record.detailsUrl !== null && detailsUrl === null)
+    ? null
+    : {
+        externalId, externalVersion, pullRequestExternalId, name,
+        status, conclusion,
+        detailsUrl
+      };
+};
+
+const isTrackerSnapshotCheckStatus = (value: unknown): value is TrackerCheckStatus =>
+  typeof value === 'string' && trackerCheckStatuses.some((status) => status === value);
+
+const isTrackerSnapshotCheckConclusion = (
+  value: unknown
+): value is TrackerCheckConclusion | null =>
+  value === null || (typeof value === 'string' && trackerCheckConclusions.some(
+    (conclusion) => conclusion === value
+  ));
+
+const trackerSnapshotCollection = <T>(
+  value: unknown,
+  parse: (entry: unknown) => T | null,
+  identity: (entry: T) => string
+): readonly T[] | null => {
+  const values = trackerSnapshotArray(value, 10_000);
+  if (values === null) return null;
+  const entries: T[] = [];
+  for (const value of values) {
+    const entry = parse(value);
+    if (entry === null) return null;
+    entries.push(entry);
+  }
+  return trackerSnapshotUnique(entries, identity) ? entries : null;
+};
+
+export const validateTrackerRepositorySnapshot = (
+  input: TrackerRepositorySnapshotValidationInput
+): TrackerRepositorySnapshot | null => {
+  const snapshot = trackerSnapshotObject(input.snapshot, [
+    'repository', 'externalVersion', 'workItems', 'pullRequests', 'checks'
+  ]);
+  if (snapshot === null) return null;
+  const repository = trackerSnapshotObject(snapshot.repository, [
+    'externalId', 'externalVersion', 'owner', 'name'
+  ]);
+  if (repository === null) return null;
+  const externalId = trackerSnapshotIdentifier(repository.externalId, 512);
+  const repositoryExternalVersion = trackerSnapshotIdentifier(repository.externalVersion, 512);
+  const externalVersion = trackerSnapshotIdentifier(snapshot.externalVersion, 512);
+  const workItems = trackerSnapshotCollection(
+    snapshot.workItems,
+    trackerSnapshotWorkItem,
+    (item) => item.externalId
+  );
+  const pullRequests = trackerSnapshotCollection(
+    snapshot.pullRequests,
+    trackerSnapshotPullRequest,
+    (pullRequest) => pullRequest.externalId
+  );
+  const checks = trackerSnapshotCollection(snapshot.checks, trackerSnapshotCheck, (check) => check.externalId);
+  return externalId === null || repositoryExternalVersion === null || externalVersion === null ||
+    repository.owner !== input.repository.owner || repository.name !== input.repository.repository ||
+    externalId !== input.repositoryExternalId || workItems === null || pullRequests === null || checks === null
+    ? null
+    : {
+        repository: {
+          externalId, externalVersion: repositoryExternalVersion,
+          owner: input.repository.owner, name: input.repository.repository
+        },
+        externalVersion, workItems, pullRequests, checks
+      };
+};
 export type TrackerSnapshotPullRequestBinding = Readonly<{
   pullRequestExternalId: string;
   workItemExternalId: string;

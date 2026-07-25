@@ -1,5 +1,5 @@
 {
-  "id": "d749f23e-76db-4671-b499-f3a9f60a609f",
+  "id": "a08ff1ea-99a4-4d51-96b2-4805ecd7b40b",
   "prevId": "bbf68f7c-c16f-4c33-bb76-7ddb3de78372",
   "version": "7",
   "dialect": "postgresql",
@@ -2542,12 +2542,6 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
         "project_id": {
           "name": "project_id",
           "type": "uuid",
@@ -2655,19 +2649,6 @@
         }
       },
       "foreignKeys": {
-        "project_tracker_repository_scopes_workspace_id_workspaces_id_fk": {
-          "name": "project_tracker_repository_scopes_workspace_id_workspaces_id_fk",
-          "tableFrom": "project_tracker_repository_scopes",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "project_tracker_repository_scopes_project_id_projects_id_fk": {
           "name": "project_tracker_repository_scopes_project_id_projects_id_fk",
           "tableFrom": "project_tracker_repository_scopes",

@@ -3,7 +3,7 @@ import type {
   TrackerRepositoryReadScopeAuthorizationInput,
   TrackerRepositoryReadScopeAuthorizer
 } from '@fai-control-plane/domain';
-import {and, eq} from 'drizzle-orm';
+import {and, eq, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -23,7 +23,8 @@ export const createPostgresTrackerRepositoryReadScopeAuthorizer = (
         schema.actors,
         and(
           eq(schema.actors.id, input.actorId),
-          eq(schema.actors.workspaceId, input.workspaceId)
+          eq(schema.actors.workspaceId, input.workspaceId),
+          isNull(schema.actors.disabledAt)
         )
       )
       .innerJoin(
@@ -47,7 +48,6 @@ export const createPostgresTrackerRepositoryReadScopeAuthorizer = (
         )
       )
       .where(and(
-        eq(schema.projectTrackerRepositoryScopes.workspaceId, input.workspaceId),
         eq(schema.projectTrackerRepositoryScopes.projectId, input.projectId),
         eq(schema.projectTrackerRepositoryScopes.provider, input.provider),
         eq(

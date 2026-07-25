@@ -78,7 +78,6 @@ describePostgres('PostgreSQL tracker repository read scope authorizer', () => {
       ...credentialRef
     });
     await db.insert(projectTrackerRepositoryScopes).values({
-      workspaceId: ids.workspace,
       projectId: ids.project,
       provider: input.provider,
       repositoryOwner: input.repository.owner,
@@ -127,5 +126,19 @@ describePostgres('PostgreSQL tracker repository read scope authorizer', () => {
       eq(projectTrackerRepositoryScopes.projectId, ids.project),
       eq(projectTrackerRepositoryScopes.provider, input.provider)
     ))).toHaveLength(1);
+  });
+
+  it('denies a disabled actor', async () => {
+    const authorizer = createPostgresTrackerRepositoryReadScopeAuthorizer(db);
+    await testPool.query(
+      'UPDATE actors SET disabled_at = now() WHERE id = $1',
+      [ids.actor]
+    );
+
+    await expect(authorizer.authorize(input)).resolves.toEqual({status: 'denied'});
+    await testPool.query(
+      'UPDATE actors SET disabled_at = null WHERE id = $1',
+      [ids.actor]
+    );
   });
 });

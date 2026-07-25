@@ -50,10 +50,10 @@ import {
   type TrackerSnapshotProjector,
   type TrackerSnapshotPullRequestBinding,
   type TrackerRepositoryReadScopeAuthorizer,
-  type TrackerRepositorySnapshot,
   type TrustedActorContext,
   type UnitOfWork,
-  type WorkItem
+  type WorkItem,
+  validateTrackerRepositorySnapshot
 } from '@fai-control-plane/domain';
 
 export interface IdGenerator {
@@ -321,44 +321,6 @@ const snapshotPullRequestBindings = (
   return bindings;
 };
 
-const snapshotFromRepositoryRead = (
-  value: unknown,
-  request: ValidTrackerRepositorySnapshotOrchestrationInput,
-  repositoryExternalId: string
-): TrackerRepositorySnapshot | null => {
-  const snapshot = dataObjectWithAllowedKeys(value, [
-    'repository', 'externalVersion', 'workItems', 'pullRequests', 'checks'
-  ]);
-  if (snapshot === null) return null;
-  const repository = dataObjectWithAllowedKeys(snapshot.repository, [
-    'externalId', 'externalVersion', 'owner', 'name'
-  ]);
-  if (repository === null) return null;
-  const externalId = boundedSnapshotIdentifier(repository.externalId, 512);
-  const repositoryExternalVersion = boundedSnapshotIdentifier(repository.externalVersion, 512);
-  const externalVersion = boundedSnapshotIdentifier(snapshot.externalVersion, 512);
-  if (
-    externalId === null || repositoryExternalVersion === null || externalVersion === null ||
-    repository.owner !== request.repository.owner || repository.name !== request.repository.repository ||
-    externalId !== repositoryExternalId || !isDenseArray(snapshot.workItems) ||
-    !isDenseArray(snapshot.pullRequests) || !isDenseArray(snapshot.checks) ||
-    snapshot.workItems.length > 10_000 || snapshot.pullRequests.length > 10_000 ||
-    snapshot.checks.length > 10_000
-  ) return null;
-  return {
-    repository: {
-      externalId,
-      externalVersion: repositoryExternalVersion,
-      owner: repository.owner,
-      name: repository.name
-    },
-    externalVersion,
-    workItems: [...snapshot.workItems] as TrackerRepositorySnapshot['workItems'],
-    pullRequests: [...snapshot.pullRequests] as TrackerRepositorySnapshot['pullRequests'],
-    checks: [...snapshot.checks] as TrackerRepositorySnapshot['checks']
-  };
-};
-
 type ValidTrackerRepositorySnapshotOrchestrationInput =
   | (TrackerRepositorySnapshotOrchestrationBase &
       Readonly<{mode: 'bootstrap'; pullRequestBindings: readonly TrackerSnapshotPullRequestBinding[]}>)
@@ -488,11 +450,11 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
     } catch {
       return failedTrackerSnapshotResult('repository_read_failed');
     }
-    const snapshot = snapshotFromRepositoryRead(
-      readSnapshot,
-      request,
-      scopeAuthorization.repositoryExternalId
-    );
+    const snapshot = validateTrackerRepositorySnapshot({
+      snapshot: readSnapshot,
+      repository: request.repository,
+      repositoryExternalId: scopeAuthorization.repositoryExternalId
+    });
     if (snapshot === null) return failedTrackerSnapshotResult('invalid_repository_snapshot');
 
     try {

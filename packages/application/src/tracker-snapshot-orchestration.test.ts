@@ -21,6 +21,25 @@ const snapshot: TrackerRepositorySnapshot = {
   },
   externalVersion: 'provider:snapshot:v1', workItems: [], pullRequests: [], checks: []
 };
+const workItem = () => ({
+  externalId: 'provider:issue:1', externalVersion: 'provider:issue:v1',
+  url: 'https://provider.test/issues/1', htmlUrl: 'https://provider.test/issues/1',
+  number: 1, title: 'Issue', state: 'open' as const,
+  labels: [{externalId: 'provider:label:1', name: 'bug', color: 'd73a4a'}],
+  assignees: [{externalId: 'provider:user:1', login: 'maintainer'}], milestone: null
+});
+const pullRequest = () => ({
+  externalId: 'provider:pr:1', externalVersion: 'provider:pr:v1',
+  url: 'https://provider.test/pulls/1', htmlUrl: 'https://provider.test/pulls/1',
+  number: 1, title: 'Pull request', state: 'open' as const, draft: false, merged: false,
+  headRef: 'feature', headSha: 'a'.repeat(40), baseRef: 'main', labels: [],
+  assignees: [{externalId: 'provider:user:1', login: 'maintainer'}], milestone: null
+});
+const check = () => ({
+  externalId: 'provider:check:1', externalVersion: 'provider:check:v1',
+  pullRequestExternalId: 'provider:pr:1', name: 'CI', status: 'completed' as const,
+  conclusion: 'success' as const, detailsUrl: 'https://provider.test/checks/1'
+});
 const applied = {
   status: 'applied' as const,
   snapshotExternalVersion: snapshot.externalVersion,
@@ -270,5 +289,41 @@ describe('tracker repository snapshot orchestration', () => {
     expect(fake.authorizeScope).toHaveBeenCalledTimes(1);
     expect(fake.reader).toHaveBeenCalledTimes(1);
     expect(fake.bootstrap).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a work item with malformed nested labels', {
+      ...snapshot,
+      workItems: [{...workItem(), labels: [{
+        ...workItem().labels[0], unsupported: true
+      }]}]
+    }],
+    ['a pull request with duplicate assignees', {
+      ...snapshot,
+      pullRequests: [{...pullRequest(), assignees: [
+        pullRequest().assignees[0], pullRequest().assignees[0]
+      ]}]
+    }],
+    ['a pull request with malformed milestone state', {
+      ...snapshot,
+      pullRequests: [{...pullRequest(), milestone: {
+        externalId: 'provider:milestone:1', number: 1, title: 'Milestone', state: 'unknown'
+      }}]
+    }],
+    ['a check with an invalid enum', {
+      ...snapshot,
+      checks: [{...check(), status: 'unknown'}]
+    }]
+  ])('rejects %s before projection', async (_name, malformedSnapshot) => {
+    const fake = fakes();
+    fake.reader.mockResolvedValueOnce(malformedSnapshot as never);
+    const service = createTrackerRepositorySnapshotOrchestrationService(fake);
+
+    await expect(service.orchestrate(input())).resolves.toEqual({
+      status: 'failed', code: 'invalid_repository_snapshot'
+    });
+    expect(fake.reader).toHaveBeenCalledTimes(1);
+    expect(fake.bootstrap).not.toHaveBeenCalled();
+    expect(fake.synchronize).not.toHaveBeenCalled();
   });
 });

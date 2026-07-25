@@ -666,9 +666,6 @@ export const projectTrackerRepositoryScopes = pgTable(
   'project_tracker_repository_scopes',
   {
     id: id(),
-    workspaceId: uuid('workspace_id')
-      .notNull()
-      .references(() => workspaces.id, {onDelete: 'cascade'}),
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, {onDelete: 'cascade'}),
