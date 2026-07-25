@@ -10,6 +10,7 @@ import {
   startTelemetry,
   stopTelemetry
 } from '@fai-control-plane/observability';
+import {configureIncomingEventQueue} from './incoming-event-queue';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
@@ -20,20 +21,12 @@ if (!databaseUrl) {
 
 let ready = false;
 let stopping = false;
-const incomingEventQueueOptions = {
-  retryLimit: 5,
-  retryDelay: 5,
-  retryBackoff: true,
-  retryDelayMax: 60,
-  expireInSeconds: 600
-};
 
 await startTelemetry('fai-control-plane-worker');
 
 const boss = new PgBoss(databaseUrl);
 boss.on('error', () => {
   console.error('pg-boss error', {code: 'PG_BOSS_ERROR'});
-  ready = false;
 });
 const {db, pool} = createDatabase(databaseUrl);
 const incomingEventConsumer = createIncomingEventQueueConsumer({
@@ -72,8 +65,7 @@ const server = createServer((request, response) => {
 
 server.listen(port, '0.0.0.0');
 await boss.start();
-await boss.createQueue(INCOMING_EVENT_QUEUE, incomingEventQueueOptions);
-await boss.updateQueue(INCOMING_EVENT_QUEUE, incomingEventQueueOptions);
+await configureIncomingEventQueue(boss, INCOMING_EVENT_QUEUE);
 await boss.work(INCOMING_EVENT_QUEUE, async ([job]) => {
   if (job === undefined) return;
   return incomingEventConsumer.consume(job.data);
@@ -87,8 +79,10 @@ async function shutdown(signal: NodeJS.Signals) {
   ready = false;
   console.info(`received ${signal}; shutting down`);
 
-  server.close();
-  await boss.stop({graceful: true, timeout: 30_000});
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error === undefined ? resolve() : reject(error));
+  });
+  await boss.stop({graceful: true, timeout: 20_000});
   await pool.end();
   await stopTelemetry();
 }

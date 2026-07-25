@@ -329,6 +329,49 @@ describePostgres(
       });
     });
 
+    it('allows only one concurrent claimant to finalize a duplicate event', async () => {
+      const candidate = event();
+      const inbox = createPostgresIncomingEventInbox(testDb, boss);
+      const processor = createPostgresIncomingEventProcessor(testDb);
+      await inbox.accept(candidate);
+
+      const results = await Promise.allSettled([
+        processor.process(candidate.eventId),
+        processor.process(candidate.eventId)
+      ]);
+      const fulfilled = results.filter(
+        (result): result is PromiseFulfilledResult<{
+          status: 'processed' | 'replayed';
+          eventId: string;
+        }> => result.status === 'fulfilled'
+      );
+      expect(fulfilled.some((result) => result.value.status === 'processed'))
+        .toBe(true);
+      expect(results.every((result) =>
+        result.status === 'fulfilled' ||
+        result.reason instanceof Error &&
+          result.reason.message === 'Incoming event is not available for processing.'
+      )).toBe(true);
+      const observations = await testDb
+        .select({id: canonicalEvents.id})
+        .from(canonicalEvents)
+        .where(eq(canonicalEvents.incomingEventId, candidate.eventId));
+      expect(observations).toHaveLength(1);
+      const [inboxRow] = await testDb
+        .select({
+          status: incomingEvents.status,
+          attemptCount: incomingEvents.attemptCount,
+          processingToken: incomingEvents.processingToken
+        })
+        .from(incomingEvents)
+        .where(eq(incomingEvents.id, candidate.eventId));
+      expect(inboxRow).toEqual({
+        status: 'processed',
+        attemptCount: 1,
+        processingToken: null
+      });
+    });
+
     it('rolls back the canonical observation when terminal inbox marking fails', async () => {
       const candidate = event();
       const inbox = createPostgresIncomingEventInbox(testDb, boss);
@@ -565,6 +608,7 @@ describePostgres('incoming event migration upgrade', () => {
     const legacyId = randomUUID();
     const legacyTrackerId = randomUUID();
     const alreadyLegacyId = randomUUID();
+    const processingId = randomUUID();
     const sharedDeliveryId = randomUUID();
     try {
       for (const migration of [
@@ -606,6 +650,16 @@ describePostgres('incoming event migration upgrade', () => {
          )`,
         [alreadyLegacyId, sharedDeliveryId]
       );
+      await pool.query(
+        `INSERT INTO incoming_events (
+           id, provider, delivery_id, event_type, verification,
+           sanitized_payload, status
+         ) VALUES (
+           $1, 'tracker', $2, 'issue',
+           '{"outcome":"unverified","method":"none"}', '{}', 'processing'
+         )`,
+        [processingId, randomUUID()]
+      );
 
       await applySqlMigration(pool, '0005_incoming_event_inbox.sql');
       const result = await pool.query(
@@ -631,6 +685,26 @@ describePostgres('incoming event migration upgrade', () => {
           payload_sha256: null
         }
       ]);
+      await applySqlMigration(pool, '0006_incoming_event_consumer.sql');
+      const [recovered] = (await pool.query(
+        `SELECT status, processing_token, processing_lease_expires_at
+         FROM incoming_events WHERE id = $1`,
+        [processingId]
+      )).rows;
+      expect(recovered).toEqual({
+        status: 'pending',
+        processing_token: null,
+        processing_lease_expires_at: null
+      });
+      const indexes = (await pool.query(
+        `SELECT indexname FROM pg_indexes
+         WHERE schemaname = 'public'
+           AND tablename IN ('incoming_events', 'canonical_events')`
+      )).rows.map((row) => row.indexname);
+      expect(indexes).toEqual(expect.arrayContaining([
+        'incoming_events_processing_lease_idx',
+        'canonical_events_incoming_event_unique'
+      ]));
     } finally {
       await pool.end();
       await admin.query(

@@ -80,6 +80,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@fai-control-plane/application':
+        specifier: workspace:*
+        version: link:../../packages/application
       '@fai-control-plane/db':
         specifier: workspace:*
         version: link:../../packages/db
