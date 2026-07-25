@@ -1,6 +1,7 @@
 import type {WorkItemStatus} from '@fai-control-plane/domain';
 
 export * from './inbound-events';
+export * from './github-webhook';
 
 export type TrackerCapabilities = {
   readWorkItems: boolean;
