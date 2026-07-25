@@ -81,6 +81,22 @@ const waitFor = async <T>(
   return latest;
 };
 
+const waitForDatabaseDisconnect = async (
+  admin: Pool,
+  name: string
+): Promise<void> => {
+  await waitFor(
+    async () => Number((await admin.query(
+      `SELECT count(*)
+       FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [name]
+    )).rows[0]?.count),
+    (count) => count === 0,
+    5_000
+  );
+};
+
 describePostgres(
   databaseUrl === undefined
     ? 'incoming event inbox integration (skipped: DATABASE_URL is absent)'
@@ -127,12 +143,7 @@ describePostgres(
       await boss?.stop({graceful: false});
       await testPool?.end();
       if (adminPool !== undefined) {
-        await adminPool.query(
-          `SELECT pg_terminate_backend(pid)
-           FROM pg_stat_activity
-           WHERE datname = $1 AND pid <> pg_backend_pid()`,
-          [databaseName]
-        );
+        await waitForDatabaseDisconnect(adminPool, databaseName);
         await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
         await adminPool.end();
       }
@@ -871,12 +882,7 @@ describePostgres('incoming event migration upgrade', () => {
       ]));
     } finally {
       await pool.end();
-      await admin.query(
-        `SELECT pg_terminate_backend(pid)
-         FROM pg_stat_activity
-         WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [upgradeName]
-      );
+      await waitForDatabaseDisconnect(admin, upgradeName);
       await admin.query(`DROP DATABASE IF EXISTS "${upgradeName}"`);
       await admin.end();
     }
