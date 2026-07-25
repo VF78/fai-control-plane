@@ -4,6 +4,10 @@ import * as schema from './schema';
 
 export * from './schema';
 export {createPostgresUnitOfWork} from './persistence';
+export {
+  createPostgresIncomingEventInbox,
+  INCOMING_EVENT_QUEUE
+} from './incoming-event-inbox';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});

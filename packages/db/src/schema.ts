@@ -451,10 +451,16 @@ export const incomingEvents = pgTable(
   'incoming_events',
   {
     id: id(),
+    projectId: uuid('project_id')
+      .references(() => projects.id, {onDelete: 'restrict'}),
     provider: text('provider').notNull(),
     deliveryId: text('delivery_id').notNull(),
     eventType: text('event_type').notNull(),
     action: text('action'),
+    installationId: text('installation_id'),
+    repositoryId: text('repository_id'),
+    projectNodeId: text('project_node_id'),
+    payloadSha256: text('payload_sha256'),
     verification: jsonb('verification')
       .$type<
         | {outcome: 'unverified'; method: 'none'}
@@ -463,7 +469,6 @@ export const incomingEvents = pgTable(
             method: 'hmac-sha256' | 'signature-sha256' | 'shared-token';
           }
       >()
-      .default(sql`'{"outcome":"unverified","method":"none"}'::jsonb`)
       .notNull(),
     sanitizedPayload: jsonb('sanitized_payload')
       .$type<Record<string, unknown>>()
@@ -485,6 +490,10 @@ export const incomingEvents = pgTable(
       table.status,
       table.receivedAt
     ),
+    index('incoming_events_project_received_idx').on(
+      table.projectId,
+      table.receivedAt
+    ),
     check(
       'incoming_events_verification_envelope_valid',
       sql`${table.verification} in (
@@ -500,6 +509,32 @@ export const incomingEvents = pgTable(
     check(
       'incoming_events_sanitized_payload_object',
       sql`jsonb_typeof(${table.sanitizedPayload}) = 'object'`
+    ),
+    check(
+      'incoming_events_payload_sha256_valid',
+      sql`(
+        (
+          ${table.provider} like 'legacy-%'
+          and ${table.projectId} is null
+          and ${table.payloadSha256} is null
+        )
+        or
+        (
+          ${table.provider} not like 'legacy-%'
+          and ${table.projectId} is not null
+          and coalesce(${table.payloadSha256} ~ '^[0-9a-f]{64}$', false)
+        )
+      )`
+    ),
+    check(
+      'incoming_events_github_verified_source',
+      sql`${table.provider} <> 'github' or (
+        ${table.verification} = '{"outcome":"verified","method":"hmac-sha256"}'::jsonb
+        and ${table.installationId} ~ '^[1-9][0-9]{0,19}$'
+        and ${table.repositoryId} ~ '^[1-9][0-9]{0,19}$'
+        and ${table.projectNodeId} is not null
+        and length(${table.projectNodeId}) between 1 and 128
+      )`
     )
   ]
 );

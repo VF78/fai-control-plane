@@ -557,6 +557,44 @@ export type CanonicalJson =
   | readonly CanonicalJson[]
   | Readonly<{[key: string]: CanonicalJson}>;
 
+export type GitHubIncomingEventSource = Readonly<{
+  kind: 'github';
+  installationId: string;
+  repositoryId: string;
+  projectNodeId: string;
+}>;
+
+export type IncomingEventSource = GitHubIncomingEventSource;
+
+export type IncomingEvent = Readonly<{
+  eventId: string;
+  workspaceId: string;
+  projectId: string;
+  provider: string;
+  deliveryId: string;
+  eventType: string;
+  action: string;
+  receivedAt: string;
+  payloadSha256: string;
+  verification: Readonly<{
+    outcome: 'verified';
+    method: 'hmac-sha256';
+  }>;
+  source: IncomingEventSource;
+  projection: Readonly<{[key: string]: CanonicalJson}>;
+}>;
+
+export type IncomingEventAcceptance =
+  | Readonly<{status: 'accepted'; eventId: string}>
+  | Readonly<{status: 'replayed'; eventId: string}>
+  | Readonly<{status: 'collision'; eventId: string}>;
+
+export interface IncomingEventInbox {
+  accept(event: IncomingEvent): Promise<IncomingEventAcceptance>;
+}
+
+export type IncomingEventQueuePayload = Readonly<{eventId: string}>;
+
 export type OpaqueSecretRef = Readonly<{
   provider: string;
   reference: string;

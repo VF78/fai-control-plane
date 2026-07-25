@@ -102,6 +102,9 @@ importers:
       pg:
         specifier: 8.22.0
         version: 8.22.0
+      pg-boss:
+        specifier: 12.26.3
+        version: 12.26.3
     devDependencies:
       drizzle-kit:
         specifier: 0.31.10
@@ -111,6 +114,9 @@ importers:
 
   packages/integrations:
     dependencies:
+      '@fai-control-plane/application':
+        specifier: workspace:*
+        version: link:../application
       '@fai-control-plane/domain':
         specifier: workspace:*
         version: link:../domain

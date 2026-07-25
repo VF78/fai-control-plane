@@ -28,6 +28,9 @@ import {
   type CommandReceipt,
   type CommandReceiptClaim,
   type CommandResult,
+  type IncomingEvent,
+  type IncomingEventAcceptance,
+  type IncomingEventInbox,
   type NonApprovalAuditEvent,
   type NonApprovalCommandOutcome,
   type NonApprovalReceipt,
@@ -46,6 +49,37 @@ export interface IdGenerator {
 export interface Clock {
   now(): Date;
 }
+
+export type VerifiedIncomingEventInput = Readonly<{
+  workspaceId: string;
+  projectId: string;
+  provider: 'github';
+  deliveryId: string;
+  eventType: 'issues' | 'pull_request' | 'check_run';
+  action: string;
+  payloadSha256: string;
+  verification: Readonly<{
+    outcome: 'verified';
+    method: 'hmac-sha256';
+  }>;
+  source: Readonly<{
+    kind: 'github';
+    installationId: string;
+    repositoryId: string;
+    projectNodeId: string;
+  }>;
+  projection: Readonly<Record<string, CanonicalJson>>;
+}>;
+
+export interface IncomingEventIngestionService {
+  ingest(input: VerifiedIncomingEventInput): Promise<IncomingEventAcceptance>;
+}
+
+export type CreateIncomingEventIngestionServiceInput = Readonly<{
+  inbox: IncomingEventInbox;
+  idGenerator?: IdGenerator;
+  clock?: Clock;
+}>;
 
 export type CanonicalCommandExecution =
   | Readonly<{status: 'completed' | 'replayed'; receipt: CommandReceipt}>
@@ -112,6 +146,174 @@ const isDenseArray = (value: unknown): value is readonly unknown[] => {
   }
 };
 
+const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const decimalIdentifierPattern = /^[1-9][0-9]{0,19}$/;
+const sha256Pattern = /^[0-9a-f]{64}$/;
+const gitShaPattern = /^[0-9a-f]{40}$/;
+
+const requiredBoundedIdentifier = (
+  value: unknown,
+  field: string,
+  maximumLength: number
+): string => {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > maximumLength ||
+    !identifierPattern.test(value)
+  ) {
+    throw new TypeError(`${field} must be a bounded identifier.`);
+  }
+  return value;
+};
+
+const requiredPositiveInteger = (value: unknown, field: string): number => {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${field} must be a positive safe integer.`);
+  }
+  return value;
+};
+
+const exactObject = (
+  value: unknown,
+  field: string,
+  keys: readonly string[]
+): Record<string, unknown> => {
+  if (!isPlainObject(value)) {
+    throw new TypeError(`${field} contains unsupported fields.`);
+  }
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    if (
+      ownKeys.length !== keys.length ||
+      ownKeys.some((key) => typeof key !== 'string' || !keys.includes(key))
+    ) {
+      throw new TypeError(`${field} contains unsupported fields.`);
+    }
+    const snapshot: Record<string, unknown> = {};
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (
+        descriptor === undefined ||
+        descriptor.enumerable !== true ||
+        !('value' in descriptor)
+      ) {
+        throw new TypeError(`${field} contains unsupported fields.`);
+      }
+      snapshot[key] = descriptor.value;
+    }
+    return snapshot;
+  } catch (error) {
+    if (error instanceof TypeError) throw error;
+    throw new TypeError(`${field} contains unsupported fields.`);
+  }
+};
+
+const cloneSafeProjection = (
+  eventType: VerifiedIncomingEventInput['eventType'],
+  value: unknown
+): IncomingEvent['projection'] => {
+  const projectionKeys = eventType === 'issues'
+    ? ['issue']
+    : eventType === 'pull_request'
+      ? ['pullRequest']
+      : ['checkRun'];
+  const projection = exactObject(value, 'projection', projectionKeys);
+
+  if (eventType === 'issues') {
+    const issue = exactObject(projection.issue, 'projection.issue', ['id', 'number', 'state']);
+    const state = issue.state;
+    if (state !== 'open' && state !== 'closed') {
+      throw new TypeError('projection.issue.state is invalid.');
+    }
+    return {
+      issue: {
+        id: requiredPositiveInteger(issue.id, 'projection.issue.id'),
+        number: requiredPositiveInteger(issue.number, 'projection.issue.number'),
+        state
+      }
+    };
+  }
+
+  if (eventType === 'pull_request') {
+    const pullRequest = exactObject(projection.pullRequest, 'projection.pullRequest', [
+      'baseRef',
+      'headRef',
+      'id',
+      'merged',
+      'number',
+      'state'
+    ]);
+    const state = pullRequest.state;
+    if (
+      (state !== 'open' && state !== 'closed') ||
+      typeof pullRequest.merged !== 'boolean'
+    ) {
+      throw new TypeError('projection.pullRequest state is invalid.');
+    }
+    return {
+      pullRequest: {
+        id: requiredPositiveInteger(pullRequest.id, 'projection.pullRequest.id'),
+        number: requiredPositiveInteger(pullRequest.number, 'projection.pullRequest.number'),
+        state,
+        merged: pullRequest.merged,
+        headRef: requiredBoundedIdentifier(
+          pullRequest.headRef,
+          'projection.pullRequest.headRef',
+          255
+        ),
+        baseRef: requiredBoundedIdentifier(
+          pullRequest.baseRef,
+          'projection.pullRequest.baseRef',
+          255
+        )
+      }
+    };
+  }
+
+  const checkRun = exactObject(projection.checkRun, 'projection.checkRun', [
+    'conclusion',
+    'headSha',
+    'id',
+    'status'
+  ]);
+  const statuses = ['queued', 'in_progress', 'completed'] as const;
+  const conclusions = [
+    'action_required',
+    'cancelled',
+    'failure',
+    'neutral',
+    'skipped',
+    'stale',
+    'success',
+    'timed_out'
+  ] as const;
+  if (
+    typeof checkRun.status !== 'string' ||
+    !statuses.includes(checkRun.status as (typeof statuses)[number]) ||
+    !(
+      checkRun.conclusion === null ||
+      (
+        typeof checkRun.conclusion === 'string' &&
+        conclusions.includes(checkRun.conclusion as (typeof conclusions)[number])
+      )
+    ) ||
+    typeof checkRun.headSha !== 'string' ||
+    !gitShaPattern.test(checkRun.headSha)
+  ) {
+    throw new TypeError('projection.checkRun is invalid.');
+  }
+  return {
+    checkRun: {
+      id: requiredPositiveInteger(checkRun.id, 'projection.checkRun.id'),
+      status: checkRun.status,
+      conclusion: checkRun.conclusion,
+      headSha: checkRun.headSha
+    }
+  } as IncomingEvent['projection'];
+};
+
 /** Rejects undefined, sparse arrays, accessors, non-plain objects, and cycles before hashing. */
 const isSafeCanonicalInput = (value: unknown, ancestors = new WeakSet<object>()): value is CanonicalJson => {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
@@ -139,6 +341,8 @@ const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): 
   const actual = Object.keys(value);
   return actual.length === keys.length && actual.every((key) => keys.includes(key));
 };
+const canonicalUuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const isVersion = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 1;
 const hasValidIssuedAt = (value: unknown): boolean =>
@@ -150,6 +354,116 @@ const error = (message: string): Readonly<{ok: false; error: CommandError}> => (
 });
 const assertNever = (value: never): never => {
   throw new TypeError(`Unhandled canonical command: ${String(value)}`);
+};
+
+export const createIncomingEventIngestionService = (
+  options: CreateIncomingEventIngestionServiceInput
+): IncomingEventIngestionService => {
+  const ids = options.idGenerator ?? defaultIds;
+  const clock = options.clock ?? defaultClock;
+
+  return {
+    async ingest(input): Promise<IncomingEventAcceptance> {
+      const value = exactObject(input, 'incoming event', [
+        'action',
+        'deliveryId',
+        'eventType',
+        'payloadSha256',
+        'projectId',
+        'projection',
+        'provider',
+        'source',
+        'verification',
+        'workspaceId'
+      ]);
+      if (
+        typeof value.workspaceId !== 'string' ||
+        !canonicalUuidPattern.test(value.workspaceId) ||
+        typeof value.projectId !== 'string' ||
+        !canonicalUuidPattern.test(value.projectId)
+      ) {
+        throw new TypeError('Incoming event workspaceId and projectId must be UUIDs.');
+      }
+      if (value.provider !== 'github') {
+        throw new TypeError('Incoming event provider is unsupported.');
+      }
+      const eventTypes = ['issues', 'pull_request', 'check_run'] as const;
+      if (
+        typeof value.eventType !== 'string' ||
+        !eventTypes.includes(value.eventType as (typeof eventTypes)[number])
+      ) {
+        throw new TypeError('Incoming event type is unsupported.');
+      }
+      const verification = exactObject(value.verification, 'verification', [
+        'method',
+        'outcome'
+      ]);
+      if (
+        verification.outcome !== 'verified' ||
+        verification.method !== 'hmac-sha256'
+      ) {
+        throw new TypeError('Incoming event must be verified with HMAC-SHA256.');
+      }
+      const source = exactObject(value.source, 'source', [
+        'installationId',
+        'kind',
+        'projectNodeId',
+        'repositoryId'
+      ]);
+      if (
+        source.kind !== 'github' ||
+        typeof source.installationId !== 'string' ||
+        !decimalIdentifierPattern.test(source.installationId) ||
+        typeof source.repositoryId !== 'string' ||
+        !decimalIdentifierPattern.test(source.repositoryId)
+      ) {
+        throw new TypeError('Incoming event GitHub source identity is invalid.');
+      }
+
+      const eventId = ids.next();
+      if (!canonicalUuidPattern.test(eventId)) {
+        throw new TypeError('Generated incoming event ID must be a UUID.');
+      }
+      const receivedAt = clock.now();
+      if (!(receivedAt instanceof Date) || Number.isNaN(receivedAt.getTime())) {
+        throw new TypeError('Incoming event clock returned an invalid date.');
+      }
+      if (
+        typeof value.payloadSha256 !== 'string' ||
+        !sha256Pattern.test(value.payloadSha256)
+      ) {
+        throw new TypeError('Incoming event payloadSha256 must be lowercase SHA-256.');
+      }
+
+      const event: IncomingEvent = {
+        eventId,
+        workspaceId: value.workspaceId,
+        projectId: value.projectId,
+        provider: value.provider,
+        deliveryId: requiredBoundedIdentifier(value.deliveryId, 'deliveryId', 128),
+        eventType: value.eventType as VerifiedIncomingEventInput['eventType'],
+        action: requiredBoundedIdentifier(value.action, 'action', 64),
+        receivedAt: receivedAt.toISOString(),
+        payloadSha256: value.payloadSha256,
+        verification: {outcome: 'verified', method: 'hmac-sha256'},
+        source: {
+          kind: 'github',
+          installationId: source.installationId,
+          repositoryId: source.repositoryId,
+          projectNodeId: requiredBoundedIdentifier(
+            source.projectNodeId,
+            'source.projectNodeId',
+            128
+          )
+        },
+        projection: cloneSafeProjection(
+          value.eventType as VerifiedIncomingEventInput['eventType'],
+          value.projection
+        )
+      };
+      return options.inbox.accept(event);
+    }
+  };
 };
 
 const isCommandShape = (value: unknown): value is CanonicalCommand => {
