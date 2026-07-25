@@ -17,6 +17,9 @@ import {
   transitionApproval,
   transitionWorkItem,
   type AccessRequestStatus,
+  type AccessRequest,
+  type AgentRun,
+  type Approval,
   type ApprovalRequiredCommandOutcome,
   type ApprovalRequiredAuditEvent,
   type AgentRunStatus,
@@ -57,6 +60,37 @@ const packetContent = (): TaskPacketContent => ({
   secretsRef: {provider: 'vault', reference: 'kv/fai/github', scope: ['repository:read']},
   createdFromEventId: 'event-1',
   createdByActorId: 'user-1'
+});
+
+const agentRun = (status: AgentRunStatus): AgentRun => ({
+  id: 'run',
+  taskPacketId: 'packet',
+  agentProfileId: 'profile',
+  status,
+  idempotencyKey: 'key',
+  version: 4
+});
+
+const approval = (status: ApprovalStatus): Approval => ({
+  id: 'approval',
+  projectId: 'project',
+  workItemId: 'work-item',
+  actionCategory: 'deploy',
+  surface: 'runner',
+  environment: 'production',
+  requestedByActorId: 'requester',
+  status,
+  version: 4
+});
+
+const accessRequest = (status: AccessRequestStatus): AccessRequest => ({
+  id: 'access',
+  workspaceId: 'workspace',
+  requesterActorId: 'requester',
+  targetSurface: 'repository',
+  requestedScope: ['contents:read'],
+  status,
+  version: 4
 });
 
 const statusCases = <T extends string>(statuses: readonly T[], allowed: readonly `${T}:${T}`[]) =>
@@ -106,9 +140,7 @@ describe('aggregate transitions', () => {
     'queued:running', 'queued:failed', 'running:waiting_approval', 'running:done',
     'running:failed', 'waiting_approval:running', 'waiting_approval:failed'
   ]))('agent run %s -> %s is %s', (from, to, legal) => {
-    const result = transitionAgentRun(
-      {id: 'run', taskPacketId: 'packet', status: from, idempotencyKey: 'key', version: 4}, to
-    );
+    const result = transitionAgentRun(agentRun(from), to);
     expect(result.ok).toBe(legal);
     if (legal && result.ok) expect(result.value.version).toBe(5);
   });
@@ -116,7 +148,7 @@ describe('aggregate transitions', () => {
   it.each(statusCases<ApprovalStatus>(approvalStatuses, [
     'pending:approved', 'pending:rejected', 'pending:expired'
   ]))('approval %s -> %s is %s', (from, to, legal) => {
-    const result = transitionApproval({id: 'approval', status: from, version: 4}, to);
+    const result = transitionApproval(approval(from), to);
     expect(result.ok).toBe(legal);
     if (legal && result.ok) expect(result.value.version).toBe(5);
   });
@@ -124,7 +156,7 @@ describe('aggregate transitions', () => {
   it.each(statusCases<AccessRequestStatus>(accessRequestStatuses, [
     'pending:granted', 'pending:rejected', 'pending:expired'
   ]))('access request %s -> %s is %s', (from, to, legal) => {
-    const result = transitionAccessRequest({id: 'access', status: from, version: 4}, to);
+    const result = transitionAccessRequest(accessRequest(from), to);
     expect(result.ok).toBe(legal);
     if (legal && result.ok) expect(result.value.version).toBe(5);
   });
@@ -377,6 +409,35 @@ describe('task packets', () => {
 });
 
 describe('canonical command transaction contract', () => {
+  it('discriminates supported aggregate insert and update modes', () => {
+    type WorkItemMutation = Extract<CanonicalMutation, {aggregateType: 'work_item'}>;
+    type PacketMutation = Extract<CanonicalMutation, {aggregateType: 'task_packet'}>;
+    type AgentRunMutation = Extract<CanonicalMutation, {aggregateType: 'agent_run'}>;
+
+    expectTypeOf<WorkItemMutation['expectedPersistedVersion']>().toEqualTypeOf<number>();
+    expectTypeOf<PacketMutation['expectedPersistedVersion']>().toEqualTypeOf<null>();
+    expectTypeOf<AgentRunMutation['expectedPersistedVersion']>().toEqualTypeOf<number | null>();
+
+    const invalidWorkItemInsert: WorkItemMutation = {
+      aggregateType: 'work_item',
+      aggregateId: 'work-item',
+      // @ts-expect-error tracker ingestion owns WorkItem creation.
+      expectedPersistedVersion: null,
+      aggregate: {
+        id: 'work-item', projectId: 'project', status: 'ready', blocked: false, version: 1
+      }
+    };
+    const invalidPacketUpdate: PacketMutation = {
+      aggregateType: 'task_packet',
+      aggregateId: 'packet',
+      // @ts-expect-error task packets are insert-only immutable snapshots.
+      expectedPersistedVersion: 1,
+      aggregate: null as never
+    };
+    expect(invalidWorkItemInsert.aggregateType).toBe('work_item');
+    expect(invalidPacketUpdate.aggregateType).toBe('task_packet');
+  });
+
   it('requires a claim, persisted CAS mutation, and audit append to complete a receipt', () => {
     type CompletionInput = Parameters<CanonicalCommandTransaction['completeReceipt']>[0];
     expectTypeOf<CompletionInput['claimToken']>().toEqualTypeOf<ReceiptClaimToken>();

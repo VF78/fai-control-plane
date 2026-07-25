@@ -93,6 +93,16 @@ export const outboxStatusEnum = pgEnum('outbox_status', [
   'published',
   'failed'
 ]);
+export const commandReceiptStateEnum = pgEnum('command_receipt_state', [
+  'claimed',
+  'completed'
+]);
+export const auditOutcomeEnum = pgEnum('audit_outcome', [
+  'succeeded',
+  'failed',
+  'rejected',
+  'approval_required'
+]);
 
 export const workspaces = pgTable(
   'workspaces',
@@ -648,6 +658,7 @@ export const agentRuns = pgTable(
     startedAt: timestamp('started_at', {withTimezone: true}),
     completedAt: timestamp('completed_at', {withTimezone: true}),
     failureCode: text('failure_code'),
+    version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
@@ -656,7 +667,8 @@ export const agentRuns = pgTable(
     index('agent_runs_status_heartbeat_idx').on(
       table.status,
       table.heartbeatAt
-    )
+    ),
+    check('agent_runs_version_positive', sql`${table.version} > 0`)
   ]
 );
 
@@ -687,6 +699,7 @@ export const approvalRequests = pgTable(
     decisionReason: text('decision_reason'),
     expiresAt: timestamp('expires_at', {withTimezone: true}),
     decidedAt: timestamp('decided_at', {withTimezone: true}),
+    version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
@@ -694,7 +707,12 @@ export const approvalRequests = pgTable(
     index('approval_requests_status_expiry_idx').on(
       table.status,
       table.expiresAt
-    )
+    ),
+    check(
+      'approval_requests_exactly_one_target',
+      sql`(${table.workItemId} is null) <> (${table.agentRunId} is null)`
+    ),
+    check('approval_requests_version_positive', sql`${table.version} > 0`)
   ]
 );
 
@@ -720,6 +738,7 @@ export const accessRequests = pgTable(
     ),
     expiresAt: timestamp('expires_at', {withTimezone: true}),
     decidedAt: timestamp('decided_at', {withTimezone: true}),
+    version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
@@ -727,7 +746,8 @@ export const accessRequests = pgTable(
     index('access_requests_status_expiry_idx').on(
       table.status,
       table.expiresAt
-    )
+    ),
+    check('access_requests_version_positive', sql`${table.version} > 0`)
   ]
 );
 
@@ -803,19 +823,26 @@ export const auditEvents = pgTable(
     actorId: uuid('actor_id').references(() => actors.id, {
       onDelete: 'restrict'
     }),
+    commandId: text('command_id').notNull(),
     actionCategory: actionCategoryEnum('action_category').notNull(),
     action: text('action').notNull(),
     targetType: text('target_type').notNull(),
     targetId: text('target_id'),
     policyDecision: policyDecisionEnum('policy_decision'),
+    outcome: auditOutcomeEnum('outcome'),
+    reasonCode: text('reason_code'),
+    expectedVersion: integer('expected_version'),
+    resultVersion: integer('result_version'),
     correlationId: text('correlation_id').notNull(),
-    metadata: jsonb('metadata')
-      .$type<Record<string, unknown>>()
-      .default(sql`'{}'::jsonb`)
-      .notNull(),
+    occurredAt: timestamp('occurred_at', {withTimezone: true}).notNull(),
+    metadata: jsonb('metadata').$type<Record<string, never>>().default(sql`'{}'::jsonb`).notNull(),
     createdAt: createdAt()
   },
   (table) => [
+    uniqueIndex('audit_events_workspace_command_unique').on(
+      table.workspaceId,
+      table.commandId
+    ),
     index('audit_events_workspace_created_idx').on(
       table.workspaceId,
       table.createdAt
@@ -857,18 +884,28 @@ export const commandReceipts = pgTable(
       .notNull()
       .references(() => workspaces.id, {onDelete: 'cascade'}),
     idempotencyKey: text('idempotency_key').notNull(),
+    requestHash: text('request_hash').notNull(),
+    commandId: text('command_id').notNull(),
+    correlationId: text('correlation_id').notNull(),
+    state: commandReceiptStateEnum('state').default('claimed').notNull(),
     commandType: text('command_type').notNull(),
-    aggregateType: text('aggregate_type').notNull(),
+    aggregateType: text('aggregate_type'),
     aggregateId: uuid('aggregate_id'),
     expectedVersion: integer('expected_version'),
     resultVersion: integer('result_version'),
-    result: jsonb('result').$type<Record<string, unknown>>().notNull(),
-    createdAt: createdAt()
+    result: jsonb('result').$type<Record<string, unknown>>(),
+    createdAt: createdAt(),
+    completedAt: timestamp('completed_at', {withTimezone: true})
   },
   (table) => [
     uniqueIndex('command_receipts_workspace_key_unique').on(
       table.workspaceId,
       table.idempotencyKey
+    ),
+    check(
+      'command_receipts_completion_consistent',
+      sql`(${table.state} = 'claimed' and ${table.result} is null and ${table.completedAt} is null)
+        or (${table.state} = 'completed' and ${table.result} is not null and ${table.completedAt} is not null)`
     )
   ]
 );

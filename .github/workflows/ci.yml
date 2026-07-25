@@ -63,6 +63,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: PostgreSQL persistence integration
+        run: pnpm --filter @fai-control-plane/db test:integration
+
       - name: Validate migration history
         run: pnpm db:check
 

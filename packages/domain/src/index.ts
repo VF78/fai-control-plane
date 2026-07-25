@@ -82,14 +82,31 @@ export type WorkItem = Readonly<{
 export type AgentRun = Readonly<{
   id: string;
   taskPacketId: string;
+  agentProfileId: string;
   status: AgentRunStatus;
   idempotencyKey: string;
   version: number;
 }>;
 
-export type Approval = Readonly<{id: string; status: ApprovalStatus; version: number}>;
+type ApprovalTarget =
+  | Readonly<{workItemId: string; agentRunId?: never}>
+  | Readonly<{workItemId?: never; agentRunId: string}>;
+export type Approval = Readonly<{
+  id: string;
+  projectId: string;
+  actionCategory: ActionCategory;
+  surface: PolicySurface;
+  environment: Environment;
+  requestedByActorId: string;
+  status: ApprovalStatus;
+  version: number;
+}> & ApprovalTarget;
 export type AccessRequest = Readonly<{
   id: string;
+  workspaceId: string;
+  requesterActorId: string;
+  targetSurface: PolicySurface;
+  requestedScope: readonly string[];
   status: AccessRequestStatus;
   version: number;
 }>;
@@ -793,13 +810,49 @@ export type PersistedVersionCas = Readonly<{
   expectedPersistedVersion: number | null;
   persistedVersion: number;
 }>;
-export type CanonicalMutation = Readonly<{
-  aggregateType: 'work_item' | 'agent_run' | 'approval' | 'access_request' | 'task_packet';
+export type WorkItemUpdateMutation = Readonly<{
+  aggregateType: 'work_item';
   aggregateId: string;
-  /** `null` means insert-if-absent; otherwise persistence must compare this exact stored version. */
-  expectedPersistedVersion: number | null;
-  aggregate: WorkItem | AgentRun | Approval | AccessRequest | TaskPacket;
+  expectedPersistedVersion: number;
+  aggregate: WorkItem;
 }>;
+export type TaskPacketInsertMutation = Readonly<{
+  aggregateType: 'task_packet';
+  aggregateId: string;
+  expectedPersistedVersion: null;
+  aggregate: TaskPacket;
+}>;
+export type AgentRunMutation = Readonly<{
+  aggregateType: 'agent_run';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: AgentRun;
+}>;
+export type ApprovalInsertMutation = Readonly<{
+  aggregateType: 'approval';
+  aggregateId: string;
+  expectedPersistedVersion: null;
+  aggregate: Approval;
+}>;
+export type ApprovalUpdateMutation = Readonly<{
+  aggregateType: 'approval';
+  aggregateId: string;
+  expectedPersistedVersion: number;
+  aggregate: Approval;
+}>;
+export type AccessRequestMutation = Readonly<{
+  aggregateType: 'access_request';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: AccessRequest;
+}>;
+export type CanonicalMutation =
+  | WorkItemUpdateMutation
+  | TaskPacketInsertMutation
+  | AgentRunMutation
+  | ApprovalInsertMutation
+  | ApprovalUpdateMutation
+  | AccessRequestMutation;
 export type PersistedCanonicalMutation = Readonly<{
   cas: PersistedVersionCas;
   audit: AuditAppendToken;
@@ -832,12 +885,7 @@ export type ApprovalRequiredAuditEvent = Readonly<Omit<
   outcome: 'approval_required';
   reasonCode: 'APPROVAL_REQUIRED';
 }>;
-export type ApprovalMutation = Readonly<{
-  aggregateType: 'approval';
-  aggregateId: string;
-  expectedPersistedVersion: number | null;
-  aggregate: Approval;
-}>;
+export type ApprovalMutation = ApprovalInsertMutation;
 export type ApprovalRequiredReceipt = Readonly<Omit<CommandReceipt, 'result'> & {
   result: Readonly<{
     ok: false;

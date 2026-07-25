@@ -83,4 +83,31 @@ describe('canonical schema foundation', () => {
     expect(incomingEventColumns).toContain('verification');
     expect(incomingEventColumns).toContain('sanitized_payload');
   });
+
+  it('models optimistic versions and atomic command receipt state', () => {
+    for (const table of [
+      schema.agentRuns,
+      schema.approvalRequests,
+      schema.accessRequests
+    ]) {
+      expect(getTableColumns(table)).toHaveProperty('version');
+    }
+
+    const receiptColumns = Object.values(
+      getTableColumns(schema.commandReceipts)
+    ).map((column) => column.name);
+    expect(receiptColumns).toEqual(
+      expect.arrayContaining([
+        'workspace_id',
+        'idempotency_key',
+        'request_hash',
+        'command_id',
+        'correlation_id',
+        'state',
+        'result',
+        'created_at',
+        'completed_at'
+      ])
+    );
+  });
 });
