@@ -3,9 +3,9 @@ import {PgBoss} from 'pg-boss';
 import {createIncomingEventQueueConsumer} from '@fai-control-plane/application';
 import {
   createDatabase,
-  createPostgresIncomingEventProcessor
-} from '@fai-control-plane/db';
-import {INCOMING_EVENT_QUEUE} from '@fai-control-plane/db/runtime';
+  createPostgresIncomingEventProcessor,
+  INCOMING_EVENT_QUEUE
+} from '@fai-control-plane/db/runtime';
 import {
   startTelemetry,
   stopTelemetry
@@ -20,6 +20,13 @@ if (!databaseUrl) {
 
 let ready = false;
 let stopping = false;
+const incomingEventQueueOptions = {
+  retryLimit: 5,
+  retryDelay: 5,
+  retryBackoff: true,
+  retryDelayMax: 60,
+  expireInSeconds: 600
+};
 
 await startTelemetry('fai-control-plane-worker');
 
@@ -65,10 +72,12 @@ const server = createServer((request, response) => {
 
 server.listen(port, '0.0.0.0');
 await boss.start();
-await boss.createQueue(INCOMING_EVENT_QUEUE);
-await boss.work(INCOMING_EVENT_QUEUE, async (job) =>
-  incomingEventConsumer.consume(job.data)
-);
+await boss.createQueue(INCOMING_EVENT_QUEUE, incomingEventQueueOptions);
+await boss.updateQueue(INCOMING_EVENT_QUEUE, incomingEventQueueOptions);
+await boss.work(INCOMING_EVENT_QUEUE, async ([job]) => {
+  if (job === undefined) return;
+  return incomingEventConsumer.consume(job.data);
+});
 ready = true;
 
 async function shutdown(signal: NodeJS.Signals) {

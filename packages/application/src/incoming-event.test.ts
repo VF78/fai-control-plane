@@ -97,6 +97,6 @@ describe('incoming event ingestion', () => {
     });
     expect(processor.process).toHaveBeenCalledWith(eventId);
     await expect(consumer.consume({eventId, projection: {issue: {id: 1}}}))
-      .rejects.toThrow('Incoming event queue payload contains unsupported fields.');
+      .rejects.toThrow('incoming event queue payload contains unsupported fields.');
   });
 });

@@ -359,17 +359,75 @@ describePostgres(
         const [inboxRow] = await testDb
           .select({
             status: incomingEvents.status,
-            processedAt: incomingEvents.processedAt
+            processedAt: incomingEvents.processedAt,
+            processingToken: incomingEvents.processingToken,
+            processingLeaseExpiresAt: incomingEvents.processingLeaseExpiresAt,
+            failureCode: incomingEvents.failureCode
           })
           .from(incomingEvents)
           .where(eq(incomingEvents.id, candidate.eventId));
-        expect(inboxRow).toEqual({status: 'processing', processedAt: null});
+        expect(inboxRow).toEqual({
+          status: 'failed',
+          processedAt: null,
+          processingToken: null,
+          processingLeaseExpiresAt: null,
+          failureCode: 'canonical_observation_failed'
+        });
       } finally {
         await testPool.query(`
           DROP TRIGGER fail_incoming_event_completion ON incoming_events;
           DROP FUNCTION fail_incoming_event_completion();
         `);
       }
+      await expect(processor.process(candidate.eventId)).resolves.toEqual({
+        status: 'processed',
+        eventId: candidate.eventId
+      });
+      const observations = await testDb
+        .select({id: canonicalEvents.id})
+        .from(canonicalEvents)
+        .where(eq(canonicalEvents.incomingEventId, candidate.eventId));
+      expect(observations).toHaveLength(1);
+    });
+
+    it('does not claim legacy events without a project', async () => {
+      const eventId = randomUUID();
+      const processor = createPostgresIncomingEventProcessor(testDb);
+      await testPool.query(
+        `INSERT INTO incoming_events (
+           id, provider, delivery_id, event_type, verification, sanitized_payload
+         ) VALUES (
+           $1, 'legacy-github', $2, 'issues',
+           '{"outcome":"unverified","method":"none"}', '{}'
+         )`,
+        [eventId, randomUUID()]
+      );
+
+      await expect(processor.process(eventId)).rejects.toThrow(
+        'Incoming event is not available for processing.'
+      );
+      const [row] = await testDb
+        .select({
+          status: incomingEvents.status,
+          attemptCount: incomingEvents.attemptCount,
+          processingToken: incomingEvents.processingToken,
+          processingLeaseExpiresAt: incomingEvents.processingLeaseExpiresAt,
+          failureCode: incomingEvents.failureCode
+        })
+        .from(incomingEvents)
+        .where(eq(incomingEvents.id, eventId));
+      expect(row).toEqual({
+        status: 'pending',
+        attemptCount: 0,
+        processingToken: null,
+        processingLeaseExpiresAt: null,
+        failureCode: null
+      });
+      const observations = await testDb
+        .select({id: canonicalEvents.id})
+        .from(canonicalEvents)
+        .where(eq(canonicalEvents.incomingEventId, eventId));
+      expect(observations).toHaveLength(0);
     });
 
     it('recovers a stale lease and retries it into one observation', async () => {
