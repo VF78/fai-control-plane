@@ -55,7 +55,10 @@ export type WorkstationRunnerOnceResult =
   | Readonly<{status: 'idle'}>
   | Readonly<{status: 'completed'; result: LocalAgentRunResult}>;
 
-export type WorkstationRunnerEnvironment = Readonly<{
+export type WorkstationRunnerEnvironment = Readonly<Record<
+  string,
+  string | undefined
+> & {
   LOCAL_WORKSTATION_RUNNER_ENABLED?: string;
   LOCAL_WORKSTATION_RUNNER_BASE_URL?: string;
   LOCAL_WORKSTATION_RUNNER_TOKEN?: string;
