@@ -1186,15 +1186,21 @@ describePostgres(
         testPool.query(
           `INSERT INTO approval_requests (
              id, project_id, work_item_id, agent_run_id, action_category,
-             surface, environment, status, requested_by_actor_id, version
+             surface, environment, subject_hash, policy_version,
+             execution_identity, action_hash, expires_at, status,
+             requested_by_actor_id, version
            ) VALUES (
-             $1, $2, $3, $4, 'deploy', 'runner', 'production', 'pending', $5, 1
+             $1, $2, $3, $4, 'deploy', 'runner', 'production', $5, $6, $4,
+             $7, now() + interval '1 hour', 'pending', $8, 1
            )`,
           [
             randomUUID(),
             fixture.projectId,
             fixture.workItemId,
             fixture.otherRunId,
+            'a'.repeat(64),
+            CURRENT_POLICY_VERSION,
+            'b'.repeat(64),
             fixture.actorId
           ]
         )
