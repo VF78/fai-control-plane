@@ -26,6 +26,7 @@ import type {
   PersistedVersionCas,
   ReceiptClaimToken,
   TaskPacket,
+  TaskPacketConfirmationView,
   UnitOfWork,
   WorkItem
 } from '@fai-control-plane/domain';
@@ -1239,6 +1240,30 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
           return row === undefined ? null : {
             ...row,
             status: row.status as WorkItem['status']
+          };
+        },
+
+        async loadTaskPacket(
+          token,
+          taskPacketId
+        ): Promise<TaskPacketConfirmationView | null> {
+          const state = requireClaim(token);
+          if (!isUuid(taskPacketId)) return null;
+          const [row] = await tx
+            .select({
+              packetId: schema.taskPackets.id,
+              approverActorId: schema.taskPackets.approverActorId,
+              contentHash: schema.taskPackets.contentHash
+            })
+            .from(schema.taskPackets)
+            .where(and(
+              eq(schema.taskPackets.id, taskPacketId),
+              taskPacketScope(state.claim.workspaceId)
+            ));
+          return row === undefined ? null : {
+            packetId: row.packetId,
+            content: {approverActorId: row.approverActorId},
+            contentHash: row.contentHash
           };
         },
 

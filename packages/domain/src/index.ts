@@ -544,7 +544,12 @@ export type CreateTaskPacketCommand = CanonicalCommandEnvelope<
 >;
 export type QueueAgentRunCommand = CanonicalCommandEnvelope<
   'agent_run.queue',
-  Readonly<{agentRunId: string; taskPacketId: string; agentProfileId: string}>
+  Readonly<{
+    agentRunId: string;
+    taskPacketId: string;
+    agentProfileId: string;
+    confirmedPacketHash: string;
+  }>
 >;
 export type TransitionAgentRunCommand = CanonicalCommandEnvelope<
   'agent_run.transition',
@@ -692,6 +697,12 @@ export type TaskPacket = Readonly<{
   packetId: string;
   content: TaskPacketContent;
   canonicalJson: string;
+  contentHash: string;
+}>;
+
+export type TaskPacketConfirmationView = Readonly<{
+  packetId: string;
+  content: Readonly<Pick<TaskPacketContent, 'approverActorId'>>;
   contentHash: string;
 }>;
 
@@ -1616,6 +1627,10 @@ export type CanonicalCommandOutcome = NonApprovalCommandOutcome | ApprovalRequir
 export interface CanonicalCommandTransaction {
   /** Loads only aggregates visible to the workspace bound to this command receipt. */
   loadWorkItem(claimToken: ReceiptClaimToken, workItemId: string): Promise<WorkItem | null>;
+  loadTaskPacket(
+    claimToken: ReceiptClaimToken,
+    taskPacketId: string
+  ): Promise<TaskPacketConfirmationView | null>;
   loadAgentRun(
     claimToken: ReceiptClaimToken,
     agentRunId: string

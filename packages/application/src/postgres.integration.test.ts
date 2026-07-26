@@ -3,6 +3,7 @@ import {fileURLToPath} from 'node:url';
 import {
   CURRENT_POLICY_VERSION,
   createActorContextIssuer,
+  createTaskPacket,
   type CanonicalCommand,
   type TaskPacketContent,
   type TrustedUserActorContext
@@ -417,17 +418,23 @@ describePostgres(
     it('stores the same run key independently in two workspaces', async () => {
       const primaryPacketId = randomUUID();
       const otherPacketId = randomUUID();
+      const primaryContent = packetContent();
+      const primaryPacket = createTaskPacket(primaryPacketId, primaryContent);
+      if (!primaryPacket.ok) throw new Error('Primary packet did not initialize.');
       await service().execute(command(
         fixture.workspaceId,
         primaryActor,
         'task_packet.create',
-        {packetId: primaryPacketId, content: packetContent()}
+        {packetId: primaryPacketId, content: primaryContent}
       ));
+      const otherContent = packetContent('other');
+      const otherPacket = createTaskPacket(otherPacketId, otherContent);
+      if (!otherPacket.ok) throw new Error('Other packet did not initialize.');
       await service().execute(command(
         fixture.otherWorkspaceId,
         otherActor,
         'task_packet.create',
-        {packetId: otherPacketId, content: packetContent('other')}
+        {packetId: otherPacketId, content: otherContent}
       ));
       const userKey = `shared-user-key-${randomUUID()}`;
       const first = command(
@@ -437,7 +444,8 @@ describePostgres(
         {
           agentRunId: randomUUID(),
           taskPacketId: primaryPacketId,
-          agentProfileId: fixture.profileId
+          agentProfileId: fixture.profileId,
+          confirmedPacketHash: primaryPacket.value.contentHash
         },
         userKey
       );
@@ -448,7 +456,8 @@ describePostgres(
         {
           agentRunId: randomUUID(),
           taskPacketId: otherPacketId,
-          agentProfileId: fixture.otherProfileId
+          agentProfileId: fixture.otherProfileId,
+          confirmedPacketHash: otherPacket.value.contentHash
         },
         userKey
       );
@@ -539,11 +548,14 @@ describePostgres(
       expect(receiptErrorCode(crossPacket)).toBe('NOT_FOUND');
 
       const validPacketId = randomUUID();
+      const validContent = packetContent();
+      const validPacket = createTaskPacket(validPacketId, validContent);
+      if (!validPacket.ok) throw new Error('Valid packet did not initialize.');
       await service().execute(command(
         fixture.workspaceId,
         primaryActor,
         'task_packet.create',
-        {packetId: validPacketId, content: packetContent()}
+        {packetId: validPacketId, content: validContent}
       ));
       const missingProfile = await service().execute(command(
         fixture.workspaceId,
@@ -552,7 +564,8 @@ describePostgres(
         {
           agentRunId: randomUUID(),
           taskPacketId: validPacketId,
-          agentProfileId: randomUUID()
+          agentProfileId: randomUUID(),
+          confirmedPacketHash: validPacket.value.contentHash
         }
       ));
       expect(receiptErrorCode(missingProfile)).toBe('NOT_FOUND');

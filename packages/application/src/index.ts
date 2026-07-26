@@ -844,8 +844,11 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
       return hasExactKeys(payload, ['packetId', 'content']) && isUuid(payload.packetId) &&
         isPlainObject(payload.content) && packetIdsAreSafe(payload.content);
     case 'agent_run.queue':
-      return hasExactKeys(payload, ['agentRunId', 'taskPacketId', 'agentProfileId']) &&
-        isUuid(payload.agentRunId) && isUuid(payload.taskPacketId) && isUuid(payload.agentProfileId);
+      return hasExactKeys(payload, [
+        'agentRunId', 'taskPacketId', 'agentProfileId', 'confirmedPacketHash'
+      ]) && isUuid(payload.agentRunId) && isUuid(payload.taskPacketId) &&
+        isUuid(payload.agentProfileId) && typeof payload.confirmedPacketHash === 'string' &&
+        sha256Pattern.test(payload.confirmedPacketHash);
     case 'agent_run.transition':
       return hasExactKeys(payload, ['agentRunId', 'status', 'expectedVersion']) && isUuid(payload.agentRunId) &&
         isOneOf(agentRunStatuses, payload.status) && isVersion(payload.expectedVersion);
@@ -1184,6 +1187,31 @@ export const createCanonicalCommandService = (
     transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
     command: Extract<CanonicalCommand, {type: 'agent_run.queue'}>
   ) {
+    const target = targetFor('agent_run', command.payload.agentRunId);
+    const packet = await transaction.loadTaskPacket(token, command.payload.taskPacketId);
+    if (packet === null) {
+      return completeNoMutation(
+        transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.')
+      );
+    }
+    if (command.actor.kind !== 'trusted_user') {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('INVALID_ACTOR_CONTEXT', 'Only an authenticated human may confirm a task packet.')
+      );
+    }
+    if (command.actor.actorId !== packet.content.approverActorId) {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('INVALID_ACTOR_CONTEXT', 'Only the task packet approver may confirm it.')
+      );
+    }
+    if (command.payload.confirmedPacketHash !== packet.contentHash) {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('VERSION_CONFLICT', 'Task packet confirmation hash conflicts with the stored packet.')
+      );
+    }
     const run: AgentRun = {
       id: command.payload.agentRunId,
       taskPacketId: command.payload.taskPacketId,
@@ -1192,12 +1220,12 @@ export const createCanonicalCommandService = (
       idempotencyKey: command.idempotencyKey,
       version: 1
     };
-    const target = targetFor('agent_run', run.id, undefined, run.version);
+    const resultTarget = targetFor('agent_run', run.id, undefined, run.version);
     const value = succeeded(compactAgentRun(run));
     return completeMutation(transaction, token, claim, command, {
       kind: 'non_approval', mutation: {aggregateType: 'agent_run', aggregateId: run.id, expectedPersistedVersion: null, aggregate: run},
-      audit: audit(claim, ids, clock, target, command.actor.actorId, command.type, 'write', value)
-    }, target, value);
+      audit: audit(claim, ids, clock, resultTarget, command.actor.actorId, command.type, 'write', value)
+    }, resultTarget, value);
   }
 
   async function agentRunTransition(

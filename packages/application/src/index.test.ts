@@ -4,6 +4,7 @@ import {
   CURRENT_POLICY_VERSION,
   createActorContextIssuer,
   createApprovalBinding,
+  createTaskPacket,
   type AccessRequest,
   type AgentRunView,
   type Approval,
@@ -14,6 +15,7 @@ import {
   type CommandExecutionResult,
   type CompletedCanonicalCommand,
   type ReceiptClaimToken,
+  type TaskPacket,
   type UnitOfWork,
   type WorkItem
 } from '@fai-control-plane/domain';
@@ -103,6 +105,7 @@ const command = <T extends CanonicalCommand['type']>(type: T, payload: Extract<C
 
 class FakeUnitOfWork implements UnitOfWork {
   readonly workItems = new Map<string, WorkItem>();
+  readonly taskPackets = new Map<string, TaskPacket>();
   readonly agentRuns = new Map<string, AgentRunView>();
   readonly approvals = new Map<string, Approval>();
   readonly accessRequests = new Map<string, AccessRequest>();
@@ -123,6 +126,7 @@ class FakeUnitOfWork implements UnitOfWork {
       ? {status: 'replayed', receipt: existing}
       : {status: 'key_reused', existingRequestHash: existing.requestHash};
     const workItems = new Map(this.workItems);
+    const taskPackets = new Map(this.taskPackets);
     const agentRuns = new Map(this.agentRuns);
     const approvals = new Map(this.approvals);
     const accessRequests = new Map(this.accessRequests);
@@ -130,6 +134,7 @@ class FakeUnitOfWork implements UnitOfWork {
     const token = {} as ReceiptClaimToken;
     const transaction: CanonicalCommandTransaction = {
       loadWorkItem: async (_token, value) => this.workItems.get(value) ?? null,
+      loadTaskPacket: async (_token, value) => this.taskPackets.get(value) ?? null,
       loadAgentRun: async (_token, value) => this.agentRuns.get(value) ?? null,
       loadApproval: async (_token, value) => this.approvals.get(value) ?? null,
       loadAccessRequest: async (_token, value) => this.accessRequests.get(value) ?? null,
@@ -139,6 +144,7 @@ class FakeUnitOfWork implements UnitOfWork {
         if (this.failure === 'version_conflict') return {status: 'version_conflict' as const, expectedPersistedVersion: 1, persistedVersion: 2};
         const mutation = outcome.mutation;
         if (mutation.aggregateType === 'work_item') this.workItems.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'task_packet') this.taskPackets.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'agent_run') this.agentRuns.set(mutation.aggregateId, {aggregate: mutation.aggregate, projectId});
         if (mutation.aggregateType === 'approval') this.approvals.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'access_request') this.accessRequests.set(mutation.aggregateId, mutation.aggregate);
@@ -167,6 +173,7 @@ class FakeUnitOfWork implements UnitOfWork {
       result = await work(transaction, token);
     } catch (cause) {
       this.workItems.clear(); workItems.forEach((value, key) => this.workItems.set(key, value));
+      this.taskPackets.clear(); taskPackets.forEach((value, key) => this.taskPackets.set(key, value));
       this.agentRuns.clear(); agentRuns.forEach((value, key) => this.agentRuns.set(key, value));
       this.approvals.clear(); approvals.forEach((value, key) => this.approvals.set(key, value));
       this.accessRequests.clear(); accessRequests.forEach((value, key) => this.accessRequests.set(key, value));
@@ -208,7 +215,18 @@ describe('canonical command service', () => {
       return command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 1});
     }],
     ['task_packet.create', () => command('task_packet.create', {packetId: id(), content: packetContent()})],
-    ['agent_run.queue', () => command('agent_run.queue', {agentRunId: id(), taskPacketId: id(), agentProfileId: id()})],
+    ['agent_run.queue', (uow: FakeUnitOfWork) => {
+      const packetId = id();
+      const packet = createTaskPacket(packetId, packetContent());
+      if (!packet.ok) throw new Error('Test packet did not initialize.');
+      uow.taskPackets.set(packetId, packet.value);
+      return command('agent_run.queue', {
+        agentRunId: id(),
+        taskPacketId: packetId,
+        agentProfileId: id(),
+        confirmedPacketHash: packet.value.contentHash
+      });
+    }],
     ['agent_run.transition', (uow: FakeUnitOfWork) => {
       const aggregate = {id: id(), taskPacketId: id(), agentProfileId: id(), status: 'queued' as const, idempotencyKey: 'run', version: 1};
       uow.agentRuns.set(aggregate.id, {aggregate, projectId});
@@ -236,6 +254,69 @@ describe('canonical command service', () => {
     if (result.status !== 'completed') return;
     expect(JSON.stringify(result.receipt)).not.toContain('secretsRef');
     expect(result.receipt.result.ok).toBe(_name !== 'approval.request');
+    if (_name === 'agent_run.queue') {
+      const runCount = uow.agentRuns.size;
+      const packet = [...uow.taskPackets.values()][0];
+      if (packet === undefined) throw new Error('Test packet was not initialized.');
+      const wrongApproverId = id();
+      const agentId = id();
+      const confirmationIssuer = createActorContextIssuer({
+        users: [
+          {actorId, capabilities: ['write:control_plane:development']},
+          {actorId: wrongApproverId, capabilities: ['write:control_plane:development']}
+        ],
+        agents: [{
+          actorId: agentId,
+          delegatedByActorIds: [actorId],
+          capabilities: ['write:control_plane:development']
+        }],
+        systems: []
+      });
+      if (!confirmationIssuer.ok) throw new Error('Confirmation actors did not initialize.');
+      const wrongApprover = confirmationIssuer.value.issueUser(wrongApproverId);
+      const confirmingUser = confirmationIssuer.value.issueUser(actorId);
+      if (!wrongApprover.ok || !confirmingUser.ok) {
+        throw new Error('Confirmation users did not initialize.');
+      }
+      const nonHuman = confirmationIssuer.value.issueAgent({
+        actorId: agentId,
+        delegatedBy: confirmingUser.value
+      });
+      if (!nonHuman.ok) throw new Error('Confirmation agent did not initialize.');
+      const queuePayload = {
+        taskPacketId: packet.packetId,
+        agentProfileId: id(),
+        confirmedPacketHash: packet.contentHash
+      };
+      const rejected = await Promise.all([
+        serviceFor(uow).execute(command('agent_run.queue', {
+          ...queuePayload,
+          agentRunId: id(),
+          confirmedPacketHash: '0'.repeat(64)
+        })),
+        serviceFor(uow).execute({
+          ...command('agent_run.queue', {...queuePayload, agentRunId: id()}),
+          actor: nonHuman.value
+        }),
+        serviceFor(uow).execute({
+          ...command('agent_run.queue', {...queuePayload, agentRunId: id()}),
+          actor: wrongApprover.value
+        }),
+        serviceFor(uow).execute(command('agent_run.queue', {
+          ...queuePayload,
+          agentRunId: id(),
+          taskPacketId: id()
+        }))
+      ]);
+      expect(rejected).toMatchObject([
+        {receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}},
+        {receipt: {result: {error: {code: 'POLICY_DENIED'}}}},
+        {receipt: {result: {error: {code: 'INVALID_ACTOR_CONTEXT'}}}},
+        {receipt: {result: {error: {code: 'NOT_FOUND'}}}}
+      ]);
+      expect(uow.agentRuns.size).toBe(runCount);
+      expect(uow.audits).toHaveLength(4);
+    }
   });
 
   it('persists an approval-required receipt atomically', async () => {
