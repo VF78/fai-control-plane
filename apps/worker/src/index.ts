@@ -244,6 +244,7 @@ await boss.work(QA_INTAKE_QUEUE, async () => {
   return Promise.all(eventIds.map((eventId) => qaIntakeTaskPacketConsumer.consume(eventId)));
 });
 await recoveryScanProducer.run();
+await dailyPmReportProducer.run();
 if (telegramStatusPublisher !== undefined) {
   let publishing = false;
   publishTelegramStatusResponses = async (): Promise<void> => {
