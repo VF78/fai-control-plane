@@ -26,10 +26,12 @@ x-runtime-environment: &runtime-environment
   RUNNER_NETWORK_MODE: ${RUNNER_NETWORK_MODE:-none}
   ARTIFACTS_ROOT: ${ARTIFACTS_ROOT:-/var/lib/fai/artifacts}
   AUTH_ENABLED: ${AUTH_ENABLED:-false}
-  AUTH_ISSUER: ${AUTH_ISSUER:-}
-  AUTH_CLIENT_ID: ${AUTH_CLIENT_ID:-}
-  AUTH_CLIENT_SECRET_FILE: ${AUTH_CLIENT_SECRET_FILE:-}
-  AUTH_SESSION_SECRET_FILE: ${AUTH_SESSION_SECRET_FILE:-}
+  AUTH_PUBLIC_BASE_URL: ${AUTH_PUBLIC_BASE_URL:-}
+  GITHUB_LOGIN_CALLBACK_URL: ${GITHUB_LOGIN_CALLBACK_URL:-}
+  GITHUB_LOGIN_CLIENT_ID: ${GITHUB_LOGIN_CLIENT_ID:-}
+  GITHUB_LOGIN_CLIENT_SECRET_FILE: ${GITHUB_LOGIN_CLIENT_SECRET_FILE:-/run/secrets/github-login-client-secret}
+  GITHUB_LOGIN_ALLOWED_USER_IDS: ${GITHUB_LOGIN_ALLOWED_USER_IDS:-}
+  AUTH_SESSION_SECRET_FILE: ${AUTH_SESSION_SECRET_FILE:-/run/secrets/auth-session-secret}
   PUBLIC_SHARING_ENABLED: ${PUBLIC_SHARING_ENABLED:-false}
   SHARE_SIGNING_KEY_FILE: ${SHARE_SIGNING_KEY_FILE:-}
 
@@ -86,6 +88,14 @@ services:
       - type: bind
         source: ${TELEGRAM_WEBHOOK_SECRET_HOST_FILE:-./infra/compose/secrets/telegram-webhook.disabled}
         target: ${TELEGRAM_WEBHOOK_SECRET_FILE:-/run/secrets/telegram-webhook}
+        read_only: true
+      - type: bind
+        source: ${GITHUB_LOGIN_CLIENT_SECRET_HOST_FILE:-./infra/compose/secrets/github-login-client-secret.disabled}
+        target: ${GITHUB_LOGIN_CLIENT_SECRET_FILE:-/run/secrets/github-login-client-secret}
+        read_only: true
+      - type: bind
+        source: ${AUTH_SESSION_SECRET_HOST_FILE:-./infra/compose/secrets/auth-session-secret.disabled}
+        target: ${AUTH_SESSION_SECRET_FILE:-/run/secrets/auth-session-secret}
         read_only: true
     depends_on:
       postgres:

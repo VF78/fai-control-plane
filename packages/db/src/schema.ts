@@ -145,6 +145,59 @@ export const actors = pgTable(
   ]
 );
 
+export const oauthLoginAttempts = pgTable(
+  'oauth_login_attempts',
+  {
+    stateHash: text('state_hash').primaryKey(),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
+    consumedAt: timestamp('consumed_at', {withTimezone: true})
+  },
+  (table) => [
+    index('oauth_login_attempts_expires_idx').on(table.expiresAt),
+    check(
+      'oauth_login_attempts_state_hash_sha256',
+      sql`${table.stateHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'oauth_login_attempts_expiry_after_creation',
+      sql`${table.expiresAt} > ${table.createdAt}`
+    )
+  ]
+);
+
+export const operatorSessions = pgTable(
+  'operator_sessions',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'cascade'}),
+    githubUserId: bigint('github_user_id', {mode: 'number'}).notNull(),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
+    revokedAt: timestamp('revoked_at', {withTimezone: true}),
+    lastSeenAt: timestamp('last_seen_at', {withTimezone: true}).notNull()
+  },
+  (table) => [
+    index('operator_sessions_actor_idx').on(table.actorId),
+    index('operator_sessions_expires_idx').on(table.expiresAt),
+    check(
+      'operator_sessions_token_hash_sha256',
+      sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check('operator_sessions_github_user_id_positive', sql`${table.githubUserId} > 0`),
+    check(
+      'operator_sessions_expiry_after_creation',
+      sql`${table.expiresAt} > ${table.createdAt}`
+    ),
+    check(
+      'operator_sessions_last_seen_after_creation',
+      sql`${table.lastSeenAt} >= ${table.createdAt}`
+    )
+  ]
+);
+
 export const projects = pgTable(
   'projects',
   {

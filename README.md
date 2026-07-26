@@ -75,7 +75,7 @@ docker compose up --build -d
 
 ### Populate the panel from GitHub
 
-This is a temporary local bootstrap path until GitHub OAuth is available. Set
+This local tracker-snapshot bootstrap is separate from operator OAuth. Set
 `FCP_BOOTSTRAP_HUMAN_SUBJECT` to a stable local human subject and
 `GITHUB_REPOSITORY_READ_TOKEN_FILE` to a file containing a read-only GitHub
 token. The seed stores only the file reference and creates that bootstrap human
@@ -102,6 +102,48 @@ node apps/worker/dist/index.js
 GitHub synchronization and runner execution are disabled by default. Enabling
 either requires explicit local configuration and must not put secret values in
 PostgreSQL.
+
+### Operator authentication
+
+`AUTH_ENABLED=false` is the default local-development bypass. When it is
+`true`, the operator page and later mutation routes using
+`requireOperatorSession` require a short-lived, revocable server-side session.
+Login uses a separate GitHub OAuth application, not the GitHub App or repository
+token used by tracker synchronization.
+
+An enabled runtime fails closed unless all of the following are exact:
+
+- `AUTH_PUBLIC_BASE_URL` is an HTTPS origin (HTTP loopback is accepted only
+  outside production);
+- `GITHUB_LOGIN_CALLBACK_URL` is
+  `<AUTH_PUBLIC_BASE_URL>/api/auth/github/callback`;
+- `GITHUB_LOGIN_CLIENT_ID` identifies the login-only OAuth application;
+- `GITHUB_LOGIN_CLIENT_SECRET_FILE` and `AUTH_SESSION_SECRET_FILE` are absolute
+  mounted secret-file paths;
+- `GITHUB_LOGIN_ALLOWED_USER_IDS` contains exactly two unique, canonical
+  positive decimal GitHub user IDs, assigned operationally to Vladimir and
+  Vitaliy;
+- `FCP_WORKSPACE_ID` is the canonical workspace UUID;
+- each allowlisted ID has one enabled Actor in that workspace with
+  `type=human`, `auth_mode=user`, and `external_subject=github:user:<id>`.
+
+The callback URL and client credentials must be configured in GitHub before
+auth is enabled; this repository does not create or mutate that external
+configuration. Replace the committed disabled secret placeholders with
+operator-owned host files and keep their contents out of `.env`, logs, and
+PostgreSQL. The session secret must contain at least 32 bytes.
+
+Production ingress and application request logging must suppress callback query
+strings on `/api/auth/github/callback`, because GitHub necessarily returns the
+short-lived authorization code in that query. The application never emits the
+callback URL, code, verifier, tokens, secrets, or GitHub profile payload.
+
+OAuth state and session tokens are persisted only as SHA-256 hashes. The PKCE
+verifier is held in a ten-minute authenticated-encrypted HttpOnly cookie, while
+the matching hash-only database attempt is consumed atomically. Sessions expire
+after eight hours; logout revokes them server-side. Cookies are HttpOnly,
+SameSite=Lax, Path `/`, and Secure whenever the public origin is HTTPS
+(mandatory in production).
 
 The committed webhook secret mount is a non-secret disabled placeholder.
 Before enabling GitHub ingestion, point `GITHUB_WEBHOOK_SECRET_HOST_FILE` at a
@@ -169,6 +211,8 @@ docker compose down --volumes
   behind `TrackerAdapter`.
 - Secret values stay in an external secret provider, mounted files, or process
   environment. The database stores only references and non-sensitive metadata.
+- GitHub usernames are display-only; only exact numeric GitHub IDs bound to
+  canonical human Actors can authorize an operator session.
 - Runner jobs are isolated, deny network access by default, and cannot connect
   directly to the control-plane database.
 - Artifacts are immutable, content-addressed where practical, access-controlled,

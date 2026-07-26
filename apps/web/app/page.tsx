@@ -1,4 +1,5 @@
 import {and, desc, eq, inArray, isNull} from 'drizzle-orm';
+import {cookies} from 'next/headers';
 import {
   actors,
   auditEvents,
@@ -13,6 +14,8 @@ import {
   workItems
 } from '@fai-control-plane/db';
 import {rankAttentionQueue, type AttentionQueueItem} from '../src/attention-queue';
+import {OPERATOR_SESSION_COOKIE, type OperatorSession} from '../src/operator-auth';
+import {currentOperatorSession} from '../src/operator-auth-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -271,6 +274,9 @@ async function loadProjects() {
 }
 
 export default async function ProjectControlPanel() {
+  const cookieStore = await cookies();
+  const auth = await currentOperatorSession(cookieStore.get(OPERATOR_SESSION_COOKIE)?.value);
+  if (auth.enabled && auth.session === null) return <OperatorLogin />;
   const projectData = await loadProjects();
   const navigation = [
     'Portfolio',
@@ -298,7 +304,11 @@ export default async function ProjectControlPanel() {
             <p className="eyebrow">Workspace overview</p>
             <h1>Portfolio</h1>
           </div>
-          <p className="source">PostgreSQL canonical state</p>
+          {auth.session === null ? (
+            <p className="source">PostgreSQL canonical state</p>
+          ) : (
+            <OperatorIdentity session={auth.session} />
+          )}
         </header>
         {projectData === null ? (
           <section className="empty-state">
@@ -315,6 +325,32 @@ export default async function ProjectControlPanel() {
         )}
       </section>
     </main>
+  );
+}
+
+function OperatorLogin() {
+  return (
+    <main className="login-shell">
+      <section className="login-panel" aria-labelledby="login-title">
+        <p className="product-name">f(AI) Studio</p>
+        <p className="eyebrow">Operator access</p>
+        <h1 id="login-title">Control Plane</h1>
+        <p>Sign in with an authorized GitHub operator account.</p>
+        <a className="login-action" href="/api/auth/github/login">Continue with GitHub</a>
+      </section>
+    </main>
+  );
+}
+
+function OperatorIdentity({session}: {session: OperatorSession}) {
+  return (
+    <div className="operator-identity">
+      <span>{session.displayName}</span>
+      <form action="/api/auth/logout" method="post">
+        <input name="_csrf" type="hidden" value={session.csrfToken} />
+        <button type="submit">Sign out</button>
+      </form>
+    </div>
   );
 }
 
