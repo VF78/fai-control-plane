@@ -42,7 +42,8 @@ const issue = (externalId: string, title = 'Issue title') => ({
   state: 'open' as const,
   labels: [],
   assignees: [],
-  milestone: null
+  milestone: null,
+  projectStatus: null
 });
 
 const pullRequest = (externalId: string) => ({

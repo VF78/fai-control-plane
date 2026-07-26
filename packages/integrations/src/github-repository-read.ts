@@ -8,6 +8,7 @@ import type {
   TrackerIdentity,
   TrackerLabel,
   TrackerMilestone,
+  TrackerProjectStatusObservation,
   TrackerPullRequestSnapshot,
   TrackerRepositorySnapshot,
   TrackerWorkItemSnapshot
@@ -21,7 +22,8 @@ import {
 
 const pageSize = 100;
 const maximumPages = 10;
-const maximumSnapshotRequests = 32;
+const maximumProjectItemPages = 2;
+const maximumSnapshotRequests = 34;
 const maximumOpenPullRequestCheckFanout = 16;
 const credentialPurpose = 'github_repository_snapshot_read';
 const shaPattern = /^[0-9a-f]{40}$/i;
@@ -29,7 +31,11 @@ const colorPattern = /^[0-9a-f]{6}$/i;
 
 export type GitHubFetch = (
   input: string,
-  init: Readonly<{method: 'GET'; headers: Readonly<Record<string, string>>}>
+  init: Readonly<{
+    method: 'GET' | 'POST';
+    headers: Readonly<Record<string, string>>;
+    body?: string;
+  }>
 ) => Promise<Response>;
 
 export type GitHubRepositoryReadErrorCode =
@@ -273,7 +279,8 @@ const workItem = (
     state: state(source.state),
     labels,
     assignees,
-    milestone: milestone(source.milestone)
+    milestone: milestone(source.milestone),
+    projectStatus: null
   };
   return {...snapshot, externalVersion: stableVersion(snapshot)};
 };
@@ -344,19 +351,52 @@ const requestHeaders = (credential: string): Readonly<Record<string, string>> =>
   'x-github-api-version': '2022-11-28'
 });
 
+const projectItemsQuery = `query ProjectStatus($projectId: ID!, $after: String) {
+  node(id: $projectId) {
+    ... on ProjectV2 {
+      id
+      items(first: 100, after: $after) {
+        nodes {
+          content {
+            __typename
+            ... on Issue {
+              number
+              repository { nameWithOwner }
+            }
+          }
+          fieldValues(first: 100) {
+            nodes {
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                optionId
+                field { ... on ProjectV2SingleSelectField { id } }
+              }
+            }
+            pageInfo { hasNextPage }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
+type ProjectEvidence = Readonly<{
+  statusByIssueNumber: ReadonlyMap<number, TrackerProjectStatusObservation>;
+}>;
+
 const createClient = (fetch: GitHubFetch, credential: string) => {
   let requestCount = 0;
-  const get = async (path: string): Promise<unknown> => {
+  const request = async (
+    input: string,
+    init: Readonly<{method: 'GET' | 'POST'; headers: Readonly<Record<string, string>>; body?: string}>
+  ): Promise<unknown> => {
     if (requestCount >= maximumSnapshotRequests) {
       return fail('github_request_budget_exceeded');
     }
     requestCount += 1;
     let response: Response;
     try {
-      response = await fetch(`https://api.github.com${path}`, {
-        method: 'GET',
-        headers: requestHeaders(credential)
-      });
+      response = await fetch(input, init);
     } catch {
       return fail('github_transport_failed');
     }
@@ -387,6 +427,22 @@ const createClient = (fetch: GitHubFetch, credential: string) => {
       return fail('github_response_invalid');
     }
   };
+  const get = async (path: string): Promise<unknown> => request(
+    `https://api.github.com${path}`,
+    {method: 'GET', headers: requestHeaders(credential)}
+  );
+  const graphql = async (
+    query: string,
+    variables: Readonly<Record<string, string | null>>
+  ): Promise<JsonObject> => {
+    const payload = object(await request('https://api.github.com/graphql', {
+      method: 'POST',
+      headers: {...requestHeaders(credential), 'content-type': 'application/json'},
+      body: JSON.stringify({query, variables})
+    }));
+    if (payload.errors !== undefined) return fail('github_provider_rejected');
+    return object(payload.data);
+  };
 
   const pages = async (
     path: string,
@@ -404,7 +460,79 @@ const createClient = (fetch: GitHubFetch, credential: string) => {
     }
     return fail('github_pagination_exceeded');
   };
-  return {get, pages};
+  return {get, graphql, pages};
+};
+
+const projectEvidencePage = (
+  payload: JsonObject,
+  scope: GitHubRepositoryScopeDefinition,
+  statusByIssueNumber: Map<number, TrackerProjectStatusObservation>
+): string | null => {
+  const project = object(payload.node);
+  if (boundedString(project.id, 512) !== scope.projectNodeId) {
+    return fail('github_response_invalid');
+  }
+  const items = object(project.items);
+  const pageInfo = object(items.pageInfo);
+  for (const item of array(items.nodes)) {
+    const source = object(item);
+    const content = source.content;
+    if (content === null) continue;
+    const entity = object(content);
+    const typename = boundedString(entity.__typename, 64);
+    if (typename !== 'Issue') return fail('github_response_invalid');
+    const repository = object(entity.repository);
+    if (boundedString(repository.nameWithOwner, 256) !== scope.fullName) continue;
+    const number = positiveInteger(entity.number);
+    const fieldValues = object(source.fieldValues);
+    if (boolean(object(fieldValues.pageInfo).hasNextPage)) return fail('github_pagination_exceeded');
+    let status: TrackerProjectStatusObservation = {
+      projectExternalId: scope.projectNodeId,
+      fieldExternalId: scope.projectStatusFieldNodeId,
+      optionExternalId: null,
+      status: null
+    };
+    let foundStatusField = false;
+    for (const fieldValue of array(fieldValues.nodes)) {
+      const value = object(fieldValue);
+      if (value.field === undefined || value.optionId === undefined) continue;
+      const field = object(value.field);
+      if (boundedString(field.id, 512) !== scope.projectStatusFieldNodeId) continue;
+      if (foundStatusField) return fail('github_response_invalid');
+      foundStatusField = true;
+      if (value.optionId !== null) {
+        const optionExternalId = boundedString(value.optionId, 512);
+        status = {
+          projectExternalId: scope.projectNodeId,
+          fieldExternalId: scope.projectStatusFieldNodeId,
+          optionExternalId,
+          status: scope.projectStatusOptionMap[optionExternalId] ?? null
+        };
+      }
+    }
+    if (statusByIssueNumber.has(number)) return fail('github_response_invalid');
+    statusByIssueNumber.set(number, status);
+  }
+  if (!boolean(pageInfo.hasNextPage)) return null;
+  return boundedString(pageInfo.endCursor, 512);
+};
+
+const readProjectEvidence = async (
+  client: ReturnType<typeof createClient>,
+  scope: GitHubRepositoryScopeDefinition
+): Promise<ProjectEvidence> => {
+  const statusByIssueNumber = new Map<number, TrackerProjectStatusObservation>();
+  let after: string | null = null;
+  for (let page = 0; page < maximumProjectItemPages; page += 1) {
+    const nextCursor = projectEvidencePage(
+      await client.graphql(projectItemsQuery, {projectId: scope.projectNodeId, after}),
+      scope,
+      statusByIssueNumber
+    );
+    if (nextCursor === null) return {statusByIssueNumber};
+    after = nextCursor;
+  }
+  return fail('github_pagination_exceeded');
 };
 
 export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
@@ -462,22 +590,29 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
       `/repos/${fullName}/issues?state=all`,
       array
     );
-    const workItems = byNumber(issuePayloads.map(
+    const rawWorkItems = byNumber(issuePayloads.map(
       (payload) => workItem(payload, scope)
     ).filter(
       (item): item is TrackerWorkItemSnapshot => item !== null
     ));
-    assertUnique(workItems, ({externalId}) => externalId);
-    assertUnique(workItems, ({number}) => number);
+    assertUnique(rawWorkItems, ({externalId}) => externalId);
+    assertUnique(rawWorkItems, ({number}) => number);
     const pullRequestPayloads = await client.pages(
       `/repos/${fullName}/pulls?state=all`,
       array
     );
-    const pullRequests = byNumber(pullRequestPayloads.map(
+    const rawPullRequests = byNumber(pullRequestPayloads.map(
       (payload) => pullRequest(payload, scope)
     ));
-    assertUnique(pullRequests, ({externalId}) => externalId);
-    assertUnique(pullRequests, ({number}) => number);
+    assertUnique(rawPullRequests, ({externalId}) => externalId);
+    assertUnique(rawPullRequests, ({number}) => number);
+    const evidence = await readProjectEvidence(client, scope);
+    const workItems = rawWorkItems.map((item) => {
+      const projectStatus = evidence.statusByIssueNumber.get(item.number) ?? null;
+      const snapshot = {...item, projectStatus};
+      return {...snapshot, externalVersion: stableVersion(snapshot)};
+    });
+    const pullRequests = rawPullRequests;
     const checks: TrackerCheckSnapshot[] = [];
     const openPullRequests = pullRequests.filter(({state}) => state === 'open');
     if (openPullRequests.length > maximumOpenPullRequestCheckFanout) {

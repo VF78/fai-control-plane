@@ -823,6 +823,14 @@ export type TrackerWorkItemSnapshot = Readonly<{
   labels: readonly TrackerLabel[];
   assignees: readonly TrackerIdentity[];
   milestone: TrackerMilestone | null;
+  projectStatus: TrackerProjectStatusObservation | null;
+}>;
+/** A Project V2 Status observation, including an explicit unknown or missing option. */
+export type TrackerProjectStatusObservation = Readonly<{
+  projectExternalId: string;
+  fieldExternalId: string;
+  optionExternalId: string | null;
+  status: WorkItemStatus | null;
 }>;
 export type TrackerPullRequestSnapshot = Readonly<{
   externalId: string;
@@ -1010,7 +1018,7 @@ const trackerSnapshotAssignees = (value: unknown): readonly TrackerIdentity[] | 
 const trackerSnapshotWorkItem = (value: unknown): TrackerWorkItemSnapshot | null => {
   const record = trackerSnapshotObject(value, [
     'externalId', 'externalVersion', 'url', 'htmlUrl', 'number', 'title', 'state',
-    'labels', 'assignees', 'milestone'
+    'labels', 'assignees', 'milestone', 'projectStatus'
   ]);
   if (record === null || (record.state !== 'open' && record.state !== 'closed')) return null;
   const externalId = trackerSnapshotIdentifier(record.externalId, 512);
@@ -1022,11 +1030,41 @@ const trackerSnapshotWorkItem = (value: unknown): TrackerWorkItemSnapshot | null
   const labels = trackerSnapshotLabels(record.labels);
   const assignees = trackerSnapshotAssignees(record.assignees);
   const milestone = trackerSnapshotMilestone(record.milestone);
+  const projectStatus = trackerSnapshotProjectStatus(record.projectStatus);
   return externalId === null || externalVersion === null || url === null || htmlUrl === null ||
     number === null || title === null || labels === null || assignees === null ||
-    (record.milestone !== null && milestone === null)
+    (record.milestone !== null && milestone === null) ||
+    (record.projectStatus !== null && projectStatus === null)
     ? null
-    : {externalId, externalVersion, url, htmlUrl, number, title, state: record.state, labels, assignees, milestone};
+    : {
+        externalId, externalVersion, url, htmlUrl, number, title, state: record.state,
+        labels, assignees, milestone, projectStatus
+      };
+};
+
+const trackerSnapshotProjectStatus = (
+  value: unknown
+): TrackerProjectStatusObservation | null => {
+  if (value === null) return null;
+  const record = trackerSnapshotObject(value, [
+    'projectExternalId', 'fieldExternalId', 'optionExternalId', 'status'
+  ]);
+  if (record === null) return null;
+  const projectExternalId = trackerSnapshotIdentifier(record.projectExternalId, 512);
+  const fieldExternalId = trackerSnapshotIdentifier(record.fieldExternalId, 512);
+  const optionExternalId = record.optionExternalId === null
+    ? null
+    : trackerSnapshotIdentifier(record.optionExternalId, 512);
+  const status = record.status === null
+    ? null
+    : typeof record.status === 'string' && workItemStatuses.includes(record.status as WorkItemStatus)
+      ? record.status as WorkItemStatus
+      : null;
+  return projectExternalId === null || fieldExternalId === null ||
+    (optionExternalId === null && record.optionExternalId !== null) ||
+    (record.status !== null && status === null)
+    ? null
+    : {projectExternalId, fieldExternalId, optionExternalId, status};
 };
 
 const trackerSnapshotPullRequest = (value: unknown): TrackerPullRequestSnapshot | null => {
@@ -1180,9 +1218,11 @@ export type TrackerSnapshotProjectionResult =
       snapshotExternalVersion: string;
       createdWorkItems: number;
       updatedWorkItems: number;
+      updatedWorkItemStatuses: number;
       projectedPullRequests: number;
       projectedChecks: number;
       unknownWorkItemExternalIds: readonly string[];
+      unknownProjectStatusWorkItemExternalIds: readonly string[];
       unmappablePullRequestExternalIds: readonly string[];
       unknownCheckExternalIds: readonly string[];
     }>

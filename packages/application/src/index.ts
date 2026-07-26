@@ -364,7 +364,8 @@ const validateTrackerRepositorySnapshotOrchestrationInput = (
     const pullRequestBindings = base.pullRequestBindings === undefined
       ? []
       : snapshotPullRequestBindings(base.pullRequestBindings);
-    return pullRequestBindings === null ? null : {
+    if (pullRequestBindings === null) return null;
+    return {
       actor: actor as TrustedActorContext, workspaceId, projectId, operationId, correlationId,
       expectedProvider, repository, credentialRef, mode: 'bootstrap', pullRequestBindings
     };

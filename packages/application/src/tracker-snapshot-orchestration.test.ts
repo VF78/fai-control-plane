@@ -26,7 +26,8 @@ const workItem = () => ({
   url: 'https://provider.test/issues/1', htmlUrl: 'https://provider.test/issues/1',
   number: 1, title: 'Issue', state: 'open' as const,
   labels: [{externalId: 'provider:label:1', name: 'bug', color: 'd73a4a'}],
-  assignees: [{externalId: 'provider:user:1', login: 'maintainer'}], milestone: null
+  assignees: [{externalId: 'provider:user:1', login: 'maintainer'}], milestone: null,
+  projectStatus: null
 });
 const pullRequest = () => ({
   externalId: 'provider:pr:1', externalVersion: 'provider:pr:v1',
@@ -45,9 +46,11 @@ const applied = {
   snapshotExternalVersion: snapshot.externalVersion,
   createdWorkItems: 0,
   updatedWorkItems: 0,
+  updatedWorkItemStatuses: 0,
   projectedPullRequests: 0,
   projectedChecks: 0,
   unknownWorkItemExternalIds: [],
+  unknownProjectStatusWorkItemExternalIds: [],
   unmappablePullRequestExternalIds: [],
   unknownCheckExternalIds: []
 };

@@ -31,6 +31,12 @@ const externalUrl = (metadata: Record<string, unknown>): string | null => {
   return typeof value === 'string' && value.startsWith('https://') ? value : null;
 };
 
+const issueState = (metadata: Record<string, unknown>): 'open' | 'closed' | null =>
+  metadata.state === 'open' || metadata.state === 'closed' ? metadata.state : null;
+
+const hasProjectStatus = (metadata: Record<string, unknown>): boolean =>
+  typeof metadata.projectStatus === 'object' && metadata.projectStatus !== null;
+
 async function loadProjects() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
@@ -78,14 +84,21 @@ async function loadProjects() {
         .where(inArray(trackerSnapshotOperations.projectId, projectIds))
         .orderBy(desc(trackerSnapshotOperations.createdAt))
     ]);
-    const links = new Map(bindings.map((binding) => [
+    const issueBindings = new Map(bindings.map((binding) => [
       binding.entityId,
-      externalUrl(binding.metadata)
+      {
+        externalUrl: externalUrl(binding.metadata),
+        state: issueState(binding.metadata),
+        hasProjectStatus: hasProjectStatus(binding.metadata)
+      }
     ]));
-    const activeItems: WorkItemRow[] = items.map((item) => ({
-      ...item,
-      externalUrl: links.get(item.id) ?? null
-    }));
+    const activeItems: WorkItemRow[] = items.flatMap((item) => {
+      const binding = issueBindings.get(item.id);
+      return binding?.state === 'closed' && !binding.hasProjectStatus ? [] : [{
+        ...item,
+        externalUrl: binding?.externalUrl ?? null
+      }];
+    });
 
     return configuredProjects.map((project) => ({
       ...project,

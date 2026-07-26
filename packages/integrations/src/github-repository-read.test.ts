@@ -72,9 +72,31 @@ const jsonResponse = (
     headers: {'content-type': 'application/json', ...headers}
   });
 
+const projectItemsPayload = (
+  projectNodeId: string,
+  nodes: readonly unknown[] = [],
+  pageInfo: Readonly<{hasNextPage: boolean; endCursor?: string | null}> = {hasNextPage: false}
+) => ({
+  data: {
+    node: {
+      id: projectNodeId,
+      items: {nodes, pageInfo}
+    }
+  }
+});
+
 const routeFetch = (
-  routes: (url: URL, init: Parameters<GitHubFetch>[1]) => Response
-): GitHubFetch => async (input, init) => routes(new URL(input), init);
+  routes: (url: URL, init: Parameters<GitHubFetch>[1]) => Response,
+  graphqlPayload?: (init: Parameters<GitHubFetch>[1]) => unknown
+): GitHubFetch => async (input, init) => {
+  const url = new URL(input);
+  if (url.pathname === '/graphql') {
+    if (graphqlPayload !== undefined) return jsonResponse(graphqlPayload(init));
+    const body = JSON.parse(init.body ?? '{}') as {variables?: {projectId?: string}};
+    return jsonResponse(projectItemsPayload(body.variables?.projectId ?? 'missing-project-id'));
+  }
+  return routes(url, init);
+};
 
 const adapter = (
   fetch: GitHubFetch,
@@ -160,6 +182,66 @@ describe('GitHub repository read adapter', () => {
       credentialRef,
       'github_repository_snapshot_read'
     );
+  });
+
+  it('projects only allowlisted Project V2 Status option IDs and preserves absent or unknown observations', async () => {
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/repos/VF78/MSA') return jsonResponse(repositoryPayload());
+      if (url.pathname.endsWith('/issues')) return jsonResponse([issue(1), issue(2), issue(3)]);
+      if (url.pathname.endsWith('/pulls')) return jsonResponse([]);
+      throw new Error(`Unexpected route ${url.pathname}`);
+    }, () => projectItemsPayload('PVT_kwHOBIUvJs4Bbefq', [
+      {
+        content: {
+          __typename: 'Issue', number: 1,
+          repository: {nameWithOwner: 'VF78/MSA'}
+        },
+        fieldValues: {
+          nodes: [{
+            optionId: '1f121483',
+            field: {id: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc'}
+          }],
+          pageInfo: {hasNextPage: false}
+        }
+      },
+      {
+        content: {
+          __typename: 'Issue', number: 2,
+          repository: {nameWithOwner: 'VF78/MSA'}
+        },
+        fieldValues: {
+          nodes: [{
+            optionId: 'not-an-allowlisted-option',
+            field: {id: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc'}
+          }],
+          pageInfo: {hasNextPage: false}
+        }
+      }
+    ]));
+
+    const snapshot = await readMsa(fetch);
+
+    expect(snapshot.workItems.map(({number, projectStatus}) => ({number, projectStatus}))).toEqual([
+      {
+        number: 1,
+        projectStatus: {
+          projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+          fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
+          optionExternalId: '1f121483',
+          status: 'ready'
+        }
+      },
+      {
+        number: 2,
+        projectStatus: {
+          projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+          fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
+          optionExternalId: 'not-an-allowlisted-option',
+          status: null
+        }
+      },
+      {number: 3, projectStatus: null}
+    ]);
   });
 
   it.each([
@@ -342,7 +424,7 @@ describe('GitHub repository read adapter', () => {
       code: 'github_request_budget_exceeded',
       message: 'github_request_budget_exceeded'
     });
-    expect(overBudget.count()).toBe(32);
+    expect(overBudget.count()).toBe(33);
   });
 
   it('reads pull requests and their check runs into stable provider-neutral models', async () => {

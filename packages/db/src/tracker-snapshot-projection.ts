@@ -48,7 +48,8 @@ const issueMetadata = (
   state: item.state,
   labels: item.labels,
   assignees: item.assignees,
-  milestone: item.milestone
+  milestone: item.milestone,
+  projectStatus: item.projectStatus
 });
 
 const pullRequestMetadata = (
@@ -283,6 +284,7 @@ export const createPostgresTrackerSnapshotProjector = (
             ? result.code.toUpperCase()
             : (
                 result.unknownWorkItemExternalIds.length > 0 ||
+                result.unknownProjectStatusWorkItemExternalIds.length > 0 ||
                 result.unmappablePullRequestExternalIds.length > 0 ||
                 result.unknownCheckExternalIds.length > 0
               )
@@ -337,7 +339,9 @@ export const createPostgresTrackerSnapshotProjector = (
       );
       let createdWorkItems = 0;
       let updatedWorkItems = 0;
+      let updatedWorkItemStatuses = 0;
       const unknownWorkItemExternalIds: string[] = [];
+      const unknownProjectStatusWorkItemExternalIds: string[] = [];
 
       for (const item of input.snapshot.workItems) {
         let workItemId = workItemIds.get(item.externalId);
@@ -350,7 +354,10 @@ export const createPostgresTrackerSnapshotProjector = (
           await tx.insert(schema.workItems).values({
             id: workItemId,
             projectId: input.projectId,
-            title: item.title
+            title: item.title,
+            ...(item.projectStatus?.status === null || item.projectStatus === null
+              ? {}
+              : {status: item.projectStatus.status})
           });
           await tx.insert(schema.trackerBindings).values({
             projectId: input.projectId,
@@ -364,6 +371,9 @@ export const createPostgresTrackerSnapshotProjector = (
             metadata: issueMetadata(input.snapshot, item)
           });
           workItemIds.set(item.externalId, workItemId);
+          if (item.projectStatus !== null && item.projectStatus.status === null) {
+            unknownProjectStatusWorkItemExternalIds.push(item.externalId);
+          }
           createdWorkItems += 1;
           continue;
         }
@@ -372,7 +382,11 @@ export const createPostgresTrackerSnapshotProjector = (
           continue;
         }
         const [workItem] = await tx
-          .select({id: schema.workItems.id, title: schema.workItems.title})
+          .select({
+            id: schema.workItems.id,
+            title: schema.workItems.title,
+            status: schema.workItems.status
+          })
           .from(schema.workItems)
           .where(and(
             eq(schema.workItems.id, workItemId),
@@ -410,6 +424,34 @@ export const createPostgresTrackerSnapshotProjector = (
             throw new Error('tracker_snapshot_work_item_disappeared');
           }
           updatedWorkItems += 1;
+        }
+        if (item.projectStatus !== null && item.projectStatus.status === null) {
+          unknownProjectStatusWorkItemExternalIds.push(item.externalId);
+          continue;
+        }
+        const mappedProjectStatus = item.projectStatus?.status ?? null;
+        if (mappedProjectStatus !== null && mappedProjectStatus !== workItem.status) {
+          const [updatedWorkItem] = await tx.update(schema.workItems).set({
+            status: mappedProjectStatus,
+            version: sql`${schema.workItems.version} + 1`,
+            updatedAt: new Date()
+          }).where(and(
+            eq(schema.workItems.id, workItemId),
+            eq(schema.workItems.projectId, input.projectId)
+          )).returning({id: schema.workItems.id});
+          if (updatedWorkItem === undefined) {
+            throw new Error('tracker_snapshot_work_item_disappeared');
+          }
+          await tx.insert(schema.statusTransitions).values({
+            id: randomUUID(),
+            workItemId,
+            fromStatus: workItem.status,
+            toStatus: mappedProjectStatus,
+            actorId: input.actorId,
+            reason: 'github_project_status_sync',
+            idempotencyKey: `tracker-project-status:${input.operationId}:${workItemId}`
+          });
+          updatedWorkItemStatuses += 1;
         }
       }
 
@@ -685,9 +727,11 @@ export const createPostgresTrackerSnapshotProjector = (
         snapshotExternalVersion: input.snapshot.externalVersion,
         createdWorkItems,
         updatedWorkItems,
+        updatedWorkItemStatuses,
         projectedPullRequests,
         projectedChecks,
         unknownWorkItemExternalIds,
+        unknownProjectStatusWorkItemExternalIds,
         unmappablePullRequestExternalIds,
         unknownCheckExternalIds
       };
