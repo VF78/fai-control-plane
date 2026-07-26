@@ -115,6 +115,10 @@ services:
         target: /run/secrets/github-projects-oauth-token
         read_only: true
       - type: bind
+        source: ${GITHUB_APP_PRIVATE_KEY_HOST_FILE}
+        target: /run/secrets/github-app-private-key
+        read_only: true
+      - type: bind
         source: ${TELEGRAM_IDENTITY_SECRET_HOST_FILE}
         target: /run/secrets/telegram-identity
         read_only: true

@@ -42,10 +42,19 @@ import {configureRecoveryScanQueue} from './recovery-scan-queue';
 import {configureDailyPmReportQueue} from './daily-pm-report-queue';
 import {configurePmReportCheckQueue} from './pm-report-check-queue';
 import {configureQaIntakeQueue} from './qa-intake-queue';
+import {
+  createGitHubReconciliationRuntime,
+  githubReconciliationFailure
+} from './github-reconciliation';
+import {
+  configureGitHubReconciliationQueue,
+  GITHUB_RECONCILIATION_QUEUE
+} from './github-reconciliation-queue';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
 const writebackEnabled = process.env.GITHUB_STATUS_WRITEBACK_ENABLED === 'true';
+const githubSyncEnabled = process.env.GITHUB_SYNC_ENABLED === 'true';
 const telegramStatusResponseEnabled = process.env.TELEGRAM_STATUS_RESPONSE_ENABLED === 'true';
 const writebackSecretPurpose = 'github_project_status_write_oauth_token';
 const telegramIdentitySecretScope = Object.freeze(['telegram:identity:keying']);
@@ -187,6 +196,9 @@ if (telegramStatusResponseEnabled) {
 let statusPublisherTimer: NodeJS.Timeout | undefined;
 let telegramStatusPublisherTimer: NodeJS.Timeout | undefined;
 let publishTelegramStatusResponses: (() => Promise<void>) | undefined;
+const githubReconciliation = githubSyncEnabled
+  ? createGitHubReconciliationRuntime(db, pool)
+  : undefined;
 
 const server = createServer((request, response) => {
   response.setHeader('Content-Type', 'application/json');
@@ -226,6 +238,9 @@ await configureRecoveryScanQueue(boss);
 await configureDailyPmReportQueue(boss);
 await configurePmReportCheckQueue(boss);
 await configureQaIntakeQueue(boss);
+if (githubReconciliation !== undefined) {
+  await configureGitHubReconciliationQueue(boss);
+}
 await boss.work(INCOMING_EVENT_QUEUE, async ([job]) => {
   if (job === undefined) return;
   const result = await incomingEventConsumer.consume(job.data);
@@ -243,8 +258,27 @@ await boss.work(QA_INTAKE_QUEUE, async () => {
   const eventIds = await qaIntakeProducer.run();
   return Promise.all(eventIds.map((eventId) => qaIntakeTaskPacketConsumer.consume(eventId)));
 });
+if (githubReconciliation !== undefined) {
+  await boss.work(GITHUB_RECONCILIATION_QUEUE, async () => {
+    try {
+      await githubReconciliation.reconcile();
+    } catch (error) {
+      const failure = githubReconciliationFailure(error);
+      console.error('github reconciliation failed', failure);
+      throw error;
+    }
+  });
+}
 await recoveryScanProducer.run();
 await dailyPmReportProducer.run();
+if (githubReconciliation !== undefined) {
+  try {
+    await githubReconciliation.reconcile();
+  } catch (error) {
+    const failure = githubReconciliationFailure(error);
+    console.error('github reconciliation startup failed', failure);
+  }
+}
 if (telegramStatusPublisher !== undefined) {
   let publishing = false;
   publishTelegramStatusResponses = async (): Promise<void> => {
@@ -268,7 +302,7 @@ if (telegramStatusPublisher !== undefined) {
     void publishTelegramStatusResponses!();
   }, 1_000);
 }
-if (writebackEnabled) {
+if (githubSyncEnabled && writebackEnabled) {
   const tokenPath = process.env.GITHUB_PROJECTS_OAUTH_TOKEN_FILE;
   if (tokenPath === undefined || !isAbsolute(tokenPath)) {
     throw new Error('GitHub status write-back configuration is invalid.');
