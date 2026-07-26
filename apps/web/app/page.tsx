@@ -99,11 +99,11 @@ async function loadProjects() {
 export default async function ProjectControlPanel() {
   const projectData = await loadProjects();
   const navigation = [
+    'Portfolio',
     'Project Control Panel',
-    'Work Items',
-    'Tracker Sync',
-    'Agent Runs',
-    'Audit Log'
+    'Runs & Approvals',
+    'Access & Policies',
+    'Health & Audit'
   ];
 
   return (

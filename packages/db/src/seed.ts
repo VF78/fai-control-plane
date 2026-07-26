@@ -9,14 +9,16 @@ import {
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required for seed');
-const credentialReference = process.env.GITHUB_APP_PRIVATE_KEY_FILE;
-if (!credentialReference) throw new Error('GITHUB_APP_PRIVATE_KEY_FILE is required for seed');
+const credentialReference = process.env.GITHUB_REPOSITORY_READ_TOKEN_FILE;
+if (!credentialReference) {
+  throw new Error('GITHUB_REPOSITORY_READ_TOKEN_FILE is required for seed');
+}
 
 const {db, pool} = createDatabase(databaseUrl);
 const workspaceSeed = {name: 'fAI Studio', slug: 'fai-studio'};
 const repositorySeeds = [
-  {name: 'MSA', slug: 'msa', owner: 'VF78', repository: 'MSA', externalId: '1278325372'},
-  {name: 'ASCON', slug: 'ascon', owner: 'VF78', repository: 'ascon', externalId: '1279114011'}
+  {name: 'MSA', slug: 'msa', owner: 'VF78', repository: 'MSA', externalId: 'github:repository:1278325372'},
+  {name: 'ASCON', slug: 'ascon', owner: 'VF78', repository: 'ascon', externalId: 'github:repository:1279114011'}
 ] as const;
 
 try {
