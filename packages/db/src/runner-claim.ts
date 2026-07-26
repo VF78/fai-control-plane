@@ -20,6 +20,9 @@ const MAX_RECEIPT_BYTES = 1_024 * 1_024;
 const WORKSTATION_LOCAL_STORAGE_PROVIDER = 'workstation-local';
 const RECEIPT_ARTIFACT_FILENAME = 'agent-run-receipt.json';
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 const workstationArtifactStorageKey = (
   runnerId: string,
   runId: string,
@@ -33,13 +36,10 @@ const workstationArtifactStorageKey = (
 const summaryArtifactFromMetadata = (metadata: CanonicalJson):
   | {name: string; sha256: string; sizeBytes: number}
   | undefined => {
-  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
-    return undefined;
-  }
+  if (!isRecord(metadata)) return undefined;
   const summaryArtifact = metadata.summaryArtifact;
   if (
-    typeof summaryArtifact !== 'object' || summaryArtifact === null ||
-    Array.isArray(summaryArtifact) ||
+    !isRecord(summaryArtifact) ||
     typeof summaryArtifact.name !== 'string' ||
     !artifactFilenamePattern.test(summaryArtifact.name) ||
     typeof summaryArtifact.sha256 !== 'string' ||
