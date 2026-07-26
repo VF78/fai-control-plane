@@ -15,7 +15,8 @@ export {
 export {
   createPostgresHealthcheckProducer,
   HEALTHCHECK_QUEUE,
-  healthcheckCron
+  healthcheckCron,
+  healthcheckStaleAfterMs
 } from './healthcheck';
 export {
   createPostgresTrackerRepositoryReadScopeAuthorizer

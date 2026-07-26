@@ -12,6 +12,7 @@ import {
   auditEvents,
   createDatabase,
   dashboardSnapshots,
+  healthcheckStaleAfterMs,
   outboxEvents,
   projectShareGrants,
   projectShareWorkItems,
@@ -271,14 +272,30 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
   ]);
   const snapshotsByProject = latestByProject(snapshots);
   const operationsByProject = latestByProject(operations);
+  const now = Date.now();
   return {
-    projects: configuredProjects.map((project) => ({
-      id: project.id, name: project.name, slug: project.slug,
-      health: snapshotsByProject.get(project.id)?.health ?? 'unknown',
-      snapshotAt: snapshotsByProject.get(project.id)?.capturedAt ?? null,
-      synchronizedAt: operationsByProject.get(project.id)?.createdAt ?? null,
-      unresolvedRiskCount: signals.filter((signal) => signal.projectId === project.id).length
-    })),
+    projects: configuredProjects.map((project) => {
+      const projectSignals = signals.filter((signal) => signal.projectId === project.id);
+      const synchronizedAt = operationsByProject.get(project.id)?.createdAt ?? null;
+      const hasCurrentFailure =
+        projectSignals.some((signal) => signal.severity === 'red') ||
+        failedOutbox.some((event) => event.projectId === project.id) ||
+        unhealthyJobs.some((job) => job.projectId === project.id);
+      const health = hasCurrentFailure
+        ? 'red'
+        : synchronizedAt === null
+          ? 'unknown'
+          : projectSignals.some((signal) => signal.severity === 'yellow') ||
+              now - synchronizedAt.getTime() > healthcheckStaleAfterMs
+            ? 'yellow'
+            : 'green';
+      return {
+        id: project.id, name: project.name, slug: project.slug, health,
+        snapshotAt: snapshotsByProject.get(project.id)?.capturedAt ?? null,
+        synchronizedAt,
+        unresolvedRiskCount: projectSignals.length
+      };
+    }),
     attention
   };
 });
