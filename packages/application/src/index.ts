@@ -3,9 +3,10 @@ import {
   actionCategories,
   accessRequestStatuses,
   agentRunStatuses,
-  approvalStatuses,
+  CURRENT_POLICY_VERSION,
   authorize,
   canonicalJson,
+  createApprovalBinding,
   createTaskPacket,
   environments,
   isTrustedActorContext,
@@ -21,6 +22,9 @@ import {
   type ActionCategory,
   type AgentRun,
   type Approval,
+  type ApprovalBindingRequest,
+  type ApprovalReceipt,
+  type ApprovalRequiredReceipt,
   type ApprovalTarget,
   type CanonicalCommand,
   type CanonicalCommandTransaction,
@@ -846,12 +850,15 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
       return hasExactKeys(payload, ['agentRunId', 'status', 'expectedVersion']) && isUuid(payload.agentRunId) &&
         isOneOf(agentRunStatuses, payload.status) && isVersion(payload.expectedVersion);
     case 'approval.request':
-      return hasExactKeys(payload, ['approvalId', 'action', 'target']) && isUuid(payload.approvalId) &&
-        isPolicyRequest(payload.action) && isApprovalTarget(payload.target);
+      return hasExactKeys(payload, ['approvalId', 'action', 'target', 'binding']) && isUuid(payload.approvalId) &&
+        isPolicyRequest(payload.action) && isApprovalTarget(payload.target) &&
+        isApprovalBindingRequest(payload.binding);
     case 'approval.decide':
-      return hasExactKeys(payload, ['approvalId', 'status', 'expectedVersion']) && isUuid(payload.approvalId) &&
-        isOneOf(approvalStatuses.filter((status) => status !== 'pending'), payload.status) &&
-        isVersion(payload.expectedVersion);
+      return hasExactKeys(payload, [
+        'approvalId', 'status', 'expectedVersion', 'expectedActionHash', 'expectedPolicyVersion'
+      ]) && isUuid(payload.approvalId) && isOneOf(['approved', 'rejected'] as const, payload.status) &&
+        isVersion(payload.expectedVersion) && typeof payload.expectedActionHash === 'string' &&
+        sha256Pattern.test(payload.expectedActionHash) && isVersion(payload.expectedPolicyVersion);
     case 'access_request.request':
       return hasExactKeys(payload, ['requestId', 'targetSurface', 'requestedScope']) && isUuid(payload.requestId) &&
         isOneOf(policySurfaces, payload.targetSurface) && isDenseArray(payload.requestedScope) &&
@@ -874,6 +881,16 @@ const isPolicyRequest = (value: unknown): value is PolicyRequest => isPlainObjec
 const isApprovalTarget = (value: unknown): value is ApprovalTarget => isPlainObject(value) &&
   ((hasExactKeys(value, ['workItemId']) && isUuid(value.workItemId)) ||
     (hasExactKeys(value, ['agentRunId']) && isUuid(value.agentRunId)));
+const isApprovalBindingRequest = (value: unknown): value is ApprovalBindingRequest => {
+  if (!isPlainObject(value) || !hasExactKeys(value, [
+    'subjectHash', 'expectedPolicyVersion', 'executionIdentity', 'expiresAt'
+  ])) return false;
+  if (typeof value.subjectHash !== 'string' || !sha256Pattern.test(value.subjectHash) ||
+    !isVersion(value.expectedPolicyVersion) || typeof value.executionIdentity !== 'string' ||
+    !canonicalUuidPattern.test(value.executionIdentity) || typeof value.expiresAt !== 'string') return false;
+  const expiresAt = new Date(value.expiresAt);
+  return !Number.isNaN(expiresAt.getTime()) && expiresAt.toISOString() === value.expiresAt;
+};
 
 const normalizedActorForHash = (command: CanonicalCommand): CanonicalJson => {
   const actor = command.actor;
@@ -1060,7 +1077,7 @@ export const createCanonicalCommandService = (
         return {status: 'key_reused', error: {code: 'IDEMPOTENCY_KEY_REUSED', message: 'Idempotency key was already used for a different request.'}};
       }
       const commandReceipt = execution.command.kind === 'approval_required'
-        ? approvalRequiredReceipt(claim, command.type === 'approval.request' ? command.payload.approvalId : '')
+        ? execution.command.commandReceipt
         : execution.command.value;
       return {status: 'completed', receipt: commandReceipt};
     }
@@ -1207,8 +1224,18 @@ export const createCanonicalCommandService = (
     transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
     command: Extract<CanonicalCommand, {type: 'approval.request'}>
   ) {
-    const requested = authorize(command.actor, command.payload.action);
     const target = targetFor('approval', command.payload.approvalId);
+    const binding = createApprovalBinding(
+      command.payload.action,
+      command.payload.target,
+      command.payload.binding,
+      command.actor.actorId,
+      clock.now()
+    );
+    if (!binding.ok) return completeNoMutation(
+      transaction, token, claim, command, target, binding, command.payload.action.actionCategory
+    );
+    const requested = authorize(command.actor, command.payload.action);
     if (requested.ok) return completeNoMutation(transaction, token, claim, command, target, failed('INVALID_COMMAND', 'Approval is unnecessary because the action is allowed.'), command.payload.action.actionCategory, 'allow');
     if (requested.error.code !== 'APPROVAL_REQUIRED') {
       return completeNoMutation(transaction, token, claim, command, target, requested, command.payload.action.actionCategory,
@@ -1224,11 +1251,25 @@ export const createCanonicalCommandService = (
       surface: command.payload.action.surface,
       environment: command.payload.action.environment,
       requestedByActorId: command.actor.actorId,
+      binding: binding.value,
       status: 'pending',
       version: 1
     };
     const approvalTarget = targetFor('approval', approval.id, undefined, 1);
-    const commandReceipt = receipt(claim, approvalTarget, failed('APPROVAL_REQUIRED', 'Approval is required.'));
+    const commandReceipt: ApprovalRequiredReceipt = {
+      ...claim,
+      aggregateType: approvalTarget.aggregateType,
+      aggregateId: approvalTarget.aggregateId,
+      resultVersion: 1,
+      result: {
+        ok: false,
+        error: {
+          code: 'APPROVAL_REQUIRED',
+          message: 'Approval is required.',
+          approval: compactApproval(approval)
+        }
+      }
+    };
     const persisted = await transaction.persistApprovalRequired({
       claimToken: token,
       outcome: {
@@ -1239,7 +1280,7 @@ export const createCanonicalCommandService = (
             failed('INVALID_COMMAND', 'Approval is required.')),
           policyDecision: 'ask', outcome: 'approval_required', reasonCode: 'APPROVAL_REQUIRED'
         },
-        receipt: commandReceipt as unknown as import('@fai-control-plane/domain').ApprovalRequiredReceipt
+        receipt: commandReceipt
       }
     });
     if (persisted.status === 'completed') return persisted.command;
@@ -1265,12 +1306,46 @@ export const createCanonicalCommandService = (
     if (approval === null) return completeNoMutation(transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.'));
     if (approval.version !== command.payload.expectedVersion) return completeNoMutation(transaction, token, claim, command,
       targetFor('approval', approval.id, command.payload.expectedVersion, approval.version), failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'));
+    if (command.payload.expectedActionHash !== approval.binding.actionHash ||
+      command.payload.expectedPolicyVersion !== approval.binding.policyVersion ||
+      command.payload.expectedPolicyVersion !== CURRENT_POLICY_VERSION) {
+      return completeNoMutation(transaction, token, claim, command, target,
+        failed('VERSION_CONFLICT', 'Approval binding or policy version conflicts with the command.'));
+    }
+    const decisionAt = clock.now();
+    if (command.actor.kind !== 'trusted_user') {
+      return completeNoMutation(transaction, token, claim, command, target,
+        failed('INVALID_ACTOR_CONTEXT', 'Only an authenticated human may decide an approval.'));
+    }
+    const authorization = authorize(command.actor, {
+      actionCategory: approval.actionCategory,
+      surface: approval.surface,
+      environment: approval.environment
+    });
+    if (authorization.ok || authorization.error.code !== 'APPROVAL_REQUIRED') {
+      return completeNoMutation(transaction, token, claim, command, target,
+        authorization.ok
+          ? failed('INVALID_COMMAND', 'Approval is no longer required by current policy.')
+          : authorization,
+        approval.actionCategory,
+        authorization.ok ? 'allow' : authorization.error.code === 'POLICY_DENIED' ? 'deny' : undefined);
+    }
+    if (command.payload.status === 'approved' &&
+      decisionAt.getTime() >= new Date(approval.binding.expiresAt).getTime()) {
+      return completeNoMutation(transaction, token, claim, command, target,
+        failed('INVALID_TRANSITION', 'Expired approvals cannot be approved.'));
+    }
     const updated = transitionApproval(approval, command.payload.status);
     if (!updated.ok) return completeNoMutation(transaction, token, claim, command, target, updated);
-    const resultTarget = targetFor('approval', updated.value.id, approval.version, updated.value.version);
-    const value = succeeded(compactApproval(updated.value));
+    const decided: Approval = {
+      ...updated.value,
+      decidedByActorId: command.actor.actorId,
+      decidedAt: decisionAt.toISOString()
+    };
+    const resultTarget = targetFor('approval', decided.id, approval.version, decided.version);
+    const value = succeeded(compactApproval(decided));
     return completeMutation(transaction, token, claim, command, {
-      kind: 'non_approval', mutation: {aggregateType: 'approval', aggregateId: updated.value.id, expectedPersistedVersion: approval.version, aggregate: updated.value},
+      kind: 'non_approval', mutation: {aggregateType: 'approval', aggregateId: decided.id, expectedPersistedVersion: approval.version, aggregate: decided},
       audit: audit(claim, ids, clock, resultTarget, command.actor.actorId, command.type, 'write', value)
     }, resultTarget, value);
   }
@@ -1333,9 +1408,14 @@ const commandTarget = (command: CanonicalCommand): Target => {
   return assertNever(command);
 };
 
-const approvalRequiredReceipt = (claim: CommandReceiptClaim, approvalId: string): CommandReceipt =>
-  receipt(claim, targetFor('approval', approvalId, undefined, 1), failed('APPROVAL_REQUIRED', 'Approval is required.'));
 const compactWorkItem = (item: WorkItem): CanonicalJson => ({id: item.id, status: item.status, version: item.version});
 const compactAgentRun = (run: AgentRun): CanonicalJson => ({id: run.id, status: run.status, version: run.version});
-const compactApproval = (approval: Approval): CanonicalJson => ({id: approval.id, status: approval.status, version: approval.version});
+const compactApproval = (approval: Approval): ApprovalReceipt => ({
+  id: approval.id,
+  status: approval.status,
+  version: approval.version,
+  binding: approval.binding,
+  ...(approval.decidedByActorId === undefined ? {} : {decidedByActorId: approval.decidedByActorId}),
+  ...(approval.decidedAt === undefined ? {} : {decidedAt: approval.decidedAt})
+});
 const compactAccessRequest = (request: AccessRequest): CanonicalJson => ({id: request.id, status: request.status, version: request.version});

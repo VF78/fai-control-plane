@@ -1,7 +1,9 @@
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {
+  CURRENT_POLICY_VERSION,
+  createApprovalBinding,
   createTaskPacket,
   type AgentRun,
   type ApprovalRequiredCommandOutcome,
@@ -79,54 +81,72 @@ const claim = (
 const approvalOutcome = (
   receiptClaim: CommandReceiptClaim,
   approvalId = randomUUID()
-): ApprovalRequiredCommandOutcome => ({
-  kind: 'approval_required',
-  approval: {
-    aggregateType: 'approval',
-    aggregateId: approvalId,
-    expectedPersistedVersion: null,
-    aggregate: {
-      id: approvalId,
-      projectId: fixture.projectId,
-      workItemId: fixture.workItemId,
+): ApprovalRequiredCommandOutcome => {
+  const action = {actionCategory: 'deploy', surface: 'runner', environment: 'production'} as const;
+  const target = {workItemId: fixture.workItemId} as const;
+  const now = new Date();
+  const binding = createApprovalBinding(action, target, {
+    subjectHash: 'a'.repeat(64),
+    expectedPolicyVersion: CURRENT_POLICY_VERSION,
+    executionIdentity: randomUUID(),
+    expiresAt: new Date(now.getTime() + 60 * 60 * 1_000).toISOString()
+  }, fixture.actorId, now);
+  if (!binding.ok) throw new Error('Approval binding fixture did not initialize.');
+  const approval = {
+    id: approvalId,
+    projectId: fixture.projectId,
+    ...target,
+    ...action,
+    requestedByActorId: fixture.actorId,
+    binding: binding.value,
+    status: 'pending' as const,
+    version: 1
+  };
+  return {
+    kind: 'approval_required',
+    approval: {
+      aggregateType: 'approval',
+      aggregateId: approvalId,
+      expectedPersistedVersion: null,
+      aggregate: approval
+    },
+    audit: {
+      id: randomUUID(),
+      workspaceId: fixture.workspaceId,
+      commandId: receiptClaim.commandId,
+      correlationId: receiptClaim.correlationId,
+      actorId: fixture.actorId,
       actionCategory: 'deploy',
-      surface: 'runner',
-      environment: 'production',
-      requestedByActorId: fixture.actorId,
-      status: 'pending',
-      version: 1
-    }
-  },
-  audit: {
-    id: randomUUID(),
-    workspaceId: fixture.workspaceId,
-    commandId: receiptClaim.commandId,
-    correlationId: receiptClaim.correlationId,
-    actorId: fixture.actorId,
-    actionCategory: 'deploy',
-    action: 'approval.request',
-    targetType: 'approval',
-    targetId: approvalId,
-    policyDecision: 'ask',
-    outcome: 'approval_required',
-    reasonCode: 'APPROVAL_REQUIRED',
-    resultVersion: 1,
-    occurredAt: new Date().toISOString()
-  },
-  receipt: {
-    ...receiptClaim,
-    aggregateType: 'approval',
-    aggregateId: approvalId,
-    resultVersion: 1,
-    result: {
-      ok: false,
-      error: {
-        code: 'APPROVAL_REQUIRED',
-        message: 'Approval is required.'
+      action: 'approval.request',
+      targetType: 'approval',
+      targetId: approvalId,
+      policyDecision: 'ask',
+      outcome: 'approval_required',
+      reasonCode: 'APPROVAL_REQUIRED',
+      resultVersion: 1,
+      occurredAt: new Date().toISOString()
+    },
+    receipt: {
+      ...receiptClaim,
+      aggregateType: 'approval',
+      aggregateId: approvalId,
+      resultVersion: 1,
+      result: {
+        ok: false,
+        error: {
+          code: 'APPROVAL_REQUIRED',
+          message: 'Approval is required.',
+          approval: {
+            id: approval.id,
+            status: approval.status,
+            version: approval.version,
+            binding: approval.binding
+          }
+        }
       }
     }
-  }
-});
+  };
+};
 
 const taskPacketContent = (
   overrides: Partial<TaskPacketContent> = {}
@@ -502,12 +522,38 @@ describePostgres(
          ) VALUES ($1, $2, $3, 'queued', $4, 1)`,
         [fixture.runId, fixture.packetId, fixture.profileId, `run-${randomUUID()}`]
       );
+      const approvalBindingNow = new Date();
+      const seededApprovalBinding = createApprovalBinding({
+        actionCategory: 'deploy',
+        surface: 'runner',
+        environment: 'production'
+      }, {workItemId: fixture.workItemId}, {
+        subjectHash: createHash('sha256').update(fixture.packetId).digest('hex'),
+        expectedPolicyVersion: CURRENT_POLICY_VERSION,
+        executionIdentity: fixture.runId,
+        expiresAt: new Date(approvalBindingNow.getTime() + 60 * 60 * 1_000).toISOString()
+      }, fixture.actorId, approvalBindingNow);
+      if (!seededApprovalBinding.ok) throw new Error('Seeded approval binding did not initialize.');
       await testPool.query(
         `INSERT INTO approval_requests (
            id, project_id, work_item_id, action_category, surface, environment,
+           subject_hash, policy_version, execution_identity, action_hash, expires_at,
            status, requested_by_actor_id, version
-         ) VALUES ($1, $2, $3, 'deploy', 'runner', 'production', 'pending', $4, 1)`,
-        [fixture.approvalId, fixture.projectId, fixture.workItemId, fixture.actorId]
+         ) VALUES (
+           $1, $2, $3, 'deploy', 'runner', 'production', $4, $5, $6, $7, $8,
+           'pending', $9, 1
+         )`,
+        [
+          fixture.approvalId,
+          fixture.projectId,
+          fixture.workItemId,
+          seededApprovalBinding.value.subjectHash,
+          seededApprovalBinding.value.policyVersion,
+          seededApprovalBinding.value.executionIdentity,
+          seededApprovalBinding.value.actionHash,
+          seededApprovalBinding.value.expiresAt,
+          fixture.actorId
+        ]
       );
       await testPool.query(
         `INSERT INTO access_requests (
@@ -963,6 +1009,18 @@ describePostgres(
         approvalClaim,
         randomUUID()
       );
+      const original = invalidApproval.approval.aggregate;
+      const crossWorkspaceBinding = createApprovalBinding({
+        actionCategory: original.actionCategory,
+        surface: original.surface,
+        environment: original.environment
+      }, {workItemId: fixture.otherWorkItemId}, {
+        subjectHash: original.binding.subjectHash,
+        expectedPolicyVersion: original.binding.policyVersion,
+        executionIdentity: original.binding.executionIdentity,
+        expiresAt: original.binding.expiresAt
+      }, original.requestedByActorId, new Date());
+      if (!crossWorkspaceBinding.ok) throw new Error('Cross-workspace approval binding did not initialize.');
       const crossWorkspaceApproval: ApprovalRequiredCommandOutcome = {
         ...invalidApproval,
         approval: {
@@ -977,6 +1035,7 @@ describePostgres(
             environment: invalidApproval.approval.aggregate.environment,
             requestedByActorId:
               invalidApproval.approval.aggregate.requestedByActorId,
+            binding: crossWorkspaceBinding.value,
             status: invalidApproval.approval.aggregate.status,
             version: invalidApproval.approval.aggregate.version
           }

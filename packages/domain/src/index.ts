@@ -96,6 +96,21 @@ export type AgentRunView = Readonly<{
 export type ApprovalTarget =
   | Readonly<{workItemId: string; agentRunId?: never}>
   | Readonly<{workItemId?: never; agentRunId: string}>;
+export type ApprovalBindingRequest = Readonly<{
+  subjectHash: string;
+  expectedPolicyVersion: number;
+  executionIdentity: string;
+  expiresAt: string;
+}>;
+export type ApprovalBinding = Readonly<{
+  subjectHash: string;
+  policyVersion: number;
+  executionIdentity: string;
+  actorId: string;
+  expiresAt: string;
+  actionHash: string;
+}>;
+export type ApprovalBindingFields = Readonly<Omit<ApprovalBinding, 'actionHash'>>;
 export type Approval = Readonly<{
   id: string;
   projectId: string;
@@ -103,9 +118,20 @@ export type Approval = Readonly<{
   surface: PolicySurface;
   environment: Environment;
   requestedByActorId: string;
+  binding: ApprovalBinding;
+  decidedByActorId?: string;
+  decidedAt?: string;
   status: ApprovalStatus;
   version: number;
 }> & ApprovalTarget;
+export type ApprovalReceipt = Readonly<{
+  id: string;
+  status: ApprovalStatus;
+  version: number;
+  binding: ApprovalBinding;
+  decidedByActorId?: string;
+  decidedAt?: string;
+}>;
 export type AccessRequest = Readonly<{
   id: string;
   workspaceId: string;
@@ -458,6 +484,8 @@ const buildPolicyMatrix = (): PolicyMatrix => {
   return deepFreeze(matrix) as PolicyMatrix;
 };
 
+export const CURRENT_POLICY_VERSION = 1 as const;
+export const APPROVAL_MAX_TTL_MS = 24 * 60 * 60 * 1_000;
 export const policyMatrix = buildPolicyMatrix();
 export const policyDecisionFor = (actorType: ActorType, request: PolicyRequest): PolicyDecision =>
   policyMatrix[actorType][request.actionCategory][request.surface][request.environment];
@@ -524,11 +552,22 @@ export type TransitionAgentRunCommand = CanonicalCommandEnvelope<
 >;
 export type RequestApprovalCommand = CanonicalCommandEnvelope<
   'approval.request',
-  Readonly<{approvalId: string; action: PolicyRequest; target: ApprovalTarget}>
+  Readonly<{
+    approvalId: string;
+    action: PolicyRequest;
+    target: ApprovalTarget;
+    binding: ApprovalBindingRequest;
+  }>
 >;
 export type DecideApprovalCommand = CanonicalCommandEnvelope<
   'approval.decide',
-  Readonly<{approvalId: string; status: Exclude<ApprovalStatus, 'pending'>; expectedVersion: number}>
+  Readonly<{
+    approvalId: string;
+    status: 'approved' | 'rejected';
+    expectedVersion: number;
+    expectedActionHash: string;
+    expectedPolicyVersion: number;
+  }>
 >;
 export type RequestAccessCommand = CanonicalCommandEnvelope<
   'access_request.request',
@@ -745,6 +784,68 @@ export const canonicalJson = (value: CanonicalJson): string => {
   }
   return JSON.stringify(value);
 };
+
+const sha256Pattern = /^[0-9a-f]{64}$/;
+const canonicalUuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export const createApprovalBinding = (
+  action: PolicyRequest,
+  target: ApprovalTarget,
+  request: ApprovalBindingRequest,
+  actorId: string,
+  now: Date
+): CommandResult<ApprovalBinding> => {
+  const nowMs = now.getTime();
+  const expiresAtMs = new Date(request.expiresAt).getTime();
+  if (!sha256Pattern.test(request.subjectHash)) {
+    return failed('INVALID_COMMAND', 'Approval subject hash must be a lowercase SHA-256 digest.');
+  }
+  if (request.expectedPolicyVersion !== CURRENT_POLICY_VERSION) {
+    return failed('VERSION_CONFLICT', 'Approval policy version is not current.');
+  }
+  if (!canonicalUuidPattern.test(request.executionIdentity) ||
+    !canonicalUuidPattern.test(actorId) ||
+    (target.agentRunId !== undefined && request.executionIdentity !== target.agentRunId)) {
+    return failed('INVALID_COMMAND', 'Approval execution identity is invalid for the target.');
+  }
+  if (!Number.isFinite(nowMs) || !Number.isFinite(expiresAtMs) ||
+    new Date(expiresAtMs).toISOString() !== request.expiresAt ||
+    expiresAtMs <= nowMs || expiresAtMs - nowMs > APPROVAL_MAX_TTL_MS) {
+    return failed('INVALID_COMMAND', 'Approval expiry must be future, canonical, and within the maximum TTL.');
+  }
+
+  const fields: ApprovalBindingFields = {
+    subjectHash: request.subjectHash,
+    policyVersion: CURRENT_POLICY_VERSION,
+    executionIdentity: request.executionIdentity,
+    actorId,
+    expiresAt: request.expiresAt
+  };
+  const actionHash = computeApprovalActionHash(action, target, fields);
+  return succeeded(deepFreeze({...fields, actionHash}));
+};
+
+export const computeApprovalActionHash = (
+  action: PolicyRequest,
+  target: ApprovalTarget,
+  fields: ApprovalBindingFields
+): string => {
+  const hashInput: CanonicalJson = {
+    bindingVersion: 1,
+    policyRequest: {
+      actionCategory: action.actionCategory,
+      surface: action.surface,
+      environment: action.environment
+    },
+    target: target.workItemId === undefined
+      ? {agentRunId: target.agentRunId}
+      : {workItemId: target.workItemId},
+    binding: fields
+  };
+  return createHash('sha256').update(canonicalJson(hashInput)).digest('hex');
+};
+
 const cloneCanonicalJson = (value: CanonicalJson): CanonicalJson => JSON.parse(canonicalJson(value)) as CanonicalJson;
 const cloneSecretRef = (value: OpaqueSecretRef | null): OpaqueSecretRef | null =>
   value === null ? null : {provider: value.provider, reference: value.reference, scope: [...value.scope]};
@@ -1476,7 +1577,11 @@ export type ApprovalMutation = ApprovalInsertMutation;
 export type ApprovalRequiredReceipt = Readonly<Omit<CommandReceipt, 'result'> & {
   result: Readonly<{
     ok: false;
-    error: Readonly<{code: 'APPROVAL_REQUIRED'; message: string}>;
+    error: Readonly<{
+      code: 'APPROVAL_REQUIRED';
+      message: string;
+      approval: ApprovalReceipt;
+    }>;
   }>;
 }>;
 export type NonApprovalReceipt = Readonly<Omit<CommandReceipt, 'result'> & {
@@ -1568,6 +1673,7 @@ export type CompletedApprovalRequiredCommand = Readonly<{
   approval: PersistedVersionCas;
   audit: AuditAppendToken;
   receipt: CommandReceiptCompletion;
+  commandReceipt: ApprovalRequiredReceipt;
   readonly [approvalRequiredCompletionBrand]: true;
 }>;
 export type CompletedAuditedReceipt = Readonly<{

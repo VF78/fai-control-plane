@@ -929,6 +929,10 @@ export const approvalRequests = pgTable(
     actionCategory: actionCategoryEnum('action_category').notNull(),
     surface: text('surface').notNull(),
     environment: text('environment').notNull(),
+    subjectHash: text('subject_hash').notNull(),
+    policyVersion: integer('policy_version').notNull(),
+    executionIdentity: uuid('execution_identity').notNull(),
+    actionHash: text('action_hash').notNull(),
     status: approvalStatusEnum('status').default('pending').notNull(),
     requestedByActorId: uuid('requested_by_actor_id')
       .notNull()
@@ -938,7 +942,7 @@ export const approvalRequests = pgTable(
       {onDelete: 'restrict'}
     ),
     decisionReason: text('decision_reason'),
-    expiresAt: timestamp('expires_at', {withTimezone: true}),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
     decidedAt: timestamp('decided_at', {withTimezone: true}),
     version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
@@ -949,9 +953,27 @@ export const approvalRequests = pgTable(
       table.status,
       table.expiresAt
     ),
+    index('approval_requests_agent_run_binding_idx').on(
+      table.agentRunId,
+      table.subjectHash,
+      table.actionHash,
+      table.status,
+      table.expiresAt
+    ),
     check(
       'approval_requests_exactly_one_target',
       sql`(${table.workItemId} is null) <> (${table.agentRunId} is null)`
+    ),
+    check(
+      'approval_requests_execution_identity_target',
+      sql`${table.agentRunId} is null or ${table.executionIdentity} = ${table.agentRunId}`
+    ),
+    check('approval_requests_subject_hash_sha256', sql`${table.subjectHash} ~ '^[0-9a-f]{64}$'`),
+    check('approval_requests_action_hash_sha256', sql`${table.actionHash} ~ '^[0-9a-f]{64}$'`),
+    check('approval_requests_policy_version_positive', sql`${table.policyVersion} > 0`),
+    check(
+      'approval_requests_expiry_bounded',
+      sql`${table.expiresAt} > ${table.createdAt} and ${table.expiresAt} <= ${table.createdAt} + interval '24 hours'`
     ),
     check('approval_requests_version_positive', sql`${table.version} > 0`)
   ]

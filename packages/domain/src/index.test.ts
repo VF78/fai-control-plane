@@ -85,6 +85,14 @@ const approval = (status: ApprovalStatus): Approval => ({
   surface: 'runner',
   environment: 'production',
   requestedByActorId: 'requester',
+  binding: {
+    subjectHash: 'a'.repeat(64),
+    policyVersion: 1,
+    executionIdentity: 'execution',
+    actorId: 'requester',
+    expiresAt: '2026-07-25T13:00:00.000Z',
+    actionHash: 'b'.repeat(64)
+  },
   status,
   version: 4
 });

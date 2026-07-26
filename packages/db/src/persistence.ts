@@ -1,4 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
+import {computeApprovalActionHash} from '@fai-control-plane/domain';
 import type {
   AccessRequest,
   AgentRun,
@@ -70,6 +71,7 @@ type GitHubBindingEffect = Readonly<{
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const sha256Pattern = /^[0-9a-f]{64}$/;
 
 const isUuid = (value: string): boolean => uuidPattern.test(value);
 
@@ -194,6 +196,38 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.id, 'approval.id');
       uuid(mutation.aggregate.projectId, 'approval.projectId');
       uuid(mutation.aggregate.requestedByActorId, 'approval.requestedByActorId');
+      invariant(
+        mutation.aggregate.binding.actorId === mutation.aggregate.requestedByActorId,
+        'Approval binding actor must match the requester.'
+      );
+      uuid(mutation.aggregate.binding.actorId, 'approval.binding.actorId');
+      uuid(mutation.aggregate.binding.executionIdentity, 'approval.binding.executionIdentity');
+      invariant(
+        sha256Pattern.test(mutation.aggregate.binding.subjectHash) &&
+          sha256Pattern.test(mutation.aggregate.binding.actionHash),
+        'Approval binding hashes must be lowercase SHA-256 digests.'
+      );
+      {
+        const {actionHash, ...bindingFields} = mutation.aggregate.binding;
+        invariant(
+          computeApprovalActionHash({
+            actionCategory: mutation.aggregate.actionCategory,
+            surface: mutation.aggregate.surface,
+            environment: mutation.aggregate.environment
+          }, mutation.aggregate, bindingFields) === actionHash,
+          'Approval action hash must match its structured action binding.'
+        );
+      }
+      invariant(
+        Number.isInteger(mutation.aggregate.binding.policyVersion) &&
+          mutation.aggregate.binding.policyVersion > 0,
+        'Approval binding policy version must be positive.'
+      );
+      invariant(
+        date(mutation.aggregate.binding.expiresAt, 'approval.binding.expiresAt').toISOString() ===
+          mutation.aggregate.binding.expiresAt,
+        'Approval binding expiry must be canonical.'
+      );
       {
         const runtimeApproval = mutation.aggregate as Approval & {
           workItemId?: unknown;
@@ -209,7 +243,29 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
           uuid(runtimeApproval.workItemId as string, 'approval.workItemId');
         } else {
           uuid(runtimeApproval.agentRunId as string, 'approval.agentRunId');
+          invariant(
+            mutation.aggregate.binding.executionIdentity === runtimeApproval.agentRunId,
+            'AgentRun approval execution identity must match its target.'
+          );
         }
+      }
+      if (mutation.expectedPersistedVersion === null) {
+        invariant(
+          mutation.aggregate.status === 'pending' &&
+            mutation.aggregate.decidedByActorId === undefined && mutation.aggregate.decidedAt === undefined,
+          'New approvals must be pending and undecided.'
+        );
+      } else {
+        invariant(
+          mutation.aggregate.status !== 'pending' &&
+            mutation.aggregate.decidedByActorId !== undefined && mutation.aggregate.decidedAt !== undefined,
+          'Approval decisions must retain the deciding actor and timestamp.'
+        );
+        uuid(mutation.aggregate.decidedByActorId, 'approval.decidedByActorId');
+        invariant(
+          date(mutation.aggregate.decidedAt, 'approval.decidedAt').toISOString() === mutation.aggregate.decidedAt,
+          'Approval decision timestamp must be canonical.'
+        );
       }
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
@@ -783,8 +839,13 @@ const persistApproval = async (
         actionCategory: aggregate.actionCategory,
         surface: aggregate.surface,
         environment: aggregate.environment,
+        subjectHash: aggregate.binding.subjectHash,
+        policyVersion: aggregate.binding.policyVersion,
+        executionIdentity: aggregate.binding.executionIdentity,
+        actionHash: aggregate.binding.actionHash,
         status: aggregate.status,
         requestedByActorId: aggregate.requestedByActorId,
+        expiresAt: new Date(aggregate.binding.expiresAt),
         version: 1
       })
       .onConflictDoNothing({target: schema.approvalRequests.id})
@@ -801,6 +862,8 @@ const persistApproval = async (
     .update(schema.approvalRequests)
     .set({
       status: aggregate.status,
+      decidedByActorId: aggregate.decidedByActorId,
+      decidedAt: new Date(aggregate.decidedAt!),
       version: sql`${schema.approvalRequests.version} + 1`,
       updatedAt: new Date()
     })
@@ -817,10 +880,16 @@ const persistApproval = async (
         eq(schema.approvalRequests.actionCategory, aggregate.actionCategory),
         eq(schema.approvalRequests.surface, aggregate.surface),
         eq(schema.approvalRequests.environment, aggregate.environment),
+        eq(schema.approvalRequests.subjectHash, aggregate.binding.subjectHash),
+        eq(schema.approvalRequests.policyVersion, aggregate.binding.policyVersion),
+        eq(schema.approvalRequests.executionIdentity, aggregate.binding.executionIdentity),
+        eq(schema.approvalRequests.actionHash, aggregate.binding.actionHash),
+        eq(schema.approvalRequests.expiresAt, new Date(aggregate.binding.expiresAt)),
         eq(
           schema.approvalRequests.requestedByActorId,
           aggregate.requestedByActorId
         ),
+        eq(schema.approvalRequests.status, 'pending'),
         eq(schema.approvalRequests.version, mutation.expectedPersistedVersion),
         approvalScope(workspaceId)
       )
@@ -1217,7 +1286,14 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               actionCategory: schema.approvalRequests.actionCategory,
               surface: schema.approvalRequests.surface,
               environment: schema.approvalRequests.environment,
+              subjectHash: schema.approvalRequests.subjectHash,
+              policyVersion: schema.approvalRequests.policyVersion,
+              executionIdentity: schema.approvalRequests.executionIdentity,
+              actionHash: schema.approvalRequests.actionHash,
               requestedByActorId: schema.approvalRequests.requestedByActorId,
+              decidedByActorId: schema.approvalRequests.decidedByActorId,
+              expiresAt: schema.approvalRequests.expiresAt,
+              decidedAt: schema.approvalRequests.decidedAt,
               status: schema.approvalRequests.status,
               version: schema.approvalRequests.version
             })
@@ -1231,6 +1307,16 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             surface: row.surface as Approval['surface'],
             environment: row.environment as Approval['environment'],
             requestedByActorId: row.requestedByActorId,
+            binding: {
+              subjectHash: row.subjectHash,
+              policyVersion: row.policyVersion,
+              executionIdentity: row.executionIdentity,
+              actorId: row.requestedByActorId,
+              expiresAt: row.expiresAt.toISOString(),
+              actionHash: row.actionHash
+            },
+            ...(row.decidedByActorId === null ? {} : {decidedByActorId: row.decidedByActorId}),
+            ...(row.decidedAt === null ? {} : {decidedAt: row.decidedAt.toISOString()}),
             status: row.status as Approval['status'],
             version: row.version
           };
@@ -1417,7 +1503,8 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             kind: 'approval_required',
             approval: persisted.cas,
             audit: appended,
-            receipt
+            receipt,
+            commandReceipt: outcome.receipt
           } as CompletedApprovalRequiredCommand;
           completed.add(command as object);
           return {status: 'completed', command};

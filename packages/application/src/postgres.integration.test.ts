@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {
+  CURRENT_POLICY_VERSION,
   createActorContextIssuer,
   type CanonicalCommand,
   type TaskPacketContent,
@@ -132,6 +133,13 @@ const service = () =>
     idGenerator: {next: randomUUID},
     clock: {now: () => new Date()}
   });
+
+const approvalBinding = () => ({
+  subjectHash: 'a'.repeat(64),
+  expectedPolicyVersion: CURRENT_POLICY_VERSION,
+  executionIdentity: randomUUID(),
+  expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString()
+});
 
 const receiptErrorCode = (
   result: Awaited<ReturnType<ReturnType<typeof service>['execute']>>
@@ -560,7 +568,8 @@ describePostgres(
             surface: 'runner',
             environment: 'development'
           },
-          target: {workItemId: fixture.otherWorkItemId}
+          target: {workItemId: fixture.otherWorkItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(missingApprovalTarget)).toBe('NOT_FOUND');
@@ -578,7 +587,8 @@ describePostgres(
             surface: 'control_plane',
             environment: 'development'
           },
-          target: {workItemId: fixture.workItemId}
+          target: {workItemId: fixture.workItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(allowed)).toBe('INVALID_COMMAND');
@@ -595,7 +605,8 @@ describePostgres(
             surface: 'runner',
             environment: 'development'
           },
-          target: {workItemId: fixture.workItemId}
+          target: {workItemId: fixture.workItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(asked)).toBe('APPROVAL_REQUIRED');
@@ -617,7 +628,8 @@ describePostgres(
             surface: 'control_plane',
             environment: 'production'
           },
-          target: {workItemId: fixture.workItemId}
+          target: {workItemId: fixture.workItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(denied)).toBe('POLICY_DENIED');
@@ -633,7 +645,8 @@ describePostgres(
             surface: 'runner',
             environment: 'development'
           },
-          target: {workItemId: fixture.workItemId}
+          target: {workItemId: fixture.workItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(capabilityDenied)).toBe('CAPABILITY_DENIED');
