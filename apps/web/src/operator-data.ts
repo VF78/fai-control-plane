@@ -545,7 +545,7 @@ export type HealthData = Readonly<{
   jobs: readonly Readonly<{id: string; project: string; projectSlug: OperatorProjectSlug; name: string; status: string; heartbeatAt: Date | null; lastSuccessAt: Date | null; nextRunAt: Date | null}>[];
   integrations: readonly Readonly<{id: string; project: string; projectSlug: OperatorProjectSlug; provider: string; mode: string; createdAt: Date}>[];
   risks: readonly Readonly<{id: string; project: string; projectSlug: OperatorProjectSlug; severity: 'green' | 'yellow' | 'red'; summary: string; updatedAt: Date}>[];
-  audit: readonly Readonly<{id: string; project: string; projectSlug: OperatorProjectSlug; action: string; outcome: string | null; reasonCode: string | null; occurredAt: Date}>[];
+  audit: readonly Readonly<{id: string; project: string; projectSlug: OperatorProjectSlug; actor: string | null; action: string; targetType: string; targetId: string | null; policyDecision: string | null; outcome: string | null; reasonCode: string | null; occurredAt: Date}>[];
 }>;
 
 export const loadHealthData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<HealthData>> => readDatabase(async (db) => {
@@ -560,8 +560,20 @@ export const loadHealthData = (scope?: OperatorProjectSlug): Promise<OperatorLoa
       .from(trackerSnapshotOperations).where(inArray(trackerSnapshotOperations.projectId, projectIds)).orderBy(desc(trackerSnapshotOperations.createdAt), trackerSnapshotOperations.id),
     db.select({id: riskSignals.id, projectId: riskSignals.projectId, severity: riskSignals.severity, summary: riskSignals.summary, updatedAt: riskSignals.updatedAt})
       .from(riskSignals).where(and(inArray(riskSignals.projectId, projectIds), isNull(riskSignals.resolvedAt))).orderBy(desc(riskSignals.updatedAt), riskSignals.id),
-    db.select({id: auditEvents.id, projectId: auditEvents.projectId, action: auditEvents.action, outcome: auditEvents.outcome, reasonCode: auditEvents.reasonCode, occurredAt: auditEvents.occurredAt})
-      .from(auditEvents).where(inArray(auditEvents.projectId, projectIds)).orderBy(desc(auditEvents.occurredAt), auditEvents.id).limit(100)
+    db.select({
+      id: auditEvents.id,
+      projectId: auditEvents.projectId,
+      actor: actors.displayName,
+      action: auditEvents.action,
+      targetType: auditEvents.targetType,
+      targetId: auditEvents.targetId,
+      policyDecision: auditEvents.policyDecision,
+      outcome: auditEvents.outcome,
+      reasonCode: auditEvents.reasonCode,
+      occurredAt: auditEvents.occurredAt
+    }).from(auditEvents).leftJoin(actors, eq(auditEvents.actorId, actors.id))
+      .where(inArray(auditEvents.projectId, projectIds))
+      .orderBy(desc(auditEvents.occurredAt), auditEvents.id).limit(100)
   ]);
   const scopeRow = <T extends Readonly<{projectId: string | null}>>(row: T) => {
     if (row.projectId === null) return [];
