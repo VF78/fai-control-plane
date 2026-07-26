@@ -1,6 +1,7 @@
 import {and, eq} from 'drizzle-orm';
 import {
   createDatabase,
+  actors,
   projects,
   projectTrackerRepositoryScopes,
   secretRefs,
@@ -12,6 +13,10 @@ if (!databaseUrl) throw new Error('DATABASE_URL is required for seed');
 const credentialReference = process.env.GITHUB_REPOSITORY_READ_TOKEN_FILE;
 if (!credentialReference) {
   throw new Error('GITHUB_REPOSITORY_READ_TOKEN_FILE is required for seed');
+}
+const bootstrapExternalSubject = process.env.FCP_BOOTSTRAP_HUMAN_SUBJECT;
+if (!bootstrapExternalSubject) {
+  throw new Error('FCP_BOOTSTRAP_HUMAN_SUBJECT is required for seed');
 }
 
 const {db, pool} = createDatabase(databaseUrl);
@@ -27,6 +32,21 @@ try {
   const persistedWorkspace = workspace ?? (await db.select().from(workspaces)
     .where(eq(workspaces.slug, workspaceSeed.slug)))[0];
   if (!persistedWorkspace) throw new Error('workspace seed failed');
+
+  await db.insert(actors).values({
+    workspaceId: persistedWorkspace.id,
+    type: 'human',
+    role: 'workspace_admin',
+    displayName: 'Bootstrap operator',
+    authMode: 'user',
+    externalSubject: bootstrapExternalSubject,
+    capabilities: {
+      'read:repository:development': true,
+      'write:tracker:development': true
+    }
+  }).onConflictDoNothing({
+    target: [actors.workspaceId, actors.authMode, actors.externalSubject]
+  });
 
   const [credential] = await db.insert(secretRefs).values({
     workspaceId: persistedWorkspace.id,

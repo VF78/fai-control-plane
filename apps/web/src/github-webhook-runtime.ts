@@ -51,11 +51,12 @@ const requiredPositiveInteger = (name: string): number => {
 };
 
 export const createFileSecretsProvider = (
-  allowedReference: OpaqueSecretRef
+  allowedReference: OpaqueSecretRef,
+  allowedPurpose = 'github.webhook.verify'
 ): SecretsProvider => ({
   async resolve(reference, purpose) {
     if (
-      purpose !== 'github.webhook.verify' ||
+      purpose !== allowedPurpose ||
       reference.provider !== allowedReference.provider ||
       reference.reference !== allowedReference.reference ||
       reference.scope.length !== allowedReference.scope.length ||

@@ -73,6 +73,24 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
+### Populate the panel from GitHub
+
+This is a temporary local bootstrap path until GitHub OAuth is available. Set
+`FCP_BOOTSTRAP_HUMAN_SUBJECT` to a stable local human subject and
+`GITHUB_REPOSITORY_READ_TOKEN_FILE` to a file containing a read-only GitHub
+token. The seed stores only the file reference and creates that bootstrap human
+actor with the minimal repository-read and tracker-projection grants.
+
+```bash
+pnpm db:migrate
+pnpm --filter @fai-control-plane/db db:seed
+pnpm github:bootstrap
+```
+
+Then open <http://localhost:3000>. The bootstrap command reads only the seeded
+MSA and ASCON repository scopes. It does not write to GitHub or GitHub Project
+V2, post comments, change status, merge, deploy, or log token or path values.
+
 Compose starts PostgreSQL, waits for it to become ready, applies the compiled
 migration once, then starts the compiled web and worker processes directly:
 
