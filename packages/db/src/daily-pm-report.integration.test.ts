@@ -8,6 +8,7 @@ import {
   createPostgresDailyPmReportProducer,
   createPostgresQaIntakeProducer,
   canonicalEvents,
+  dashboardSnapshots,
   dailyPmReports,
   projectTrackerRepositoryScopes,
   scheduledJobs,
@@ -150,6 +151,10 @@ describePostgres('PostgreSQL daily PM report producer', () => {
     await producer.run();
     const firstReports = await db.select().from(dailyPmReports)
       .orderBy(dailyPmReports.projectId);
+    await db.delete(dashboardSnapshots).where(and(
+      eq(dashboardSnapshots.projectId, ids.msa),
+      eq(dashboardSnapshots.capturedAt, now)
+    ));
     await testPool.query(`
       CREATE FUNCTION fail_daily_pm_report_replay() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
@@ -161,9 +166,40 @@ describePostgres('PostgreSQL daily PM report producer', () => {
     `);
     await producer.run();
     const reports = await db.select().from(dailyPmReports).orderBy(dailyPmReports.projectId);
+    const snapshots = await db.select().from(dashboardSnapshots)
+      .orderBy(dashboardSnapshots.projectId);
 
     expect(reports).toEqual(firstReports);
     expect(reports).toHaveLength(2);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots.find((snapshot) => snapshot.projectId === ids.msa)).toEqual(
+      expect.objectContaining({
+        capturedAt: now,
+        health: 'red',
+        metrics: {
+          totalWorkItems: 6,
+          activeWorkItems: 4,
+          blockedWorkItems: 2,
+          pendingApprovals: 0,
+          unresolvedRisks: 2,
+          failedGitHubWritebacks: 1
+        }
+      })
+    );
+    expect(snapshots.find((snapshot) => snapshot.projectId === ids.ascon)).toEqual(
+      expect.objectContaining({
+        capturedAt: now,
+        health: 'yellow',
+        metrics: {
+          totalWorkItems: 0,
+          activeWorkItems: 0,
+          blockedWorkItems: 0,
+          pendingApprovals: 0,
+          unresolvedRisks: 0,
+          failedGitHubWritebacks: 0
+        }
+      })
+    );
     expect(reports.find((report) => report.projectId === ids.other)).toBeUndefined();
     expect(reports.find((report) => report.projectId === ids.msa)?.payload).toEqual({
       schemaVersion: 1,

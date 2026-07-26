@@ -27,6 +27,51 @@ const nextDailyPmReportRunAt = (runAt: Date): Date => {
 
 const reportDateFor = (runAt: Date): string => runAt.toISOString().slice(0, 10);
 
+const dashboardSnapshotFor = (
+  payload: schema.DailyPmReportPayload,
+  capturedAt: Date
+): Readonly<{
+  capturedAt: Date;
+  health: 'green' | 'yellow' | 'red';
+  metrics: Record<string, number>;
+}> => {
+  const {statusCounts, blockedCount} = payload.workItems;
+  const {unresolvedCountsBySeverity} = payload.riskSignals;
+  const failedGitHubWritebacks = payload.github.failedWritebackCount;
+  const metrics = {
+    totalWorkItems: Object.values(statusCounts).reduce((total, count) => total + count, 0),
+    activeWorkItems: statusCounts.ready + statusCounts.in_dev + statusCounts.qa +
+      statusCounts.acceptance,
+    blockedWorkItems: blockedCount,
+    pendingApprovals: payload.approvals.pendingCount,
+    unresolvedRisks: Object.values(unresolvedCountsBySeverity)
+      .reduce((total, count) => total + count, 0),
+    failedGitHubWritebacks
+  };
+  const health = unresolvedCountsBySeverity.red > 0 || failedGitHubWritebacks > 0
+    ? 'red'
+    : unresolvedCountsBySeverity.yellow > 0 ||
+        payload.github.latestSuccessfulTrackerSnapshot.freshness !== 'fresh'
+      ? 'yellow'
+      : 'green';
+
+  return {capturedAt, health, metrics};
+};
+
+const insertDashboardSnapshot = async (
+  tx: Transaction,
+  projectId: string,
+  payload: schema.DailyPmReportPayload,
+  capturedAt: Date
+): Promise<void> => {
+  await tx.insert(schema.dashboardSnapshots).values({
+    projectId,
+    ...dashboardSnapshotFor(payload, capturedAt)
+  }).onConflictDoNothing({
+    target: [schema.dashboardSnapshots.projectId, schema.dashboardSnapshots.capturedAt]
+  });
+};
+
 const buildPayload = async (
   tx: Transaction,
   projectId: string,
@@ -129,12 +174,19 @@ export const createPostgresDailyPmReportProducer = (
           await db.transaction(async (tx) => {
             await tx.select({id: schema.projects.id}).from(schema.projects)
               .where(eq(schema.projects.id, projectId)).for('update');
-            const [existingReport] = await tx.select({id: schema.dailyPmReports.id})
+            const [existingReport] = await tx.select({
+              id: schema.dailyPmReports.id,
+              payload: schema.dailyPmReports.payload,
+              createdAt: schema.dailyPmReports.createdAt
+            })
               .from(schema.dailyPmReports).where(and(
                 eq(schema.dailyPmReports.projectId, projectId),
                 eq(schema.dailyPmReports.reportDate, reportDateFor(runAt))
               )).limit(1);
             if (existingReport !== undefined) {
+              await insertDashboardSnapshot(
+                tx, projectId, existingReport.payload, existingReport.createdAt
+              );
               await tx.update(schema.scheduledJobs).set({
                 cron: dailyPmReportCron,
                 queueName: DAILY_PM_REPORT_QUEUE,
@@ -172,14 +224,16 @@ export const createPostgresDailyPmReportProducer = (
                 updatedAt: runAt
               }
             });
+            const payload = await buildPayload(tx, projectId, runAt);
             await tx.insert(schema.dailyPmReports).values({
               projectId,
               reportDate: reportDateFor(runAt),
-              payload: await buildPayload(tx, projectId, runAt),
+              payload,
               createdAt: runAt
             }).onConflictDoNothing({
               target: [schema.dailyPmReports.projectId, schema.dailyPmReports.reportDate]
             });
+            await insertDashboardSnapshot(tx, projectId, payload, runAt);
             await tx.update(schema.scheduledJobs).set({
               status: 'active',
               lastSuccessAt: runAt,
