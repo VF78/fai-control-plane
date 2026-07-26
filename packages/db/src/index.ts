@@ -34,6 +34,11 @@ export {
   DAILY_PM_REPORT_QUEUE,
   dailyPmReportCron
 } from './daily-pm-report';
+export {
+  createPostgresPmReportCheckProducer,
+  PM_REPORT_CHECK_QUEUE,
+  pmReportCheckCron
+} from './pm-report-check';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});
