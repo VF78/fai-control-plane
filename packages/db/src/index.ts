@@ -45,6 +45,7 @@ export {
   pmReportCheckCron
 } from './pm-report-check';
 export {createPostgresRunnerClaimStore} from './runner-claim';
+export {createPostgresProjectShareStore} from './project-share';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});

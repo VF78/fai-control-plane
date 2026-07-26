@@ -9,6 +9,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -223,6 +224,69 @@ export const projects = pgTable(
   ]
 );
 
+export const projectShareGrants = pgTable(
+  'project_share_grants',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'cascade'}),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'cascade'}),
+    createdByActorId: uuid('created_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    tokenHash: text('token_hash').notNull(),
+    fieldScope: jsonb('field_scope')
+      .$type<readonly [
+        'publicTitle',
+        'publicStatus',
+        'publicSummary',
+        'updatedTime'
+      ]>()
+      .default(sql`'["publicTitle","publicStatus","publicSummary","updatedTime"]'::jsonb`)
+      .notNull(),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
+    revokedAt: timestamp('revoked_at', {withTimezone: true}),
+    revokedByActorId: uuid('revoked_by_actor_id').references(() => actors.id, {
+      onDelete: 'restrict'
+    }),
+    lastAccessedAt: timestamp('last_accessed_at', {withTimezone: true}),
+    accessCount: integer('access_count').default(0).notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('project_share_grants_token_hash_unique').on(table.tokenHash),
+    index('project_share_grants_project_idx').on(table.projectId),
+    index('project_share_grants_expires_idx').on(table.expiresAt),
+    check(
+      'project_share_grants_token_hash_sha256',
+      sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'project_share_grants_field_scope_fixed',
+      sql`${table.fieldScope} = '["publicTitle","publicStatus","publicSummary","updatedTime"]'::jsonb`
+    ),
+    check(
+      'project_share_grants_expiry_after_creation',
+      sql`${table.expiresAt} > ${table.createdAt}`
+    ),
+    check(
+      'project_share_grants_revocation_consistent',
+      sql`(${table.revokedAt} is null and ${table.revokedByActorId} is null)
+        or (${table.revokedAt} is not null and ${table.revokedByActorId} is not null
+          and ${table.revokedAt} >= ${table.createdAt})`
+    ),
+    check(
+      'project_share_grants_access_consistent',
+      sql`(${table.accessCount} = 0 and ${table.lastAccessedAt} is null)
+        or (${table.accessCount} > 0 and ${table.lastAccessedAt} is not null
+          and ${table.lastAccessedAt} >= ${table.createdAt})`
+    )
+  ]
+);
+
 export const milestones = pgTable(
   'milestones',
   {
@@ -323,6 +387,25 @@ export const workItems = pgTable(
   (table) => [
     index('work_items_project_status_idx').on(table.projectId, table.status),
     check('work_items_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const projectShareWorkItems = pgTable(
+  'project_share_work_items',
+  {
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => projectShareGrants.id, {onDelete: 'cascade'}),
+    workItemId: uuid('work_item_id')
+      .notNull()
+      .references(() => workItems.id, {onDelete: 'cascade'})
+  },
+  (table) => [
+    primaryKey({
+      name: 'project_share_work_items_pk',
+      columns: [table.grantId, table.workItemId]
+    }),
+    index('project_share_work_items_work_item_idx').on(table.workItemId)
   ]
 );
 

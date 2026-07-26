@@ -1,4 +1,17 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
+export {
+  createProjectShareService,
+  type CreateProjectShareGrantInput,
+  type CreateProjectShareInput,
+  type CreateProjectShareServiceInput,
+  type ProjectShareGrant,
+  type ProjectShareService,
+  type ProjectShareStore,
+  type PublicProjectItem,
+  type PublicProjectProjection,
+  type RevokeProjectShareGrantInput,
+  type RevokeProjectShareInput
+} from './project-share';
 import {
   actionCategories,
   accessRequestStatuses,
