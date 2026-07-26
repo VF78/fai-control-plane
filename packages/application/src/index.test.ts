@@ -242,10 +242,28 @@ describe('canonical command service', () => {
       const packet = createTaskPacket(packetId, packetContent());
       if (!packet.ok) throw new Error('Test packet did not initialize.');
       uow.taskPackets.set(packetId, packet.value);
+      const agentProfileId = id();
+      const profileBase = {
+        id: agentProfileId,
+        workspaceId,
+        actorId,
+        runtimeId: 'codex-cli',
+        runtimeProfile: 'test',
+        allowedTools: ['test'],
+        forbiddenSurfaces: ['production'],
+        instructions: 'Execute only the confirmed test packet.',
+        settings: {resultFormat: 'structured_v1' as const, includeEvidence: true},
+        enabled: true,
+        version: 1
+      };
+      uow.agentProfiles.set(agentProfileId, {
+        ...profileBase,
+        configHash: hashAgentProfileConfiguration(profileBase)
+      });
       return command('agent_run.queue', {
         agentRunId: id(),
         taskPacketId: packetId,
-        agentProfileId: id(),
+        agentProfileId,
         confirmedPacketHash: packet.value.contentHash,
         baseCommit: 'a'.repeat(40)
       });
