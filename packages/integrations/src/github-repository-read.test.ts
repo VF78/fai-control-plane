@@ -1,4 +1,5 @@
 import {describe, expect, it, vi} from 'vitest';
+import {generateKeyPairSync} from 'node:crypto';
 import {
   trackerCheckStatuses,
   type OpaqueSecretRef,
@@ -11,6 +12,8 @@ import {
 } from './github-repository-read';
 
 const sha = (id: number): string => id.toString(16).padStart(40, '0');
+const appPrivateKey = generateKeyPairSync('rsa', {modulusLength: 2048})
+  .privateKey.export({format: 'pem', type: 'pkcs8'}).toString();
 
 const repositoryPayload = (
   fullName: 'VF78/MSA' | 'VF78/ascon' = 'VF78/MSA',
@@ -54,12 +57,20 @@ const pullRequest = (id: number, overrides: Record<string, unknown> = {}) => ({
 
 const credentialRef: OpaqueSecretRef = {
   provider: 'test-secrets',
-  reference: 'github/dogfood/read',
-  scope: ['VF78/MSA', 'VF78/ascon']
+  reference: 'github/projects/read',
+  scope: ['project']
 };
 
 const secretsProvider = (value = 'caller-secret'): SecretsProvider => ({
   resolve: async () => ({value})
+});
+const appPrivateKeyRef: OpaqueSecretRef = {
+  provider: 'test-secrets',
+  reference: 'github/app/private-key',
+  scope: ['github:app:installation-token:mint']
+};
+const appSecretsProvider = (): SecretsProvider => ({
+  resolve: async () => ({value: appPrivateKey})
 });
 
 const jsonResponse = (
@@ -82,6 +93,7 @@ const projectItemsPayload = (
   data: {
     node: {
       id: projectNodeId,
+      owner: {databaseId: 75837222},
       items: {nodes, pageInfo}
     },
     repository: {
@@ -99,6 +111,12 @@ const routeFetch = (
   graphqlPayload?: (init: Parameters<GitHubFetch>[1]) => unknown
 ): GitHubFetch => async (input, init) => {
   const url = new URL(input);
+  if (url.pathname === '/app/installations/149112973/access_tokens') {
+    return jsonResponse({
+      token: 'installation-token',
+      expires_at: new Date(Date.now() + 60 * 60_000).toISOString()
+    });
+  }
   if (url.pathname === '/graphql') {
     if (graphqlPayload !== undefined) return jsonResponse(graphqlPayload(init));
     const body = JSON.parse(init.body ?? '{}') as {variables?: {
@@ -122,8 +140,14 @@ const routeFetch = (
 
 const adapter = (
   fetch: GitHubFetch,
-  provider: SecretsProvider = secretsProvider()
-) => createGitHubRepositoryReadAdapter({fetch, secretsProvider: provider});
+  projectsProvider: SecretsProvider = secretsProvider(),
+  appProvider: SecretsProvider = appSecretsProvider()
+) => createGitHubRepositoryReadAdapter({
+  fetch,
+  projectsSecretsProvider: projectsProvider,
+  appSecretsProvider: appProvider,
+  appPrivateKeyRef
+});
 
 const readMsa = (
   fetch: GitHubFetch,
@@ -159,30 +183,61 @@ describe('GitHub repository read adapter', () => {
     {owner: 'someone', repository: 'ascon'}
   ])('rejects non-exact repository $owner/$repository before transport', async (repository) => {
     const fetch = vi.fn<GitHubFetch>();
-    const provider = {resolve: vi.fn(secretsProvider().resolve)};
-    const read = adapter(fetch, provider).readRepositorySnapshot!;
+    const projectsProvider = {resolve: vi.fn(secretsProvider().resolve)};
+    const appProvider = {resolve: vi.fn(appSecretsProvider().resolve)};
+    const read = adapter(fetch, projectsProvider, appProvider).readRepositorySnapshot!;
 
     await expect(read({repository, credentialRef})).rejects.toMatchObject({
       code: 'github_repository_not_allowed',
       message: 'github_repository_not_allowed'
     });
     expect(fetch).not.toHaveBeenCalled();
-    expect(provider.resolve).not.toHaveBeenCalled();
+    expect(projectsProvider.resolve).not.toHaveBeenCalled();
+    expect(appProvider.resolve).not.toHaveBeenCalled();
   });
 
-  it('passes the opaque ref to the secrets boundary and accepts both exact dogfood repositories', async () => {
+  it('separates App repository reads from exact-scope Project OAuth reads', async () => {
     const seen = new Set<string>();
-    const fetch = routeFetch((url) => {
+    const authorizations = new Map<string, Set<string>>();
+    const recordAuthorization = (
+      path: string,
+      authorization: string | undefined
+    ): void => {
+      if (authorization === undefined) throw new Error('Missing authorization header');
+      const entries = authorizations.get(path) ?? new Set<string>();
+      entries.add(authorization);
+      authorizations.set(path, entries);
+    };
+    const fetch = routeFetch((url, init) => {
       seen.add(url.pathname.split('/').slice(1, 4).join('/'));
+      recordAuthorization(url.pathname, init.headers.authorization);
       if (url.pathname.endsWith('/issues') || url.pathname.endsWith('/pulls')) {
         return jsonResponse([]);
       }
       return jsonResponse(repositoryPayload(
         url.pathname.endsWith('/MSA') ? 'VF78/MSA' : 'VF78/ascon'
       ));
+    }, (init) => {
+      recordAuthorization('/graphql', init.headers.authorization);
+      const body = JSON.parse(init.body ?? '{}') as {
+        variables?: {projectId?: string; repositoryOwner?: string; repositoryName?: string};
+      };
+      return projectItemsPayload(
+        body.variables?.projectId ??
+          (body.variables?.repositoryName === 'ascon'
+            ? 'PVT_kwHOBIUvJs4Bbi0Q'
+            : 'PVT_kwHOBIUvJs4Bbefq'),
+        [],
+        {hasNextPage: false},
+        `${body.variables?.repositoryOwner ?? 'VF78'}/${
+          body.variables?.repositoryName ?? 'MSA'
+        }`
+      );
     });
-    const resolve = vi.fn(async () => ({value: 'caller-secret'}));
-    const read = adapter(fetch, {resolve}).readRepositorySnapshot!;
+    const projectResolve = vi.fn(async () => ({value: 'oauth-token'}));
+    const appResolve = vi.fn(async () => ({value: appPrivateKey}));
+    const read = adapter(fetch, {resolve: projectResolve}, {resolve: appResolve})
+      .readRepositorySnapshot!;
 
     await read({
       repository: {owner: 'VF78', repository: 'MSA'},
@@ -194,16 +249,48 @@ describe('GitHub repository read adapter', () => {
     });
 
     expect(seen).toEqual(new Set(['repos/VF78/MSA', 'repos/VF78/ascon']));
-    expect(resolve).toHaveBeenNthCalledWith(
+    expect(projectResolve).toHaveBeenNthCalledWith(
       1,
       credentialRef,
-      'github_repository_snapshot_read'
+      'github_project_snapshot_read_oauth_token'
     );
-    expect(resolve).toHaveBeenNthCalledWith(
+    expect(projectResolve).toHaveBeenNthCalledWith(
       2,
       credentialRef,
-      'github_repository_snapshot_read'
+      'github_project_snapshot_read_oauth_token'
     );
+    expect(appResolve).toHaveBeenNthCalledWith(
+      1,
+      appPrivateKeyRef,
+      'github_app_installation_token_mint'
+    );
+    expect(appResolve).toHaveBeenNthCalledWith(
+      2,
+      appPrivateKeyRef,
+      'github_app_installation_token_mint'
+    );
+    expect(authorizations.get('/repos/VF78/MSA')).toEqual(new Set(['Bearer installation-token']));
+    expect(authorizations.get('/repos/VF78/ascon')).toEqual(new Set(['Bearer installation-token']));
+    expect(authorizations.get('/graphql')).toEqual(new Set([
+      'Bearer installation-token',
+      'Bearer oauth-token'
+    ]));
+  });
+
+  it('denies a non-exact Project OAuth scope before secrets or transport', async () => {
+    const fetch = vi.fn<GitHubFetch>();
+    const projectResolve = vi.fn(secretsProvider().resolve);
+    const appResolve = vi.fn(appSecretsProvider().resolve);
+    const read = adapter(fetch, {resolve: projectResolve}, {resolve: appResolve})
+      .readRepositorySnapshot!;
+
+    await expect(read({
+      repository: {owner: 'VF78', repository: 'MSA'},
+      credentialRef: {...credentialRef, scope: ['project', 'repo']}
+    })).rejects.toMatchObject({code: 'github_credential_invalid'});
+    expect(fetch).not.toHaveBeenCalled();
+    expect(projectResolve).not.toHaveBeenCalled();
+    expect(appResolve).not.toHaveBeenCalled();
   });
 
   it('projects only allowlisted Project V2 Status option IDs and preserves absent or unknown observations', async () => {
@@ -296,7 +383,7 @@ describe('GitHub repository read adapter', () => {
   it('paginates work items and filters pull requests from the issues endpoint', async () => {
     const requestedPages: number[] = [];
     const fetch = routeFetch((url, init) => {
-      expect(init.headers.authorization).toBe('Bearer caller-secret');
+      expect(init.headers.authorization).toBe('Bearer installation-token');
       expect(init.headers['user-agent']).toBe('fai-control-plane-repository-reader/0.1');
       if (url.pathname === '/repos/VF78/MSA') {
         return jsonResponse(repositoryPayload());
@@ -394,7 +481,7 @@ describe('GitHub repository read adapter', () => {
     expect(overLimit.counts()).toEqual({requestCount: 3, checkRequests: 0});
   });
 
-  it('allows request 34 and rejects request 35 within one snapshot', async () => {
+  it('allows request 36 and rejects request 37 within one snapshot', async () => {
     const run = async (exceed: boolean) => {
       let requestCount = 0;
       const fetch = routeFetch((url) => {
@@ -1004,7 +1091,9 @@ describe('GitHub repository read adapter', () => {
 
     let failure: unknown;
     try {
-      await readMsa(vi.fn(), provider);
+      await readMsa(routeFetch(() => {
+        throw new Error('Unexpected repository request');
+      }), provider);
     } catch (error) {
       failure = error;
     }

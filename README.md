@@ -75,11 +75,15 @@ docker compose up --build -d
 
 ### Populate the panel from GitHub
 
-This local tracker-snapshot bootstrap is separate from operator OAuth. Set
-`FCP_BOOTSTRAP_HUMAN_SUBJECT` to a stable local human subject and
-`GITHUB_REPOSITORY_READ_TOKEN_FILE` to a file containing a read-only GitHub
-token. The seed stores only the file reference and creates that bootstrap human
-actor with the minimal repository-read and tracker-projection grants.
+This local tracker-snapshot bootstrap is separate from login OAuth. Set
+`FCP_BOOTSTRAP_HUMAN_SUBJECT` to a stable local human subject, mount the GitHub
+App private key at `GITHUB_APP_PRIVATE_KEY_FILE`, and mount the exact-scope
+Projects OAuth token at `GITHUB_PROJECTS_OAUTH_TOKEN_FILE`. The App mints an
+installation token in memory for repository, issue, pull-request, check, and
+PR-link reads. The OAuth token is used only for the two allowlisted ProjectV2
+status snapshots. The seed stores only the OAuth file reference and creates the
+bootstrap human actor with the minimal repository-read and tracker-projection
+grants.
 
 ```bash
 pnpm db:migrate

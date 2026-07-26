@@ -10,9 +10,9 @@ import {
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required for seed');
-const credentialReference = process.env.GITHUB_REPOSITORY_READ_TOKEN_FILE;
+const credentialReference = process.env.GITHUB_PROJECTS_OAUTH_TOKEN_FILE;
 if (!credentialReference) {
-  throw new Error('GITHUB_REPOSITORY_READ_TOKEN_FILE is required for seed');
+  throw new Error('GITHUB_PROJECTS_OAUTH_TOKEN_FILE is required for seed');
 }
 const bootstrapExternalSubject = process.env.FCP_BOOTSTRAP_HUMAN_SUBJECT;
 if (!bootstrapExternalSubject) {
@@ -48,16 +48,15 @@ try {
     target: [actors.workspaceId, actors.authMode, actors.externalSubject]
   });
 
-  const [credential] = await db.insert(secretRefs).values({
+  const [persistedCredential] = await db.insert(secretRefs).values({
     workspaceId: persistedWorkspace.id,
     provider: 'file',
     reference: credentialReference,
-    scope: ['github:repository:snapshot:read']
-  }).onConflictDoNothing({
-    target: [secretRefs.workspaceId, secretRefs.provider, secretRefs.reference]
+    scope: ['project']
+  }).onConflictDoUpdate({
+    target: [secretRefs.workspaceId, secretRefs.provider, secretRefs.reference],
+    set: {scope: ['project']}
   }).returning();
-  const persistedCredential = credential ?? (await db.select().from(secretRefs)
-    .where(and(eq(secretRefs.workspaceId, persistedWorkspace.id), eq(secretRefs.provider, 'file'), eq(secretRefs.reference, credentialReference))))[0];
   if (!persistedCredential) throw new Error('credential reference seed failed');
 
   for (const repository of repositorySeeds) {
@@ -74,8 +73,9 @@ try {
       repositoryName: repository.repository,
       repositoryExternalId: repository.externalId,
       credentialRefId: persistedCredential.id
-    }).onConflictDoNothing({
-      target: [projectTrackerRepositoryScopes.projectId, projectTrackerRepositoryScopes.provider, projectTrackerRepositoryScopes.repositoryOwner, projectTrackerRepositoryScopes.repositoryName]
+    }).onConflictDoUpdate({
+      target: [projectTrackerRepositoryScopes.projectId, projectTrackerRepositoryScopes.provider, projectTrackerRepositoryScopes.repositoryOwner, projectTrackerRepositoryScopes.repositoryName],
+      set: {credentialRefId: persistedCredential.id}
     });
   }
   console.log(`Seeded fAI Studio workspace: ${persistedWorkspace.id}`);

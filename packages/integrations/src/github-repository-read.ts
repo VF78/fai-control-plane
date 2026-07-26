@@ -1,5 +1,6 @@
-import {createHash} from 'node:crypto';
+import {createHash, createSign} from 'node:crypto';
 import type {
+  OpaqueSecretRef,
   SecretsProvider,
   TrackerAdapter,
   TrackerCheckConclusion,
@@ -23,9 +24,14 @@ import {
 const pageSize = 100;
 const maximumPages = 10;
 const maximumProjectItemPages = 2;
-const maximumSnapshotRequests = 34;
+const maximumSnapshotRequests = 36;
 const maximumOpenPullRequestCheckFanout = 16;
-const credentialPurpose = 'github_repository_snapshot_read';
+const projectCredentialPurpose = 'github_project_snapshot_read_oauth_token';
+const appPrivateKeyPurpose = 'github_app_installation_token_mint';
+const githubProjectsOAuthScope = Object.freeze(['project']);
+const githubAppId = 4_397_394;
+const githubInstallationId = 149_112_973;
+const githubProjectsOwnerId = 75_837_222;
 const shaPattern = /^[0-9a-f]{40}$/i;
 const colorPattern = /^[0-9a-f]{6}$/i;
 
@@ -353,12 +359,14 @@ const requestHeaders = (credential: string): Readonly<Record<string, string>> =>
   'x-github-api-version': '2022-11-28'
 });
 
-const projectItemsQuery = `query ProjectStatus(
-  $projectId: ID!, $after: String, $repositoryOwner: String!, $repositoryName: String!
-) {
+const projectItemsQuery = `query ProjectStatus($projectId: ID!, $after: String) {
   node(id: $projectId) {
     ... on ProjectV2 {
       id
+      owner {
+        ... on User { databaseId }
+        ... on Organization { databaseId }
+      }
       items(first: 100, after: $after) {
         nodes {
           id
@@ -383,6 +391,11 @@ const projectItemsQuery = `query ProjectStatus(
       }
     }
   }
+}`;
+
+const pullRequestEvidenceQuery = `query PullRequestEvidence(
+  $repositoryOwner: String!, $repositoryName: String!
+) {
   repository(owner: $repositoryOwner, name: $repositoryName) {
     nameWithOwner
     pullRequests(first: 100, states: [OPEN, CLOSED, MERGED]) {
@@ -406,9 +419,9 @@ type ProjectEvidence = Readonly<{
   linkedWorkItemExternalIdsByPullRequestNumber: ReadonlyMap<number, readonly string[]>;
 }>;
 
-const createClient = (fetch: GitHubFetch, credential: string) => {
+const createRequest = (fetch: GitHubFetch) => {
   let requestCount = 0;
-  const request = async (
+  return async (
     input: string,
     init: Readonly<{method: 'GET' | 'POST'; headers: Readonly<Record<string, string>>; body?: string}>
   ): Promise<unknown> => {
@@ -449,6 +462,12 @@ const createClient = (fetch: GitHubFetch, credential: string) => {
       return fail('github_response_invalid');
     }
   };
+};
+
+const createClient = (
+  request: ReturnType<typeof createRequest>,
+  credential: string
+) => {
   const get = async (path: string): Promise<unknown> => request(
     `https://api.github.com${path}`,
     {method: 'GET', headers: requestHeaders(credential)}
@@ -485,6 +504,56 @@ const createClient = (fetch: GitHubFetch, credential: string) => {
   return {get, graphql, pages};
 };
 
+const base64Url = (value: string): string =>
+  Buffer.from(value, 'utf8').toString('base64url');
+
+const mintInstallationToken = async (
+  request: ReturnType<typeof createRequest>,
+  secretsProvider: SecretsProvider,
+  privateKeyRef: OpaqueSecretRef
+): Promise<string> => {
+  let privateKey: string;
+  try {
+    ({value: privateKey} = await secretsProvider.resolve(
+      privateKeyRef,
+      appPrivateKeyPurpose
+    ));
+  } catch {
+    return fail('github_credential_invalid');
+  }
+  if (privateKey.length === 0 || privateKey.length > 65_536 || privateKey.includes('\0')) {
+    return fail('github_credential_invalid');
+  }
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const signingInput = `${base64Url(JSON.stringify({alg: 'RS256', typ: 'JWT'}))}.${base64Url(
+    JSON.stringify({iat: nowSeconds - 60, exp: nowSeconds + 540, iss: githubAppId})
+  )}`;
+  let signature: string;
+  try {
+    signature = createSign('RSA-SHA256').update(signingInput).sign(privateKey, 'base64url');
+  } catch {
+    return fail('github_credential_invalid');
+  }
+  const payload = object(await request(
+    `https://api.github.com/app/installations/${githubInstallationId}/access_tokens`,
+    {
+      method: 'POST',
+      headers: {
+        ...requestHeaders(`${signingInput}.${signature}`),
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({repositories: ['MSA', 'ascon']})
+    }
+  ));
+  const token = boundedString(payload.token, 65_536);
+  const expiresAt = Date.parse(boundedString(payload.expires_at, 64));
+  const now = Date.now();
+  if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt > now + 65 * 60_000) {
+    return fail('github_response_invalid');
+  }
+  return token;
+};
+
 const projectEvidencePage = (
   payload: JsonObject,
   scope: GitHubRepositoryScopeDefinition,
@@ -492,6 +561,11 @@ const projectEvidencePage = (
 ): string | null => {
   const project = object(payload.node);
   if (boundedString(project.id, 512) !== scope.projectNodeId) {
+    return fail('github_response_invalid');
+  }
+  const owner = object(project.owner);
+  if (positiveInteger(owner.databaseId) !== githubProjectsOwnerId ||
+    githubProjectsOwnerId !== scope.ownerId) {
     return fail('github_response_invalid');
   }
   const items = object(project.items);
@@ -580,7 +654,8 @@ const pullRequestEvidence = (
 };
 
 const readProjectEvidence = async (
-  client: ReturnType<typeof createClient>,
+  projectClient: ReturnType<typeof createClient>,
+  repositoryClient: ReturnType<typeof createClient>,
   scope: GitHubRepositoryScopeDefinition
 ): Promise<ProjectEvidence> => {
   const statusByIssueNumber = new Map<number, TrackerProjectStatusObservation>();
@@ -589,12 +664,19 @@ const readProjectEvidence = async (
   if (repositoryOwner === undefined || repositoryName === undefined) {
     return fail('github_response_invalid');
   }
+  pullRequestEvidence(
+    await repositoryClient.graphql(pullRequestEvidenceQuery, {
+      repositoryOwner,
+      repositoryName
+    }),
+    scope,
+    linkedWorkItemExternalIdsByPullRequestNumber
+  );
   let after: string | null = null;
   for (let page = 0; page < maximumProjectItemPages; page += 1) {
-    const payload = await client.graphql(projectItemsQuery, {
-      projectId: scope.projectNodeId, after, repositoryOwner, repositoryName
+    const payload = await projectClient.graphql(projectItemsQuery, {
+      projectId: scope.projectNodeId, after
     });
-    pullRequestEvidence(payload, scope, linkedWorkItemExternalIdsByPullRequestNumber);
     const nextCursor = projectEvidencePage(
       payload,
       scope,
@@ -610,7 +692,9 @@ const readProjectEvidence = async (
 
 export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
   fetch: GitHubFetch;
-  secretsProvider: SecretsProvider;
+  appSecretsProvider: SecretsProvider;
+  appPrivateKeyRef: OpaqueSecretRef;
+  projectsSecretsProvider: SecretsProvider;
 }>): TrackerAdapter => ({
   provider: 'github',
   capabilities: {
@@ -627,22 +711,38 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
     if (scope === undefined) {
       return fail('github_repository_not_allowed');
     }
-    let credential: string;
+    if (
+      input.credentialRef.scope.length !== githubProjectsOAuthScope.length ||
+      input.credentialRef.scope.some(
+        (part, index) => part !== githubProjectsOAuthScope[index]
+      )
+    ) {
+      return fail('github_credential_invalid');
+    }
+    const request = createRequest(dependencies.fetch);
+    const installationToken = await mintInstallationToken(
+      request,
+      dependencies.appSecretsProvider,
+      dependencies.appPrivateKeyRef
+    );
+    let projectCredential: string;
     try {
-      const resolved = await dependencies.secretsProvider.resolve(
+      const resolved = await dependencies.projectsSecretsProvider.resolve(
         input.credentialRef,
-        credentialPurpose
+        projectCredentialPurpose
       );
-      credential = resolved.value;
+      projectCredential = resolved.value;
     } catch {
       return fail('github_credential_invalid');
     }
-    if (typeof credential !== 'string' || credential.length === 0) {
+    if (typeof projectCredential !== 'string' || projectCredential.length === 0 ||
+      projectCredential.length > 65_536 || projectCredential.includes('\0')) {
       return fail('github_credential_invalid');
     }
 
-    const client = createClient(dependencies.fetch, credential);
-    const repositoryPayload = object(await client.get(`/repos/${fullName}`));
+    const repositoryClient = createClient(request, installationToken);
+    const projectClient = createClient(request, projectCredential);
+    const repositoryPayload = object(await repositoryClient.get(`/repos/${fullName}`));
     const repositoryOwner = object(repositoryPayload.owner);
     if (positiveInteger(repositoryPayload.id) !== scope.repositoryId ||
       boundedString(repositoryPayload.full_name, 256) !== scope.fullName ||
@@ -659,7 +759,7 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
       externalVersion: stableVersion(repository)
     };
 
-    const issuePayloads = await client.pages(
+    const issuePayloads = await repositoryClient.pages(
       `/repos/${fullName}/issues?state=all`,
       array
     );
@@ -670,11 +770,11 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
     ));
     assertUnique(rawWorkItems, ({externalId}) => externalId);
     assertUnique(rawWorkItems, ({number}) => number);
-    const pullRequestPayloads = await client.pages(
+    const pullRequestPayloads = await repositoryClient.pages(
       `/repos/${fullName}/pulls?state=all`,
       array
     );
-    const evidence = await readProjectEvidence(client, scope);
+    const evidence = await readProjectEvidence(projectClient, repositoryClient, scope);
     const rawPullRequests = byNumber(pullRequestPayloads.map(
       (payload) => {
         const number = positiveInteger(object(payload).number);
@@ -702,7 +802,7 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
     for (const pullRequestModel of openPullRequests) {
       let checkPayloads = checksByHeadSha.get(pullRequestModel.headSha);
       if (checkPayloads === undefined) {
-        checkPayloads = await client.pages(
+        checkPayloads = await repositoryClient.pages(
           `/repos/${fullName}/commits/${pullRequestModel.headSha}/check-runs`,
           (payload) => array(object(payload).check_runs)
         );

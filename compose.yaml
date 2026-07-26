@@ -92,6 +92,14 @@ services:
       - "${WEB_PORT:-3000}:3000"
     volumes:
       - type: bind
+        source: ${GITHUB_APP_PRIVATE_KEY_HOST_FILE:-./infra/compose/secrets/github-app-private-key.disabled}
+        target: ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/github-app-private-key}
+        read_only: true
+      - type: bind
+        source: ${GITHUB_PROJECTS_OAUTH_TOKEN_HOST_FILE:-./infra/compose/secrets/github-projects-oauth-token.disabled}
+        target: ${GITHUB_PROJECTS_OAUTH_TOKEN_FILE:-/run/secrets/github-projects-oauth-token}
+        read_only: true
+      - type: bind
         source: ${GITHUB_WEBHOOK_SECRET_HOST_FILE:-./infra/compose/secrets/github-webhook.disabled}
         target: ${GITHUB_WEBHOOK_SECRET_FILE:-/run/secrets/github-webhook}
         read_only: true

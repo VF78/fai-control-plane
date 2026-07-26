@@ -24,14 +24,26 @@ const required = (name: string): string => {
   return value;
 };
 
+const requiredExactInteger = (name: string, expected: number): number => {
+  const value = required(name);
+  if (value !== String(expected)) {
+    throw new Error(`${name} must be exactly ${expected}`);
+  }
+  return expected;
+};
+
 const databaseUrl = required('DATABASE_URL');
-const tokenFile = required('GITHUB_REPOSITORY_READ_TOKEN_FILE');
+const projectsTokenFile = required('GITHUB_PROJECTS_OAUTH_TOKEN_FILE');
+const appPrivateKeyFile = required('GITHUB_APP_PRIVATE_KEY_FILE');
+requiredExactInteger('GITHUB_APP_ID', 4_397_394);
+requiredExactInteger('GITHUB_MSA_INSTALLATION_ID', 149_112_973);
+requiredExactInteger('GITHUB_ASCON_INSTALLATION_ID', 149_112_973);
 const bootstrapSubject = required('FCP_BOOTSTRAP_HUMAN_SUBJECT');
 const {db, pool} = createDatabase(databaseUrl);
 const projectSlugs = ['msa', 'ascon'] as const;
 
 try {
-  console.info('GitHub repository read token: configured');
+  console.info('GitHub App and Projects OAuth credentials: configured');
   const [workspace] = await db.select({id: workspaces.id}).from(workspaces)
     .where(eq(workspaces.slug, 'fai-studio'));
   if (workspace === undefined) throw new Error('Seeded fAI Studio workspace is required');
@@ -88,9 +100,21 @@ try {
   const service = createTrackerRepositorySnapshotOrchestrationService({
     adapter: createGitHubRepositoryReadAdapter({
       fetch: (input, init) => fetch(input, init),
-      secretsProvider: createFileSecretsProvider({
-        provider: 'file', reference: tokenFile, scope: ['github:repository:snapshot:read']
-      }, 'github_repository_snapshot_read')
+      appSecretsProvider: createFileSecretsProvider({
+        provider: 'file',
+        reference: appPrivateKeyFile,
+        scope: ['github:app:installation-token:mint']
+      }, 'github_app_installation_token_mint'),
+      appPrivateKeyRef: {
+        provider: 'file',
+        reference: appPrivateKeyFile,
+        scope: ['github:app:installation-token:mint']
+      },
+      projectsSecretsProvider: createFileSecretsProvider({
+        provider: 'file',
+        reference: projectsTokenFile,
+        scope: ['project']
+      }, 'github_project_snapshot_read_oauth_token')
     }),
     scopeAuthorizer: createPostgresTrackerRepositoryReadScopeAuthorizer(db),
     projector: createPostgresTrackerSnapshotProjector(db)
