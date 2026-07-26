@@ -397,13 +397,14 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       pullRequests: [],
       checks: []
     });
-    await projector.bootstrap({...operation(initial), projectId});
+    await projector.bootstrap({...operation(initial), actorId: ids.owner, projectId});
     const inDev = {...ready, optionExternalId: 'option-in-dev', status: 'in_dev' as const};
     const projected = await projector.synchronize({
       ...operation({...initial, externalVersion: 'github:sha256:status-command-2', workItems: [{
         ...issue('github:issue:9002'), projectStatus: inDev
       }]}),
       projectId,
+      actorId: ids.owner,
       expectedPreviousExternalVersion: 'github:sha256:status-command-1'
     });
     expect(projected).toMatchObject({status: 'applied', updatedWorkItemStatuses: 0});
@@ -422,12 +423,12 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     });
 
     const issuer = createActorContextIssuer({
-      users: [], agents: [],
-      systems: [{actorId: ids.actor, capabilities: ['write:control_plane:development']}]
+      users: [{actorId: ids.owner, capabilities: ['write:control_plane:development']}],
+      agents: [], systems: []
     });
     if (!issuer.ok) throw new Error('Test actor issuer did not initialize.');
-    const actor = issuer.value.issueSystem(ids.actor);
-    if (!actor.ok) throw new Error('Test system actor did not initialize.');
+    const actor = issuer.value.issueUser(ids.owner);
+    if (!actor.ok) throw new Error('Test user actor did not initialize.');
     const processor = createPostgresTrackerStatusObservationProcessor(
       db,
       createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)}),
@@ -448,6 +449,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
         ...issue('github:issue:9002'), projectStatus: inDev
       }]}),
       projectId,
+      actorId: ids.owner,
       expectedPreviousExternalVersion: 'github:sha256:status-command-2'
     });
     const echoes = await db.select().from(trackerStatusObservationInbox).where(eq(
@@ -485,7 +487,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       pullRequests: [],
       checks: []
     });
-    await projector.bootstrap({...operation(initial), projectId});
+    await projector.bootstrap({...operation(initial), actorId: ids.owner, projectId});
     const [binding] = await db.select().from(trackerBindings).where(and(
       eq(trackerBindings.projectId, projectId),
       eq(trackerBindings.surface, 'issue')
@@ -498,6 +500,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     await projector.synchronize({
       ...operation({...initial, externalVersion: 'github:sha256:status-conflict-2'}),
       projectId,
+      actorId: ids.owner,
       expectedPreviousExternalVersion: 'github:sha256:status-conflict-1'
     });
     const [outboundRace] = await db.select().from(trackerStatusObservationInbox).where(eq(
@@ -514,15 +517,16 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
         ...issue('github:issue:9003'), projectStatus: done
       }]}),
       projectId,
+      actorId: ids.owner,
       expectedPreviousExternalVersion: 'github:sha256:status-conflict-2'
     });
     const issuer = createActorContextIssuer({
-      users: [], agents: [],
-      systems: [{actorId: ids.actor, capabilities: ['write:control_plane:development']}]
+      users: [{actorId: ids.owner, capabilities: ['write:control_plane:development']}],
+      agents: [], systems: []
     });
     if (!issuer.ok) throw new Error('Test actor issuer did not initialize.');
-    const actor = issuer.value.issueSystem(ids.actor);
-    if (!actor.ok) throw new Error('Test system actor did not initialize.');
+    const actor = issuer.value.issueUser(ids.owner);
+    if (!actor.ok) throw new Error('Test user actor did not initialize.');
     const processor = createPostgresTrackerStatusObservationProcessor(
       db,
       createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)}),

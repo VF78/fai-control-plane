@@ -79,6 +79,26 @@ export const createPostgresTrackerStatusObservationProcessor = (
       return updated === undefined ? null : {...updated, processingToken};
     });
     if (claimed === null) return {status: 'idle'};
+    if (actor.actorId !== claimed.actorId) {
+      const [completed] = await db.update(schema.trackerStatusObservationInbox).set({
+        state: 'conflict',
+        conflictCode: 'actor_mismatch',
+        processingToken: null,
+        processingLeaseExpiresAt: null,
+        processedAt: now()
+      }).where(and(
+        eq(schema.trackerStatusObservationInbox.id, claimed.id),
+        eq(schema.trackerStatusObservationInbox.state, 'processing'),
+        eq(schema.trackerStatusObservationInbox.processingToken, claimed.processingToken)
+      )).returning({id: schema.trackerStatusObservationInbox.id});
+      return completed === undefined
+        ? {status: 'retryable', observationId: claimed.id}
+        : {
+            status: 'conflict',
+            observationId: claimed.id,
+            code: 'actor_mismatch'
+          };
+    }
 
     let execution: CanonicalCommandExecution;
     try {
