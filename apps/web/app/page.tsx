@@ -1,12 +1,18 @@
 import {and, desc, eq, inArray, isNull} from 'drizzle-orm';
 import {
+  actors,
+  auditEvents,
   createDatabase,
   dashboardSnapshots,
+  outboxEvents,
   projects,
+  riskSignals,
+  scheduledJobs,
   trackerBindings,
   trackerSnapshotOperations,
   workItems
 } from '@fai-control-plane/db';
+import {rankAttentionQueue, type AttentionQueueItem} from '../src/attention-queue';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +22,12 @@ const statusLabel = (status: string) => status.replace('_', ' ');
 const syncLabel = (value: Date | null) => value === null
   ? 'Never synced'
   : `Synced ${value.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+const freshnessLabel = (value: Date) => `Updated ${value.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+const severityLabel = (value: AttentionQueueItem['severity']) => ({
+  red: 'Critical',
+  yellow: 'Warning',
+  green: 'Info'
+})[value];
 
 type WorkItemRow = {
   id: string;
@@ -37,6 +49,9 @@ const issueState = (metadata: Record<string, unknown>): 'open' | 'closed' | null
 const hasProjectStatus = (metadata: Record<string, unknown>): boolean =>
   typeof metadata.projectStatus === 'object' && metadata.projectStatus !== null;
 
+const outboxWorkItemId = (payload: Record<string, unknown>): string | null =>
+  typeof payload.workItemId === 'string' ? payload.workItemId : null;
+
 async function loadProjects() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
@@ -52,7 +67,7 @@ async function loadProjects() {
     if (configuredProjects.length === 0) return [];
 
     const projectIds = configuredProjects.map(({id}) => id);
-    const [items, bindings, snapshots, operations] = await Promise.all([
+    const [items, bindings, snapshots, operations, signals, failedOutbox, unhealthyJobs] = await Promise.all([
       db.select({
         id: workItems.id,
         projectId: workItems.projectId,
@@ -82,7 +97,48 @@ async function loadProjects() {
         createdAt: trackerSnapshotOperations.createdAt
       }).from(trackerSnapshotOperations)
         .where(inArray(trackerSnapshotOperations.projectId, projectIds))
-        .orderBy(desc(trackerSnapshotOperations.createdAt))
+        .orderBy(desc(trackerSnapshotOperations.createdAt)),
+      db.select({
+        id: riskSignals.id,
+        projectId: riskSignals.projectId,
+        workItemId: riskSignals.workItemId,
+        code: riskSignals.code,
+        severity: riskSignals.severity,
+        summary: riskSignals.summary,
+        updatedAt: riskSignals.updatedAt,
+        workItemTitle: workItems.title,
+        owner: actors.displayName
+      }).from(riskSignals)
+        .leftJoin(workItems, and(
+          eq(riskSignals.workItemId, workItems.id),
+          eq(riskSignals.projectId, workItems.projectId)
+        ))
+        .leftJoin(actors, eq(workItems.ownerActorId, actors.id))
+        .where(and(inArray(riskSignals.projectId, projectIds), isNull(riskSignals.resolvedAt)))
+        .orderBy(desc(riskSignals.updatedAt), riskSignals.id),
+      db.select({
+        id: outboxEvents.id,
+        projectId: outboxEvents.projectId,
+        payload: outboxEvents.payload,
+        attemptCount: outboxEvents.attemptCount,
+        failureCode: outboxEvents.failureCode,
+        updatedAt: outboxEvents.updatedAt
+      }).from(outboxEvents).where(and(
+        inArray(outboxEvents.projectId, projectIds),
+        eq(outboxEvents.destination, 'github'),
+        eq(outboxEvents.eventType, 'github.project_status.write.v1'),
+        eq(outboxEvents.status, 'failed')
+      )).orderBy(desc(outboxEvents.updatedAt), outboxEvents.id),
+      db.select({
+        id: scheduledJobs.id,
+        projectId: scheduledJobs.projectId,
+        name: scheduledJobs.name,
+        updatedAt: scheduledJobs.updatedAt,
+        heartbeatAt: scheduledJobs.heartbeatAt
+      }).from(scheduledJobs).where(and(
+        inArray(scheduledJobs.projectId, projectIds),
+        eq(scheduledJobs.status, 'unhealthy')
+      )).orderBy(desc(scheduledJobs.updatedAt), scheduledJobs.id)
     ]);
     const issueBindings = new Map(bindings.map((binding) => [
       binding.entityId,
@@ -99,6 +155,102 @@ async function loadProjects() {
         externalUrl: binding?.externalUrl ?? null
       }];
     });
+    const itemById = new Map(activeItems.map((item) => [item.id, item]));
+    const auditWorkItemIds = [...new Set([
+      ...signals.flatMap((signal) => signal.workItemId === null ? [] : [signal.workItemId]),
+      ...failedOutbox.flatMap((event) => {
+        const workItemId = outboxWorkItemId(event.payload);
+        return workItemId === null ? [] : [workItemId];
+      })
+    ])];
+    const audits = auditWorkItemIds.length === 0 ? [] : await db.select({
+      targetId: auditEvents.targetId,
+      action: auditEvents.action,
+      outcome: auditEvents.outcome,
+      reasonCode: auditEvents.reasonCode,
+      occurredAt: auditEvents.occurredAt
+    }).from(auditEvents).where(and(
+      inArray(auditEvents.targetId, auditWorkItemIds),
+      inArray(auditEvents.projectId, projectIds),
+      eq(auditEvents.targetType, 'work_item')
+    )).orderBy(desc(auditEvents.occurredAt), auditEvents.id);
+    const auditByWorkItem = new Map<string, typeof audits[number]>();
+    for (const audit of audits) {
+      if (audit.targetId !== null && !auditByWorkItem.has(audit.targetId)) {
+        auditByWorkItem.set(audit.targetId, audit);
+      }
+    }
+    const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
+    const auditEvidence = (workItemId: string | null, fallback: string): string => {
+      if (workItemId === null) return fallback;
+      const audit = auditByWorkItem.get(workItemId);
+      if (audit === undefined) return fallback;
+      const outcome = audit.outcome === null ? '' : ` ${audit.outcome}`;
+      const reason = audit.reasonCode === null ? '' : ` (${audit.reasonCode})`;
+      return `Audit: ${audit.action}${outcome}${reason}`;
+    };
+    const attention = rankAttentionQueue([
+      ...signals.flatMap((signal): AttentionQueueItem[] => {
+        const project = projectById.get(signal.projectId);
+        if (project === undefined) return [];
+        const item = signal.workItemId === null ? undefined : itemById.get(signal.workItemId);
+        return [{
+          id: `risk:${signal.id}`,
+          projectId: signal.projectId,
+          severity: signal.severity,
+          project: project.name,
+          object: signal.workItemTitle ?? 'Project risk signal',
+          reason: signal.summary,
+          impact: signal.workItemId === null ? 'Unresolved project risk' : 'Unresolved risk on linked work item',
+          freshness: signal.updatedAt,
+          owner: signal.owner,
+          evidence: auditEvidence(signal.workItemId, `RiskSignal: ${signal.code}`),
+          action: item?.externalUrl === null || item === undefined
+            ? {label: 'Review signal', href: null}
+            : {label: 'Open issue', href: item.externalUrl}
+        }];
+      }),
+      ...failedOutbox.flatMap((event): AttentionQueueItem[] => {
+        if (event.projectId === null) return [];
+        const project = projectById.get(event.projectId);
+        if (project === undefined) return [];
+        const workItemId = outboxWorkItemId(event.payload);
+        const item = workItemId === null ? undefined : itemById.get(workItemId);
+        return [{
+          id: `outbox:${event.id}`,
+          projectId: event.projectId,
+          severity: 'red',
+          project: project.name,
+          object: item?.title ?? 'GitHub project status write',
+          reason: event.failureCode ?? 'GitHub status write failed',
+          impact: 'Canonical status is not confirmed in GitHub',
+          freshness: event.updatedAt,
+          owner: null,
+          evidence: auditEvidence(workItemId, `Outbox: failed after ${event.attemptCount} attempts`),
+          action: item?.externalUrl === null || item === undefined
+            ? {label: 'Inspect write', href: null}
+            : {label: 'Open issue', href: item.externalUrl}
+        }];
+      }),
+      ...unhealthyJobs.flatMap((job): AttentionQueueItem[] => {
+        if (job.projectId === null) return [];
+        const project = projectById.get(job.projectId);
+        if (project === undefined) return [];
+        return [{
+          id: `job:${job.id}`,
+          projectId: job.projectId,
+          severity: 'red',
+          project: project.name,
+          object: job.name,
+          reason: 'Scheduled job is unhealthy',
+          impact: 'Scheduled recovery is not in a healthy state',
+          freshness: job.heartbeatAt ?? job.updatedAt,
+          owner: null,
+          evidence: 'ScheduledJob: unhealthy',
+          action: {label: 'Inspect job', href: null}
+        }];
+      })
+    ]);
 
     return configuredProjects.map((project) => ({
       ...project,
@@ -106,7 +258,8 @@ async function loadProjects() {
       snapshotCapturedAt: operations.find(
         (operation) => operation.projectId === project.id
       )?.createdAt ?? null,
-      items: activeItems.filter((item) => item.projectId === project.id)
+      items: activeItems.filter((item) => item.projectId === project.id),
+      attention: attention.filter((item) => item.projectId === project.id)
     }));
   } finally {
     await pool.end();
@@ -129,7 +282,7 @@ export default async function ProjectControlPanel() {
         <p className="product-name">f(AI) Studio</p>
         <nav aria-label="Control plane">
           {navigation.map((item) => (
-            <span className={item === 'Project Control Panel' ? 'nav-item active' : 'nav-item'} key={item}>
+            <span className={item === 'Portfolio' ? 'nav-item active' : 'nav-item'} key={item}>
               {item}
             </span>
           ))}
@@ -139,7 +292,7 @@ export default async function ProjectControlPanel() {
         <header className="page-header">
           <div>
             <p className="eyebrow">Workspace overview</p>
-            <h1>Project Control Panel</h1>
+            <h1>Portfolio</h1>
           </div>
           <p className="source">PostgreSQL canonical state</p>
         </header>
@@ -171,7 +324,7 @@ function ControlSurface({projects: projectData}: {
     if (left.blocked !== right.blocked) return left.blocked ? -1 : 1;
     return urgency.indexOf(left.status) - urgency.indexOf(right.status);
   });
-  const attention = activeItems.filter((item) => item.blocked);
+  const attention = rankAttentionQueue(projectData.flatMap((project) => project.attention));
   const grouped = statuses.map((status) => ({
     status,
     items: activeItems.filter((item) => item.status === status)
@@ -180,10 +333,17 @@ function ControlSurface({projects: projectData}: {
   return (
     <div className="control-surface">
       <section className="attention" aria-labelledby="attention-title">
-        <header><p className="eyebrow">Attention</p><h2 id="attention-title">{attention.length} blocked</h2></header>
-        {attention.length === 0 ? <p>No blocked active work in canonical state.</p> : attention.map((item) => (
+        <header><p className="eyebrow">Attention queue</p><h2 id="attention-title">{attention.length} exceptions</h2></header>
+        {attention.length === 0 ? <p>No unresolved exceptions in selected canonical scope.</p> : attention.map((item) => (
           <article className="attention-row" key={item.id}>
-            <strong>{item.title}</strong><span>{item.project}</span><span>{statusLabel(item.status)}</span>
+            <span className={`severity ${item.severity}`}>{severityLabel(item.severity)}</span>
+            <div className="attention-subject"><strong>{item.object}</strong><span>{item.project}</span></div>
+            <div className="attention-detail"><strong>{item.reason}</strong><span>{item.evidence}</span></div>
+            <div className="attention-detail"><span>{item.impact}</span><time dateTime={item.freshness.toISOString()}>{freshnessLabel(item.freshness)}</time></div>
+            <span>{item.owner ?? 'Unassigned'}</span>
+            {item.action.href === null ? <span className="attention-action">{item.action.label}</span> : (
+              <a className="attention-action" href={item.action.href} rel="noreferrer" target="_blank">{item.action.label}</a>
+            )}
           </article>
         ))}
       </section>
