@@ -121,7 +121,6 @@ export const createPostgresRecoveryScanProducer = (
               attemptCount: schema.incomingEvents.attemptCount
             }).from(schema.incomingEvents).where(and(
               eq(schema.incomingEvents.projectId, projectId),
-              eq(schema.incomingEvents.provider, 'github'),
               eq(schema.incomingEvents.status, 'processing'),
               lte(schema.incomingEvents.processingLeaseExpiresAt, runAt)
             )).orderBy(asc(schema.incomingEvents.id)).for('update', {skipLocked: true});
