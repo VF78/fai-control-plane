@@ -82,6 +82,7 @@ describePostgres(
       const disabledRunId = randomUUID();
       const disallowedRunId = randomUUID();
       const secretReference = 'file:///customer/webhook-token';
+      const runnerId = 'operator-workstation';
 
       await testDb.insert(workspaces).values({
         id: workspaceId,
@@ -270,7 +271,7 @@ describePostgres(
       });
       const authorization = {
         workspaceId,
-        runnerId: 'operator-workstation',
+        runnerId,
         projectIds: [projectId],
         repositories: [{owner: 'VF78', name: 'fai-control-plane'}],
         runtimeIds: ['coding-runner']
@@ -320,7 +321,7 @@ describePostgres(
         ]));
       expect(rows.find((row) => row.id === eligibleRunId)).toMatchObject({
         status: 'running',
-        runnerId: 'operator-workstation',
+        runnerId,
         leaseTokenHash: expect.stringMatching(/^[0-9a-f]{64}$/),
         attempt: 1,
         version: 2
@@ -433,7 +434,7 @@ describePostgres(
         {
           kind: 'receipt',
           storageProvider: 'workstation-local',
-          storageKey: `coding-runner/${eligibleRunId}/agent-run-receipt.json`,
+          storageKey: `${runnerId}/${eligibleRunId}/agent-run-receipt.json`,
           contentType: 'application/json',
           sha256: completionPayload.receiptSha256,
           sizeBytes: completionPayload.receiptSizeBytes
@@ -441,7 +442,7 @@ describePostgres(
         {
           kind: 'summary',
           storageProvider: 'workstation-local',
-          storageKey: `coding-runner/${eligibleRunId}/codex-summary.json`,
+          storageKey: `${runnerId}/${eligibleRunId}/codex-summary.json`,
           contentType: 'application/json',
           sha256: completionPayload.summaryArtifact!.sha256,
           sizeBytes: completionPayload.summaryArtifact!.sizeBytes
