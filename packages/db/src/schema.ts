@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -533,6 +534,51 @@ export const scheduledJobs = pgTable(
     uniqueIndex('scheduled_jobs_project_name_unique').on(
       table.projectId,
       table.name
+    )
+  ]
+);
+
+export type DailyPmReportPayload = Readonly<{
+  schemaVersion: 1;
+  timezone: 'UTC';
+  reportDate: string;
+  generatedAt: string;
+  dataAsOf: string;
+  workItems: Readonly<{
+    statusCounts: Readonly<Record<
+      'backlog' | 'ready' | 'in_dev' | 'qa' | 'acceptance' | 'done',
+      number
+    >>;
+    blockedCount: number;
+  }>;
+  riskSignals: Readonly<{
+    unresolvedCountsBySeverity: Readonly<Record<'green' | 'yellow' | 'red', number>>;
+  }>;
+  approvals: Readonly<{pendingCount: number}>;
+  github: Readonly<{
+    failedWritebackCount: number;
+    latestSuccessfulTrackerSnapshot: Readonly<{
+      at: string | null;
+      freshness: 'fresh' | 'stale' | 'missing';
+    }>;
+  }>;
+}>;
+
+export const dailyPmReports = pgTable(
+  'daily_pm_reports',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    reportDate: date('report_date').notNull(),
+    payload: jsonb('payload').$type<DailyPmReportPayload>().notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('daily_pm_reports_project_date_unique').on(
+      table.projectId,
+      table.reportDate
     )
   ]
 );

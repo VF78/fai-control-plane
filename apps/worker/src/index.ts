@@ -5,10 +5,12 @@ import {PgBoss} from 'pg-boss';
 import {createIncomingEventQueueConsumer} from '@fai-control-plane/application';
 import {
   createDatabase,
+  createPostgresDailyPmReportProducer,
   createPostgresHealthcheckProducer,
   createPostgresGitHubProjectStatusPublisher,
   createPostgresIncomingEventProcessor,
   createPostgresRecoveryScanProducer,
+  DAILY_PM_REPORT_QUEUE,
   HEALTHCHECK_QUEUE,
   INCOMING_EVENT_QUEUE,
   RECOVERY_SCAN_QUEUE
@@ -22,6 +24,7 @@ import {
 import {configureIncomingEventQueue} from './incoming-event-queue';
 import {configureHealthcheckQueue} from './healthcheck-queue';
 import {configureRecoveryScanQueue} from './recovery-scan-queue';
+import {configureDailyPmReportQueue} from './daily-pm-report-queue';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
@@ -69,6 +72,7 @@ const incomingEventConsumer = createIncomingEventQueueConsumer({
 });
 const healthcheckProducer = createPostgresHealthcheckProducer(db);
 const recoveryScanProducer = createPostgresRecoveryScanProducer(db, boss);
+const dailyPmReportProducer = createPostgresDailyPmReportProducer(db);
 let statusPublisherTimer: NodeJS.Timeout | undefined;
 
 const server = createServer((request, response) => {
@@ -106,12 +110,14 @@ await boss.start();
 await configureIncomingEventQueue(boss, INCOMING_EVENT_QUEUE);
 await configureHealthcheckQueue(boss);
 await configureRecoveryScanQueue(boss);
+await configureDailyPmReportQueue(boss);
 await boss.work(INCOMING_EVENT_QUEUE, async ([job]) => {
   if (job === undefined) return;
   return incomingEventConsumer.consume(job.data);
 });
 await boss.work(HEALTHCHECK_QUEUE, async () => healthcheckProducer.run());
 await boss.work(RECOVERY_SCAN_QUEUE, async () => recoveryScanProducer.run());
+await boss.work(DAILY_PM_REPORT_QUEUE, async () => dailyPmReportProducer.run());
 await recoveryScanProducer.run();
 if (writebackEnabled) {
   const appId = process.env.GITHUB_APP_ID;

@@ -29,6 +29,11 @@ export {
   RECOVERY_SCAN_QUEUE,
   recoveryScanCron
 } from './recovery-scan';
+export {
+  createPostgresDailyPmReportProducer,
+  DAILY_PM_REPORT_QUEUE,
+  dailyPmReportCron
+} from './daily-pm-report';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});
