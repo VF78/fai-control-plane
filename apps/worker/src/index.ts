@@ -10,7 +10,7 @@ import {
   INCOMING_EVENT_QUEUE
 } from '@fai-control-plane/db/runtime';
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
-import {createGitHubProjectStatusWriteAdapter} from '@fai-control-plane/integrations';
+import {createGitHubProjectStatusWriteAdapter} from '@fai-control-plane/integrations/runtime';
 import {
   startTelemetry,
   stopTelemetry

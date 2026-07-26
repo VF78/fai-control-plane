@@ -79,6 +79,21 @@ const repositoryMetadata = (
   name: snapshot.repository.name
 });
 
+const projectStatusIdentityMatches = (
+  binding: typeof schema.trackerBindings.$inferSelect,
+  snapshot: TrackerRepositorySnapshot,
+  observed: TrackerWorkItemSnapshot['projectStatus']
+): boolean => {
+  if (observed === null) return true;
+  const metadata = binding.metadata as Record<string, unknown>;
+  const status = metadata.projectStatus;
+  return metadata.repositoryExternalId === snapshot.repository.externalId &&
+    status !== null && typeof status === 'object' && !Array.isArray(status) &&
+    (status as Record<string, unknown>).projectExternalId === observed.projectExternalId &&
+    (status as Record<string, unknown>).projectItemExternalId === observed.projectItemExternalId &&
+    (status as Record<string, unknown>).fieldExternalId === observed.fieldExternalId;
+};
+
 const validateInput = (input: TrackerSnapshotProjectionInput): void => {
   const required = [
     input.operationId,
@@ -243,6 +258,7 @@ export const createPostgresTrackerSnapshotProjector = (
         };
       }
 
+      let providerStatusMismatch = false;
       const record = async (
         result: AppliedResult | ConflictResult
       ): Promise<void> => {
@@ -276,6 +292,10 @@ export const createPostgresTrackerSnapshotProjector = (
           reasonCode: result.status === 'conflict'
             ? result.code.toUpperCase()
             : (
+                providerStatusMismatch
+              )
+              ? 'GITHUB_PROJECT_STATUS_MISMATCH'
+              : (
                 result.unknownWorkItemExternalIds.length > 0 ||
                 result.unknownProjectStatusWorkItemExternalIds.length > 0 ||
                 result.unmappablePullRequestExternalIds.length > 0 ||
@@ -305,8 +325,8 @@ export const createPostgresTrackerSnapshotProjector = (
         ));
       const canonicalIssueBindings = await tx
         .select({
-          externalId: schema.trackerBindings.externalId,
-          entityId: schema.trackerBindings.entityId
+          binding: schema.trackerBindings,
+          workItem: schema.workItems
         })
         .from(schema.trackerBindings)
         .innerJoin(
@@ -328,7 +348,12 @@ export const createPostgresTrackerSnapshotProjector = (
       );
       const workItemIds = new Map(
         canonicalIssueBindings.map(
-          (binding) => [binding.externalId, binding.entityId]
+          ({binding}) => [binding.externalId, binding.entityId]
+        )
+      );
+      const workItemsByExternalId = new Map(
+        canonicalIssueBindings.map(
+          ({binding, workItem}) => [binding.externalId, {binding, workItem}]
         )
       );
       let createdWorkItems = 0;
@@ -375,24 +400,36 @@ export const createPostgresTrackerSnapshotProjector = (
           unknownWorkItemExternalIds.push(item.externalId);
           continue;
         }
-        const [workItem] = await tx
-          .select({
-            id: schema.workItems.id,
-            title: schema.workItems.title,
-            status: schema.workItems.status
-          })
-          .from(schema.workItems)
-          .where(and(
-            eq(schema.workItems.id, workItemId),
-            eq(schema.workItems.projectId, input.projectId)
-          ));
-        if (workItem === undefined) {
+        const bound = workItemsByExternalId.get(item.externalId);
+        if (bound === undefined || bound.workItem.id !== workItemId) {
           unknownWorkItemExternalIds.push(item.externalId);
           continue;
         }
+        const {binding, workItem} = bound;
+        const observedProjectStatus = item.projectStatus;
+        if (!projectStatusIdentityMatches(binding, input.snapshot, observedProjectStatus)) {
+          unknownProjectStatusWorkItemExternalIds.push(item.externalId);
+          continue;
+        }
+        if (
+          input.mode === 'synchronize' &&
+          binding.lastOutboundMutationId !== null &&
+          (
+            observedProjectStatus === null ||
+            observedProjectStatus.status === null ||
+            observedProjectStatus.status !== workItem.status
+          )
+        ) {
+          providerStatusMismatch = true;
+          continue;
+        }
+        const confirmsOutboundMutation =
+          binding.lastOutboundMutationId !== null &&
+          observedProjectStatus?.status === workItem.status;
         const [updatedBinding] = await tx.update(schema.trackerBindings).set({
           externalVersion: item.externalVersion,
           lastInboundVersion: item.externalVersion,
+          ...(confirmsOutboundMutation ? {lastOutboundMutationId: null} : {}),
           metadata: issueMetadata(input.snapshot, item),
           updatedAt: new Date()
         }).where(and(

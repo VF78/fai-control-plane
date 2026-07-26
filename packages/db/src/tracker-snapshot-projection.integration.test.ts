@@ -12,6 +12,7 @@ import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
   auditEvents,
   buildChecks,
+  outboxEvents,
   prLinks,
   trackerBindings,
   trackerSnapshotOperations,
@@ -278,6 +279,89 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       code: 'stale_snapshot',
       currentExternalVersion: 'github:sha256:snapshot-2'
     });
+  });
+
+  it('keeps a newer canonical GitHub status and outbound marker when a stale provider status arrives', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Reconciliation', $3)`,
+      [projectId, ids.workspace, `reconciliation-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const projectStatus = {
+      projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+      projectItemExternalId: 'PVTI_MSA_1',
+      fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
+      optionExternalId: '1f121483',
+      status: 'ready' as const
+    };
+    const initial = snapshot('github:sha256:reconcile-1', {
+      repository: {
+        externalId: 'github:repository:9001',
+        externalVersion: 'github:sha256:repository-reconcile',
+        owner: 'VF78',
+        name: 'Reconciliation'
+      },
+      workItems: [{...issue('github:issue:9001'), projectStatus}],
+      pullRequests: [],
+      checks: []
+    });
+    await projector.bootstrap({...operation(initial), projectId});
+    const [binding] = await db.select().from(trackerBindings).where(and(
+      eq(trackerBindings.projectId, projectId),
+      eq(trackerBindings.surface, 'issue'),
+      eq(trackerBindings.externalId, 'github:issue:9001')
+    ));
+    expect(binding).toBeDefined();
+    const outboundMutationId = randomUUID();
+    await db.update(workItems).set({status: 'in_dev', version: 2})
+      .where(eq(workItems.id, binding!.entityId));
+    await db.update(trackerBindings).set({lastOutboundMutationId: outboundMutationId})
+      .where(eq(trackerBindings.id, binding!.id));
+
+    const staleInput = {
+      ...operation({...initial, externalVersion: 'github:sha256:reconcile-2'}),
+      projectId,
+      expectedPreviousExternalVersion: 'github:sha256:reconcile-1'
+    };
+    const stale = await projector.synchronize(staleInput);
+    expect(stale).toMatchObject({status: 'applied', updatedWorkItemStatuses: 0});
+    const [afterStale, staleBinding] = await Promise.all([
+      db.select().from(workItems).where(eq(workItems.id, binding!.entityId)),
+      db.select().from(trackerBindings).where(eq(trackerBindings.id, binding!.id))
+    ]);
+    expect(afterStale[0]).toMatchObject({status: 'in_dev', version: 2});
+    expect(staleBinding[0]).toMatchObject({
+      lastOutboundMutationId: outboundMutationId,
+      lastInboundVersion: 'github:sha256:github:issue:9001:Issue title'
+    });
+
+    const confirmedStatus = {...projectStatus, optionExternalId: '47fc9ee4', status: 'in_dev' as const};
+    const confirmation = await projector.synchronize({
+      ...operation({...initial, externalVersion: 'github:sha256:reconcile-3', workItems: [{
+        ...issue('github:issue:9001'), projectStatus: confirmedStatus
+      }]}),
+      projectId,
+      expectedPreviousExternalVersion: 'github:sha256:reconcile-2'
+    });
+    expect(confirmation).toMatchObject({status: 'applied', updatedWorkItemStatuses: 0});
+    const [confirmedBinding, audits, writes] = await Promise.all([
+      db.select().from(trackerBindings).where(eq(trackerBindings.id, binding!.id)),
+      db.select().from(auditEvents).where(and(
+        eq(auditEvents.projectId, projectId),
+        eq(auditEvents.commandId, staleInput.operationId),
+        eq(auditEvents.reasonCode, 'GITHUB_PROJECT_STATUS_MISMATCH')
+      )),
+      db.select().from(outboxEvents).where(eq(outboxEvents.projectId, projectId))
+    ]);
+    expect(confirmedBinding[0]).toMatchObject({
+      lastOutboundMutationId: null,
+      lastInboundVersion: 'github:sha256:github:issue:9001:Issue title',
+      metadata: {projectStatus: confirmedStatus}
+    });
+    expect(audits).toHaveLength(1);
+    expect(writes).toHaveLength(0);
   });
 
   it('serializes simultaneous identical bootstrap and synchronize operations', async () => {
