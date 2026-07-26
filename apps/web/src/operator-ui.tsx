@@ -97,7 +97,7 @@ function AttentionQueue({items}: {items: readonly PortfolioData['attention'][num
   </section>;
 }
 
-export function ProjectView({data}: {data: ProjectData}) {
+export function ProjectView({data, csrfToken}: {data: ProjectData; csrfToken: string | null}) {
   return <div className="control-surface">
     <section className="project-facts" aria-labelledby="project-facts-title"><header><p className="eyebrow">Selected project</p><h2 id="project-facts-title">{data.project.name}</h2></header>
       <dl className="fact-grid"><div><dt>Default branch</dt><dd>{data.project.defaultBranch}</dd></div><div><dt>Project record</dt><dd>{stamp(data.project.updatedAt)}</dd></div><div><dt>Tracker operation</dt><dd className={age(data.synchronizedAt)}>{stamp(data.synchronizedAt)}</dd></div><div><dt>Latest snapshot</dt><dd>{data.snapshot === null ? 'No recorded snapshot' : `${data.snapshot.health}, ${stamp(data.snapshot.capturedAt)}`}</dd></div></dl>
@@ -108,6 +108,7 @@ export function ProjectView({data}: {data: ProjectData}) {
         {items.length === 0 ? <p className="status-empty">No recorded WorkItems.</p> : <div className="work-list">{items.map((item) => <article className="work-row" key={item.id}>
           <div><strong>{item.title}</strong>{item.summary === null ? null : <span>{item.summary}</span>}</div><span>{item.owner ?? 'No recorded owner'}</span><span className={item.blocked ? 'blocked yes' : 'blocked'}>{item.blocked ? 'Blocked' : 'Not blocked'}</span><time dateTime={item.updatedAt.toISOString()}>{stamp(item.updatedAt)}</time>
           {item.externalUrl === null ? <span className="no-link">No source link</span> : <a href={item.externalUrl} rel="noreferrer" target="_blank">Open source</a>}
+          {csrfToken === null || !item.canBuildPacket ? null : <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><button type="submit">Build packet</button></form>}
         </article>)}</div>}</section>; })}
     </section>
   </div>;

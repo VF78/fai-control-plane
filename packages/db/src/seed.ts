@@ -112,6 +112,21 @@ try {
       forbiddenSurfaces: ['external_message', 'github_write', 'runner', 'production']
     }
   });
+  await db.insert(agentProfiles).values({
+    workspaceId: persistedWorkspace.id,
+    actorId: bootstrapActor.id,
+    runtimeId: 'codex-cli',
+    runtimeProfile: 'write_scoped',
+    allowedTools: ['git', 'read', 'test', 'build', 'issue_read'],
+    forbiddenSurfaces: ['production', 'deploy', 'merge', 'protected_secrets'],
+    enabled: true
+  }).onConflictDoUpdate({
+    target: [agentProfiles.actorId, agentProfiles.runtimeId, agentProfiles.runtimeProfile],
+    set: {
+      allowedTools: ['git', 'read', 'test', 'build', 'issue_read'],
+      forbiddenSurfaces: ['production', 'deploy', 'merge', 'protected_secrets']
+    }
+  });
 
   const [persistedCredential] = await db.insert(secretRefs).values({
     workspaceId: persistedWorkspace.id,

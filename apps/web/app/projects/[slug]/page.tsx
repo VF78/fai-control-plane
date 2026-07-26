@@ -17,6 +17,6 @@ export default async function ProjectControlPanelPage({params}: {params: Promise
   if (load.state === 'ready' && load.data === null) notFound();
   return <OperatorShell active="project" scope={slug} session={auth.session}>
     <PageHeader eyebrow="Project delivery" title="Project Control Panel" detail={`${slug.toUpperCase()} canonical scope`} />
-    <LoadState load={load}>{(data) => data === null ? null : <ProjectView data={data} />}</LoadState>
+    <LoadState load={load}>{(data) => data === null ? null : <ProjectView data={data} csrfToken={auth.session?.csrfToken ?? null} />}</LoadState>
   </OperatorShell>;
 }

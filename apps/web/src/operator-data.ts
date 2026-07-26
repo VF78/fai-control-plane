@@ -13,6 +13,7 @@ import {
   outboxEvents,
   projectShareGrants,
   projectShareWorkItems,
+  projectTrackerRepositoryScopes,
   projects,
   prLinks,
   riskSignals,
@@ -98,6 +99,20 @@ const safeExternalUrl = (metadata: Record<string, unknown>): string | null => {
   } catch {
     return null;
   }
+};
+
+const confirmedGitHubIssueUrl = (
+  metadata: Record<string, unknown>,
+  repository: Readonly<{owner: string; name: string}> | null
+): string | null => {
+  const number = metadata.number;
+  const candidate = safeExternalUrl(metadata);
+  if (repository === null || typeof number !== 'number' || !Number.isSafeInteger(number) || number < 1 || candidate === null) return null;
+  const url = new URL(candidate);
+  return url.hostname === 'github.com' && url.port === '' && url.search === '' && url.hash === '' &&
+    url.pathname === `/${repository.owner}/${repository.name}/issues/${number}`
+    ? url.toString()
+    : null;
 };
 
 const latestByProject = <T extends Readonly<{projectId: string}>>(rows: readonly T[]): Map<string, T> => {
@@ -218,13 +233,14 @@ export type ProjectData = Readonly<{
   workItems: readonly Readonly<{
     id: string; title: string; summary: string | null; status: (typeof workItemStatuses)[number];
     blocked: boolean; owner: string | null; updatedAt: Date; externalUrl: string | null;
+    canBuildPacket: boolean;
   }>[];
 }>;
 
 export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
   const [project] = await scopedProjects(db, slug);
   if (project === undefined) return null;
-  const [snapshots, operations, items, bindings] = await Promise.all([
+  const [snapshots, operations, items, bindings, repositoryScopes] = await Promise.all([
     db.select({health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(eq(dashboardSnapshots.projectId, project.id)).orderBy(desc(dashboardSnapshots.capturedAt)).limit(1),
     db.select({createdAt: trackerSnapshotOperations.createdAt})
@@ -234,13 +250,32 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       blocked: workItems.blocked, owner: actors.displayName, updatedAt: workItems.updatedAt
     }).from(workItems).leftJoin(actors, eq(workItems.ownerActorId, actors.id))
       .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt))).orderBy(desc(workItems.updatedAt), workItems.id),
-    db.select({entityId: trackerBindings.entityId, metadata: trackerBindings.metadata})
-      .from(trackerBindings).where(and(eq(trackerBindings.projectId, project.id), eq(trackerBindings.entityType, 'work_item')))
+    db.select({
+      entityId: trackerBindings.entityId,
+      provider: trackerBindings.provider,
+      surface: trackerBindings.surface,
+      metadata: trackerBindings.metadata
+    })
+      .from(trackerBindings).where(and(eq(trackerBindings.projectId, project.id), eq(trackerBindings.entityType, 'work_item'))),
+    db.select({owner: projectTrackerRepositoryScopes.repositoryOwner, name: projectTrackerRepositoryScopes.repositoryName})
+      .from(projectTrackerRepositoryScopes).where(and(
+        eq(projectTrackerRepositoryScopes.projectId, project.id),
+        eq(projectTrackerRepositoryScopes.provider, 'github')
+      ))
   ]);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
+  const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
+  const packetEligibleItems = new Set(bindings.flatMap((binding) =>
+    binding.provider === 'github' && binding.surface === 'issue' && confirmedGitHubIssueUrl(binding.metadata, repository) !== null
+      ? [binding.entityId]
+      : []));
   return {
     project, snapshot: snapshots[0] ?? null, synchronizedAt: operations[0]?.createdAt ?? null,
-    workItems: items.flatMap((item) => workItemStatuses.includes(item.status) ? [{...item, externalUrl: externalUrlByItem.get(item.id) ?? null}] : [])
+    workItems: items.flatMap((item) => workItemStatuses.includes(item.status) ? [{
+      ...item,
+      externalUrl: externalUrlByItem.get(item.id) ?? null,
+      canBuildPacket: (item.status === 'ready' || item.status === 'in_dev') && packetEligibleItems.has(item.id)
+    }] : [])
   };
 });
 
