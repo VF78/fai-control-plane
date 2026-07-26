@@ -258,7 +258,10 @@ describePostgres(
       });
       await expect(inbox.accept(event({
         deliveryId: original.deliveryId,
-        source: {...original.source, repositoryId: '1279114011'}
+        source: {
+          ...(original.source as Extract<IncomingEvent['source'], {kind: 'github'}>),
+          repositoryId: '1279114011'
+        }
       }))).resolves.toEqual({
         status: 'collision',
         eventId: original.eventId

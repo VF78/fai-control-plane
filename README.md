@@ -109,6 +109,12 @@ real host file with mode `0600`. Keep `GITHUB_INGRESS_ENABLED=false` until the
 incoming-event consumer is deployed; the webhook route returns `404` while
 either synchronization or ingress is disabled.
 
+Telegram ingress is also disabled by default. When explicitly enabled, the
+webhook accepts only `/status` from the configured private chat and user
+allowlists, then records a sanitized durable command event. It does not send a
+reply or start a runner. Point `TELEGRAM_WEBHOOK_SECRET_HOST_FILE` at a `0600`
+file containing the exact Bot API webhook secret without a trailing newline.
+
 ### Verify
 
 ```bash

@@ -21,6 +21,9 @@ type ClaimedIncomingEvent = Readonly<{
   installation_id: string | null;
   repository_id: string | null;
   project_node_id: string | null;
+  telegram_message_id: string | null;
+  telegram_chat_id: string | null;
+  telegram_user_id: string | null;
   payload_sha256: string | null;
   sanitized_payload: Record<string, unknown>;
   received_at: Date;
@@ -65,6 +68,9 @@ export const createPostgresIncomingEventProcessor = (
           installation_id,
           repository_id,
           project_node_id,
+          telegram_message_id,
+          telegram_chat_id,
+          telegram_user_id,
           payload_sha256,
           sanitized_payload,
           received_at,
@@ -92,16 +98,23 @@ export const createPostgresIncomingEventProcessor = (
           .where(eq(schema.projects.id, claimResult.project_id));
         if (project === undefined) throw unavailable();
 
+        const source = claimResult.provider === 'telegram'
+          ? {
+              messageId: claimResult.telegram_message_id,
+              chatId: claimResult.telegram_chat_id,
+              userId: claimResult.telegram_user_id
+            }
+          : {
+              installationId: claimResult.installation_id,
+              repositoryId: claimResult.repository_id,
+              projectNodeId: claimResult.project_node_id
+            };
         const observation = {
           provider: claimResult.provider,
           deliveryId: claimResult.delivery_id,
           eventType: claimResult.event_type,
           action: claimResult.action,
-          source: {
-            installationId: claimResult.installation_id,
-            repositoryId: claimResult.repository_id,
-            projectNodeId: claimResult.project_node_id
-          },
+          source,
           payloadSha256: claimResult.payload_sha256,
           projection: claimResult.sanitized_payload
         };
@@ -120,7 +133,9 @@ export const createPostgresIncomingEventProcessor = (
             ${project.workspaceId}::uuid,
             ${claimResult.project_id}::uuid,
             ${claimResult.id}::uuid,
-            'incoming_event.observed',
+            ${claimResult.provider === 'telegram'
+              ? 'chat.command.status.requested'
+              : 'incoming_event.observed'},
             'project',
             ${claimResult.project_id}::uuid,
             ${`incoming-event:${claimResult.id}`},

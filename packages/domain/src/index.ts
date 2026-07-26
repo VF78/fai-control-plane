@@ -564,7 +564,16 @@ export type GitHubIncomingEventSource = Readonly<{
   projectNodeId: string;
 }>;
 
-export type IncomingEventSource = GitHubIncomingEventSource;
+export type TelegramIncomingEventSource = Readonly<{
+  kind: 'telegram';
+  messageId: string;
+  chatId: string;
+  userId: string;
+}>;
+
+export type IncomingEventSource =
+  | GitHubIncomingEventSource
+  | TelegramIncomingEventSource;
 
 export type IncomingEvent = Readonly<{
   eventId: string;
@@ -578,7 +587,7 @@ export type IncomingEvent = Readonly<{
   payloadSha256: string;
   verification: Readonly<{
     outcome: 'verified';
-    method: 'hmac-sha256';
+    method: 'hmac-sha256' | 'shared-token';
   }>;
   source: IncomingEventSource;
   projection: Readonly<{[key: string]: CanonicalJson}>;

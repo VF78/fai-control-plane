@@ -497,6 +497,9 @@ export const incomingEvents = pgTable(
     installationId: text('installation_id'),
     repositoryId: text('repository_id'),
     projectNodeId: text('project_node_id'),
+    telegramMessageId: text('telegram_message_id'),
+    telegramChatId: text('telegram_chat_id'),
+    telegramUserId: text('telegram_user_id'),
     payloadSha256: text('payload_sha256'),
     verification: jsonb('verification')
       .$type<
@@ -591,6 +594,18 @@ export const incomingEvents = pgTable(
         and ${table.repositoryId} ~ '^[1-9][0-9]{0,19}$'
         and ${table.projectNodeId} is not null
         and length(${table.projectNodeId}) between 1 and 128
+      )`
+    ),
+    check(
+      'incoming_events_telegram_verified_source',
+      sql`${table.provider} <> 'telegram' or (
+        ${table.verification} = '{"outcome":"verified","method":"shared-token"}'::jsonb
+        and ${table.installationId} is null
+        and ${table.repositoryId} is null
+        and ${table.projectNodeId} is null
+        and ${table.telegramMessageId} ~ '^tgid:v1:[0-9a-f]{64}$'
+        and ${table.telegramChatId} ~ '^tgid:v1:[0-9a-f]{64}$'
+        and ${table.telegramUserId} ~ '^tgid:v1:[0-9a-f]{64}$'
       )`
     )
   ]

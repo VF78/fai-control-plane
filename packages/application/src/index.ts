@@ -66,21 +66,16 @@ export interface Clock {
 export type VerifiedIncomingEventInput = Readonly<{
   workspaceId: string;
   projectId: string;
-  provider: 'github';
+  provider: 'github' | 'telegram';
   deliveryId: string;
-  eventType: 'issues' | 'pull_request' | 'check_run';
+  eventType: 'issues' | 'pull_request' | 'check_run' | 'chat_command';
   action: string;
   payloadSha256: string;
   verification: Readonly<{
     outcome: 'verified';
-    method: 'hmac-sha256';
+    method: 'hmac-sha256' | 'shared-token';
   }>;
-  source: Readonly<{
-    kind: 'github';
-    installationId: string;
-    repositoryId: string;
-    projectNodeId: string;
-  }>;
+  source: IncomingEvent['source'];
   projection: Readonly<Record<string, CanonicalJson>>;
 }>;
 
@@ -507,7 +502,9 @@ const cloneSafeProjection = (
     ? ['issue']
     : eventType === 'pull_request'
       ? ['pullRequest']
-      : ['checkRun'];
+      : eventType === 'check_run'
+        ? ['checkRun']
+        : ['command'];
   const projection = exactObject(value, 'projection', projectionKeys);
 
   if (eventType === 'issues') {
@@ -559,6 +556,14 @@ const cloneSafeProjection = (
         )
       }
     };
+  }
+
+  if (eventType === 'chat_command') {
+    const command = exactObject(projection.command, 'projection.command', ['name']);
+    if (command.name !== 'status') {
+      throw new TypeError('projection.command is invalid.');
+    }
+    return {command: {name: 'status'}};
   }
 
   const checkRun = exactObject(projection.checkRun, 'projection.checkRun', [
@@ -672,10 +677,10 @@ export const createIncomingEventIngestionService = (
       ) {
         throw new TypeError('Incoming event workspaceId and projectId must be UUIDs.');
       }
-      if (value.provider !== 'github') {
+      if (value.provider !== 'github' && value.provider !== 'telegram') {
         throw new TypeError('Incoming event provider is unsupported.');
       }
-      const eventTypes = ['issues', 'pull_request', 'check_run'] as const;
+      const eventTypes = ['issues', 'pull_request', 'check_run', 'chat_command'] as const;
       if (
         typeof value.eventType !== 'string' ||
         !eventTypes.includes(value.eventType as (typeof eventTypes)[number])
@@ -688,24 +693,46 @@ export const createIncomingEventIngestionService = (
       ]);
       if (
         verification.outcome !== 'verified' ||
-        verification.method !== 'hmac-sha256'
+        (verification.method !== 'hmac-sha256' && verification.method !== 'shared-token') ||
+        (value.provider === 'github' && verification.method !== 'hmac-sha256') ||
+        (value.provider === 'telegram' && verification.method !== 'shared-token')
       ) {
-        throw new TypeError('Incoming event must be verified with HMAC-SHA256.');
+        throw new TypeError('Incoming event verification is invalid.');
       }
-      const source = exactObject(value.source, 'source', [
-        'installationId',
-        'kind',
-        'projectNodeId',
-        'repositoryId'
-      ]);
-      if (
-        source.kind !== 'github' ||
-        typeof source.installationId !== 'string' ||
-        !decimalIdentifierPattern.test(source.installationId) ||
-        typeof source.repositoryId !== 'string' ||
-        !decimalIdentifierPattern.test(source.repositoryId)
+      const source = value.provider === 'github'
+        ? exactObject(value.source, 'source', [
+            'installationId',
+            'kind',
+            'projectNodeId',
+            'repositoryId'
+          ])
+        : exactObject(value.source, 'source', ['chatId', 'kind', 'messageId', 'userId']);
+      if (value.provider === 'github') {
+        if (
+          source.kind !== 'github' ||
+          typeof source.installationId !== 'string' ||
+          !decimalIdentifierPattern.test(source.installationId) ||
+          typeof source.repositoryId !== 'string' ||
+          !decimalIdentifierPattern.test(source.repositoryId)
+        ) {
+          throw new TypeError('Incoming event GitHub source identity is invalid.');
+        }
+      } else if (
+        source.kind !== 'telegram' ||
+        typeof source.messageId !== 'string' ||
+        !/^tgid:v1:[0-9a-f]{64}$/.test(source.messageId) ||
+        typeof source.chatId !== 'string' ||
+        !/^tgid:v1:[0-9a-f]{64}$/.test(source.chatId) ||
+        typeof source.userId !== 'string' ||
+        !/^tgid:v1:[0-9a-f]{64}$/.test(source.userId)
       ) {
-        throw new TypeError('Incoming event GitHub source identity is invalid.');
+        throw new TypeError('Incoming event Telegram source identity is invalid.');
+      }
+      if (
+        (value.provider === 'github' && value.eventType === 'chat_command') ||
+        (value.provider === 'telegram' && (value.eventType !== 'chat_command' || value.action !== 'status'))
+      ) {
+        throw new TypeError('Incoming event provider and type are incompatible.');
       }
 
       const eventId = ids.next();
@@ -727,23 +754,33 @@ export const createIncomingEventIngestionService = (
         eventId,
         workspaceId: value.workspaceId,
         projectId: value.projectId,
-        provider: value.provider,
+        provider: value.provider as VerifiedIncomingEventInput['provider'],
         deliveryId: requiredBoundedIdentifier(value.deliveryId, 'deliveryId', 128),
         eventType: value.eventType as VerifiedIncomingEventInput['eventType'],
         action: requiredBoundedIdentifier(value.action, 'action', 64),
         receivedAt: receivedAt.toISOString(),
         payloadSha256: value.payloadSha256,
-        verification: {outcome: 'verified', method: 'hmac-sha256'},
-        source: {
-          kind: 'github',
-          installationId: source.installationId,
-          repositoryId: source.repositoryId,
-          projectNodeId: requiredBoundedIdentifier(
-            source.projectNodeId,
-            'source.projectNodeId',
-            128
-          )
+        verification: {
+          outcome: 'verified',
+          method: verification.method as 'hmac-sha256' | 'shared-token'
         },
+        source: value.provider === 'github'
+          ? {
+              kind: 'github',
+              installationId: source.installationId as string,
+              repositoryId: source.repositoryId as string,
+              projectNodeId: requiredBoundedIdentifier(
+                source.projectNodeId,
+                'source.projectNodeId',
+                128
+              )
+            }
+          : {
+              kind: 'telegram',
+              messageId: source.messageId as string,
+              chatId: source.chatId as string,
+              userId: source.userId as string
+            },
         projection: cloneSafeProjection(
           value.eventType as VerifiedIncomingEventInput['eventType'],
           value.projection
