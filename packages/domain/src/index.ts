@@ -84,6 +84,7 @@ export type AgentRun = Readonly<{
   id: string;
   taskPacketId: string;
   agentProfileId: string;
+  baseCommit: string;
   status: AgentRunStatus;
   idempotencyKey: string;
   version: number;
@@ -92,6 +93,49 @@ export type AgentRunView = Readonly<{
   aggregate: AgentRun;
   projectId: string;
 }>;
+
+export type RunnerRepositoryAuthorization = Readonly<{
+  owner: string;
+  name: string;
+}>;
+export type RunnerClaimAuthorization = Readonly<{
+  workspaceId: string;
+  runnerId: string;
+  projectIds: readonly string[];
+  repositories: readonly RunnerRepositoryAuthorization[];
+}>;
+export type RunnerClaimRecord = Readonly<{
+  runId: string;
+  packetId: string;
+  packetHash: string;
+  repository: RunnerRepositoryAuthorization;
+  baseCommit: string;
+  runtimeProfile: string;
+  timeboxMinutes: number;
+  promptFields: Readonly<{
+    goal: string;
+    acceptanceCriteria: readonly string[];
+    inScope: readonly string[];
+    outOfScope: readonly string[];
+    relevantLinks: readonly string[];
+    relevantFiles: readonly string[];
+    allowedTools: readonly string[];
+    forbiddenSurfaces: readonly string[];
+    dataPolicy: CanonicalJson;
+    expectedOutputSchema: CanonicalJson;
+  }>;
+}>;
+export type RunnerClaimLeaseInput = RunnerClaimAuthorization & Readonly<{
+  leaseTokenHash: string;
+  claimedAt: Date;
+  leaseExpiresAt: Date;
+}>;
+export interface RunnerClaimStore {
+  claim<T>(
+    input: RunnerClaimLeaseInput,
+    prepare: (record: RunnerClaimRecord) => T
+  ): Promise<T | null>;
+}
 
 export type ApprovalTarget =
   | Readonly<{workItemId: string; agentRunId?: never}>
@@ -549,6 +593,7 @@ export type QueueAgentRunCommand = CanonicalCommandEnvelope<
     taskPacketId: string;
     agentProfileId: string;
     confirmedPacketHash: string;
+    baseCommit: string;
   }>
 >;
 export type TransitionAgentRunCommand = CanonicalCommandEnvelope<

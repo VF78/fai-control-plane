@@ -445,7 +445,8 @@ describePostgres(
           agentRunId: randomUUID(),
           taskPacketId: primaryPacketId,
           agentProfileId: fixture.profileId,
-          confirmedPacketHash: primaryPacket.value.contentHash
+          confirmedPacketHash: primaryPacket.value.contentHash,
+          baseCommit: 'a'.repeat(40)
         },
         userKey
       );
@@ -457,7 +458,8 @@ describePostgres(
           agentRunId: randomUUID(),
           taskPacketId: otherPacketId,
           agentProfileId: fixture.otherProfileId,
-          confirmedPacketHash: otherPacket.value.contentHash
+          confirmedPacketHash: otherPacket.value.contentHash,
+          baseCommit: 'b'.repeat(40)
         },
         userKey
       );
@@ -565,7 +567,8 @@ describePostgres(
           agentRunId: randomUUID(),
           taskPacketId: validPacketId,
           agentProfileId: randomUUID(),
-          confirmedPacketHash: validPacket.value.contentHash
+          confirmedPacketHash: validPacket.value.contentHash,
+          baseCommit: 'a'.repeat(40)
         }
       ));
       expect(receiptErrorCode(missingProfile)).toBe('NOT_FOUND');

@@ -889,6 +889,7 @@ export const agentRuns = pgTable(
     agentProfileId: uuid('agent_profile_id')
       .notNull()
       .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    baseCommit: text('base_commit').notNull(),
     status: runStatusEnum('status').default('queued').notNull(),
     idempotencyKey: text('idempotency_key').notNull(),
     queueJobId: text('queue_job_id'),
@@ -899,6 +900,10 @@ export const agentRuns = pgTable(
     startedAt: timestamp('started_at', {withTimezone: true}),
     completedAt: timestamp('completed_at', {withTimezone: true}),
     failureCode: text('failure_code'),
+    runnerId: text('runner_id'),
+    leaseTokenHash: text('lease_token_hash'),
+    leaseExpiresAt: timestamp('lease_expires_at', {withTimezone: true}),
+    attempt: integer('attempt').default(0).notNull(),
     version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
@@ -909,7 +914,25 @@ export const agentRuns = pgTable(
       table.status,
       table.heartbeatAt
     ),
-    check('agent_runs_version_positive', sql`${table.version} > 0`)
+    index('agent_runs_claim_order_idx').on(table.status, table.createdAt),
+    check('agent_runs_version_positive', sql`${table.version} > 0`),
+    check('agent_runs_attempt_nonnegative', sql`${table.attempt} >= 0`),
+    check(
+      'agent_runs_base_commit_sha1',
+      sql`${table.baseCommit} ~ '^[0-9a-f]{40}$'`
+    ),
+    check(
+      'agent_runs_lease_token_hash_sha256',
+      sql`${table.leaseTokenHash} is null or ${table.leaseTokenHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'agent_runs_lease_fields_together',
+      sql`num_nonnulls(${table.runnerId}, ${table.leaseTokenHash}, ${table.leaseExpiresAt}) in (0, 3)`
+    ),
+    check(
+      'agent_runs_runner_id_nonempty',
+      sql`${table.runnerId} is null or length(${table.runnerId}) between 1 and 128`
+    )
   ]
 );
 

@@ -39,6 +39,7 @@ export {
   PM_REPORT_CHECK_QUEUE,
   pmReportCheckCron
 } from './pm-report-check';
+export {createPostgresRunnerClaimStore} from './runner-claim';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});

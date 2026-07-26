@@ -518,9 +518,16 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO agent_runs (
-           id, task_packet_id, agent_profile_id, status, idempotency_key, version
-         ) VALUES ($1, $2, $3, 'queued', $4, 1)`,
-        [fixture.runId, fixture.packetId, fixture.profileId, `run-${randomUUID()}`]
+           id, task_packet_id, agent_profile_id, base_commit, status,
+           idempotency_key, version
+         ) VALUES ($1, $2, $3, $4, 'queued', $5, 1)`,
+        [
+          fixture.runId,
+          fixture.packetId,
+          fixture.profileId,
+          'a'.repeat(40),
+          `run-${randomUUID()}`
+        ]
       );
       const approvalBindingNow = new Date();
       const seededApprovalBinding = createApprovalBinding({
@@ -662,6 +669,7 @@ describePostgres(
           id: fixture.runId,
           taskPacketId: fixture.packetId,
           agentProfileId: fixture.profileId,
+          baseCommit: 'a'.repeat(40),
           status: 'queued',
           idempotencyKey: expect.any(String),
           version: 1
@@ -945,6 +953,7 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.packetId,
         agentProfileId: fixture.profileId,
+        baseCommit: 'a'.repeat(40),
         status: 'queued',
         idempotencyKey: userKey,
         version: 1
@@ -953,6 +962,7 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.otherPacketId,
         agentProfileId: fixture.otherProfileId,
+        baseCommit: 'b'.repeat(40),
         status: 'queued',
         idempotencyKey: userKey,
         version: 1
@@ -1256,6 +1266,7 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.packetId,
         agentProfileId: randomUUID(),
+        baseCommit: 'a'.repeat(40),
         status: 'queued',
         idempotencyKey: `run-${randomUUID()}`,
         version: 1

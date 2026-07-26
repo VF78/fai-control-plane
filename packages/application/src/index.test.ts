@@ -224,11 +224,20 @@ describe('canonical command service', () => {
         agentRunId: id(),
         taskPacketId: packetId,
         agentProfileId: id(),
-        confirmedPacketHash: packet.value.contentHash
+        confirmedPacketHash: packet.value.contentHash,
+        baseCommit: 'a'.repeat(40)
       });
     }],
     ['agent_run.transition', (uow: FakeUnitOfWork) => {
-      const aggregate = {id: id(), taskPacketId: id(), agentProfileId: id(), status: 'queued' as const, idempotencyKey: 'run', version: 1};
+      const aggregate = {
+        id: id(),
+        taskPacketId: id(),
+        agentProfileId: id(),
+        baseCommit: 'a'.repeat(40),
+        status: 'queued' as const,
+        idempotencyKey: 'run',
+        version: 1
+      };
       uow.agentRuns.set(aggregate.id, {aggregate, projectId});
       return command('agent_run.transition', {agentRunId: aggregate.id, status: 'running', expectedVersion: 1});
     }],
@@ -286,7 +295,8 @@ describe('canonical command service', () => {
       const queuePayload = {
         taskPacketId: packet.packetId,
         agentProfileId: id(),
-        confirmedPacketHash: packet.contentHash
+        confirmedPacketHash: packet.contentHash,
+        baseCommit: 'a'.repeat(40)
       };
       const rejected = await Promise.all([
         serviceFor(uow).execute(command('agent_run.queue', {
@@ -438,7 +448,15 @@ describe('canonical command service', () => {
 
   it('records invalid transitions for every transition aggregate and a CAS race', async () => {
     const uow = new FakeUnitOfWork();
-    const run = {id: id(), taskPacketId: id(), agentProfileId: id(), status: 'queued' as const, idempotencyKey: 'run', version: 1};
+    const run = {
+      id: id(),
+      taskPacketId: id(),
+      agentProfileId: id(),
+      baseCommit: 'a'.repeat(40),
+      status: 'queued' as const,
+      idempotencyKey: 'run',
+      version: 1
+    };
     const approval = approvalFixture('approved');
     const request: AccessRequest = {id: id(), workspaceId, requesterActorId: actorId, targetSurface: 'repository', requestedScope: ['read'], status: 'granted', version: 1};
     uow.agentRuns.set(run.id, {aggregate: run, projectId}); uow.approvals.set(approval.id, approval); uow.accessRequests.set(request.id, request);

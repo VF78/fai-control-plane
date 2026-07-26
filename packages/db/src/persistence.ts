@@ -737,6 +737,7 @@ const persistAgentRun = async (
         id: aggregate.id,
         taskPacketId: aggregate.taskPacketId,
         agentProfileId: aggregate.agentProfileId,
+        baseCommit: aggregate.baseCommit,
         status: aggregate.status,
         idempotencyKey: agentRunIdempotencyKey(
           workspaceId,
@@ -766,6 +767,7 @@ const persistAgentRun = async (
         eq(schema.agentRuns.id, aggregate.id),
         eq(schema.agentRuns.taskPacketId, aggregate.taskPacketId),
         eq(schema.agentRuns.agentProfileId, aggregate.agentProfileId),
+        eq(schema.agentRuns.baseCommit, aggregate.baseCommit),
         eq(schema.agentRuns.idempotencyKey, aggregate.idempotencyKey),
         eq(schema.agentRuns.version, mutation.expectedPersistedVersion),
         agentRunScope(workspaceId)
@@ -1275,6 +1277,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               id: schema.agentRuns.id,
               taskPacketId: schema.agentRuns.taskPacketId,
               agentProfileId: schema.agentRuns.agentProfileId,
+              baseCommit: schema.agentRuns.baseCommit,
               status: schema.agentRuns.status,
               idempotencyKey: schema.agentRuns.idempotencyKey,
               version: schema.agentRuns.version,
@@ -1291,6 +1294,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               id: row.id,
               taskPacketId: row.taskPacketId,
               agentProfileId: row.agentProfileId,
+              baseCommit: row.baseCommit,
               status: row.status as AgentRun['status'],
               idempotencyKey: row.idempotencyKey,
               version: row.version

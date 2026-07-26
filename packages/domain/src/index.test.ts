@@ -72,6 +72,7 @@ const agentRun = (status: AgentRunStatus): AgentRun => ({
   id: 'run',
   taskPacketId: 'packet',
   agentProfileId: 'profile',
+  baseCommit: 'a'.repeat(40),
   status,
   idempotencyKey: 'key',
   version: 4
