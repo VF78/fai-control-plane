@@ -86,3 +86,12 @@ export {
   type ProcessExecutionResult,
   type ProcessExecutor
 } from './codex-agent-runtime';
+
+export {
+  createWorktreeManager,
+  WorktreeManagerError,
+  type AgentRunWorktree,
+  type PrepareWorktreeInput,
+  type WorktreeManager,
+  type WorktreeManagerOptions
+} from './worktree-manager';
