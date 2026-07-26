@@ -12,7 +12,11 @@ export default async function AccessPage() {
   if (auth.enabled && auth.session === null) return <OperatorLogin />;
   const load = await loadAccessData();
   return <OperatorShell active="access" session={auth.session}>
-    <PageHeader eyebrow="Authority records" title="Access & Policies" detail="Read-only canonical references" />
-    <LoadState load={load}>{(data) => <AccessView data={data} policyVersion={CURRENT_POLICY_VERSION} />}</LoadState>
+    <PageHeader eyebrow="Authority records" title="Access & Policies" detail="Canonical access and sharing controls" />
+    <LoadState load={load}>{(data) => <AccessView
+      csrfToken={auth.session?.csrfToken ?? null}
+      data={data}
+      policyVersion={CURRENT_POLICY_VERSION}
+    />}</LoadState>
   </OperatorShell>;
 }

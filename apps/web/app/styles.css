@@ -8,11 +8,11 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 h1, h2, h3, p, dl, dd { margin: 0; }
 a { color: #1c6489; text-decoration: none; }
 a:hover { text-decoration: underline; }
-a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid #286d91; outline-offset: 3px; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #286d91; outline-offset: 3px; }
 h1 { font-size: 1.5rem; font-weight: 680; letter-spacing: 0; }
 h2 { font-size: 1.06rem; font-weight: 680; letter-spacing: 0; }
 h3 { color: #545a52; font-size: 0.75rem; font-weight: 700; letter-spacing: 0; text-transform: uppercase; }
@@ -82,6 +82,34 @@ dd.unknown { color: #697169; }
 .policy-row { grid-template-columns: minmax(8rem, 1fr) repeat(3, minmax(7rem, 0.65fr)); }
 .safe-reference { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 
+.share-manager { max-width: 88rem; }
+.share-form { display: grid; gap: 1rem; grid-template-columns: minmax(10rem, 0.65fr) minmax(14rem, 0.8fr); max-width: 58rem; }
+.share-field { display: grid; gap: 0.35rem; }
+.share-field > span, .share-task-scope legend { color: #596259; font-size: 0.76rem; font-weight: 700; }
+.share-field input, .share-field select, .one-time-share input { background: #fff; border: 1px solid #b8beb6; border-radius: 3px; color: #20231f; min-height: 2.75rem; padding: 0.6rem 0.7rem; width: 100%; }
+.share-task-scope { border: 0; grid-column: 1 / -1; margin: 0; min-width: 0; padding: 0; }
+.share-task-scope legend { margin-bottom: 0.45rem; padding: 0; }
+.share-task-list { border-bottom: 1px solid #e0e4dd; max-height: 18rem; overflow-y: auto; }
+.share-task-option { align-items: start; border-top: 1px solid #e0e4dd; cursor: pointer; display: grid; gap: 0.65rem; grid-template-columns: 1.25rem minmax(0, 1fr); min-height: 2.75rem; padding: 0.6rem 0.2rem; }
+.share-task-option input { height: 1.15rem; margin: 0.1rem 0 0; width: 1.15rem; }
+.share-task-option span { display: grid; gap: 0.15rem; min-width: 0; }
+.share-task-option strong { font-size: 0.82rem; overflow-wrap: anywhere; }
+.share-task-option small { color: #697169; font-size: 0.72rem; text-transform: capitalize; }
+.share-submit { align-items: center; display: flex; gap: 1rem; grid-column: 1 / -1; justify-content: space-between; }
+.share-submit span { color: #697169; font-size: 0.76rem; }
+.share-submit button { background: #20231f; border: 0; border-radius: 3px; color: #fff; cursor: pointer; font-size: 0.8rem; font-weight: 700; min-height: 2.75rem; padding: 0.65rem 1rem; }
+.share-submit button:disabled, .revoke-share:disabled { cursor: not-allowed; opacity: 0.55; }
+.one-time-share { border-left: 3px solid #8b6610; display: grid; gap: 0.5rem; margin-top: 1rem; max-width: 58rem; padding: 0.75rem 0 0.75rem 0.85rem; }
+.one-time-share strong { color: #6f520e; font-size: 0.8rem; }
+.one-time-share input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
+.share-message { color: #a44034; font-size: 0.8rem; margin-top: 0.75rem; }
+.share-empty { margin-top: 1.25rem; }
+.share-grant-list { border-bottom: 1px solid #e0e4dd; margin-top: 1.25rem; }
+.share-grant-row { align-items: center; border-top: 1px solid #e0e4dd; display: grid; gap: 0.75rem; grid-template-columns: minmax(6rem, 0.6fr) minmax(7rem, 0.7fr) minmax(10rem, 1fr) minmax(10rem, 1fr) minmax(7rem, 0.7fr) 5rem 4.5rem; min-width: 0; padding: 0.7rem 0; }
+.share-grant-row strong { font-size: 0.84rem; }
+.share-grant-row > span { color: #687068; font-size: 0.75rem; overflow-wrap: anywhere; }
+.revoke-share { background: transparent; border: 0; color: #a44034; cursor: pointer; font-size: 0.76rem; font-weight: 700; min-height: 2.5rem; padding: 0.4rem; }
+
 .empty-state { max-width: 35rem; padding: 3rem 0; }
 .empty-state h2 { margin-bottom: 0.55rem; }
 .empty-state p { color: #697169; font-size: 0.9rem; line-height: 1.5; }
@@ -108,6 +136,7 @@ code { color: #4f5a4f; }
   .run-row { grid-template-columns: minmax(14rem, 1.2fr) minmax(8rem, 0.7fr) minmax(11rem, 1fr); }
   .run-row > :nth-child(4) { grid-column: 2 / -1; }
   .table-row { grid-template-columns: minmax(8rem, 0.75fr) minmax(11rem, 1.3fr) minmax(7rem, 0.7fr) minmax(9rem, 0.9fr); }
+  .share-grant-row { grid-template-columns: minmax(7rem, 0.7fr) repeat(3, minmax(9rem, 1fr)); }
 }
 
 @media (max-width: 900px) {
@@ -141,6 +170,11 @@ code { color: #4f5a4f; }
   .fact-grid { grid-template-columns: 1fr; }
   .fact-grid > div, .fact-grid > div:nth-child(2) { border-right: 0; border-top: 1px solid #e0e4dd; margin-top: 0.75rem; padding: 0.75rem 0 0; }
   .fact-grid > div:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+  .share-form, .share-grant-row { grid-template-columns: minmax(0, 1fr); }
+  .share-field, .share-task-scope, .share-submit { grid-column: auto; }
+  .share-submit { align-items: stretch; flex-direction: column; }
+  .share-submit button, .revoke-share { min-height: 2.75rem; width: 100%; }
+  .share-grant-row { align-items: start; gap: 0.45rem; padding: 0.85rem 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

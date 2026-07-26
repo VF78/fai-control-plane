@@ -11,6 +11,8 @@ import {
   createDatabase,
   dashboardSnapshots,
   outboxEvents,
+  projectShareGrants,
+  projectShareWorkItems,
   projects,
   riskSignals,
   scheduledJobs,
@@ -303,6 +305,29 @@ export type AccessData = Readonly<{
   requests: readonly Readonly<{id: string; requester: string; targetSurface: string; requestedScope: readonly string[]; status: string; expiresAt: Date | null; decidedAt: Date | null}>[];
   secretRefs: readonly Readonly<{id: string; provider: string; scope: readonly string[]; lastRotatedAt: Date | null}>[];
   policy: readonly Readonly<{actorType: string; allow: number; ask: number; deny: number}>[];
+  sharing: Readonly<{
+    enabled: boolean;
+    projects: readonly Readonly<{
+      name: string;
+      slug: OperatorProjectSlug;
+      workItems: readonly Readonly<{
+        id: string;
+        title: string;
+        status: (typeof workItemStatuses)[number];
+      }>[];
+    }>[];
+    grants: readonly Readonly<{
+      shareId: string;
+      project: string;
+      projectSlug: OperatorProjectSlug;
+      createdAt: Date;
+      expiresAt: Date;
+      revokedAt: Date | null;
+      accessCount: number;
+      scopedItemCount: number;
+      active: boolean;
+    }>[];
+  }>;
 }>;
 
 const policySummary = () => actorTypes.map((actorType) => {
@@ -318,20 +343,88 @@ export {CURRENT_POLICY_VERSION};
 export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatabase(async (db) => {
   const configuredProjects = await scopedProjects(db);
   const workspaceIds = [...new Set(configuredProjects.map(({workspaceId}) => workspaceId))];
-  if (workspaceIds.length === 0) return {actors: [], requests: [], secretRefs: [], policy: policySummary()};
-  const [persistedActors, requests, persistedSecretRefs] = await Promise.all([
+  const sharingEnabled = process.env.PUBLIC_SHARING_ENABLED === 'true';
+  if (workspaceIds.length === 0) {
+    return {
+      actors: [],
+      requests: [],
+      secretRefs: [],
+      policy: policySummary(),
+      sharing: {enabled: sharingEnabled, projects: [], grants: []}
+    };
+  }
+  const projectIds = configuredProjects.map(({id}) => id);
+  const [persistedActors, requests, persistedSecretRefs, shareItems, grants] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
     db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt})
       .from(accessRequests).leftJoin(actors, eq(accessRequests.requesterActorId, actors.id)).where(inArray(accessRequests.workspaceId, workspaceIds)).orderBy(desc(accessRequests.updatedAt), accessRequests.id),
     db.select({id: secretRefs.id, provider: secretRefs.provider, scope: secretRefs.scope, lastRotatedAt: secretRefs.lastRotatedAt})
-      .from(secretRefs).where(inArray(secretRefs.workspaceId, workspaceIds)).orderBy(secretRefs.provider, secretRefs.id)
+      .from(secretRefs).where(inArray(secretRefs.workspaceId, workspaceIds)).orderBy(secretRefs.provider, secretRefs.id),
+    db.select({
+      id: workItems.id,
+      projectId: workItems.projectId,
+      title: workItems.title,
+      status: workItems.status
+    }).from(workItems).where(and(
+      inArray(workItems.projectId, projectIds),
+      isNull(workItems.deletedAt)
+    )).orderBy(workItems.status, workItems.title, workItems.id),
+    db.select({
+      shareId: projectShareGrants.id,
+      projectId: projectShareGrants.projectId,
+      createdAt: projectShareGrants.createdAt,
+      expiresAt: projectShareGrants.expiresAt,
+      revokedAt: projectShareGrants.revokedAt,
+      accessCount: projectShareGrants.accessCount
+    }).from(projectShareGrants)
+      .where(inArray(projectShareGrants.projectId, projectIds))
+      .orderBy(desc(projectShareGrants.createdAt), projectShareGrants.id)
   ]);
+  const grantIds = grants.map(({shareId}) => shareId);
+  const scopeRows = grantIds.length === 0
+    ? []
+    : await db.select({shareId: projectShareWorkItems.grantId})
+        .from(projectShareWorkItems)
+        .where(inArray(projectShareWorkItems.grantId, grantIds));
+  const scopedItemCounts = new Map<string, number>();
+  for (const row of scopeRows) {
+    scopedItemCounts.set(
+      row.shareId,
+      (scopedItemCounts.get(row.shareId) ?? 0) + 1
+    );
+  }
+  const projectById = new Map(
+    configuredProjects.map((project) => [project.id, project])
+  );
   return {
     actors: persistedActors,
     requests: requests.map((request) => ({...request, requester: request.requester ?? 'No recorded requester'})),
     secretRefs: persistedSecretRefs,
-    policy: policySummary()
+    policy: policySummary(),
+    sharing: {
+      enabled: sharingEnabled,
+      projects: configuredProjects.map((project) => ({
+        name: project.name,
+        slug: project.slug,
+        workItems: shareItems.filter((item) => item.projectId === project.id)
+          .map(({id, title, status}) => ({id, title, status}))
+      })),
+      grants: grants.flatMap((grant) => {
+        const project = projectById.get(grant.projectId);
+        return project === undefined ? [] : [{
+          shareId: grant.shareId,
+          project: project.name,
+          projectSlug: project.slug,
+          createdAt: grant.createdAt,
+          expiresAt: grant.expiresAt,
+          revokedAt: grant.revokedAt,
+          accessCount: grant.accessCount,
+          scopedItemCount: scopedItemCounts.get(grant.shareId) ?? 0,
+          active: grant.revokedAt === null && grant.expiresAt.getTime() > Date.now()
+        }];
+      })
+    }
   };
 });
 

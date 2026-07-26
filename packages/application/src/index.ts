@@ -11,7 +11,7 @@ export {
   type PublicProjectProjection,
   type RevokeProjectShareGrantInput,
   type RevokeProjectShareInput
-} from './project-share';
+} from './project-share.ts';
 import {
   actionCategories,
   accessRequestStatuses,

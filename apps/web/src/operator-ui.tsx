@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type {ReactNode} from 'react';
 import type {OperatorSession} from './operator-auth';
 import {workItemStatuses, type AccessData, type HealthData, type OperatorLoad, type OperatorProjectSlug, type PortfolioData, type ProjectData, type RunsData} from './operator-data';
+import {ProjectShareControls} from './project-share-controls';
 
 type PageKey = 'portfolio' | 'project' | 'runs' | 'access' | 'health';
 
@@ -127,8 +128,18 @@ export function RunsView({data}: {data: RunsData}) {
   </div>;
 }
 
-export function AccessView({data, policyVersion}: {data: AccessData; policyVersion: number}) {
+export function AccessView({csrfToken, data, policyVersion}: {
+  csrfToken: string | null;
+  data: AccessData;
+  policyVersion: number;
+}) {
   return <div className="control-surface">
+    <ProjectShareControls
+      csrfToken={csrfToken}
+      enabled={data.sharing.enabled}
+      grants={data.sharing.grants}
+      projects={data.sharing.projects}
+    />
     <section aria-labelledby="actors-title"><header><p className="eyebrow">Persisted identities</p><h2 id="actors-title">Actors</h2></header>{data.actors.length === 0 ? <p className="muted">No actors are recorded in the configured workspace.</p> : <div className="table-list">{data.actors.map((actor) => <article className="table-row" key={actor.id}><strong>{actor.displayName}</strong><span>{actor.type} · {label(actor.role)}</span><span>{actor.disabledAt === null ? 'Enabled' : `Disabled: ${stamp(actor.disabledAt)}`}</span><span>{Object.keys(actor.capabilities).filter((key) => actor.capabilities[key]).length} recorded capabilities</span></article>)}</div>}</section>
     <section aria-labelledby="requests-title"><header><p className="eyebrow">Persisted access requests</p><h2 id="requests-title">Requests</h2></header>{data.requests.length === 0 ? <p className="muted">No access requests are recorded.</p> : <div className="table-list">{data.requests.map((request) => <article className="table-row" key={request.id}><strong>{request.requester}</strong><span>{label(request.targetSurface)}</span><span>{request.requestedScope.length === 0 ? 'No recorded scope' : request.requestedScope.join(', ')}</span><span className={`state ${request.status}`}>{request.status}</span><span>Expires: {stamp(request.expiresAt)}</span></article>)}</div>}</section>
     <section aria-labelledby="secrets-title"><header><p className="eyebrow">Persisted metadata</p><h2 id="secrets-title">Secret refs</h2></header>{data.secretRefs.length === 0 ? <p className="muted">No secret references are recorded.</p> : <div className="table-list">{data.secretRefs.map((secretRef) => <article className="table-row" key={secretRef.id}><strong>{secretRef.provider}</strong><span>{secretRef.scope.length === 0 ? 'No recorded scope' : secretRef.scope.join(', ')}</span><span>Rotated: {stamp(secretRef.lastRotatedAt)}</span></article>)}</div>}</section>
