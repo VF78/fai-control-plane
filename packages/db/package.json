@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate --name foundation",
     "db:migrate": "tsx src/migrate.ts",
+    "db:seed": "tsx src/seed.ts",
     "db:check": "drizzle-kit check",
     "test:schema": "vitest run --root ../.. packages/db/src/schema.test.ts",
     "test:integration": "vitest run --root ../.. packages/db/src/persistence.integration.test.ts packages/db/src/incoming-event-inbox.integration.test.ts packages/db/src/tracker-snapshot-projection.integration.test.ts packages/db/src/tracker-repository-read-authorizer.integration.test.ts"
