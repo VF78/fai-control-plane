@@ -473,7 +473,7 @@ const nodeProcessExecutor: ProcessExecutor = async (
 
     const child = spawn(request.executable, [...request.args], {
       cwd: request.cwd,
-      env: {...request.env},
+      env: {...request.env} as NodeJS.ProcessEnv,
       shell: false,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true
