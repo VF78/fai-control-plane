@@ -527,9 +527,9 @@ type Target = Readonly<{
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const gitCommitPattern = /^[0-9a-f]{40}$/;
-const routinePolicy: PolicyRequest = {
+export const CANONICAL_COMMAND_POLICY = {
   actionCategory: 'write', surface: 'control_plane', environment: 'development'
-};
+} as const satisfies PolicyRequest;
 const commandTypes = new Set<CanonicalCommand['type']>([
   'work_item.transition',
   'work_item.set_blocked',
@@ -1408,7 +1408,7 @@ export const createCanonicalCommandService = (
     claim: CommandReceiptClaim,
     command: CanonicalCommand
   ) => {
-    const routine = authorize(command.actor, routinePolicy);
+    const routine = authorize(command.actor, CANONICAL_COMMAND_POLICY);
     if (!routine.ok) {
       return completeNoMutation(
         transaction, claimToken, claim, command, commandTarget(command), routine, 'write',

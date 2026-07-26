@@ -1,4 +1,5 @@
 import {requireOperatorSession} from './operator-auth-runtime';
+import {buildAgentRunQueuePolicyPreview} from './operator-data';
 import {getTaskPacketConfirmationRuntime} from './task-packet-confirmation-runtime';
 
 const MAX_BODY_BYTES = 4 * 1024;
@@ -56,11 +57,17 @@ const readBoundedJson = async (request: Request): Promise<unknown> => {
 };
 
 const parse = (value: unknown) => isRecord(value) &&
-  exactKeys(value, ['_csrf', 'confirmedPacketHash', 'agentProfileId']) &&
+  exactKeys(value, ['_csrf', 'confirmedPacketHash', 'agentProfileId', 'actionHash']) &&
   typeof value._csrf === 'string' && value._csrf.length > 0 && value._csrf.length <= 128 &&
   typeof value.confirmedPacketHash === 'string' && SHA256_PATTERN.test(value.confirmedPacketHash) &&
-  typeof value.agentProfileId === 'string' && UUID_PATTERN.test(value.agentProfileId)
-  ? {csrfToken: value._csrf, confirmedPacketHash: value.confirmedPacketHash, agentProfileId: value.agentProfileId}
+  typeof value.agentProfileId === 'string' && UUID_PATTERN.test(value.agentProfileId) &&
+  typeof value.actionHash === 'string' && SHA256_PATTERN.test(value.actionHash)
+  ? {
+    csrfToken: value._csrf,
+    confirmedPacketHash: value.confirmedPacketHash,
+    agentProfileId: value.agentProfileId,
+    actionHash: value.actionHash
+  }
   : null;
 
 export async function confirmTaskPacketCommand(
@@ -85,6 +92,13 @@ export async function confirmTaskPacketCommand(
     if (packet === null) return new Response(null, {status: 404, headers: noStore});
     if (packet.contentHash !== input.confirmedPacketHash) {
       return Response.json({status: 'packet_changed'}, {status: 409, headers: noStore});
+    }
+    const preview = buildAgentRunQueuePolicyPreview({
+      ...packet,
+      approverActorId: authorization.session.actorId
+    });
+    if (preview.actionHash !== input.actionHash) {
+      return Response.json({status: 'action_changed'}, {status: 409, headers: noStore});
     }
     const result = await runtime.queue({
       ...packet,

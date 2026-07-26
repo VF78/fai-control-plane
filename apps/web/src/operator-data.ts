@@ -1,4 +1,6 @@
+import {createHash} from 'node:crypto';
 import {and, desc, eq, inArray, isNull} from 'drizzle-orm';
+import {CANONICAL_COMMAND_POLICY} from '@fai-control-plane/application';
 import {
   accessRequests,
   actors,
@@ -27,9 +29,13 @@ import {
   CURRENT_POLICY_VERSION,
   actionCategories,
   actorTypes,
+  canonicalJson,
   environments,
+  policyDecisionFor,
   policyMatrix,
-  policySurfaces
+  policySurfaces,
+  type CanonicalJson,
+  type PolicyDecision
 } from '@fai-control-plane/domain';
 import {rankAttentionQueue, type AttentionQueueItem} from './attention-queue';
 
@@ -54,6 +60,58 @@ type Project = Readonly<{
 }>;
 
 export const workItemStatuses = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
+
+export type AgentRunQueuePolicyPreview = Readonly<{
+  actorType: 'human';
+  actionCategory: 'write';
+  surface: 'control_plane';
+  environment: 'development';
+  decision: PolicyDecision;
+  policyVersion: number;
+  actionHash: string;
+  baseCommit: string;
+  requiredHumanPacketHash: string;
+  stopFactors: readonly string[];
+  runnable: boolean;
+}>;
+
+export const buildAgentRunQueuePolicyPreview = (input: Readonly<{
+  packetId: string;
+  contentHash: string;
+  agentProfileId: string;
+  baseCommit: string;
+  approverActorId: string;
+}>): AgentRunQueuePolicyPreview => {
+  const actorType = 'human' as const;
+  const decision = policyDecisionFor(actorType, CANONICAL_COMMAND_POLICY);
+  const hashInput: CanonicalJson = {
+    action: 'agent_run.queue',
+    actorType,
+    packetId: input.packetId,
+    contentHash: input.contentHash,
+    agentProfileId: input.agentProfileId,
+    baseCommit: input.baseCommit,
+    approverActorId: input.approverActorId,
+    policyVersion: CURRENT_POLICY_VERSION,
+    policyRequest: CANONICAL_COMMAND_POLICY
+  };
+  const stopFactors = decision === 'allow'
+    ? []
+    : [decision === 'ask'
+      ? 'Canonical policy requires approval; direct queueing is stopped.'
+      : 'Canonical policy denies this queue action.'];
+  return {
+    actorType,
+    ...CANONICAL_COMMAND_POLICY,
+    decision,
+    policyVersion: CURRENT_POLICY_VERSION,
+    actionHash: createHash('sha256').update(canonicalJson(hashInput)).digest('hex'),
+    baseCommit: input.baseCommit,
+    requiredHumanPacketHash: input.contentHash,
+    stopFactors,
+    runnable: stopFactors.length === 0
+  };
+};
 
 const readDatabase = async <T>(loader: (db: Database) => Promise<T>): Promise<OperatorLoad<T>> => {
   const databaseUrl = process.env.DATABASE_URL;
@@ -299,7 +357,9 @@ export type RunsData = Readonly<{
     forbiddenSurfaces: readonly string[]; dataPolicy: Record<string, unknown>;
     expectedOutputSchema: Record<string, unknown>; timeboxMinutes: number; reviewer: string;
     approver: string; approverActorId: string; authMode: string; runtimeProfile: string;
-    contentHash: string; profiles: readonly Readonly<{id: string; name: string; runtimeId: string}>[];
+    contentHash: string; profiles: readonly Readonly<{
+      id: string; name: string; runtimeId: string; policyPreview: AgentRunQueuePolicyPreview;
+    }>[];
     runnable: boolean; nonRunnableReason: string | null;
   }> [];
 }>;
@@ -345,7 +405,11 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       .from(agentProfiles).innerJoin(actors, eq(actors.id, agentProfiles.actorId))
       .where(and(inArray(agentProfiles.workspaceId, workspaceIds), eq(agentProfiles.enabled, true), isNull(actors.disabledAt)))
       .orderBy(agentProfiles.runtimeProfile, agentProfiles.runtimeId),
-    db.select({projectId: trackerBindings.projectId, metadata: trackerBindings.metadata})
+    db.select({
+      projectId: trackerBindings.projectId,
+      entityId: trackerBindings.entityId,
+      metadata: trackerBindings.metadata
+    })
       .from(trackerBindings)
       .where(and(
         inArray(trackerBindings.projectId, projectIds),
@@ -375,14 +439,15 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
     profilesByWorkspaceRuntime.set(key, [...(profilesByWorkspaceRuntime.get(key) ?? []), profile]);
   }
   const repositoryBindingByProject = new Map(
-    repositoryBindings.map((binding) => [binding.projectId, binding])
+    repositoryBindings
+      .filter((binding) => binding.entityId === binding.projectId)
+      .map((binding) => [binding.projectId, binding])
   );
-  const baseCommitReason = (binding: typeof repositoryBindings[number] | undefined): string | null => {
-    if (binding === undefined) return 'No repository default branch head is recorded.';
-    return typeof binding.metadata.defaultBranch === 'string' && binding.metadata.defaultBranch.length > 0 &&
-      typeof binding.metadata.headSha === 'string' && /^[0-9a-f]{40}$/.test(binding.metadata.headSha)
-      ? null
-      : 'The repository default branch head is not recorded as a lowercase 40-character commit.';
+  const baseCommitFrom = (binding: typeof repositoryBindings[number] | undefined): string | null => {
+    if (binding === undefined || typeof binding.metadata.defaultBranch !== 'string' ||
+      binding.metadata.defaultBranch.length === 0) return null;
+    return typeof binding.metadata.headSha === 'string' &&
+      /^[0-9a-f]{40}$/.test(binding.metadata.headSha) ? binding.metadata.headSha : null;
   };
   return {
     runs: runs.flatMap((run) => {
@@ -397,17 +462,39 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       const project = projectById.get(packet.projectId);
       if (project === undefined) return [];
       const eligibleProfiles = profilesByWorkspaceRuntime.get(profileKey(project.workspaceId, packet.runtimeProfile)) ?? [];
-      const baseReason = baseCommitReason(repositoryBindingByProject.get(packet.projectId));
-      const nonRunnableReason = baseReason ?? (eligibleProfiles.length === 0 ? 'No enabled agent profile matches the packet runtime profile.' : null);
+      const repositoryBinding = repositoryBindingByProject.get(packet.projectId);
+      const baseCommit = baseCommitFrom(repositoryBinding);
+      const nonRunnableReason = baseCommit === null
+        ? (repositoryBinding === undefined
+          ? 'No repository default branch head is recorded.'
+          : 'The repository default branch head is not recorded as a lowercase 40-character commit.')
+        : (eligibleProfiles.length === 0 ? 'No enabled agent profile matches the packet runtime profile.' : null);
+      const packetProfiles = baseCommit === null ? [] : eligibleProfiles.map(({id, name, runtimeId}) => ({
+        id,
+        name,
+        runtimeId,
+        policyPreview: buildAgentRunQueuePolicyPreview({
+          packetId: packet.id,
+          contentHash: packet.contentHash,
+          agentProfileId: id,
+          baseCommit,
+          approverActorId: packet.approverActorId
+        })
+      }));
+      const effectiveNonRunnableReason = nonRunnableReason ?? (
+        packetProfiles.length > 0 && packetProfiles.every(({policyPreview}) => !policyPreview.runnable)
+          ? 'Canonical policy stops every enabled profile for this queue action.'
+          : null
+      );
       return [{
         ...packet,
         project: project.name,
         projectSlug: project.slug,
         reviewer: actorNameById.get(packet.reviewerActorId) ?? 'No recorded reviewer',
         approver: actorNameById.get(packet.approverActorId) ?? 'No recorded approver',
-        profiles: eligibleProfiles.map(({id, name, runtimeId}) => ({id, name, runtimeId})),
-        runnable: nonRunnableReason === null,
-        nonRunnableReason
+        profiles: packetProfiles,
+        runnable: effectiveNonRunnableReason === null,
+        nonRunnableReason: effectiveNonRunnableReason
       }];
     })
   };

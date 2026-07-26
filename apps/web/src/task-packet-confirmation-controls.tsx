@@ -20,11 +20,13 @@ export function TaskPacketConfirmationControls({
   const [acknowledged, setAcknowledged] = useState(false);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const canConfirm = enabled && csrfToken !== null && packet.runnable &&
-    agentProfileId !== '' && acknowledged && !pending;
+  const selectedProfile = packet.profiles.find(({id}) => id === agentProfileId);
+  const preview = selectedProfile?.policyPreview;
+  const canConfirm = enabled && csrfToken !== null && packet.runnable && preview?.runnable === true &&
+    acknowledged && !pending;
 
   const confirm = async () => {
-    if (!canConfirm || csrfToken === null) return;
+    if (!canConfirm || csrfToken === null || preview === undefined) return;
     setPending(true);
     setMessage(null);
     try {
@@ -36,7 +38,8 @@ export function TaskPacketConfirmationControls({
           body: JSON.stringify({
             _csrf: csrfToken,
             confirmedPacketHash: packet.contentHash,
-            agentProfileId
+            agentProfileId,
+            actionHash: preview.actionHash
           })
         }
       );
@@ -45,7 +48,7 @@ export function TaskPacketConfirmationControls({
         return;
       }
       setMessage(response.status === 409
-        ? 'The packet hash changed. Refresh and review the current packet.'
+        ? 'The queue action changed. Refresh and review the current policy preview.'
         : 'The packet was not queued.');
     } catch {
       setMessage('The packet was not queued.');
@@ -54,7 +57,7 @@ export function TaskPacketConfirmationControls({
     }
   };
 
-  if (!packet.runnable) return <p className="packet-state">{packet.nonRunnableReason}</p>;
+  if (preview === undefined) return <p className="packet-state">{packet.nonRunnableReason}</p>;
   if (!enabled || csrfToken === null) {
     return <p className="packet-state">An authenticated operator session is required to confirm this packet.</p>;
   }
@@ -66,12 +69,20 @@ export function TaskPacketConfirmationControls({
     >{packet.profiles.map((profile) => <option key={profile.id} value={profile.id}>
       {profile.name} · {profile.runtimeId}
     </option>)}</select></label>
+    <dl className="packet-facts" style={{gridColumn: '1 / -1'}}>
+      <div><dt>Decision</dt><dd>{preview.decision}</dd></div>
+      <div><dt>Policy version</dt><dd>v{preview.policyVersion}</dd></div>
+      <div><dt>Policy tuple</dt><dd>{preview.actorType} · {preview.actionCategory} · {preview.surface} · {preview.environment}</dd></div>
+      <div><dt>Action hash</dt><dd><code>{preview.actionHash}</code></dd></div>
+      <div><dt>Base commit</dt><dd><code>{preview.baseCommit}</code></dd></div>
+      <div><dt>Stop factors</dt><dd>{preview.stopFactors.length === 0 ? 'None' : preview.stopFactors.join(' ')}</dd></div>
+    </dl>
     <label className="packet-acknowledgement"><input
       checked={acknowledged}
       disabled={pending}
       onChange={(event) => setAcknowledged(event.target.checked)}
       type="checkbox"
-    /><span>I confirm the exact packet hash <code>{packet.contentHash}</code>.</span></label>
+    /><span>Required human confirmation: I confirm the exact packet hash <code>{preview.requiredHumanPacketHash}</code>.</span></label>
     <button disabled={!canConfirm} onClick={() => void confirm()} type="button">
       {pending ? 'Queueing' : 'Confirm and queue'}
     </button>
