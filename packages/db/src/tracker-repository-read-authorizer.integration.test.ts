@@ -9,6 +9,7 @@ import {
   projectTrackerRepositoryScopes,
   secretRefs
 } from './index';
+import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (process.env.CI && databaseUrl === undefined) {
@@ -90,14 +91,11 @@ describePostgres('PostgreSQL tracker repository read scope authorizer', () => {
   afterAll(async () => {
     await testPool?.end();
     if (adminPool !== undefined) {
-      await adminPool.query(
-        `SELECT pg_terminate_backend(pid)
-         FROM pg_stat_activity
-         WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [databaseName]
-      );
-      await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-      await adminPool.end();
+      try {
+        await dropDatabaseWhenDisconnected(adminPool, databaseName);
+      } finally {
+        await adminPool.end();
+      }
     }
   });
 

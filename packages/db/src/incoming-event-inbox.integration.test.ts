@@ -21,6 +21,7 @@ import {
   INCOMING_EVENT_QUEUE
 } from './incoming-event-inbox';
 import {createPostgresIncomingEventProcessor} from './incoming-event-consumer';
+import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {createDatabase} from './index';
 import {canonicalEvents, incomingEvents} from './schema';
 
@@ -84,22 +85,6 @@ const waitFor = async <T>(
   return latest;
 };
 
-const waitForDatabaseDisconnect = async (
-  admin: Pool,
-  name: string
-): Promise<void> => {
-  await waitFor(
-    async () => Number((await admin.query(
-      `SELECT count(*)
-       FROM pg_stat_activity
-       WHERE datname = $1 AND pid <> pg_backend_pid()`,
-      [name]
-    )).rows[0]?.count),
-    (count) => count === 0,
-    5_000
-  );
-};
-
 describePostgres(
   databaseUrl === undefined
     ? 'incoming event inbox integration (skipped: DATABASE_URL is absent)'
@@ -146,9 +131,11 @@ describePostgres(
       await boss?.stop({graceful: false});
       await testPool?.end();
       if (adminPool !== undefined) {
-        await waitForDatabaseDisconnect(adminPool, databaseName);
-        await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-        await adminPool.end();
+        try {
+          await dropDatabaseWhenDisconnected(adminPool, databaseName);
+        } finally {
+          await adminPool.end();
+        }
       }
     });
 
@@ -932,11 +919,13 @@ describePostgres('incoming event migration upgrade', () => {
         'incoming_events_processing_lease_idx',
         'canonical_events_incoming_event_unique'
       ]));
-    } finally {
-      await pool.end();
-      await waitForDatabaseDisconnect(admin, upgradeName);
-      await admin.query(`DROP DATABASE IF EXISTS "${upgradeName}"`);
-      await admin.end();
-    }
+      } finally {
+        await pool.end();
+        try {
+          await dropDatabaseWhenDisconnected(admin, upgradeName);
+        } finally {
+          await admin.end();
+        }
+      }
   }, 30_000);
 });

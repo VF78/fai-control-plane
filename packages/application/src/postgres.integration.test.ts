@@ -15,6 +15,7 @@ import {
   createPostgresUnitOfWork,
   taskPackets
 } from '@fai-control-plane/db';
+import {dropDatabaseWhenDisconnected} from '../../db/src/integration-test-utils';
 import {eq, inArray} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
@@ -251,14 +252,11 @@ describePostgres(
     afterAll(async () => {
       await testPool?.end();
       if (adminPool !== undefined) {
-        await adminPool.query(
-          `SELECT pg_terminate_backend(pid)
-           FROM pg_stat_activity
-           WHERE datname = $1 AND pid <> pg_backend_pid()`,
-          [databaseName]
-        );
-        await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-        await adminPool.end();
+        try {
+          await dropDatabaseWhenDisconnected(adminPool, databaseName);
+        } finally {
+          await adminPool.end();
+        }
       }
     });
 
