@@ -17,12 +17,21 @@ vi.mock('../../../../src/runner-claim-runtime', async (importOriginal) => {
         repositories: [{owner: 'VF78', name: 'fai-control-plane'}]
       },
       tokenHash: createHash('sha256').update(token).digest(),
-      service: {claim: async () => null}
+      service: {
+        claim: async () => null,
+        heartbeat: async () => ({leaseExpiresAt: '2026-07-26T10:02:00.000Z'}),
+        complete: async () => ({
+          terminal: 'done' as const,
+          completedAt: '2026-07-26T10:02:00.000Z'
+        })
+      }
     })
   };
 });
 
 import {POST} from './route';
+import {POST as heartbeat} from '../heartbeat/route';
+import {POST as complete} from '../complete/route';
 
 const previousEnabled = process.env.LOCAL_RUNNER_TRANSPORT_ENABLED;
 
@@ -57,4 +66,39 @@ it('fails closed when disabled and rejects an inexact bearer token', async () =>
     headers: {authorization: `Bearer ${token}`}
   }));
   expect(idle.status).toBe(204);
+});
+
+it('keeps lease transport disabled by default and denies malformed completion without details', async () => {
+  process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = 'false';
+  const disabled = await heartbeat(new Request('http://localhost/api/runner/heartbeat', {
+    method: 'POST',
+    headers: {authorization: `Bearer ${token}`},
+    body: JSON.stringify({runId: '00000000-0000-4000-8000-000000000003', attempt: 1})
+  }));
+  expect(disabled.status).toBe(503);
+  expect(disabled.headers.get('cache-control')).toBe('no-store');
+
+  process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = 'true';
+  const forged = await complete(new Request('http://localhost/api/runner/complete', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'x-fai-runner-lease-token': 'forged',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      runId: '00000000-0000-4000-8000-000000000003',
+      attempt: 1,
+      terminal: 'done',
+      receiptSha256: 'a'.repeat(64),
+      receiptSizeBytes: 128,
+      finalStatus: 'succeeded',
+      changedFiles: ['../../secret'],
+      checks: [],
+      riskCount: 0,
+      nextAction: 'review_receipt'
+    })
+  }));
+  expect(forged.status).toBe(404);
+  expect(forged.headers.get('cache-control')).toBe('no-store');
 });

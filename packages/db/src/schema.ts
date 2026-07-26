@@ -1063,6 +1063,43 @@ export const artifacts = pgTable(
   ]
 );
 
+export const agentRunReceipts = pgTable(
+  'agent_run_receipts',
+  {
+    agentRunId: uuid('agent_run_id')
+      .primaryKey()
+      .references(() => agentRuns.id, {onDelete: 'restrict'}),
+    runnerId: text('runner_id').notNull(),
+    attempt: integer('attempt').notNull(),
+    terminal: runStatusEnum('terminal').notNull(),
+    receiptSha256: text('receipt_sha256').notNull(),
+    receiptSizeBytes: bigint('receipt_size_bytes', {mode: 'number'}).notNull(),
+    completionReplayHash: text('completion_replay_hash').notNull(),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull(),
+    completedAt: timestamp('completed_at', {withTimezone: true}).notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    check(
+      'agent_run_receipts_terminal_status',
+      sql`${table.terminal} in ('done', 'failed')`
+    ),
+    check('agent_run_receipts_attempt_positive', sql`${table.attempt} > 0`),
+    check(
+      'agent_run_receipts_sha256',
+      sql`${table.receiptSha256} ~ '^[0-9a-f]{64}$' and ${table.completionReplayHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'agent_run_receipts_size_positive',
+      sql`${table.receiptSizeBytes} > 0 and ${table.receiptSizeBytes} <= 1048576`
+    ),
+    check(
+      'agent_run_receipts_runner_id_nonempty',
+      sql`length(${table.runnerId}) between 1 and 128`
+    )
+  ]
+);
+
 export const riskSignals = pgTable(
   'risk_signals',
   {

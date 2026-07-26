@@ -48,6 +48,7 @@ import {
   type RunnerClaimAuthorization,
   type RunnerClaimRecord,
   type RunnerClaimStore,
+  type RunnerTransportStore,
   type RunnerRepositoryAuthorization,
   type TaskPacket,
   type OpaqueSecretRef,
@@ -117,6 +118,7 @@ export type CreateCanonicalCommandServiceInput = Readonly<{
 
 export type RunnerClaimEnvelope = Readonly<{
   runId: string;
+  attempt: number;
   packetId: string;
   packetHash: string;
   repository: RunnerRepositoryAuthorization;
@@ -130,18 +132,63 @@ export type RunnerClaimEnvelope = Readonly<{
 
 export interface RunnerClaimService {
   claim(authorization: RunnerClaimAuthorization): Promise<RunnerClaimEnvelope | null>;
+  heartbeat(input: RunnerHeartbeatRequest): Promise<RunnerHeartbeatResponse | null>;
+  complete(input: RunnerCompletionRequest): Promise<RunnerCompletionResponse | null>;
 }
 
 export type CreateRunnerClaimServiceInput = Readonly<{
-  store: RunnerClaimStore;
+  store: RunnerTransportStore;
   clock?: Clock;
   tokenGenerator?: () => string;
+}>;
+
+export type RunnerHeartbeatRequest = Readonly<{
+  authorization: RunnerClaimAuthorization;
+  runId: string;
+  attempt: number;
+  leaseToken: string;
+}>;
+export type RunnerHeartbeatResponse = Readonly<{
+  leaseExpiresAt: string;
+}>;
+export type RunnerCompletionPayload = Readonly<{
+  runId: string;
+  attempt: number;
+  terminal: 'done' | 'failed';
+  receiptSha256: string;
+  receiptSizeBytes: number;
+  finalStatus: 'succeeded' | 'process_failed' | 'timed_out' | 'cancelled';
+  summaryArtifact?: Readonly<{
+    name: string;
+    sha256: string;
+    sizeBytes: number;
+  }>;
+  changedFiles: readonly string[];
+  checks: readonly Readonly<{
+    name: string;
+    status: 'passed' | 'failed' | 'not_run';
+  }>[];
+  riskCount: number;
+  nextAction: 'review_receipt' | 'review_worktree' | 'retry_explicitly';
+  branch?: string;
+  worktreeRef?: string;
+  artifactRef?: string;
+}>;
+export type RunnerCompletionRequest = Readonly<{
+  authorization: RunnerClaimAuthorization;
+  payload: RunnerCompletionPayload;
+  leaseToken: string;
+}>;
+export type RunnerCompletionResponse = Readonly<{
+  terminal: 'done' | 'failed';
+  completedAt: string;
 }>;
 
 export type {
   RunnerClaimAuthorization,
   RunnerClaimRecord,
   RunnerClaimStore,
+  RunnerTransportStore,
   RunnerRepositoryAuthorization
 };
 
@@ -151,6 +198,139 @@ const MAX_RUNNER_ENVELOPE_BYTES = 68 * 1_024;
 const runnerLeaseTokenPattern = /^[A-Za-z0-9_-]{32,128}$/;
 const runnerPacketHashPattern = /^[0-9a-f]{64}$/;
 const runnerBaseCommitPattern = /^[0-9a-f]{40}$/;
+const runnerRunIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const runnerSafeReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$/;
+const runnerSafeNamePattern = /^[A-Za-z0-9][A-Za-z0-9 .,_:()/-]{0,127}$/;
+const MAX_RUNNER_RECEIPT_BYTES = 1_024 * 1_024;
+const MAX_RUNNER_RISK_COUNT = 100;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const exactKeys = (
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): boolean => {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+};
+
+const safeReference = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  runnerSafeReferencePattern.test(value) &&
+  !value.includes('//') &&
+  !value.split('/').some((part) => part === '.' || part === '..');
+
+const boundedArray = <T>(
+  value: unknown,
+  maximum: number,
+  parse: (item: unknown) => T | null
+): readonly T[] | null => {
+  if (!Array.isArray(value) || value.length > maximum) return null;
+  const result = value.map(parse);
+  return result.some((item) => item === null) ? null : result as readonly T[];
+};
+
+export const parseRunnerHeartbeatPayload = (
+  value: unknown
+): Readonly<{runId: string; attempt: number}> | null => {
+  if (!isRecord(value) || !exactKeys(value, ['runId', 'attempt'])) return null;
+  const runId = value.runId;
+  const attempt = value.attempt;
+  return typeof runId === 'string' && runnerRunIdPattern.test(runId) &&
+    typeof attempt === 'number' && Number.isSafeInteger(attempt) &&
+    attempt > 0 && attempt <= 10_000
+    ? {runId, attempt}
+    : null;
+};
+
+export const parseRunnerCompletionPayload = (
+  value: unknown
+): RunnerCompletionPayload | null => {
+  const keys = [
+    'runId', 'attempt', 'terminal', 'receiptSha256', 'receiptSizeBytes',
+    'finalStatus', 'changedFiles', 'checks', 'riskCount', 'nextAction',
+    'summaryArtifact', 'branch', 'worktreeRef', 'artifactRef'
+  ];
+  if (!isRecord(value) || Object.keys(value).some((key) => !keys.includes(key))) return null;
+  const required = [
+    'runId', 'attempt', 'terminal', 'receiptSha256', 'receiptSizeBytes',
+    'finalStatus', 'changedFiles', 'checks', 'riskCount', 'nextAction'
+  ];
+  if (required.some((key) => !(key in value))) return null;
+  const attempt = value.attempt;
+  const receiptSizeBytes = value.receiptSizeBytes;
+  const riskCount = value.riskCount;
+  if (
+    !runnerRunIdPattern.test(value.runId as string) ||
+    typeof attempt !== 'number' || !Number.isSafeInteger(attempt) || attempt <= 0 || attempt > 10_000 ||
+    (value.terminal !== 'done' && value.terminal !== 'failed') ||
+    !runnerPacketHashPattern.test(value.receiptSha256 as string) ||
+    typeof receiptSizeBytes !== 'number' || !Number.isSafeInteger(receiptSizeBytes) ||
+    receiptSizeBytes <= 0 || receiptSizeBytes > MAX_RUNNER_RECEIPT_BYTES ||
+    typeof riskCount !== 'number' || !Number.isSafeInteger(riskCount) ||
+    riskCount < 0 || riskCount > MAX_RUNNER_RISK_COUNT ||
+    !['succeeded', 'process_failed', 'timed_out', 'cancelled'].includes(value.finalStatus as string) ||
+    !['review_receipt', 'review_worktree', 'retry_explicitly'].includes(value.nextAction as string) ||
+    (value.terminal === 'done') !== (value.finalStatus === 'succeeded')
+  ) return null;
+  const changedFiles = boundedArray(value.changedFiles, 100, (item) =>
+    safeReference(item) ? item : null
+  );
+  const checks = boundedArray(value.checks, 24, (item) =>
+    isRecord(item) && exactKeys(item, ['name', 'status']) &&
+    typeof item.name === 'string' && runnerSafeNamePattern.test(item.name) &&
+    ['passed', 'failed', 'not_run'].includes(item.status as string)
+      ? {name: item.name, status: item.status as 'passed' | 'failed' | 'not_run'}
+      : null
+  );
+  if (changedFiles === null || checks === null) return null;
+  const optionalReference = (key: 'branch' | 'worktreeRef' | 'artifactRef'): string | undefined =>
+    key in value && value[key] !== undefined
+      ? safeReference(value[key]) ? value[key] : undefined
+      : undefined;
+  const branch = optionalReference('branch');
+  const worktreeRef = optionalReference('worktreeRef');
+  const artifactRef = optionalReference('artifactRef');
+  if (
+    ('branch' in value && branch === undefined) ||
+    ('worktreeRef' in value && worktreeRef === undefined) ||
+    ('artifactRef' in value && artifactRef === undefined)
+  ) return null;
+  let summaryArtifact: RunnerCompletionPayload['summaryArtifact'];
+  if ('summaryArtifact' in value && value.summaryArtifact !== undefined) {
+    const summary = value.summaryArtifact;
+    const summarySizeBytes = isRecord(summary) ? summary.sizeBytes : undefined;
+    if (
+      !isRecord(summary) || !exactKeys(summary, ['name', 'sha256', 'sizeBytes']) ||
+      !safeReference(summary.name) || !runnerPacketHashPattern.test(summary.sha256 as string) ||
+      typeof summarySizeBytes !== 'number' || !Number.isSafeInteger(summarySizeBytes) ||
+      summarySizeBytes <= 0 || summarySizeBytes > MAX_RUNNER_RECEIPT_BYTES ||
+      value.finalStatus !== 'succeeded'
+    ) return null;
+    summaryArtifact = {
+      name: summary.name,
+      sha256: summary.sha256 as string,
+      sizeBytes: summarySizeBytes
+    };
+  }
+  return {
+    runId: value.runId as string,
+    attempt,
+    terminal: value.terminal as 'done' | 'failed',
+    receiptSha256: value.receiptSha256 as string,
+    receiptSizeBytes,
+    finalStatus: value.finalStatus as RunnerCompletionPayload['finalStatus'],
+    ...(summaryArtifact === undefined ? {} : {summaryArtifact}),
+    changedFiles,
+    checks,
+    riskCount,
+    nextAction: value.nextAction as RunnerCompletionPayload['nextAction'],
+    ...(branch === undefined ? {} : {branch}),
+    ...(worktreeRef === undefined ? {} : {worktreeRef}),
+    ...(artifactRef === undefined ? {} : {artifactRef})
+  };
+};
 
 const runnerPrompt = (record: RunnerClaimRecord): string => {
   const prompt = [
@@ -199,6 +379,7 @@ export const createRunnerClaimService = (
           if (
             !runnerPacketHashPattern.test(record.packetHash) ||
             !runnerBaseCommitPattern.test(record.baseCommit) ||
+            !Number.isSafeInteger(record.attempt) || record.attempt < 1 ||
             record.runtimeProfile.length < 1 ||
             record.runtimeProfile.length > 128
           ) {
@@ -206,6 +387,7 @@ export const createRunnerClaimService = (
           }
           const envelope: RunnerClaimEnvelope = {
             runId: record.runId,
+            attempt: record.attempt,
             packetId: record.packetId,
             packetHash: record.packetHash,
             repository: record.repository,
@@ -225,6 +407,51 @@ export const createRunnerClaimService = (
           return envelope;
         }
       );
+    },
+    /** Heartbeats deliberately preserve the original lease capability. */
+    async heartbeat(request) {
+      if (!runnerLeaseTokenPattern.test(request.leaseToken)) return null;
+      const at = clock.now();
+      if (!Number.isFinite(at.getTime())) return null;
+      const result = await input.store.heartbeat({
+        ...request.authorization,
+        runId: request.runId,
+        attempt: request.attempt,
+        leaseTokenHash: createHash('sha256').update(request.leaseToken).digest('hex'),
+        at,
+        leaseExpiresAt: new Date(at.getTime() + RUNNER_LEASE_DURATION_MS)
+      });
+      return result.status === 'extended' || result.status === 'unchanged'
+        ? {leaseExpiresAt: result.leaseExpiresAt!.toISOString()}
+        : null;
+    },
+    async complete(request) {
+      if (!runnerLeaseTokenPattern.test(request.leaseToken)) return null;
+      const at = clock.now();
+      if (!Number.isFinite(at.getTime())) return null;
+      const payloadJson = canonicalJson(request.payload as unknown as CanonicalJson);
+      const result = await input.store.complete({
+        ...request.authorization,
+        runId: request.payload.runId,
+        attempt: request.payload.attempt,
+        leaseTokenHash: createHash('sha256').update(request.leaseToken).digest('hex'),
+        completionReplayHash: createHash('sha256')
+          .update(request.leaseToken)
+          .update('\0')
+          .update(payloadJson)
+          .digest('hex'),
+        terminal: request.payload.terminal,
+        receiptSha256: request.payload.receiptSha256,
+        receiptSizeBytes: request.payload.receiptSizeBytes,
+        metadata: request.payload as unknown as CanonicalJson,
+        at
+      });
+      return result.status === 'completed' || result.status === 'replayed'
+        ? {
+            terminal: result.terminal!,
+            completedAt: result.completedAt!.toISOString()
+          }
+        : null;
     }
   };
 };

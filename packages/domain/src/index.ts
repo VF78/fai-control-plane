@@ -106,6 +106,7 @@ export type RunnerClaimAuthorization = Readonly<{
 }>;
 export type RunnerClaimRecord = Readonly<{
   runId: string;
+  attempt: number;
   packetId: string;
   packetHash: string;
   repository: RunnerRepositoryAuthorization;
@@ -135,6 +136,38 @@ export interface RunnerClaimStore {
     input: RunnerClaimLeaseInput,
     prepare: (record: RunnerClaimRecord) => T
   ): Promise<T | null>;
+}
+
+export type RunnerLeaseInput = RunnerClaimAuthorization & Readonly<{
+  runId: string;
+  attempt: number;
+  leaseTokenHash: string;
+  at: Date;
+  leaseExpiresAt: Date;
+}>;
+export type RunnerHeartbeatResult = Readonly<{
+  status: 'extended' | 'unchanged' | 'denied';
+  leaseExpiresAt?: Date;
+}>;
+export type RunnerCompletionInput = RunnerClaimAuthorization & Readonly<{
+  runId: string;
+  attempt: number;
+  leaseTokenHash: string;
+  completionReplayHash: string;
+  terminal: 'done' | 'failed';
+  receiptSha256: string;
+  receiptSizeBytes: number;
+  metadata: CanonicalJson;
+  at: Date;
+}>;
+export type RunnerCompletionResult = Readonly<{
+  status: 'completed' | 'replayed' | 'denied' | 'conflict';
+  terminal?: 'done' | 'failed';
+  completedAt?: Date;
+}>;
+export interface RunnerTransportStore extends RunnerClaimStore {
+  heartbeat(input: RunnerLeaseInput): Promise<RunnerHeartbeatResult>;
+  complete(input: RunnerCompletionInput): Promise<RunnerCompletionResult>;
 }
 
 export type ApprovalTarget =

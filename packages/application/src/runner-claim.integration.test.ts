@@ -4,6 +4,7 @@ import {createTaskPacket, type TaskPacketContent} from '@fai-control-plane/domai
 import {
   actors,
   agentProfiles,
+  agentRunReceipts,
   agentRuns,
   auditEvents,
   canonicalEvents,
@@ -17,7 +18,7 @@ import {
   workspaces
 } from '@fai-control-plane/db';
 import {dropDatabaseWhenDisconnected} from '../../db/src/integration-test-utils';
-import {eq, inArray} from 'drizzle-orm';
+import {asc, eq, inArray} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
@@ -65,7 +66,7 @@ describePostgres(
       }
     }, 30_000);
 
-    it('leases one eligible run concurrently without exposing secret references', async () => {
+    it('claims, heartbeats, and completes one eligible run without exposing secret references', async () => {
       const workspaceId = randomUUID();
       const projectId = randomUUID();
       const actorId = randomUUID();
@@ -258,8 +259,10 @@ describePostgres(
         });
       }
 
+      let now = new Date('2026-07-26T10:00:00.000Z');
       const service = createRunnerClaimService({
-        store: createPostgresRunnerClaimStore(testDb)
+        store: createPostgresRunnerClaimStore(testDb),
+        clock: {now: () => now}
       });
       const authorization = {
         workspaceId,
@@ -275,6 +278,7 @@ describePostgres(
       expect(claims.filter((claim) => claim !== null)).toHaveLength(1);
       expect(envelope).toMatchObject({
         runId: eligibleRunId,
+        attempt: 1,
         repository: {owner: 'VF78', name: 'fai-control-plane'},
         baseCommit: 'a'.repeat(40),
         runtimeProfile: 'codex-safe',
@@ -325,6 +329,90 @@ describePostgres(
       expect(
         rows.find((row) => row.id === eligibleRunId)?.leaseTokenHash
       ).not.toBe(envelope?.leaseToken);
+      now = new Date('2026-07-26T10:00:01.000Z');
+      const heartbeat = await service.heartbeat({
+        authorization,
+        runId: eligibleRunId,
+        attempt: 1,
+        leaseToken: envelope!.leaseToken
+      });
+      expect(heartbeat).toEqual({leaseExpiresAt: '2026-07-26T10:02:01.000Z'});
+      expect(await service.heartbeat({
+        authorization,
+        runId: eligibleRunId,
+        attempt: 1,
+        leaseToken: envelope!.leaseToken
+      })).toEqual(heartbeat);
+      const completionPayload = {
+        runId: eligibleRunId,
+        attempt: 1,
+        terminal: 'done' as const,
+        receiptSha256: 'b'.repeat(64),
+        receiptSizeBytes: 512,
+        finalStatus: 'succeeded' as const,
+        summaryArtifact: {
+          name: 'codex-summary.json',
+          sha256: 'c'.repeat(64),
+          sizeBytes: 128
+        },
+        changedFiles: ['packages/application/src/index.ts'],
+        checks: [{name: 'application typecheck', status: 'passed' as const}],
+        riskCount: 0,
+        nextAction: 'review_receipt' as const,
+        branch: `fai/run/${eligibleRunId}`,
+        worktreeRef: `worktrees/${eligibleRunId}`,
+        artifactRef: `receipts/${eligibleRunId}/agent-run-receipt.json`
+      };
+      now = new Date('2026-07-26T10:00:02.000Z');
+      const completion = await service.complete({
+        authorization,
+        payload: completionPayload,
+        leaseToken: envelope!.leaseToken
+      });
+      expect(completion).toEqual({
+        terminal: 'done',
+        completedAt: '2026-07-26T10:00:02.000Z'
+      });
+      expect(await service.complete({
+        authorization,
+        payload: completionPayload,
+        leaseToken: envelope!.leaseToken
+      })).toEqual(completion);
+      expect(await service.complete({
+        authorization,
+        payload: {...completionPayload, receiptSha256: 'd'.repeat(64)},
+        leaseToken: envelope!.leaseToken
+      })).toBeNull();
+      const [completedRun] = await testDb
+        .select({
+          status: agentRuns.status,
+          runnerId: agentRuns.runnerId,
+          leaseTokenHash: agentRuns.leaseTokenHash,
+          leaseExpiresAt: agentRuns.leaseExpiresAt,
+          version: agentRuns.version
+        })
+        .from(agentRuns)
+        .where(eq(agentRuns.id, eligibleRunId));
+      expect(completedRun).toEqual({
+        status: 'done',
+        runnerId: null,
+        leaseTokenHash: null,
+        leaseExpiresAt: null,
+        version: 4
+      });
+      const [receipt] = await testDb
+        .select({
+          receiptSha256: agentRunReceipts.receiptSha256,
+          receiptSizeBytes: agentRunReceipts.receiptSizeBytes,
+          metadata: agentRunReceipts.metadata
+        })
+        .from(agentRunReceipts)
+        .where(eq(agentRunReceipts.agentRunId, eligibleRunId));
+      expect(receipt).toEqual({
+        receiptSha256: completionPayload.receiptSha256,
+        receiptSizeBytes: completionPayload.receiptSizeBytes,
+        metadata: completionPayload
+      });
       const auditRows = await testDb
         .select({
           workspaceId: auditEvents.workspaceId,
@@ -341,7 +429,8 @@ describePostgres(
           metadata: auditEvents.metadata
         })
         .from(auditEvents)
-        .where(eq(auditEvents.workspaceId, workspaceId));
+        .where(eq(auditEvents.workspaceId, workspaceId))
+        .orderBy(asc(auditEvents.occurredAt));
       expect(auditRows).toEqual([{
         workspaceId,
         projectId,
@@ -354,6 +443,32 @@ describePostgres(
         expectedVersion: 1,
         resultVersion: 2,
         correlationId: `runner.claim:${eligibleRunId}:attempt:1`,
+        metadata: {}
+      }, {
+        workspaceId,
+        projectId,
+        actorId,
+        commandId: `runner.heartbeat:${eligibleRunId}:attempt:1:version:3`,
+        action: 'runner.heartbeat',
+        targetType: 'agent_run',
+        targetId: eligibleRunId,
+        outcome: 'succeeded',
+        expectedVersion: 2,
+        resultVersion: 3,
+        correlationId: `runner.heartbeat:${eligibleRunId}:attempt:1:version:3`,
+        metadata: {}
+      }, {
+        workspaceId,
+        projectId,
+        actorId,
+        commandId: `runner.complete:${eligibleRunId}:attempt:1`,
+        action: 'runner.complete',
+        targetType: 'agent_run',
+        targetId: eligibleRunId,
+        outcome: 'succeeded',
+        expectedVersion: 3,
+        resultVersion: 4,
+        correlationId: `runner.complete:${eligibleRunId}:attempt:1`,
         metadata: {}
       }]);
     }, 30_000);
