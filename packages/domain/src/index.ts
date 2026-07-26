@@ -828,6 +828,7 @@ export type TrackerWorkItemSnapshot = Readonly<{
 /** A Project V2 Status observation, including an explicit unknown or missing option. */
 export type TrackerProjectStatusObservation = Readonly<{
   projectExternalId: string;
+  projectItemExternalId: string;
   fieldExternalId: string;
   optionExternalId: string | null;
   status: WorkItemStatus | null;
@@ -1048,10 +1049,11 @@ const trackerSnapshotProjectStatus = (
 ): TrackerProjectStatusObservation | null => {
   if (value === null) return null;
   const record = trackerSnapshotObject(value, [
-    'projectExternalId', 'fieldExternalId', 'optionExternalId', 'status'
+    'projectExternalId', 'projectItemExternalId', 'fieldExternalId', 'optionExternalId', 'status'
   ]);
   if (record === null) return null;
   const projectExternalId = trackerSnapshotIdentifier(record.projectExternalId, 512);
+  const projectItemExternalId = trackerSnapshotIdentifier(record.projectItemExternalId, 512);
   const fieldExternalId = trackerSnapshotIdentifier(record.fieldExternalId, 512);
   const optionExternalId = record.optionExternalId === null
     ? null
@@ -1061,11 +1063,11 @@ const trackerSnapshotProjectStatus = (
     : typeof record.status === 'string' && workItemStatuses.includes(record.status as WorkItemStatus)
       ? record.status as WorkItemStatus
       : null;
-  return projectExternalId === null || fieldExternalId === null ||
+  return projectExternalId === null || projectItemExternalId === null || fieldExternalId === null ||
     (optionExternalId === null && record.optionExternalId !== null) ||
     (record.status !== null && status === null)
     ? null
-    : {projectExternalId, fieldExternalId, optionExternalId, status};
+    : {projectExternalId, projectItemExternalId, fieldExternalId, optionExternalId, status};
 };
 
 const trackerSnapshotPullRequest = (value: unknown): TrackerPullRequestSnapshot | null => {
@@ -1269,15 +1271,44 @@ export interface TrackerRepositoryReadScopeAuthorizer {
     input: TrackerRepositoryReadScopeAuthorizationInput
   ): Promise<TrackerRepositoryReadScopeAuthorization>;
 }
+export type TrackerWorkItemTransitionInput = Readonly<{
+  bindingId: string;
+  workItemId: string;
+  canonicalVersion: number;
+  status: WorkItemStatus;
+  expectedBindingVersion: string | null;
+  expectedProviderOptionId: string | null;
+  target: Readonly<{
+    repositoryExternalId: string;
+    projectExternalId: string;
+    projectItemExternalId: string;
+    fieldExternalId: string;
+  }>;
+  mutationId: string;
+  credentialRef: OpaqueSecretRef;
+}>;
+export type TrackerWorkItemTransitionResult =
+  | Readonly<{
+      status: 'confirmed';
+      receipt: Readonly<{
+        verification: 'read_after_write';
+        projectItemExternalId: string;
+        optionExternalId: string;
+        clientMutationId: string;
+      }>;
+    }>
+  | Readonly<{status: 'stale'}>
+  | Readonly<{status: 'identity_denied'}>
+  | Readonly<{status: 'retryable'}>;
 export type TrackerAdapter = Readonly<{
   provider: string;
   capabilities: TrackerCapabilities;
   readRepositorySnapshot?: (
     input: TrackerRepositoryReadInput
   ) => Promise<TrackerRepositorySnapshot>;
-  transitionWorkItem?: (input: Readonly<{
-    bindingId: string; expectedVersion: string; status: WorkItemStatus; idempotencyKey: string;
-  }>) => Promise<Readonly<{externalVersion: string}>>;
+  transitionWorkItem?: (
+    input: TrackerWorkItemTransitionInput
+  ) => Promise<TrackerWorkItemTransitionResult>;
 }>;
 export type ChatAdapter = Readonly<{
   provider: string;
@@ -1407,7 +1438,8 @@ export type PersistedCanonicalMutation = Readonly<{
 export type AuditedMutationResult =
   | Readonly<{status: 'persisted'; mutation: PersistedCanonicalMutation}>
   | Readonly<{status: 'version_conflict'; expectedPersistedVersion: number | null; persistedVersion: number | null}>
-  | Readonly<{status: 'not_found'}>;
+  | Readonly<{status: 'not_found'}>
+  | Readonly<{status: 'invalid_effect'}>;
 export type AuditAppendToken = Readonly<{readonly [auditAppendTokenBrand]: true}>;
 export type CommandReceiptCompletion = Readonly<{readonly [receiptCompletionBrand]: true}>;
 export type CommandReceiptClaimResult =
@@ -1483,6 +1515,17 @@ export interface CanonicalCommandTransaction {
   persistAuditedMutation(input: Readonly<{
     claimToken: ReceiptClaimToken;
     outcome: NonApprovalCommandOutcome;
+  }>): Promise<AuditedMutationResult>;
+  /**
+   * Optional provider-effect extension for a WorkItem status transition. The
+   * PostgreSQL implementation keeps the binding lock, aggregate CAS, outbox,
+   * audit, and receipt in the command transaction.
+   */
+  persistAuditedWorkItemTransition?(input: Readonly<{
+    claimToken: ReceiptClaimToken;
+    outcome: NonApprovalCommandOutcome;
+    fromStatus: WorkItemStatus;
+    mutationId: string;
   }>): Promise<AuditedMutationResult>;
   /** Atomically persists the approval, ask audit, and completed receipt. */
   persistApprovalRequired(input: Readonly<{

@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import type {
   AccessRequest,
   AgentRun,
@@ -62,6 +62,11 @@ type PersistenceFailure =
       persistedVersion: number | null;
     }>
   | Readonly<{status: 'not_found'}>;
+
+type GitHubBindingEffect = Readonly<{
+  bindingId: string;
+  payload: Record<string, unknown>;
+}>;
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -934,6 +939,50 @@ const persistAggregate = (
   }
 };
 
+const githubStatusEffect = (
+  binding: typeof schema.trackerBindings.$inferSelect,
+  workItem: WorkItem,
+  mutationId: string
+): GitHubBindingEffect | null => {
+  const metadata = binding.metadata as Record<string, unknown>;
+  const projectStatus = metadata.projectStatus;
+  const repositoryExternalId = metadata.repositoryExternalId;
+  if (
+    typeof repositoryExternalId !== 'string' ||
+    !/^github:repository:[1-9][0-9]*$/.test(repositoryExternalId) ||
+    projectStatus === null || typeof projectStatus !== 'object' ||
+    Array.isArray(projectStatus)
+  ) return null;
+  const status = projectStatus as Record<string, unknown>;
+  if (
+    typeof status.projectExternalId !== 'string' ||
+    typeof status.projectItemExternalId !== 'string' ||
+    typeof status.fieldExternalId !== 'string' ||
+    (status.optionExternalId !== null && typeof status.optionExternalId !== 'string')
+  ) return null;
+  return {
+    bindingId: binding.id,
+    payload: {
+      version: 1,
+      bindingId: binding.id,
+      workItemId: workItem.id,
+      canonicalVersion: workItem.version,
+      status: workItem.status,
+      expected: {
+        bindingExternalVersion: binding.externalVersion,
+        providerOptionId: status.optionExternalId as string | null
+      },
+      target: {
+        repositoryExternalId,
+        projectExternalId: status.projectExternalId,
+        projectItemExternalId: status.projectItemExternalId,
+        fieldExternalId: status.fieldExternalId
+      },
+      mutationId
+    }
+  };
+};
+
 const auditProjectId = async (
   tx: Transaction,
   workspaceId: string,
@@ -1243,6 +1292,96 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             auditToken: appended
           });
           return {status: 'persisted', mutation};
+        },
+
+        async persistAuditedWorkItemTransition({
+          claimToken: token,
+          outcome,
+          fromStatus,
+          mutationId
+        }) {
+          const state = requireClaim(token);
+          if (outcome.mutation.aggregateType !== 'work_item') {
+            return {status: 'invalid_effect'} as const;
+          }
+          validateAggregateIdentity(outcome.mutation);
+          validateAuditEnvelope(outcome.audit, state.claim, outcome.mutation);
+          await actorBelongsToWorkspace(
+            tx,
+            state.claim.workspaceId,
+            outcome.audit.actorId
+          );
+          const bindings = await tx
+            .select({binding: schema.trackerBindings})
+            .from(schema.trackerBindings)
+            .innerJoin(
+              schema.workItems,
+              and(
+                eq(schema.workItems.id, schema.trackerBindings.entityId),
+                eq(schema.workItems.projectId, schema.trackerBindings.projectId),
+                workItemScope(state.claim.workspaceId)
+              )
+            )
+            .where(and(
+              eq(schema.trackerBindings.provider, 'github'),
+              eq(schema.trackerBindings.surface, 'issue'),
+              eq(schema.trackerBindings.entityType, 'work_item'),
+              eq(schema.trackerBindings.entityId, outcome.mutation.aggregateId)
+            ))
+            .limit(2)
+            .for('update');
+          if (bindings.length > 1) {
+            return {status: 'invalid_effect'} as const;
+          }
+          const [binding] = bindings;
+          const effect = binding === undefined
+            ? null
+            : githubStatusEffect(binding.binding, outcome.mutation.aggregate, mutationId);
+          if (binding !== undefined && effect === null) {
+            return {status: 'invalid_effect'} as const;
+          }
+          const persisted = await persistWorkItem(
+            tx,
+            state.claim.workspaceId,
+            outcome.mutation
+          );
+          if (persisted.status !== 'persisted') return persisted;
+          await tx.insert(schema.statusTransitions).values({
+            id: randomUUID(),
+            workItemId: outcome.mutation.aggregateId,
+            fromStatus,
+            toStatus: outcome.mutation.aggregate.status,
+            actorId: outcome.audit.actorId,
+            reason: 'canonical_work_item_transition',
+            idempotencyKey: `canonical-work-item-transition:${state.claim.commandId}`
+          });
+          if (effect !== null) {
+            await tx.update(schema.trackerBindings).set({
+              lastOutboundMutationId: mutationId,
+              updatedAt: new Date()
+            }).where(eq(schema.trackerBindings.id, effect.bindingId));
+            await tx.insert(schema.outboxEvents).values({
+              workspaceId: state.claim.workspaceId,
+              projectId: persisted.projectId,
+              destination: 'github',
+              eventType: 'github.project_status.write.v1',
+              idempotencyKey: `github-project-status:${effect.bindingId}:${mutationId}`,
+              payload: effect.payload
+            });
+          }
+          const appended = await appendAudit(tx, outcome.audit, persisted.projectId);
+          const mutation = {
+            cas: persisted.cas,
+            audit: appended
+          } as PersistedCanonicalMutation;
+          mutations.set(mutation as object, {
+            claimToken: token,
+            aggregateType: outcome.mutation.aggregateType,
+            aggregateId: outcome.mutation.aggregateId,
+            cas: persisted.cas,
+            auditToken: appended
+          });
+          return {status: 'persisted' as const, mutation};
         },
 
         async persistApprovalRequired({

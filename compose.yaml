@@ -7,14 +7,16 @@ x-runtime-environment: &runtime-environment
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
   GITHUB_SYNC_ENABLED: ${GITHUB_SYNC_ENABLED:-false}
   GITHUB_INGRESS_ENABLED: ${GITHUB_INGRESS_ENABLED:-false}
+  GITHUB_STATUS_WRITEBACK_ENABLED: ${GITHUB_STATUS_WRITEBACK_ENABLED:-false}
   GITHUB_APP_ID: ${GITHUB_APP_ID:-}
-  GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-}
+  GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/github-app-private-key}
   GITHUB_WEBHOOK_SECRET_FILE: ${GITHUB_WEBHOOK_SECRET_FILE:-/run/secrets/github-webhook}
   FCP_WORKSPACE_ID: ${FCP_WORKSPACE_ID:-}
   GITHUB_MSA_PROJECT_ID: ${GITHUB_MSA_PROJECT_ID:-}
   GITHUB_MSA_INSTALLATION_ID: ${GITHUB_MSA_INSTALLATION_ID:-}
   GITHUB_ASCON_PROJECT_ID: ${GITHUB_ASCON_PROJECT_ID:-}
   GITHUB_ASCON_INSTALLATION_ID: ${GITHUB_ASCON_INSTALLATION_ID:-}
+  GITHUB_APP_PRIVATE_KEY_HOST_FILE: ${GITHUB_APP_PRIVATE_KEY_HOST_FILE:-./infra/compose/secrets/github-app-private-key.disabled}
   RUNNER_ENABLED: ${RUNNER_ENABLED:-false}
   RUNNER_NETWORK_MODE: ${RUNNER_NETWORK_MODE:-none}
   ARTIFACTS_ROOT: ${ARTIFACTS_ROOT:-/var/lib/fai/artifacts}
@@ -108,6 +110,10 @@ services:
       - "${WORKER_PORT:-3001}:3001"
     volumes:
       - artifacts:/var/lib/fai/artifacts
+      - type: bind
+        source: ${GITHUB_APP_PRIVATE_KEY_HOST_FILE:-./infra/compose/secrets/github-app-private-key.disabled}
+        target: ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/github-app-private-key}
+        read_only: true
     depends_on:
       postgres:
         condition: service_healthy

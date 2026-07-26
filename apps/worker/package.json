@@ -12,6 +12,7 @@
   "dependencies": {
     "@fai-control-plane/application": "workspace:*",
     "@fai-control-plane/db": "workspace:*",
+    "@fai-control-plane/integrations": "workspace:*",
     "@fai-control-plane/observability": "workspace:*",
     "pg-boss": "12.26.3"
   }

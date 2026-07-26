@@ -86,6 +86,9 @@ importers:
       '@fai-control-plane/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@fai-control-plane/integrations':
+        specifier: workspace:*
+        version: link:../../packages/integrations
       '@fai-control-plane/observability':
         specifier: workspace:*
         version: link:../../packages/observability

@@ -214,6 +214,7 @@ describe('GitHub repository read adapter', () => {
       throw new Error(`Unexpected route ${url.pathname}`);
     }, () => projectItemsPayload('PVT_kwHOBIUvJs4Bbefq', [
       {
+        id: 'PVTI_MSA_1',
         content: {
           __typename: 'Issue', number: 1,
           repository: {nameWithOwner: 'VF78/MSA'}
@@ -227,6 +228,7 @@ describe('GitHub repository read adapter', () => {
         }
       },
       {
+        id: 'PVTI_MSA_2',
         content: {
           __typename: 'Issue', number: 2,
           repository: {nameWithOwner: 'VF78/MSA'}
@@ -248,6 +250,7 @@ describe('GitHub repository read adapter', () => {
         number: 1,
         projectStatus: {
           projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+          projectItemExternalId: 'PVTI_MSA_1',
           fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
           optionExternalId: '1f121483',
           status: 'ready'
@@ -257,6 +260,7 @@ describe('GitHub repository read adapter', () => {
         number: 2,
         projectStatus: {
           projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+          projectItemExternalId: 'PVTI_MSA_2',
           fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
           optionExternalId: 'not-an-allowlisted-option',
           status: null

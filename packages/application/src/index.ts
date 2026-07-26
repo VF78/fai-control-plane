@@ -1041,7 +1041,7 @@ export const createCanonicalCommandService = (
     }
     const transitioned = transitionWorkItem(item, command.payload.status);
     if (!transitioned.ok) return completeNoMutation(transaction, token, claim, command, target, transitioned);
-    return mutateWorkItem(transaction, token, claim, command, item, transitioned.value);
+    return mutateWorkItem(transaction, token, claim, command, item, transitioned.value, true);
   }
 
   async function workItemBlocked(
@@ -1065,14 +1065,43 @@ export const createCanonicalCommandService = (
 
   async function mutateWorkItem(
     transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim, command: CanonicalCommand,
-    original: WorkItem, updated: WorkItem
+    original: WorkItem, updated: WorkItem, isTransition = false
   ) {
     const target = targetFor('work_item', updated.id, original.version, updated.version);
-    return completeMutation(transaction, token, claim, command, {
+    const outcome: NonApprovalCommandOutcome = {
       kind: 'non_approval',
       mutation: {aggregateType: 'work_item', aggregateId: updated.id, expectedPersistedVersion: original.version, aggregate: updated},
       audit: audit(claim, ids, clock, target, command.actor.actorId, command.type, 'write', succeeded(compactWorkItem(updated)))
-    }, target, succeeded(compactWorkItem(updated)));
+    };
+    if (!isTransition || transaction.persistAuditedWorkItemTransition === undefined) {
+      return completeMutation(transaction, token, claim, command, outcome, target, succeeded(compactWorkItem(updated)));
+    }
+    const persisted = await transaction.persistAuditedWorkItemTransition({
+      claimToken: token,
+      outcome,
+      fromStatus: original.status,
+      mutationId: command.commandId
+    });
+    if (persisted.status !== 'persisted') {
+      const failedTarget = targetFor(
+        target.aggregateType,
+        target.aggregateId,
+        target.expectedVersion,
+        persisted.status === 'version_conflict' && persisted.persistedVersion !== null
+          ? persisted.persistedVersion
+          : undefined
+      );
+      const failure = persisted.status === 'invalid_effect'
+        ? failed('INVALID_COMMAND', 'GitHub status write-back binding is incomplete.')
+        : failed(
+          persisted.status === 'not_found' ? 'NOT_FOUND' : 'VERSION_CONFLICT',
+          persisted.status === 'not_found' ? 'Resource was not found.' : 'Resource version conflicts with the command.'
+        );
+      return completeNoMutation(transaction, token, claim, command, failedTarget, failure, 'write');
+    }
+    const commandReceipt = receipt(claim, target, succeeded(compactWorkItem(updated)));
+    const completion = await transaction.completeReceipt({claimToken: token, receipt: commandReceipt, mutation: persisted.mutation});
+    return {kind: 'non_approval' as const, value: commandReceipt, mutation: completion};
   }
 
   async function taskPacketCreate(

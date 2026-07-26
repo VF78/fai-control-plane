@@ -361,6 +361,7 @@ const projectItemsQuery = `query ProjectStatus(
       id
       items(first: 100, after: $after) {
         nodes {
+          id
           content {
             __typename
             ... on Issue {
@@ -509,6 +510,7 @@ const projectEvidencePage = (
     if (boolean(object(fieldValues.pageInfo).hasNextPage)) return fail('github_pagination_exceeded');
     let status: TrackerProjectStatusObservation = {
       projectExternalId: scope.projectNodeId,
+      projectItemExternalId: boundedString(source.id, 512),
       fieldExternalId: scope.projectStatusFieldNodeId,
       optionExternalId: null,
       status: null
@@ -525,6 +527,7 @@ const projectEvidencePage = (
         const optionExternalId = boundedString(value.optionId, 512);
         status = {
           projectExternalId: scope.projectNodeId,
+          projectItemExternalId: boundedString(source.id, 512),
           fieldExternalId: scope.projectStatusFieldNodeId,
           optionExternalId,
           status: scope.projectStatusOptionMap[optionExternalId] ?? null

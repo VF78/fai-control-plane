@@ -13,7 +13,11 @@ import {
   commandReceipts,
   createDatabase,
   createPostgresUnitOfWork,
-  taskPackets
+  outboxEvents,
+  statusTransitions,
+  taskPackets,
+  trackerBindings,
+  workItems
 } from '@fai-control-plane/db';
 import {dropDatabaseWhenDisconnected} from '../../db/src/integration-test-utils';
 import {eq, inArray} from 'drizzle-orm';
@@ -279,6 +283,92 @@ describePostgres(
           result: {ok: true}
         }
       });
+    });
+
+    it('atomically enqueues a GitHub Project status write-back for a WorkItem transition', async () => {
+      const workItemId = randomUUID();
+      const bindingId = randomUUID();
+      await testDb.insert(workItems).values({
+        id: workItemId,
+        projectId: fixture.projectId,
+        title: 'GitHub-bound item',
+        status: 'ready',
+        version: 1
+      });
+      await testDb.insert(trackerBindings).values({
+        id: bindingId,
+        projectId: fixture.projectId,
+        provider: 'github',
+        surface: 'issue',
+        externalId: 'github:issue:9001',
+        entityType: 'work_item',
+        entityId: workItemId,
+        externalVersion: 'github:sha256:inbound',
+        lastInboundVersion: 'github:sha256:inbound',
+        metadata: {
+          repositoryExternalId: 'github:repository:1278325372',
+          projectStatus: {
+            projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+            projectItemExternalId: 'PVTI_test_9001',
+            fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
+            optionExternalId: '1f121483',
+            status: 'ready'
+          }
+        }
+      });
+      const transition = command(
+        fixture.workspaceId,
+        primaryActor,
+        'work_item.transition',
+        {workItemId, status: 'in_dev', expectedVersion: 1}
+      );
+
+      await expect(service().execute(transition)).resolves.toMatchObject({
+        status: 'completed', receipt: {result: {ok: true}, resultVersion: 2}
+      });
+      await expect(testDb.select({status: workItems.status, version: workItems.version})
+        .from(workItems).where(eq(workItems.id, workItemId))).resolves.toEqual([
+        {status: 'in_dev', version: 2}
+      ]);
+      await expect(testDb.select({fromStatus: statusTransitions.fromStatus, toStatus: statusTransitions.toStatus})
+        .from(statusTransitions).where(eq(statusTransitions.workItemId, workItemId))).resolves.toEqual([
+        {fromStatus: 'ready', toStatus: 'in_dev'}
+      ]);
+      await expect(testDb.select({lastOutboundMutationId: trackerBindings.lastOutboundMutationId})
+        .from(trackerBindings).where(eq(trackerBindings.id, bindingId))).resolves.toEqual([
+        {lastOutboundMutationId: transition.commandId}
+      ]);
+      await expect(testDb.select({payload: outboxEvents.payload, status: outboxEvents.status})
+        .from(outboxEvents).where(eq(outboxEvents.idempotencyKey,
+          `github-project-status:${bindingId}:${transition.commandId}`))).resolves.toMatchObject([
+        {
+          status: 'pending',
+          payload: {
+            version: 1,
+            bindingId,
+            workItemId,
+            canonicalVersion: 2,
+            status: 'in_dev',
+            expected: {
+              bindingExternalVersion: 'github:sha256:inbound',
+              providerOptionId: '1f121483'
+            },
+            target: {
+              repositoryExternalId: 'github:repository:1278325372',
+              projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+              projectItemExternalId: 'PVTI_test_9001',
+              fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc'
+            },
+            mutationId: transition.commandId
+          }
+        }
+      ]);
+      await expect(testDb.select().from(auditEvents)
+        .where(eq(auditEvents.commandId, transition.commandId))).resolves.toHaveLength(1);
+      await expect(testDb.select().from(commandReceipts)
+        .where(eq(commandReceipts.commandId, transition.commandId))).resolves.toMatchObject([
+        {state: 'completed'}
+      ]);
     });
 
     it('completes duplicate packet content as an audited conflict', async () => {
