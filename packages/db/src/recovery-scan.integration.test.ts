@@ -4,12 +4,19 @@ import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
+  actors,
+  agentProfiles,
+  agentRuns,
+  auditEvents,
+  canonicalEvents,
   createDatabase,
   createPostgresRecoveryScanProducer,
   incomingEvents,
   projectTrackerRepositoryScopes,
   scheduledJobs,
-  secretRefs
+  secretRefs,
+  taskPackets,
+  workItems
 } from './index';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 
@@ -25,7 +32,13 @@ const ids = {
   secret: randomUUID(),
   expired: randomUUID(),
   telegramExpired: randomUUID(),
-  active: randomUUID()
+  active: randomUUID(),
+  actor: randomUUID(),
+  profile: randomUUID(),
+  workItem: randomUUID(),
+  event: randomUUID(),
+  packet: randomUUID(),
+  run: randomUUID()
 };
 
 describePostgres('PostgreSQL recovery scan producer', () => {
@@ -68,6 +81,77 @@ describePostgres('PostgreSQL recovery scan producer', () => {
       repositoryName: 'MSA',
       repositoryExternalId: 'github:repository:1278325372',
       credentialRefId: ids.secret
+    });
+    await db.insert(actors).values({
+      id: ids.actor,
+      workspaceId: ids.workspace,
+      type: 'human',
+      role: 'workspace_admin',
+      displayName: 'Recovery scan approver',
+      authMode: 'user'
+    });
+    await db.insert(agentProfiles).values({
+      id: ids.profile,
+      workspaceId: ids.workspace,
+      actorId: ids.actor,
+      runtimeId: 'coding-runner',
+      runtimeProfile: 'codex-safe'
+    });
+    await db.insert(workItems).values({
+      id: ids.workItem,
+      projectId: ids.project,
+      title: 'Recover an expired runner lease',
+      status: 'ready'
+    });
+    await db.insert(canonicalEvents).values({
+      id: ids.event,
+      workspaceId: ids.workspace,
+      projectId: ids.project,
+      eventType: 'test.seed',
+      aggregateType: 'work_item',
+      aggregateId: ids.workItem,
+      deduplicationKey: `recovery-scan-${randomUUID()}`,
+      payload: {},
+      occurredAt: now
+    });
+    await db.insert(taskPackets).values({
+      id: ids.packet,
+      projectId: ids.project,
+      workItemId: ids.workItem,
+      workItemVersion: 1,
+      goal: 'Recover an expired runner lease',
+      acceptanceCriteria: [],
+      inScope: [],
+      outOfScope: [],
+      relevantLinks: [],
+      relevantFiles: [],
+      allowedTools: [],
+      forbiddenSurfaces: [],
+      dataPolicy: {},
+      timeboxMinutes: 15,
+      expectedOutputSchema: {},
+      reviewerActorId: ids.actor,
+      approverActorId: ids.actor,
+      runtimeProfile: 'codex-safe',
+      authMode: 'agent',
+      secretRefId: ids.secret,
+      createdFromEventId: ids.event,
+      contentHash: 'd'.repeat(64),
+      createdByActorId: ids.actor
+    });
+    await db.insert(agentRuns).values({
+      id: ids.run,
+      taskPacketId: ids.packet,
+      agentProfileId: ids.profile,
+      confirmedPacketHash: 'e'.repeat(64),
+      baseCommit: 'a'.repeat(40),
+      status: 'running',
+      idempotencyKey: `recovery-scan-${ids.run}`,
+      runnerId: 'expired-runner',
+      leaseTokenHash: 'f'.repeat(64),
+      leaseExpiresAt: new Date(now.getTime() - 1_000),
+      attempt: 1,
+      version: 3
     });
     await testPool.query(
       `INSERT INTO incoming_events (
@@ -143,5 +227,59 @@ describePostgres('PostgreSQL recovery scan producer', () => {
       eq(scheduledJobs.projectId, ids.project),
       eq(scheduledJobs.name, 'recovery_scan')
     ))).toHaveLength(1);
+  });
+
+  it('fails an expired runner lease once without requeueing it', async () => {
+    const sentBefore = sent.length;
+    const producer = createPostgresRecoveryScanProducer(db, {
+      async send(_name, data) {
+        sent.push((data as {eventId: string}).eventId);
+        return randomUUID();
+      }
+    }, {now: () => now});
+
+    await Promise.all([producer.run(), producer.run()]);
+
+    expect(sent).toHaveLength(sentBefore);
+    expect(await db.select({
+      status: agentRuns.status,
+      completedAt: agentRuns.completedAt,
+      failureCode: agentRuns.failureCode,
+      runnerId: agentRuns.runnerId,
+      leaseTokenHash: agentRuns.leaseTokenHash,
+      leaseExpiresAt: agentRuns.leaseExpiresAt,
+      attempt: agentRuns.attempt,
+      version: agentRuns.version
+    }).from(agentRuns).where(eq(agentRuns.id, ids.run))).toEqual([{
+      status: 'failed',
+      completedAt: now,
+      failureCode: 'runner_lease_expired',
+      runnerId: null,
+      leaseTokenHash: null,
+      leaseExpiresAt: null,
+      attempt: 1,
+      version: 4
+    }]);
+    expect(await db.select({
+      commandId: auditEvents.commandId,
+      action: auditEvents.action,
+      targetType: auditEvents.targetType,
+      targetId: auditEvents.targetId,
+      outcome: auditEvents.outcome,
+      reasonCode: auditEvents.reasonCode,
+      expectedVersion: auditEvents.expectedVersion,
+      resultVersion: auditEvents.resultVersion,
+      correlationId: auditEvents.correlationId
+    }).from(auditEvents).where(eq(auditEvents.targetId, ids.run))).toEqual([{
+      commandId: `runner.lease_expired:${ids.run}:attempt:1`,
+      action: 'runner.lease_expired',
+      targetType: 'agent_run',
+      targetId: ids.run,
+      outcome: 'failed',
+      reasonCode: 'runner_lease_expired',
+      expectedVersion: 3,
+      resultVersion: 4,
+      correlationId: `runner.lease_expired:${ids.run}:attempt:1`
+    }]);
   });
 });

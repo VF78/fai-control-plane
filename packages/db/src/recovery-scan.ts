@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import {and, asc, eq, inArray, lte, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {fromDrizzle} from 'pg-boss';
@@ -13,6 +14,7 @@ const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const recoveryScanName = 'recovery_scan';
 const maximumIncomingEventAttempts = 5;
 const recoveryExhaustedCode = 'incoming_event_recovery_exhausted';
+const runnerLeaseExpiredCode = 'runner_lease_expired';
 
 type Condition = Readonly<{
   severity: 'red';
@@ -159,6 +161,64 @@ export const createPostgresRecoveryScanProducer = (
                 {db: fromDrizzle(tx, sql)}
               );
               if (jobId === null) throw new Error('Incoming event recovery enqueue failed.');
+            }
+
+            const expiredRuns = await tx.select({
+              id: schema.agentRuns.id,
+              workspaceId: schema.projects.workspaceId,
+              actorId: schema.actors.id,
+              attempt: schema.agentRuns.attempt,
+              version: schema.agentRuns.version
+            }).from(schema.agentRuns)
+              .innerJoin(schema.taskPackets, eq(schema.taskPackets.id, schema.agentRuns.taskPacketId))
+              .innerJoin(schema.projects, eq(schema.projects.id, schema.taskPackets.projectId))
+              .innerJoin(schema.agentProfiles, eq(schema.agentProfiles.id, schema.agentRuns.agentProfileId))
+              .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
+              .where(and(
+                eq(schema.taskPackets.projectId, projectId),
+                eq(schema.agentRuns.status, 'running'),
+                lte(schema.agentRuns.leaseExpiresAt, runAt)
+              )).orderBy(asc(schema.agentRuns.id)).for('update', {
+                of: schema.agentRuns,
+                skipLocked: true
+              });
+
+            for (const run of expiredRuns) {
+              const [terminalized] = await tx.update(schema.agentRuns).set({
+                status: 'failed',
+                completedAt: runAt,
+                failureCode: runnerLeaseExpiredCode,
+                runnerId: null,
+                leaseTokenHash: null,
+                leaseExpiresAt: null,
+                version: sql`${schema.agentRuns.version} + 1`,
+                updatedAt: runAt
+              }).where(and(
+                eq(schema.agentRuns.id, run.id),
+                eq(schema.agentRuns.status, 'running'),
+                eq(schema.agentRuns.version, run.version),
+                lte(schema.agentRuns.leaseExpiresAt, runAt)
+              )).returning({version: schema.agentRuns.version});
+              if (terminalized === undefined) continue;
+              const auditIdentity = `runner.lease_expired:${run.id}:attempt:${run.attempt}`;
+              await tx.insert(schema.auditEvents).values({
+                id: randomUUID(),
+                workspaceId: run.workspaceId,
+                projectId,
+                actorId: run.actorId,
+                commandId: auditIdentity,
+                actionCategory: 'write',
+                action: 'runner.lease_expired',
+                targetType: 'agent_run',
+                targetId: run.id,
+                outcome: 'failed',
+                reasonCode: runnerLeaseExpiredCode,
+                expectedVersion: run.version,
+                resultVersion: terminalized.version,
+                correlationId: auditIdentity,
+                occurredAt: runAt,
+                metadata: {}
+              });
             }
 
             const exhausted = await tx.select({id: schema.incomingEvents.id})
