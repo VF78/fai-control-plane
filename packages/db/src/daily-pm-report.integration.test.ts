@@ -6,6 +6,8 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
   createDatabase,
   createPostgresDailyPmReportProducer,
+  createPostgresQaIntakeProducer,
+  canonicalEvents,
   dailyPmReports,
   projectTrackerRepositoryScopes,
   scheduledJobs,
@@ -190,5 +192,30 @@ describePostgres('PostgreSQL daily PM report producer', () => {
         }
       }
     });
+  });
+
+  it('persists one no-work QA intake result without enqueuing a handoff', async () => {
+    const producer = createPostgresQaIntakeProducer(db, {now: () => now});
+
+    await producer.run();
+    await producer.run();
+
+    expect(await db.select().from(canonicalEvents).where(and(
+      eq(canonicalEvents.projectId, ids.msa),
+      eq(canonicalEvents.eventType, 'qa_intake.no_work.v1')
+    ))).toEqual([expect.objectContaining({
+      payload: {
+        schemaVersion: 1,
+        runKey: '2026-07-26',
+        outcome: 'no_work',
+        observedAt: '2026-07-26T09:00:00.000Z',
+        workItems: []
+      }
+    })]);
+    expect(await db.select().from(scheduledJobs).where(and(
+      eq(scheduledJobs.projectId, ids.msa),
+      eq(scheduledJobs.name, 'qa_intake'),
+      eq(scheduledJobs.status, 'active')
+    ))).toHaveLength(1);
   });
 });

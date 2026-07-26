@@ -12,11 +12,13 @@ import {
   createPostgresTelegramStatusPublisher,
   createPostgresTelegramStatusResponseOutbox,
   createPostgresPmReportCheckProducer,
+  createPostgresQaIntakeProducer,
   createPostgresRecoveryScanProducer,
   DAILY_PM_REPORT_QUEUE,
   HEALTHCHECK_QUEUE,
   INCOMING_EVENT_QUEUE,
   PM_REPORT_CHECK_QUEUE,
+  QA_INTAKE_QUEUE,
   RECOVERY_SCAN_QUEUE
 } from '@fai-control-plane/db/runtime';
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
@@ -33,6 +35,7 @@ import {configureHealthcheckQueue} from './healthcheck-queue';
 import {configureRecoveryScanQueue} from './recovery-scan-queue';
 import {configureDailyPmReportQueue} from './daily-pm-report-queue';
 import {configurePmReportCheckQueue} from './pm-report-check-queue';
+import {configureQaIntakeQueue} from './qa-intake-queue';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
@@ -137,6 +140,7 @@ const healthcheckProducer = createPostgresHealthcheckProducer(db);
 const recoveryScanProducer = createPostgresRecoveryScanProducer(db, boss);
 const dailyPmReportProducer = createPostgresDailyPmReportProducer(db);
 const pmReportCheckProducer = createPostgresPmReportCheckProducer(db);
+const qaIntakeProducer = createPostgresQaIntakeProducer(db);
 let telegramStatusResponder: Readonly<{prepare(eventId: string): Promise<'prepared' | 'skipped'>}> | undefined;
 let telegramStatusPublisher: Readonly<{publishAvailable(): Promise<'published' | 'failed' | 'idle'>}> | undefined;
 if (telegramStatusResponseEnabled) {
@@ -212,6 +216,7 @@ await configureHealthcheckQueue(boss);
 await configureRecoveryScanQueue(boss);
 await configureDailyPmReportQueue(boss);
 await configurePmReportCheckQueue(boss);
+await configureQaIntakeQueue(boss);
 await boss.work(INCOMING_EVENT_QUEUE, async ([job]) => {
   if (job === undefined) return;
   const result = await incomingEventConsumer.consume(job.data);
@@ -225,6 +230,7 @@ await boss.work(HEALTHCHECK_QUEUE, async () => healthcheckProducer.run());
 await boss.work(RECOVERY_SCAN_QUEUE, async () => recoveryScanProducer.run());
 await boss.work(DAILY_PM_REPORT_QUEUE, async () => dailyPmReportProducer.run());
 await boss.work(PM_REPORT_CHECK_QUEUE, async () => pmReportCheckProducer.run());
+await boss.work(QA_INTAKE_QUEUE, async () => qaIntakeProducer.run());
 await recoveryScanProducer.run();
 if (telegramStatusPublisher !== undefined) {
   let publishing = false;

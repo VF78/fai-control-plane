@@ -44,6 +44,11 @@ export {
   PM_REPORT_CHECK_QUEUE,
   pmReportCheckCron
 } from './pm-report-check';
+export {
+  createPostgresQaIntakeProducer,
+  QA_INTAKE_QUEUE,
+  qaIntakeCron
+} from './qa-intake';
 export {createPostgresRunnerClaimStore} from './runner-claim';
 export {createPostgresProjectShareStore} from './project-share';
 
