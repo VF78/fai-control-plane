@@ -116,7 +116,8 @@ try {
         ? {mode}
         : {mode, expectedPreviousExternalVersion: scope.lastInboundVersion ?? ''})
     });
-    console.info(`${scope.projectSlug}: ${mode} ${result.status}`);
+    const resultCode = 'code' in result ? ` (${result.code})` : '';
+    console.info(`${scope.projectSlug}: ${mode} ${result.status}${resultCode}`);
     if (result.status === 'denied' || result.status === 'failed' || result.status === 'conflict') {
       failed = true;
     }

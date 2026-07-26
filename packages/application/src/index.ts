@@ -249,6 +249,12 @@ const boundedSnapshotIdentifier = (value: unknown, maximumLength: number): strin
     ? value
     : null;
 
+const boundedSnapshotString = (value: unknown, maximumLength: number): string | null =>
+  typeof value === 'string' && value.length > 0 && value.length <= maximumLength &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+    ? value
+    : null;
+
 const dataObjectWithAllowedKeys = (
   value: unknown,
   requiredKeys: readonly string[],
@@ -292,7 +298,7 @@ const snapshotCredentialRef = (value: unknown): OpaqueSecretRef | null => {
   const record = dataObjectWithAllowedKeys(value, ['provider', 'reference', 'scope']);
   if (record === null || !isDenseArray(record.scope) || record.scope.length > 32) return null;
   const provider = boundedSnapshotIdentifier(record.provider, 64);
-  const reference = boundedSnapshotIdentifier(record.reference, 512);
+  const reference = boundedSnapshotString(record.reference, 512);
   const scope = record.scope.map((entry) => boundedSnapshotIdentifier(entry, 255));
   return provider === null || reference === null || scope.some((entry) => entry === null)
     ? null
@@ -355,7 +361,9 @@ const validateTrackerRepositorySnapshotOrchestrationInput = (
   ) return null;
   if (base.mode === 'bootstrap') {
     if (base.expectedPreviousExternalVersion !== undefined) return null;
-    const pullRequestBindings = snapshotPullRequestBindings(base.pullRequestBindings);
+    const pullRequestBindings = base.pullRequestBindings === undefined
+      ? []
+      : snapshotPullRequestBindings(base.pullRequestBindings);
     return pullRequestBindings === null ? null : {
       actor: actor as TrustedActorContext, workspaceId, projectId, operationId, correlationId,
       expectedProvider, repository, credentialRef, mode: 'bootstrap', pullRequestBindings

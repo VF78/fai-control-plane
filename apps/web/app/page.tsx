@@ -13,6 +13,9 @@ export const dynamic = 'force-dynamic';
 const statuses = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance'] as const;
 const urgency = ['in_dev', 'qa', 'acceptance', 'ready', 'backlog'];
 const statusLabel = (status: string) => status.replace('_', ' ');
+const syncLabel = (value: Date | null) => value === null
+  ? 'Never synced'
+  : `Synced ${value.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
 type WorkItemRow = {
   id: string;
@@ -70,7 +73,6 @@ async function loadProjects() {
         .orderBy(desc(dashboardSnapshots.capturedAt)),
       db.select({
         projectId: trackerSnapshotOperations.projectId,
-        version: trackerSnapshotOperations.snapshotExternalVersion,
         createdAt: trackerSnapshotOperations.createdAt
       }).from(trackerSnapshotOperations)
         .where(inArray(trackerSnapshotOperations.projectId, projectIds))
@@ -88,7 +90,9 @@ async function loadProjects() {
     return configuredProjects.map((project) => ({
       ...project,
       health: snapshots.find((snapshot) => snapshot.projectId === project.id)?.health ?? 'unknown',
-      snapshotVersion: operations.find((operation) => operation.projectId === project.id)?.version ?? null,
+      snapshotCapturedAt: operations.find(
+        (operation) => operation.projectId === project.id
+      )?.createdAt ?? null,
       items: activeItems.filter((item) => item.projectId === project.id)
     }));
   } finally {
@@ -178,7 +182,7 @@ function ControlSurface({projects: projectData}: {
             <div className="signal-row" key={project.id}>
               <strong>{project.name}</strong>
               <span className={`health ${project.health}`}>Health: {project.health}</span>
-              <span>Snapshot: {project.snapshotVersion ?? 'none'}</span>
+              <span>{syncLabel(project.snapshotCapturedAt)}</span>
             </div>
           ))}
         </div>
