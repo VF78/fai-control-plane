@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 
 export async function POST(
   request: Request,
-  {params}: {params: Promise<{packetId: string}>}
+  {params}: {params: Promise<{id: string}>}
 ): Promise<Response> {
-  return confirmTaskPacketCommand(request, (await params).packetId);
+  return confirmTaskPacketCommand(request, (await params).id);
 }

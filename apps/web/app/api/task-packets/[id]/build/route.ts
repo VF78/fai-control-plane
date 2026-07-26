@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(
   request: Request,
-  {params}: {params: Promise<{workItemId: string}>}
+  {params}: {params: Promise<{id: string}>}
 ): Promise<Response> {
-  return createCodingTaskPacketCommand(request, (await params).workItemId);
+  return createCodingTaskPacketCommand(request, (await params).id);
 }
