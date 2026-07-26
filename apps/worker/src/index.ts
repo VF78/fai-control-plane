@@ -8,8 +8,10 @@ import {
   createPostgresHealthcheckProducer,
   createPostgresGitHubProjectStatusPublisher,
   createPostgresIncomingEventProcessor,
+  createPostgresRecoveryScanProducer,
   HEALTHCHECK_QUEUE,
-  INCOMING_EVENT_QUEUE
+  INCOMING_EVENT_QUEUE,
+  RECOVERY_SCAN_QUEUE
 } from '@fai-control-plane/db/runtime';
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
 import {createGitHubProjectStatusWriteAdapter} from '@fai-control-plane/integrations/runtime';
@@ -19,6 +21,7 @@ import {
 } from '@fai-control-plane/observability';
 import {configureIncomingEventQueue} from './incoming-event-queue';
 import {configureHealthcheckQueue} from './healthcheck-queue';
+import {configureRecoveryScanQueue} from './recovery-scan-queue';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
@@ -65,6 +68,7 @@ const incomingEventConsumer = createIncomingEventQueueConsumer({
   processor: createPostgresIncomingEventProcessor(db)
 });
 const healthcheckProducer = createPostgresHealthcheckProducer(db);
+const recoveryScanProducer = createPostgresRecoveryScanProducer(db, boss);
 let statusPublisherTimer: NodeJS.Timeout | undefined;
 
 const server = createServer((request, response) => {
@@ -101,11 +105,14 @@ server.listen(port, '0.0.0.0');
 await boss.start();
 await configureIncomingEventQueue(boss, INCOMING_EVENT_QUEUE);
 await configureHealthcheckQueue(boss);
+await configureRecoveryScanQueue(boss);
 await boss.work(INCOMING_EVENT_QUEUE, async ([job]) => {
   if (job === undefined) return;
   return incomingEventConsumer.consume(job.data);
 });
 await boss.work(HEALTHCHECK_QUEUE, async () => healthcheckProducer.run());
+await boss.work(RECOVERY_SCAN_QUEUE, async () => recoveryScanProducer.run());
+await recoveryScanProducer.run();
 if (writebackEnabled) {
   const appId = process.env.GITHUB_APP_ID;
   const privateKeyPath = process.env.GITHUB_APP_PRIVATE_KEY_FILE;

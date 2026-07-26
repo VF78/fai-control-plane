@@ -21,8 +21,14 @@ export {
 } from './incoming-event-consumer';
 export {
   createPostgresIncomingEventInbox,
-  INCOMING_EVENT_QUEUE
+  INCOMING_EVENT_QUEUE,
+  type PgBossTransactionalSender
 } from './incoming-event-inbox';
+export {
+  createPostgresRecoveryScanProducer,
+  RECOVERY_SCAN_QUEUE,
+  recoveryScanCron
+} from './recovery-scan';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});
