@@ -80,8 +80,10 @@ export interface ArtifactStore {
 export {
   CodexRuntimeInputError,
   createCodexAgentRuntime,
+  readCodexStructuredSummary,
   type CodexAgentRuntimeOptions,
   type CodexProcessEnvironment,
+  type CodexStructuredSummary,
   type ProcessExecutionRequest,
   type ProcessExecutionResult,
   type ProcessExecutor
@@ -106,3 +108,12 @@ export {
   type LocalAgentRunReceipt,
   type LocalAgentRunResult
 } from './agent-run-orchestrator';
+
+export {
+  runWorkstationRunnerFromEnvironment,
+  runWorkstationRunnerOnce,
+  type WorkstationRunnerClientOptions,
+  type WorkstationRunnerEnvironment,
+  type WorkstationRunnerFromEnvironmentResult,
+  type WorkstationRunnerOnceResult
+} from './workstation-runner';

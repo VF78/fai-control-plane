@@ -1,6 +1,7 @@
+import {constants} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {lstat, mkdir, readFile, realpath, writeFile} from 'node:fs/promises';
+import {lstat, mkdir, open, readFile, realpath, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import type {
   AgentRuntime,
@@ -337,7 +338,7 @@ const ensureSummaryTargetAbsent = async (summaryPath: string): Promise<void> => 
   inputError('summary_target_exists');
 };
 
-type StructuredSummary = Readonly<{
+export type CodexStructuredSummary = Readonly<{
   status: 'completed' | 'blocked';
   summary: string;
   changedFiles: readonly string[];
@@ -368,7 +369,7 @@ const isStringArray = (
   value.length <= maxItems &&
   value.every((entry) => isBoundedString(entry, 1, maxLength));
 
-const isStructuredSummary = (value: unknown): value is StructuredSummary => {
+const isStructuredSummary = (value: unknown): value is CodexStructuredSummary => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const summary = value as Record<string, unknown>;
   if (
@@ -402,19 +403,31 @@ const isStructuredSummary = (value: unknown): value is StructuredSummary => {
   });
 };
 
-const readStructuredSummary = async (
+export const readCodexStructuredSummary = async (
   summaryPath: string
-): Promise<Readonly<{sha256: string; sizeBytes: number}>> => {
-  const stats = await lstat(summaryPath);
-  if (
-    !stats.isFile() ||
-    stats.isSymbolicLink() ||
-    stats.size === 0 ||
-    stats.size > MAX_SUMMARY_BYTES
-  ) {
-    throw new Error('invalid_summary');
+): Promise<Readonly<{
+  summary: CodexStructuredSummary;
+  sha256: string;
+  sizeBytes: number;
+}>> => {
+  const file = await open(
+    summaryPath,
+    constants.O_RDONLY | constants.O_NOFOLLOW
+  );
+  let body: Buffer;
+  try {
+    const before = await file.stat();
+    if (!before.isFile() || before.size === 0 || before.size > MAX_SUMMARY_BYTES) {
+      throw new Error('invalid_summary');
+    }
+    body = await file.readFile();
+    const after = await file.stat();
+    if (after.size !== before.size || body.byteLength !== after.size) {
+      throw new Error('invalid_summary');
+    }
+  } finally {
+    await file.close();
   }
-  const body = await readFile(summaryPath);
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.toString('utf8'));
@@ -422,7 +435,11 @@ const readStructuredSummary = async (
     throw new Error('invalid_summary');
   }
   if (!isStructuredSummary(parsed)) throw new Error('invalid_summary');
-  return {sha256: sha256(body), sizeBytes: body.byteLength};
+  return {
+    summary: parsed,
+    sha256: sha256(body),
+    sizeBytes: body.byteLength
+  };
 };
 
 type OutputAccumulator = Readonly<{
@@ -669,7 +686,7 @@ export const createCodexAgentRuntime = (
       }
 
       try {
-        const summary = await readStructuredSummary(summaryPath);
+        const summary = await readCodexStructuredSummary(summaryPath);
         return {
           ...base,
           status: 'succeeded',

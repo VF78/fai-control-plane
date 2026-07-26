@@ -103,6 +103,26 @@ GitHub synchronization and runner execution are disabled by default. Enabling
 either requires explicit local configuration and must not put secret values in
 PostgreSQL.
 
+### Workstation Runner
+
+`pnpm runner:once` performs one claim poll and exits. It prints only
+`disabled`, `idle`, or `completed`; it never prints bearer tokens, prompts, or
+artifact paths. It remains disabled until
+`LOCAL_WORKSTATION_RUNNER_ENABLED=true`.
+
+When enabled, set `LOCAL_WORKSTATION_RUNNER_BASE_URL`,
+`LOCAL_WORKSTATION_RUNNER_REPOSITORY` (`owner/name`),
+`LOCAL_WORKSTATION_RUNNER_REPOSITORY_ROOT`,
+`LOCAL_WORKSTATION_RUNNER_WORKTREE_ROOT`,
+`LOCAL_WORKSTATION_RUNNER_ARTIFACT_ROOT`, and
+`LOCAL_WORKSTATION_RUNNER_CODEX_HOME`. Set exactly one of
+`LOCAL_WORKSTATION_RUNNER_TOKEN` or
+`LOCAL_WORKSTATION_RUNNER_TOKEN_FILE`; use an operator-owned `0600` file for
+the latter. Use an HTTPS base URL except for loopback local development
+(`localhost`, `127.0.0.1`, or `::1`). The server transport's workspace, project, and repository
+allowlists remain authoritative; the workstation also rejects claims for a
+repository other than its configured value.
+
 ### Operator authentication
 
 `AUTH_ENABLED=false` is the default local-development bypass. When it is
