@@ -9,6 +9,11 @@ export {
 } from './github-project-status-writeback';
 export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
 export {
+  createPostgresHealthcheckProducer,
+  HEALTHCHECK_QUEUE,
+  healthcheckCron
+} from './healthcheck';
+export {
   createPostgresTrackerRepositoryReadScopeAuthorizer
 } from './tracker-repository-read-authorizer';
 export {

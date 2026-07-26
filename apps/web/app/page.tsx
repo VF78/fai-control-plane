@@ -181,6 +181,9 @@ async function loadProjects() {
       }
     }
     const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
+    const projectsWithWritebackSignal = new Set(signals.flatMap((signal) =>
+      signal.code === 'github_status_writeback_failed' ? [signal.projectId] : []
+    ));
     const auditEvidence = (workItemId: string | null, fallback: string): string => {
       if (workItemId === null) return fallback;
       const audit = auditByWorkItem.get(workItemId);
@@ -212,6 +215,7 @@ async function loadProjects() {
       }),
       ...failedOutbox.flatMap((event): AttentionQueueItem[] => {
         if (event.projectId === null) return [];
+        if (projectsWithWritebackSignal.has(event.projectId)) return [];
         const project = projectById.get(event.projectId);
         if (project === undefined) return [];
         const workItemId = outboxWorkItemId(event.payload);

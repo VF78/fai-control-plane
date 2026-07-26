@@ -5,8 +5,10 @@ import {PgBoss} from 'pg-boss';
 import {createIncomingEventQueueConsumer} from '@fai-control-plane/application';
 import {
   createDatabase,
+  createPostgresHealthcheckProducer,
   createPostgresGitHubProjectStatusPublisher,
   createPostgresIncomingEventProcessor,
+  HEALTHCHECK_QUEUE,
   INCOMING_EVENT_QUEUE
 } from '@fai-control-plane/db/runtime';
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
@@ -16,6 +18,7 @@ import {
   stopTelemetry
 } from '@fai-control-plane/observability';
 import {configureIncomingEventQueue} from './incoming-event-queue';
+import {configureHealthcheckQueue} from './healthcheck-queue';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
@@ -61,6 +64,7 @@ const {db, pool} = createDatabase(databaseUrl);
 const incomingEventConsumer = createIncomingEventQueueConsumer({
   processor: createPostgresIncomingEventProcessor(db)
 });
+const healthcheckProducer = createPostgresHealthcheckProducer(db);
 let statusPublisherTimer: NodeJS.Timeout | undefined;
 
 const server = createServer((request, response) => {
@@ -96,10 +100,12 @@ const server = createServer((request, response) => {
 server.listen(port, '0.0.0.0');
 await boss.start();
 await configureIncomingEventQueue(boss, INCOMING_EVENT_QUEUE);
+await configureHealthcheckQueue(boss);
 await boss.work(INCOMING_EVENT_QUEUE, async ([job]) => {
   if (job === undefined) return;
   return incomingEventConsumer.consume(job.data);
 });
+await boss.work(HEALTHCHECK_QUEUE, async () => healthcheckProducer.run());
 if (writebackEnabled) {
   const appId = process.env.GITHUB_APP_ID;
   const privateKeyPath = process.env.GITHUB_APP_PRIVATE_KEY_FILE;
