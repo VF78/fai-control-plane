@@ -24,7 +24,8 @@ import {
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
 import {
   createGitHubProjectStatusWriteAdapter,
-  createTelegramChatAdapter
+  createTelegramChatAdapter,
+  githubProjectsOAuthScope
 } from '@fai-control-plane/integrations/runtime';
 import {
   startTelemetry,
@@ -41,8 +42,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
 const writebackEnabled = process.env.GITHUB_STATUS_WRITEBACK_ENABLED === 'true';
 const telegramStatusResponseEnabled = process.env.TELEGRAM_STATUS_RESPONSE_ENABLED === 'true';
-const writebackSecretPurpose = 'github_project_status_write_private_key';
-const writebackSecretScope = Object.freeze(['github:project:status:write']);
+const writebackSecretPurpose = 'github_project_status_write_oauth_token';
 const telegramIdentitySecretScope = Object.freeze(['telegram:identity:keying']);
 const telegramBotSecretScope = Object.freeze(['telegram:bot:send']);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -89,9 +89,9 @@ const createWritebackFileSecretsProvider = (
     }
     const value = await readFile(allowedReference.reference, 'utf8');
     if (value.length === 0 || value.length > 65_536 || value.includes('\0')) {
-      throw new Error('GitHub App private key file is invalid.');
+      throw new Error('GitHub Projects OAuth token file is invalid.');
     }
-    return {value};
+    return {value: value.trimEnd()};
   }
 });
 
@@ -256,32 +256,19 @@ if (telegramStatusPublisher !== undefined) {
   }, 1_000);
 }
 if (writebackEnabled) {
-  const appId = process.env.GITHUB_APP_ID;
-  const privateKeyPath = process.env.GITHUB_APP_PRIVATE_KEY_FILE;
-  const msaInstallationId = process.env.GITHUB_MSA_INSTALLATION_ID;
-  const asconInstallationId = process.env.GITHUB_ASCON_INSTALLATION_ID;
-  if (
-    appId === undefined || !/^[1-9][0-9]{0,19}$/.test(appId) ||
-    privateKeyPath === undefined || !isAbsolute(privateKeyPath) ||
-    msaInstallationId === undefined || !/^[1-9][0-9]{0,19}$/.test(msaInstallationId) ||
-    asconInstallationId === undefined || !/^[1-9][0-9]{0,19}$/.test(asconInstallationId)
-  ) {
+  const tokenPath = process.env.GITHUB_PROJECTS_OAUTH_TOKEN_FILE;
+  if (tokenPath === undefined || !isAbsolute(tokenPath)) {
     throw new Error('GitHub status write-back configuration is invalid.');
   }
   const credentialRef: OpaqueSecretRef = {
     provider: 'file',
-    reference: privateKeyPath,
-    scope: writebackSecretScope
+    reference: tokenPath,
+    scope: githubProjectsOAuthScope
   };
   const publisher = createPostgresGitHubProjectStatusPublisher(
     db,
     createGitHubProjectStatusWriteAdapter({
-      appId,
-      secretsProvider: createWritebackFileSecretsProvider(credentialRef),
-      installationIds: {
-        'VF78/MSA': msaInstallationId,
-        'VF78/ascon': asconInstallationId
-      }
+      secretsProvider: createWritebackFileSecretsProvider(credentialRef)
     }),
     credentialRef
   );

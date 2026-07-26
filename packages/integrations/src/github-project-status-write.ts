@@ -1,4 +1,3 @@
-import {createSign} from 'node:crypto';
 import type {
   SecretsProvider,
   TrackerAdapter,
@@ -17,17 +16,19 @@ type GitHubFetch = (
   }>
 ) => Promise<Response>;
 
-type InstallationIds = Readonly<{
-  'VF78/MSA': string;
-  'VF78/ascon': string;
-}>;
-
 type AdapterFailure = 'identity_denied' | 'retryable';
 
 const githubApi = 'https://api.github.com';
 const userAgent = 'fai-control-plane-status-writeback/0.1';
-const secretPurpose = 'github_project_status_write_private_key';
+const secretPurpose = 'github_project_status_write_oauth_token';
 const requestTimeoutMs = 10_000;
+const githubProjectsOwnerId = 75837222;
+const allowedProjectNodeIds = new Set([
+  'PVT_kwHOBIUvJs4Bbefq',
+  'PVT_kwHOBIUvJs4Bbi0Q'
+]);
+
+export const githubProjectsOAuthScope = Object.freeze(['project']);
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -47,21 +48,6 @@ const optionFor = (
     ([, status]) => status === input.status
   );
   return option === undefined ? null : {fullName: scope.fullName, optionId: option[0]};
-};
-
-const appJwt = (appId: string, privateKey: string, now: Date): string => {
-  const encoded = (value: unknown): string =>
-    Buffer.from(JSON.stringify(value)).toString('base64url');
-  const issuedAt = Math.floor(now.getTime() / 1_000) - 60;
-  const unsigned = `${encoded({alg: 'RS256', typ: 'JWT'})}.${encoded({
-    iat: issuedAt,
-    exp: issuedAt + 540,
-    iss: appId
-  })}`;
-  const signer = createSign('RSA-SHA256');
-  signer.update(unsigned);
-  signer.end();
-  return `${unsigned}.${signer.sign(privateKey).toString('base64url')}`;
 };
 
 const headers = (token: string): Readonly<Record<string, string>> => ({
@@ -94,36 +80,17 @@ const fetchRequest = async (
   }
 };
 
-const installationToken = async (
-  fetch: GitHubFetch,
-  appId: string,
-  privateKey: string,
-  installationId: string,
-  now: () => Date
-): Promise<Readonly<{status: 'ok'; token: string}> | Readonly<{status: AdapterFailure}>> => {
-  let jwt: string;
-  try {
-    jwt = appJwt(appId, privateKey, now());
-  } catch {
-    return {status: 'identity_denied'};
-  }
-  const response = await fetchRequest(
-    fetch,
-    `${githubApi}/app/installations/${installationId}/access_tokens`,
-    {method: 'POST', headers: headers(jwt), body: '{}'}
-  );
-  if (response.status !== 'ok') return response;
-  const body = object(await response.response.json());
-  return body === null || typeof body.token !== 'string' || body.token.length === 0
-    ? {status: 'identity_denied'}
-    : {status: 'ok', token: body.token};
-};
-
 const itemFieldQuery = `query ProjectStatusItem($itemId: ID!) {
   node(id: $itemId) {
     ... on ProjectV2Item {
       id
-      project { id }
+      project {
+        id
+        owner {
+          ... on User { databaseId }
+          ... on Organization { databaseId }
+        }
+      }
       fieldValues(first: 100) {
         nodes {
           ... on ProjectV2ItemFieldSingleSelectValue {
@@ -168,9 +135,12 @@ const observedOption = (
 ): Readonly<{status: 'observed'; optionId: string | null}> | Readonly<{status: 'identity_denied'}> => {
   const item = object(data.node);
   const project = item === null ? null : object(item.project);
+  const owner = project === null ? null : object(project.owner);
   if (
     item === null || project === null || item.id !== input.target.projectItemExternalId ||
-    project.id !== input.target.projectExternalId
+    project.id !== input.target.projectExternalId ||
+    !allowedProjectNodeIds.has(project.id as string) ||
+    owner === null || owner.databaseId !== githubProjectsOwnerId
   ) return {status: 'identity_denied'};
   const fieldValues = object(item.fieldValues);
   const nodes = fieldValues === null || !Array.isArray(fieldValues.nodes)
@@ -192,36 +162,33 @@ const observedOption = (
 };
 
 export const createGitHubProjectStatusWriteAdapter = (input: Readonly<{
-  appId: string;
-  installationIds: InstallationIds;
   secretsProvider: SecretsProvider;
   fetch?: GitHubFetch;
-  now?: () => Date;
 }>): Pick<TrackerAdapter, 'transitionWorkItem'> => {
   const fetch = input.fetch ?? ((url, init) => globalThis.fetch(url, init));
-  const now = input.now ?? (() => new Date());
   return {
     async transitionWorkItem(command): Promise<TrackerWorkItemTransitionResult> {
       const target = optionFor(command);
-      const installationId = target === null ? undefined : input.installationIds[target.fullName];
       if (
-        !/^[1-9][0-9]{0,19}$/.test(input.appId) || target === null ||
-        installationId === undefined || !/^[1-9][0-9]{0,19}$/.test(installationId)
+        target === null || !allowedProjectNodeIds.has(command.target.projectExternalId) ||
+        command.credentialRef.scope.length !== githubProjectsOAuthScope.length ||
+        command.credentialRef.scope.some((scope, index) => scope !== githubProjectsOAuthScope[index])
       ) {
         return {status: 'identity_denied'};
       }
-      let privateKey: string;
+      let token: string;
       try {
-        ({value: privateKey} = await input.secretsProvider.resolve(
+        ({value: token} = await input.secretsProvider.resolve(
           command.credentialRef,
           secretPurpose
         ));
       } catch {
         return {status: 'identity_denied'};
       }
-      const token = await installationToken(fetch, input.appId, privateKey, installationId, now);
-      if (token.status !== 'ok') return token;
-      const before = await graphql(fetch, token.token, itemFieldQuery, {
+      if (token.length === 0 || token.length > 65_536 || token.includes('\0')) {
+        return {status: 'identity_denied'};
+      }
+      const before = await graphql(fetch, token, itemFieldQuery, {
         itemId: command.target.projectItemExternalId
       });
       if (before.status !== 'ok') return before;
@@ -236,7 +203,7 @@ export const createGitHubProjectStatusWriteAdapter = (input: Readonly<{
         }};
       }
       if (observedBefore.optionId !== command.expectedProviderOptionId) return {status: 'stale'};
-      const updated = await graphql(fetch, token.token, updateStatusMutation, {
+      const updated = await graphql(fetch, token, updateStatusMutation, {
         projectId: command.target.projectExternalId,
         itemId: command.target.projectItemExternalId,
         fieldId: command.target.fieldExternalId,
@@ -250,7 +217,7 @@ export const createGitHubProjectStatusWriteAdapter = (input: Readonly<{
         update === null || update.clientMutationId !== command.mutationId ||
         updatedItem === null || updatedItem.id !== command.target.projectItemExternalId
       ) return {status: 'identity_denied'};
-      const after = await graphql(fetch, token.token, itemFieldQuery, {
+      const after = await graphql(fetch, token, itemFieldQuery, {
         itemId: command.target.projectItemExternalId
       });
       if (after.status !== 'ok') return after;

@@ -8,6 +8,7 @@ x-runtime-environment: &runtime-environment
   GITHUB_SYNC_ENABLED: ${GITHUB_SYNC_ENABLED:-false}
   GITHUB_INGRESS_ENABLED: ${GITHUB_INGRESS_ENABLED:-false}
   GITHUB_STATUS_WRITEBACK_ENABLED: ${GITHUB_STATUS_WRITEBACK_ENABLED:-false}
+  GITHUB_PROJECTS_OAUTH_TOKEN_FILE: ${GITHUB_PROJECTS_OAUTH_TOKEN_FILE:-/run/secrets/github-projects-oauth-token}
   GITHUB_APP_ID: ${GITHUB_APP_ID:-}
   GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/github-app-private-key}
   GITHUB_WEBHOOK_SECRET_FILE: ${GITHUB_WEBHOOK_SECRET_FILE:-/run/secrets/github-webhook}
@@ -147,8 +148,8 @@ services:
     volumes:
       - artifacts:/var/lib/fai/artifacts
       - type: bind
-        source: ${GITHUB_APP_PRIVATE_KEY_HOST_FILE:-./infra/compose/secrets/github-app-private-key.disabled}
-        target: ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/github-app-private-key}
+        source: ${GITHUB_PROJECTS_OAUTH_TOKEN_HOST_FILE:-./infra/compose/secrets/github-projects-oauth-token.disabled}
+        target: ${GITHUB_PROJECTS_OAUTH_TOKEN_FILE:-/run/secrets/github-projects-oauth-token}
         read_only: true
       - type: bind
         source: ${TELEGRAM_IDENTITY_SECRET_HOST_FILE:-./infra/compose/secrets/telegram-identity.disabled}
