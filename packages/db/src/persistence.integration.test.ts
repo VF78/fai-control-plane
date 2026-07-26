@@ -507,12 +507,14 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO agent_runs (
-           id, task_packet_id, agent_profile_id, status, idempotency_key, version
-         ) VALUES ($1, $2, $3, 'queued', $4, 1)`,
+           id, task_packet_id, agent_profile_id, base_commit, status,
+           idempotency_key, version
+         ) VALUES ($1, $2, $3, $4, 'queued', $5, 1)`,
         [
           fixture.otherRunId,
           fixture.otherPacketId,
           fixture.otherProfileId,
+          'b'.repeat(40),
           `other-run-${randomUUID()}`
         ]
       );
