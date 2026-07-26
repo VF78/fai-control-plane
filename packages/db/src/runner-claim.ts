@@ -14,8 +14,46 @@ const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const runtimeIdPattern = /^[A-Za-z0-9._:-]{1,128}$/;
+const artifactFilenamePattern = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$/;
 const MAX_LEASE_MS = 2 * 60 * 1_000;
 const MAX_RECEIPT_BYTES = 1_024 * 1_024;
+const WORKSTATION_LOCAL_STORAGE_PROVIDER = 'workstation-local';
+const RECEIPT_ARTIFACT_FILENAME = 'agent-run-receipt.json';
+
+const workstationArtifactStorageKey = (
+  runnerId: string,
+  runId: string,
+  filename: string
+): string => [
+  encodeURIComponent(runnerId),
+  runId,
+  encodeURIComponent(filename)
+].join('/');
+
+const summaryArtifactFromMetadata = (metadata: CanonicalJson):
+  | {name: string; sha256: string; sizeBytes: number}
+  | undefined => {
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+    return undefined;
+  }
+  const summaryArtifact = metadata.summaryArtifact;
+  if (
+    typeof summaryArtifact !== 'object' || summaryArtifact === null ||
+    Array.isArray(summaryArtifact) ||
+    typeof summaryArtifact.name !== 'string' ||
+    !artifactFilenamePattern.test(summaryArtifact.name) ||
+    typeof summaryArtifact.sha256 !== 'string' ||
+    !sha256Pattern.test(summaryArtifact.sha256) ||
+    typeof summaryArtifact.sizeBytes !== 'number' ||
+    !Number.isSafeInteger(summaryArtifact.sizeBytes) ||
+    summaryArtifact.sizeBytes < 1 || summaryArtifact.sizeBytes > MAX_RECEIPT_BYTES
+  ) return undefined;
+  return {
+    name: summaryArtifact.name,
+    sha256: summaryArtifact.sha256,
+    sizeBytes: summaryArtifact.sizeBytes
+  };
+};
 
 const validAuthorization = (input: {
   workspaceId: string;
@@ -419,6 +457,37 @@ export const createPostgresRunnerClaimStore = (
         metadata: input.metadata as Record<string, unknown>,
         completedAt: input.at
       });
+      const summaryArtifact = summaryArtifactFromMetadata(input.metadata);
+      await tx.insert(schema.artifacts).values([
+        {
+          id: randomUUID(),
+          agentRunId: input.runId,
+          kind: 'receipt',
+          storageProvider: WORKSTATION_LOCAL_STORAGE_PROVIDER,
+          storageKey: workstationArtifactStorageKey(
+            input.runnerId,
+            input.runId,
+            RECEIPT_ARTIFACT_FILENAME
+          ),
+          contentType: 'application/json',
+          sha256: input.receiptSha256,
+          sizeBytes: input.receiptSizeBytes
+        },
+        ...(summaryArtifact === undefined ? [] : [{
+          id: randomUUID(),
+          agentRunId: input.runId,
+          kind: 'summary',
+          storageProvider: WORKSTATION_LOCAL_STORAGE_PROVIDER,
+          storageKey: workstationArtifactStorageKey(
+            input.runnerId,
+            input.runId,
+            summaryArtifact.name
+          ),
+          contentType: 'application/json',
+          sha256: summaryArtifact.sha256,
+          sizeBytes: summaryArtifact.sizeBytes
+        }])
+      ]);
       const auditIdentity = `runner.complete:${input.runId}:attempt:${input.attempt}`;
       await tx.insert(schema.auditEvents).values({
         id: randomUUID(),

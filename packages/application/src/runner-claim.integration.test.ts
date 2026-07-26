@@ -6,6 +6,7 @@ import {
   agentProfiles,
   agentRunReceipts,
   agentRuns,
+  artifacts,
   auditEvents,
   canonicalEvents,
   createDatabase,
@@ -417,6 +418,35 @@ describePostgres(
         receiptSizeBytes: completionPayload.receiptSizeBytes,
         metadata: completionPayload
       });
+      expect(await testDb
+        .select({
+          kind: artifacts.kind,
+          storageProvider: artifacts.storageProvider,
+          storageKey: artifacts.storageKey,
+          contentType: artifacts.contentType,
+          sha256: artifacts.sha256,
+          sizeBytes: artifacts.sizeBytes
+        })
+        .from(artifacts)
+        .where(eq(artifacts.agentRunId, eligibleRunId))
+        .orderBy(asc(artifacts.kind))).toEqual([
+        {
+          kind: 'receipt',
+          storageProvider: 'workstation-local',
+          storageKey: `coding-runner/${eligibleRunId}/agent-run-receipt.json`,
+          contentType: 'application/json',
+          sha256: completionPayload.receiptSha256,
+          sizeBytes: completionPayload.receiptSizeBytes
+        },
+        {
+          kind: 'summary',
+          storageProvider: 'workstation-local',
+          storageKey: `coding-runner/${eligibleRunId}/codex-summary.json`,
+          contentType: 'application/json',
+          sha256: completionPayload.summaryArtifact!.sha256,
+          sizeBytes: completionPayload.summaryArtifact!.sizeBytes
+        }
+      ]);
       const auditRows = await testDb
         .select({
           workspaceId: auditEvents.workspaceId,
