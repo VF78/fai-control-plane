@@ -674,6 +674,7 @@ describePostgres(
           id: fixture.runId,
           taskPacketId: fixture.packetId,
           agentProfileId: fixture.profileId,
+          confirmedPacketHash: 'a'.repeat(64),
           baseCommit: 'a'.repeat(40),
           status: 'queued',
           idempotencyKey: expect.any(String),
