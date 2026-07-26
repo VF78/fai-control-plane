@@ -848,6 +848,7 @@ export type TrackerPullRequestSnapshot = Readonly<{
   labels: readonly TrackerLabel[];
   assignees: readonly TrackerIdentity[];
   milestone: TrackerMilestone | null;
+  linkedWorkItemExternalIds: readonly string[];
 }>;
 export type TrackerCheckConclusion =
   | 'action_required'
@@ -1070,7 +1071,8 @@ const trackerSnapshotProjectStatus = (
 const trackerSnapshotPullRequest = (value: unknown): TrackerPullRequestSnapshot | null => {
   const record = trackerSnapshotObject(value, [
     'externalId', 'externalVersion', 'url', 'htmlUrl', 'number', 'title', 'state', 'draft',
-    'merged', 'headRef', 'headSha', 'baseRef', 'labels', 'assignees', 'milestone'
+    'merged', 'headRef', 'headSha', 'baseRef', 'labels', 'assignees', 'milestone',
+    'linkedWorkItemExternalIds'
   ]);
   if (
     record === null || (record.state !== 'open' && record.state !== 'closed') ||
@@ -1088,14 +1090,19 @@ const trackerSnapshotPullRequest = (value: unknown): TrackerPullRequestSnapshot 
   const labels = trackerSnapshotLabels(record.labels);
   const assignees = trackerSnapshotAssignees(record.assignees);
   const milestone = trackerSnapshotMilestone(record.milestone);
+  const linkedWorkItemExternalIds = trackerSnapshotArray(record.linkedWorkItemExternalIds, 2)?.map(
+    (entry) => trackerSnapshotIdentifier(entry, 512)
+  );
   return externalId === null || externalVersion === null || url === null || htmlUrl === null ||
     number === null || title === null || headRef === null || headSha === null || baseRef === null ||
-    labels === null || assignees === null || (record.milestone !== null && milestone === null)
+    labels === null || assignees === null || (record.milestone !== null && milestone === null) ||
+    linkedWorkItemExternalIds === undefined || linkedWorkItemExternalIds.some((entry) => entry === null) ||
+    !trackerSnapshotUnique(linkedWorkItemExternalIds as string[], (entry) => entry)
     ? null
     : {
         externalId, externalVersion, url, htmlUrl, number, title, state: record.state,
         draft: record.draft, merged: record.merged, headRef, headSha, baseRef, labels, assignees,
-        milestone
+        milestone, linkedWorkItemExternalIds: linkedWorkItemExternalIds as string[]
       };
 };
 
@@ -1185,10 +1192,6 @@ export const validateTrackerRepositorySnapshot = (
         externalVersion, workItems, pullRequests, checks
       };
 };
-export type TrackerSnapshotPullRequestBinding = Readonly<{
-  pullRequestExternalId: string;
-  workItemExternalId: string;
-}>;
 export type TrackerSnapshotProjectionBase = Readonly<{
   operationId: string;
   workspaceId: string;
@@ -1198,16 +1201,11 @@ export type TrackerSnapshotProjectionBase = Readonly<{
   provider: string;
   snapshot: TrackerRepositorySnapshot;
 }>;
-export type TrackerSnapshotBootstrapInput = TrackerSnapshotProjectionBase &
-  Readonly<{
-    mode: 'bootstrap';
-    pullRequestBindings?: readonly TrackerSnapshotPullRequestBinding[];
-  }>;
+export type TrackerSnapshotBootstrapInput = TrackerSnapshotProjectionBase & Readonly<{mode: 'bootstrap'}>;
 export type TrackerSnapshotSynchronizationInput = TrackerSnapshotProjectionBase &
   Readonly<{
     mode: 'synchronize';
     expectedPreviousExternalVersion: string;
-    pullRequestBindings?: never;
   }>;
 export type TrackerSnapshotProjectionInput =
   | TrackerSnapshotBootstrapInput
@@ -1224,6 +1222,7 @@ export type TrackerSnapshotProjectionResult =
       unknownWorkItemExternalIds: readonly string[];
       unknownProjectStatusWorkItemExternalIds: readonly string[];
       unmappablePullRequestExternalIds: readonly string[];
+      ambiguousPullRequestExternalIds: readonly string[];
       unknownCheckExternalIds: readonly string[];
     }>
   | Readonly<{

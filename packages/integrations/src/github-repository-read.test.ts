@@ -75,12 +75,21 @@ const jsonResponse = (
 const projectItemsPayload = (
   projectNodeId: string,
   nodes: readonly unknown[] = [],
-  pageInfo: Readonly<{hasNextPage: boolean; endCursor?: string | null}> = {hasNextPage: false}
+  pageInfo: Readonly<{hasNextPage: boolean; endCursor?: string | null}> = {hasNextPage: false},
+  repositoryFullName: string = 'VF78/MSA',
+  pullRequests: readonly unknown[] = []
 ) => ({
   data: {
     node: {
       id: projectNodeId,
       items: {nodes, pageInfo}
+    },
+    repository: {
+      nameWithOwner: repositoryFullName,
+      pullRequests: {
+        nodes: pullRequests,
+        pageInfo: {hasNextPage: false}
+      }
     }
   }
 });
@@ -92,8 +101,21 @@ const routeFetch = (
   const url = new URL(input);
   if (url.pathname === '/graphql') {
     if (graphqlPayload !== undefined) return jsonResponse(graphqlPayload(init));
-    const body = JSON.parse(init.body ?? '{}') as {variables?: {projectId?: string}};
-    return jsonResponse(projectItemsPayload(body.variables?.projectId ?? 'missing-project-id'));
+    const body = JSON.parse(init.body ?? '{}') as {variables?: {
+      projectId?: string;
+      repositoryOwner?: string;
+      repositoryName?: string;
+    }};
+    const repositoryFullName = body.variables?.repositoryOwner !== undefined &&
+      body.variables?.repositoryName !== undefined
+      ? `${body.variables.repositoryOwner}/${body.variables.repositoryName}`
+      : 'missing-repository';
+    return jsonResponse(projectItemsPayload(
+      body.variables?.projectId ?? 'missing-project-id',
+      [],
+      {hasNextPage: false},
+      repositoryFullName
+    ));
   }
   return routes(url, init);
 };
@@ -368,7 +390,7 @@ describe('GitHub repository read adapter', () => {
     expect(overLimit.counts()).toEqual({requestCount: 3, checkRequests: 0});
   });
 
-  it('allows request 32 and rejects request 33 within one snapshot', async () => {
+  it('allows request 34 and rejects request 35 within one snapshot', async () => {
     const run = async (exceed: boolean) => {
       let requestCount = 0;
       const fetch = routeFetch((url) => {
@@ -404,6 +426,17 @@ describe('GitHub repository read adapter', () => {
           });
         }
         throw new Error(`Unexpected route ${url.pathname}`);
+      }, (init) => {
+        const body = JSON.parse(init.body ?? '{}') as {
+          variables?: {after?: string | null};
+        };
+        return projectItemsPayload(
+          'PVT_kwHOBIUvJs4Bbefq',
+          [],
+          body.variables?.after === null
+            ? {hasNextPage: true, endCursor: 'project-page-2'}
+            : {hasNextPage: false}
+        );
       });
       return {
         read: readMsa(fetch),
@@ -424,7 +457,7 @@ describe('GitHub repository read adapter', () => {
       code: 'github_request_budget_exceeded',
       message: 'github_request_budget_exceeded'
     });
-    expect(overBudget.count()).toBe(33);
+    expect(overBudget.count()).toBe(32);
   });
 
   it('reads pull requests and their check runs into stable provider-neutral models', async () => {
@@ -449,7 +482,19 @@ describe('GitHub repository read adapter', () => {
         });
       }
       throw new Error(`Unexpected route ${url.pathname}`);
-    });
+    }, () => projectItemsPayload(
+      'PVT_kwHOBIUvJs4Bbefq',
+      [],
+      {hasNextPage: false},
+      'VF78/MSA',
+      [{
+        number: 8,
+        closingIssuesReferences: {
+          nodes: [{databaseId: 7, repository: {nameWithOwner: 'VF78/MSA'}}],
+          pageInfo: {hasNextPage: false}
+        }
+      }]
+    ));
 
     const first = await readMsa(fetch);
     const second = await readMsa(fetch);
@@ -462,7 +507,8 @@ describe('GitHub repository read adapter', () => {
       headRef: 'feature-8',
       headSha: sha(8),
       baseRef: 'main',
-      merged: false
+      merged: false,
+      linkedWorkItemExternalIds: ['github:issue:7']
     })]);
     expect(first.checks).toEqual([expect.objectContaining({
       externalId: 'github:check-run:44',

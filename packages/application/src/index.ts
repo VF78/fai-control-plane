@@ -48,7 +48,6 @@ import {
   type TrackerRepositoryRef,
   type TrackerSnapshotProjectionResult,
   type TrackerSnapshotProjector,
-  type TrackerSnapshotPullRequestBinding,
   type TrackerRepositoryReadScopeAuthorizer,
   type TrustedActorContext,
   type UnitOfWork,
@@ -127,12 +126,10 @@ export type TrackerRepositorySnapshotOrchestrationInput =
   | (TrackerRepositorySnapshotOrchestrationBase & Readonly<{
       mode: 'bootstrap';
       expectedPreviousExternalVersion?: never;
-      pullRequestBindings?: readonly TrackerSnapshotPullRequestBinding[];
     }>)
   | (TrackerRepositorySnapshotOrchestrationBase & Readonly<{
       mode: 'synchronize';
       expectedPreviousExternalVersion: string;
-      pullRequestBindings?: never;
     }>);
 
 export type TrackerRepositorySnapshotOrchestrationResult =
@@ -305,31 +302,9 @@ const snapshotCredentialRef = (value: unknown): OpaqueSecretRef | null => {
     : {provider, reference, scope: scope as string[]};
 };
 
-const snapshotPullRequestBindings = (
-  value: unknown
-): readonly TrackerSnapshotPullRequestBinding[] | null => {
-  if (value === undefined) return [];
-  if (!isDenseArray(value) || value.length > 10_000) return null;
-  const bindings: TrackerSnapshotPullRequestBinding[] = [];
-  const pullRequestExternalIds = new Set<string>();
-  for (const entry of value) {
-    const record = dataObjectWithAllowedKeys(entry, ['pullRequestExternalId', 'workItemExternalId']);
-    if (record === null) return null;
-    const pullRequestExternalId = boundedSnapshotIdentifier(record.pullRequestExternalId, 512);
-    const workItemExternalId = boundedSnapshotIdentifier(record.workItemExternalId, 512);
-    if (
-      pullRequestExternalId === null || workItemExternalId === null ||
-      pullRequestExternalIds.has(pullRequestExternalId)
-    ) return null;
-    pullRequestExternalIds.add(pullRequestExternalId);
-    bindings.push({pullRequestExternalId, workItemExternalId});
-  }
-  return bindings;
-};
-
 type ValidTrackerRepositorySnapshotOrchestrationInput =
   | (TrackerRepositorySnapshotOrchestrationBase &
-      Readonly<{mode: 'bootstrap'; pullRequestBindings: readonly TrackerSnapshotPullRequestBinding[]}>)
+      Readonly<{mode: 'bootstrap'}>)
   | (TrackerRepositorySnapshotOrchestrationBase &
       Readonly<{mode: 'synchronize'; expectedPreviousExternalVersion: string}>);
 
@@ -343,7 +318,7 @@ const validateTrackerRepositorySnapshotOrchestrationInput = (
   const base = dataObjectWithAllowedKeys(
     value,
     baseKeys,
-    ['expectedPreviousExternalVersion', 'pullRequestBindings']
+    ['expectedPreviousExternalVersion']
   );
   if (base === null || (base.mode !== 'bootstrap' && base.mode !== 'synchronize')) return null;
   const actor = base.actor;
@@ -361,16 +336,11 @@ const validateTrackerRepositorySnapshotOrchestrationInput = (
   ) return null;
   if (base.mode === 'bootstrap') {
     if (base.expectedPreviousExternalVersion !== undefined) return null;
-    const pullRequestBindings = base.pullRequestBindings === undefined
-      ? []
-      : snapshotPullRequestBindings(base.pullRequestBindings);
-    if (pullRequestBindings === null) return null;
     return {
       actor: actor as TrustedActorContext, workspaceId, projectId, operationId, correlationId,
-      expectedProvider, repository, credentialRef, mode: 'bootstrap', pullRequestBindings
+      expectedProvider, repository, credentialRef, mode: 'bootstrap'
     };
   }
-  if (base.pullRequestBindings !== undefined) return null;
   const expectedPreviousExternalVersion = boundedSnapshotIdentifier(
     base.expectedPreviousExternalVersion,
     512
@@ -475,8 +445,7 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
             actorId: request.actor.actorId,
             correlationId: request.correlationId,
             provider: request.expectedProvider,
-            snapshot,
-            pullRequestBindings: request.pullRequestBindings
+            snapshot
           })
         : await dependencies.projector.synchronize({
             operationId: request.operationId,

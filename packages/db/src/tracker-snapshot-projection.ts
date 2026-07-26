@@ -32,10 +32,7 @@ const canonical = (value: unknown): string => {
 export const trackerSnapshotProjectionRequestHash = (
   input: TrackerSnapshotProjectionInput
 ): string =>
-  `sha256:${createHash('sha256').update(canonical({
-    ...input,
-    pullRequestBindings: input.pullRequestBindings ?? []
-  })).digest('hex')}`;
+  `sha256:${createHash('sha256').update(canonical(input)).digest('hex')}`;
 
 const issueMetadata = (
   snapshot: TrackerRepositorySnapshot,
@@ -102,10 +99,6 @@ const validateInput = (input: TrackerSnapshotProjectionInput): void => {
       !unique(input.snapshot.pullRequests.map(({externalId}) => externalId)) ||
       !unique(input.snapshot.checks.map(({externalId}) => externalId))) {
     throw new Error('tracker_snapshot_identity_duplicate');
-  }
-  const mappings = input.pullRequestBindings ?? [];
-  if (!unique(mappings.map(({pullRequestExternalId}) => pullRequestExternalId))) {
-    throw new Error('tracker_snapshot_mapping_duplicate');
   }
 };
 
@@ -286,6 +279,7 @@ export const createPostgresTrackerSnapshotProjector = (
                 result.unknownWorkItemExternalIds.length > 0 ||
                 result.unknownProjectStatusWorkItemExternalIds.length > 0 ||
                 result.unmappablePullRequestExternalIds.length > 0 ||
+                result.ambiguousPullRequestExternalIds.length > 0 ||
                 result.unknownCheckExternalIds.length > 0
               )
               ? 'TRACKER_ITEMS_REQUIRE_ACTION'
@@ -491,64 +485,66 @@ export const createPostgresTrackerSnapshotProjector = (
       const rawPullRequestExternalIds = new Set(
         pullRequestBindings.map(({externalId}) => externalId)
       );
-      const pullRequestIds = new Map(
+      const canonicalPullRequestIds = new Map(
         canonicalPullRequestBindings.map(
           (binding) => [binding.externalId, binding.entityId]
         )
       );
-      const requestedMappings = new Map(
-        (input.pullRequestBindings ?? []).map((mapping) => [
-          mapping.pullRequestExternalId,
-          mapping.workItemExternalId
-        ])
-      );
+      const mappedPullRequestIds = new Map<string, string>();
       const unmappablePullRequestExternalIds: string[] = [];
+      const ambiguousPullRequestExternalIds: string[] = [];
       let projectedPullRequests = 0;
 
       for (const pullRequest of input.snapshot.pullRequests) {
-        let prLinkId = pullRequestIds.get(pullRequest.externalId);
+        if (pullRequest.linkedWorkItemExternalIds.length > 1) {
+          ambiguousPullRequestExternalIds.push(pullRequest.externalId);
+          continue;
+        }
+        const mappedWorkItemId = workItemIds.get(
+          pullRequest.linkedWorkItemExternalIds[0] ?? ''
+        );
+        if (mappedWorkItemId === undefined) {
+          unmappablePullRequestExternalIds.push(pullRequest.externalId);
+          continue;
+        }
+        let prLinkId = canonicalPullRequestIds.get(pullRequest.externalId);
         if (
           prLinkId === undefined &&
-          input.mode === 'bootstrap' &&
           !rawPullRequestExternalIds.has(pullRequest.externalId)
         ) {
-          const mappedWorkItemId = workItemIds.get(
-            requestedMappings.get(pullRequest.externalId) ?? ''
-          );
-          if (mappedWorkItemId !== undefined) {
-            prLinkId = randomUUID();
-            await tx.insert(schema.prLinks).values({
-              id: prLinkId,
-              workItemId: mappedWorkItemId,
-              provider: input.provider,
-              repositoryRef:
-                `${input.snapshot.repository.owner}/${input.snapshot.repository.name}`,
-              externalId: pullRequest.externalId,
-              url: pullRequest.url,
-              headRef: pullRequest.headRef,
-              baseRef: pullRequest.baseRef,
-              state: pullRequest.state,
-              draft: pullRequest.draft
-            });
-            await tx.insert(schema.trackerBindings).values({
-              projectId: input.projectId,
-              provider: input.provider,
-              surface: 'pull_request',
-              externalId: pullRequest.externalId,
-              entityType: 'pr_link',
-              entityId: prLinkId,
-              externalVersion: pullRequest.externalVersion,
-              lastInboundVersion: pullRequest.externalVersion,
-              metadata: pullRequestMetadata(input.snapshot, pullRequest)
-            });
-            pullRequestIds.set(pullRequest.externalId, prLinkId);
-          }
+          prLinkId = randomUUID();
+          await tx.insert(schema.prLinks).values({
+            id: prLinkId,
+            workItemId: mappedWorkItemId,
+            provider: input.provider,
+            repositoryRef:
+              `${input.snapshot.repository.owner}/${input.snapshot.repository.name}`,
+            externalId: pullRequest.externalId,
+            url: pullRequest.url,
+            headRef: pullRequest.headRef,
+            baseRef: pullRequest.baseRef,
+            state: pullRequest.state,
+            draft: pullRequest.draft
+          });
+          await tx.insert(schema.trackerBindings).values({
+            projectId: input.projectId,
+            provider: input.provider,
+            surface: 'pull_request',
+            externalId: pullRequest.externalId,
+            entityType: 'pr_link',
+            entityId: prLinkId,
+            externalVersion: pullRequest.externalVersion,
+            lastInboundVersion: pullRequest.externalVersion,
+            metadata: pullRequestMetadata(input.snapshot, pullRequest)
+          });
+          canonicalPullRequestIds.set(pullRequest.externalId, prLinkId);
         }
         if (prLinkId === undefined) {
           unmappablePullRequestExternalIds.push(pullRequest.externalId);
           continue;
         }
         const [updatedPullRequest] = await tx.update(schema.prLinks).set({
+          workItemId: mappedWorkItemId,
           repositoryRef:
             `${input.snapshot.repository.owner}/${input.snapshot.repository.name}`,
           url: pullRequest.url,
@@ -561,7 +557,7 @@ export const createPostgresTrackerSnapshotProjector = (
           .returning({id: schema.prLinks.id});
         if (updatedPullRequest === undefined) {
           unmappablePullRequestExternalIds.push(pullRequest.externalId);
-          pullRequestIds.delete(pullRequest.externalId);
+          canonicalPullRequestIds.delete(pullRequest.externalId);
           continue;
         }
         const [updatedBinding] = await tx.update(schema.trackerBindings).set({
@@ -578,9 +574,10 @@ export const createPostgresTrackerSnapshotProjector = (
         )).returning({id: schema.trackerBindings.id});
         if (updatedBinding === undefined) {
           unmappablePullRequestExternalIds.push(pullRequest.externalId);
-          pullRequestIds.delete(pullRequest.externalId);
+          canonicalPullRequestIds.delete(pullRequest.externalId);
           continue;
         }
+        mappedPullRequestIds.set(pullRequest.externalId, prLinkId);
         projectedPullRequests += 1;
       }
 
@@ -633,7 +630,7 @@ export const createPostgresTrackerSnapshotProjector = (
       let projectedChecks = 0;
 
       for (const check of input.snapshot.checks) {
-        const prLinkId = pullRequestIds.get(check.pullRequestExternalId);
+        const prLinkId = mappedPullRequestIds.get(check.pullRequestExternalId);
         if (prLinkId === undefined) {
           unknownCheckExternalIds.push(check.externalId);
           continue;
@@ -733,6 +730,7 @@ export const createPostgresTrackerSnapshotProjector = (
         unknownWorkItemExternalIds,
         unknownProjectStatusWorkItemExternalIds,
         unmappablePullRequestExternalIds,
+        ambiguousPullRequestExternalIds,
         unknownCheckExternalIds
       };
       await record(result);

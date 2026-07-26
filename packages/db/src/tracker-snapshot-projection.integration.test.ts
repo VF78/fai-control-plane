@@ -46,7 +46,7 @@ const issue = (externalId: string, title = 'Issue title') => ({
   projectStatus: null
 });
 
-const pullRequest = (externalId: string) => ({
+const pullRequest = (externalId: string, linkedWorkItemExternalIds: readonly string[] = []) => ({
   externalId,
   externalVersion: `github:sha256:${externalId}`,
   url: `https://api.github.com/repos/VF78/MSA/pulls/10`,
@@ -61,7 +61,8 @@ const pullRequest = (externalId: string) => ({
   baseRef: 'main',
   labels: [],
   assignees: [],
-  milestone: null
+  milestone: null,
+  linkedWorkItemExternalIds
 });
 
 const check = (externalId: string, pullRequestExternalId: string) => ({
@@ -86,7 +87,7 @@ const snapshot = (
   },
   externalVersion: version,
   workItems: [issue('github:issue:1')],
-  pullRequests: [pullRequest('github:pull_request:10')],
+  pullRequests: [pullRequest('github:pull_request:10', ['github:issue:1'])],
   checks: [check('github:check_run:100', 'github:pull_request:10')],
   ...overrides
 });
@@ -175,13 +176,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       code: 'bootstrap_required'
     });
 
-    const bootstrap = {
-      ...operation(initial),
-      pullRequestBindings: [{
-        pullRequestExternalId: 'github:pull_request:10',
-        workItemExternalId: 'github:issue:1'
-      }]
-    };
+    const bootstrap = operation(initial);
     const applied = await projector.bootstrap(bootstrap);
     expect(applied).toMatchObject({
       status: 'applied',
@@ -190,6 +185,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       projectedChecks: 1,
       unknownWorkItemExternalIds: [],
       unmappablePullRequestExternalIds: [],
+      ambiguousPullRequestExternalIds: [],
       unknownCheckExternalIds: []
     });
     expect(await projector.bootstrap(bootstrap)).toEqual({
@@ -239,7 +235,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
         issue('github:issue:2', 'Unknown issue')
       ],
       pullRequests: [
-        pullRequest('github:pull_request:10'),
+        pullRequest('github:pull_request:10', ['github:issue:1']),
         pullRequest('github:pull_request:11')
       ],
       checks: [
@@ -517,17 +513,13 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
         name: 'Orphans'
       },
       workItems: [issue('test:issue:3001')],
-      pullRequests: [pullRequest('test:pull_request:3010')],
+      pullRequests: [pullRequest('test:pull_request:3010', ['test:issue:3001'])],
       checks: [check('test:check:3100', 'test:pull_request:3010')]
     });
     await projector.bootstrap({
       ...operation(initial),
       projectId,
-      provider: 'test-orphans',
-      pullRequestBindings: [{
-        pullRequestExternalId: 'test:pull_request:3010',
-        workItemExternalId: 'test:issue:3001'
-      }]
+      provider: 'test-orphans'
     });
     const before = await db.select({
       surface: trackerBindings.surface,
@@ -553,7 +545,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
         externalVersion: 'test:issue:3001:2'
       }],
       pullRequests: [{
-        ...pullRequest('test:pull_request:3010'),
+        ...pullRequest('test:pull_request:3010', ['test:issue:3001']),
         externalVersion: 'test:pull_request:3010:2'
       }],
       checks: [{

@@ -25,13 +25,10 @@ const input = () => ({
 });
 
 describe('tracker snapshot projection request hash', () => {
-  it('is deterministic and treats omitted mappings as an empty mapping set', () => {
+  it('is deterministic for the same provider snapshot', () => {
     const value = input();
     expect(trackerSnapshotProjectionRequestHash(value)).toBe(
-      trackerSnapshotProjectionRequestHash({
-        ...value,
-        pullRequestBindings: []
-      })
+      trackerSnapshotProjectionRequestHash(value)
     );
   });
 

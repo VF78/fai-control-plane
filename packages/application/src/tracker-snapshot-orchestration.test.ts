@@ -34,7 +34,8 @@ const pullRequest = () => ({
   url: 'https://provider.test/pulls/1', htmlUrl: 'https://provider.test/pulls/1',
   number: 1, title: 'Pull request', state: 'open' as const, draft: false, merged: false,
   headRef: 'feature', headSha: 'a'.repeat(40), baseRef: 'main', labels: [],
-  assignees: [{externalId: 'provider:user:1', login: 'maintainer'}], milestone: null
+  assignees: [{externalId: 'provider:user:1', login: 'maintainer'}], milestone: null,
+  linkedWorkItemExternalIds: []
 });
 const check = () => ({
   externalId: 'provider:check:1', externalVersion: 'provider:check:v1',
@@ -52,6 +53,7 @@ const applied = {
   unknownWorkItemExternalIds: [],
   unknownProjectStatusWorkItemExternalIds: [],
   unmappablePullRequestExternalIds: [],
+  ambiguousPullRequestExternalIds: [],
   unknownCheckExternalIds: []
 };
 
@@ -80,7 +82,6 @@ const input = (overrides: Record<string, unknown> = {}) => ({
   repository: {owner: 'owner', repository: 'repository'},
   credentialRef,
   mode: 'bootstrap' as const,
-  pullRequestBindings: [{pullRequestExternalId: 'provider:pr:1', workItemExternalId: 'provider:issue:1'}],
   ...overrides
 });
 
@@ -156,7 +157,7 @@ describe('tracker repository snapshot orchestration', () => {
       status: 'failed', code: 'invalid_input'
     });
     await expect(service.orchestrate(input({
-      mode: 'synchronize', pullRequestBindings: [], expectedPreviousExternalVersion: 'provider:v1'
+      mode: 'synchronize', expectedPreviousExternalVersion: 'provider:v1', pullRequestBindings: []
     }))).resolves.toEqual({status: 'failed', code: 'invalid_input'});
     expect(fake.calls).toEqual([]);
   });
@@ -194,8 +195,7 @@ describe('tracker repository snapshot orchestration', () => {
       actorId: request.actor.actorId,
       correlationId: request.correlationId,
       provider: request.expectedProvider,
-      snapshot,
-      pullRequestBindings: request.pullRequestBindings
+      snapshot
     }));
     expect(fake.synchronize).not.toHaveBeenCalled();
   });
@@ -205,8 +205,7 @@ describe('tracker repository snapshot orchestration', () => {
     const service = createTrackerRepositorySnapshotOrchestrationService(fake);
     const request = input({
       mode: 'synchronize',
-      expectedPreviousExternalVersion: 'provider:snapshot:v0',
-      pullRequestBindings: undefined
+      expectedPreviousExternalVersion: 'provider:snapshot:v0'
     });
 
     await expect(service.orchestrate(request)).resolves.toEqual(applied);
