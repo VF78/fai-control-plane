@@ -5,7 +5,7 @@ import {
   type CommandError,
   type CommandReceipt
 } from '@fai-control-plane/domain';
-import {and, asc, eq, inArray, isNull} from 'drizzle-orm';
+import {and, eq, inArray, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -71,13 +71,15 @@ const configuredActorProfile = async (db: Database, workspaceId: string) => {
     eq(schema.actors.id, schema.agentProfiles.actorId)
   ).where(and(
     eq(schema.agentProfiles.workspaceId, workspaceId),
+    eq(schema.agentProfiles.runtimeId, 'pm-qa-bot'),
+    eq(schema.agentProfiles.runtimeProfile, 'read_safe'),
     eq(schema.agentProfiles.enabled, true),
     eq(schema.actors.workspaceId, workspaceId),
     eq(schema.actors.type, 'human'),
     eq(schema.actors.authMode, 'user'),
     inArray(schema.actors.role, ['delivery_lead', 'workspace_admin']),
     isNull(schema.actors.disabledAt)
-  )).orderBy(asc(schema.actors.id), asc(schema.agentProfiles.id));
+  ));
   return profiles.find((profile) => profile.capabilities[requiredCapability] === true);
 };
 

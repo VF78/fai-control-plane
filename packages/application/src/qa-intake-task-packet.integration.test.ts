@@ -84,14 +84,24 @@ describePostgres('QA intake task packet consumer', () => {
       authMode: 'user',
       capabilities: {'write:control_plane:development': true}
     });
-    await db.insert(agentProfiles).values({
-      workspaceId,
-      actorId,
-      runtimeId: 'qa-intake',
-      runtimeProfile: 'qa-read-only',
-      allowedTools: [],
-      forbiddenSurfaces: ['github_write', 'telegram', 'runner', 'production']
-    });
+    await db.insert(agentProfiles).values([
+      {
+        workspaceId,
+        actorId,
+        runtimeId: 'other-enabled-profile',
+        runtimeProfile: 'other-profile',
+        allowedTools: [],
+        forbiddenSurfaces: ['github_write', 'runner', 'production']
+      },
+      {
+        workspaceId,
+        actorId,
+        runtimeId: 'pm-qa-bot',
+        runtimeProfile: 'read_safe',
+        allowedTools: [],
+        forbiddenSurfaces: ['external_message', 'github_write', 'runner', 'production']
+      }
+    ]);
     await db.insert(workItems).values([
       {id: workItemId, projectId, title: 'Review me', status: 'qa', version: 3},
       {id: otherWorkItemId, projectId, title: 'Review me too', status: 'qa', version: 4}
@@ -154,7 +164,7 @@ describePostgres('QA intake task packet consumer', () => {
         workItemId,
         workItemVersion: 3,
         createdFromEventId: reviewEventId,
-        runtimeProfile: 'qa-read-only',
+        runtimeProfile: 'read_safe',
         secretRefId: null,
         reviewerActorId: actorId,
         approverActorId: actorId,
@@ -165,7 +175,7 @@ describePostgres('QA intake task packet consumer', () => {
         workItemId: otherWorkItemId,
         workItemVersion: 4,
         createdFromEventId: reviewEventId,
-        runtimeProfile: 'qa-read-only',
+        runtimeProfile: 'read_safe',
         secretRefId: null,
         reviewerActorId: actorId,
         approverActorId: actorId,

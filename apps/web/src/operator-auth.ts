@@ -114,20 +114,20 @@ const readSecret = async (
 const parseAllowedUserIds = (value: string): ReadonlySet<number> => {
   const entries = value.split(',');
   if (entries.length !== 2) {
-    throw new Error('GITHUB_LOGIN_ALLOWED_USER_IDS must contain exactly two numeric IDs');
+    throw new Error('FCP_OPERATOR_GITHUB_USER_IDS must contain exactly two numeric IDs');
   }
   const ids = entries.map((entry) => {
     if (!/^[1-9][0-9]{0,15}$/.test(entry)) {
-      throw new Error('GITHUB_LOGIN_ALLOWED_USER_IDS must use canonical positive decimal IDs');
+      throw new Error('FCP_OPERATOR_GITHUB_USER_IDS must use canonical positive decimal IDs');
     }
     const id = Number(entry);
     if (!Number.isSafeInteger(id)) {
-      throw new Error('GITHUB_LOGIN_ALLOWED_USER_IDS contains an unsafe numeric ID');
+      throw new Error('FCP_OPERATOR_GITHUB_USER_IDS contains an unsafe numeric ID');
     }
     return id;
   });
   if (new Set(ids).size !== 2) {
-    throw new Error('GITHUB_LOGIN_ALLOWED_USER_IDS must not contain duplicates');
+    throw new Error('FCP_OPERATOR_GITHUB_USER_IDS must not contain duplicates');
   }
   return new Set(ids);
 };
@@ -181,7 +181,7 @@ export async function loadOperatorAuthConfig(
     sessionSecret,
     publicBaseUrl,
     callbackUrl,
-    allowedUserIds: parseAllowedUserIds(requiredValue(env, 'GITHUB_LOGIN_ALLOWED_USER_IDS')),
+    allowedUserIds: parseAllowedUserIds(requiredValue(env, 'FCP_OPERATOR_GITHUB_USER_IDS')),
     secureCookies: publicBaseUrl.protocol === 'https:'
   });
 }

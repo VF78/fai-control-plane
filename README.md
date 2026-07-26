@@ -46,11 +46,13 @@ Browser -> Next.js BFF -> domain -> PostgreSQL
                                                +-> isolated runner -> artifacts
 ```
 
-GitHub is a bidirectional `TrackerAdapter`, not a second control-plane database.
-Inbound webhooks and polling results enter a durable inbox. Domain changes that
-must be reflected in GitHub enter a durable outbox. The field-level authority
-matrix in [ADR 0002](docs/adr/0002-postgresql-authority-and-tracker-sync.md)
-prevents ambiguous last-writer-wins behavior.
+GitHub is an inbound reconciliation `TrackerAdapter`, not a second
+control-plane database. Webhooks and polling results enter a durable inbox and
+mapped observations transition canonical PostgreSQL state; the WorkItem UI is
+display-only. The GitHub writer remains deferred and disabled in this week-one
+local foundation. The field-level authority matrix in
+[ADR 0002](docs/adr/0002-postgresql-authority-and-tracker-sync.md) prevents
+ambiguous last-writer-wins behavior when an explicit writer is later approved.
 
 ## Local Bootstrap
 
@@ -76,14 +78,17 @@ docker compose up --build -d
 ### Populate the panel from GitHub
 
 This local tracker-snapshot bootstrap is separate from login OAuth. Set
-`FCP_BOOTSTRAP_HUMAN_SUBJECT` to a stable local human subject, mount the GitHub
-App private key at `GITHUB_APP_PRIVATE_KEY_FILE`, and mount the exact-scope
+`FCP_OPERATOR_GITHUB_USER_IDS` to exactly two unique canonical positive GitHub
+user IDs and set `FCP_BOOTSTRAP_HUMAN_SUBJECT` to `github:user:<id>` for one of
+them. The seed idempotently creates both human user Actors, keeps the bootstrap
+operator as `workspace_admin`, and attaches its enabled `pm-qa-bot` /
+`read_safe` profile for QA intake packet creation. Mount the GitHub App private
+key at `GITHUB_APP_PRIVATE_KEY_FILE`, and mount the exact-scope
 Projects OAuth token at `GITHUB_PROJECTS_OAUTH_TOKEN_FILE`. The App mints an
 installation token in memory for repository, issue, pull-request, check, and
 PR-link reads. The OAuth token is used only for the two allowlisted ProjectV2
-status snapshots. The seed stores only the OAuth file reference and creates the
-bootstrap human actor with the minimal repository-read and tracker-projection
-grants.
+status snapshots. The seed stores only the OAuth file reference; it never stores
+tokens or personal credentials.
 
 ```bash
 pnpm db:migrate
@@ -103,9 +108,10 @@ node apps/web/.next/standalone/apps/web/server.js
 node apps/worker/dist/index.js
 ```
 
-GitHub synchronization and runner execution are disabled by default. Enabling
-either requires explicit local configuration and must not put secret values in
-PostgreSQL.
+GitHub inbound reconciliation and runner execution are disabled by default.
+The WorkItem UI remains display-only, and the GitHub writer is deferred and
+disabled; enabling any integration requires explicit local configuration and
+must not put secret values in PostgreSQL.
 
 ### Workstation Runner
 
@@ -144,10 +150,12 @@ An enabled runtime fails closed unless all of the following are exact:
 - `GITHUB_LOGIN_CLIENT_ID` identifies the login-only OAuth application;
 - `GITHUB_LOGIN_CLIENT_SECRET_FILE` and `AUTH_SESSION_SECRET_FILE` are absolute
   mounted secret-file paths;
-- `GITHUB_LOGIN_ALLOWED_USER_IDS` contains exactly two unique, canonical
+- `FCP_OPERATOR_GITHUB_USER_IDS` contains exactly two unique, canonical
   positive decimal GitHub user IDs, assigned operationally to Vladimir and
   Vitaliy;
 - `FCP_WORKSPACE_ID` is the canonical workspace UUID;
+- `FCP_BOOTSTRAP_HUMAN_SUBJECT` is exactly `github:user:<id>` for one of those
+  two IDs;
 - each allowlisted ID has one enabled Actor in that workspace with
   `type=human`, `auth_mode=user`, and `external_subject=github:user:<id>`.
 
@@ -265,7 +273,7 @@ docker compose down --volumes
 ## Decisions
 
 - [ADR 0001: Modular monolith with a worker](docs/adr/0001-modular-monolith-and-worker.md)
-- [ADR 0002: PostgreSQL authority and bidirectional tracker sync](docs/adr/0002-postgresql-authority-and-tracker-sync.md)
+- [ADR 0002: PostgreSQL authority and inbound tracker reconciliation](docs/adr/0002-postgresql-authority-and-tracker-sync.md)
 - [ADR 0003: Authentication and secret handling](docs/adr/0003-authentication-and-secrets.md)
 - [ADR 0004: Runner isolation and artifacts](docs/adr/0004-runner-isolation-and-artifacts.md)
 - [ADR 0005: Telemetry, retention, and public sharing](docs/adr/0005-telemetry-retention-and-public-sharing.md)
