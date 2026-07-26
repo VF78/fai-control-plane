@@ -15,7 +15,9 @@ const input = () => ({
       externalId: 'github:repository:1278325372',
       externalVersion: 'github:sha256:repository',
       owner: 'VF78',
-      name: 'MSA'
+      name: 'MSA',
+      defaultBranch: 'main',
+      headSha: 'a'.repeat(40)
     },
     externalVersion: 'github:sha256:snapshot',
     workItems: [],

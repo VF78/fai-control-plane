@@ -17,7 +17,7 @@ const credentialRef: OpaqueSecretRef = {
 const snapshot: TrackerRepositorySnapshot = {
   repository: {
     externalId: 'provider:repository:1', externalVersion: 'provider:repository:v1',
-    owner: 'owner', name: 'repository'
+    owner: 'owner', name: 'repository', defaultBranch: 'main', headSha: 'a'.repeat(40)
   },
   externalVersion: 'provider:snapshot:v1', workItems: [], pullRequests: [], checks: []
 };

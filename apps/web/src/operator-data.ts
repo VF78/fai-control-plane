@@ -15,7 +15,6 @@ import {
   projectShareWorkItems,
   projectTrackerRepositoryScopes,
   projects,
-  prLinks,
   riskSignals,
   scheduledJobs,
   secretRefs,
@@ -311,7 +310,7 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
   const projectIds = configuredProjects.map(({id}) => id);
   const workspaceIds = [...new Set(configuredProjects.map(({workspaceId}) => workspaceId))];
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
-  const [runs, approvals, packetRows, profiles, prBindings] = await Promise.all([
+  const [runs, approvals, packetRows, profiles, repositoryBindings] = await Promise.all([
     db.select({
       id: agentRuns.id, projectId: taskPackets.projectId, workItem: workItems.title, agent: actors.displayName,
       status: agentRuns.status, runtimeProfile: taskPackets.runtimeProfile, packetGoal: taskPackets.goal,
@@ -346,15 +345,14 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       .from(agentProfiles).innerJoin(actors, eq(actors.id, agentProfiles.actorId))
       .where(and(inArray(agentProfiles.workspaceId, workspaceIds), eq(agentProfiles.enabled, true), isNull(actors.disabledAt)))
       .orderBy(agentProfiles.runtimeProfile, agentProfiles.runtimeId),
-    db.select({projectId: trackerBindings.projectId, workItemId: prLinks.workItemId, metadata: trackerBindings.metadata})
-      .from(prLinks).innerJoin(workItems, eq(workItems.id, prLinks.workItemId))
-      .innerJoin(trackerBindings, and(
-        eq(trackerBindings.projectId, workItems.projectId),
+    db.select({projectId: trackerBindings.projectId, metadata: trackerBindings.metadata})
+      .from(trackerBindings)
+      .where(and(
+        inArray(trackerBindings.projectId, projectIds),
         eq(trackerBindings.provider, 'github'),
-        eq(trackerBindings.surface, 'pull_request'),
-        eq(trackerBindings.entityType, 'pr_link'),
-        eq(trackerBindings.entityId, prLinks.id)
-      )).where(inArray(trackerBindings.projectId, projectIds))
+        eq(trackerBindings.surface, 'repository'),
+        eq(trackerBindings.entityType, 'project')
+      ))
   ]);
   const actorIds = [...new Set(packetRows.flatMap((packet) => [packet.reviewerActorId, packet.approverActorId]))];
   const packetActors = actorIds.length === 0 ? [] : await db.select({id: actors.id, name: actors.displayName})
@@ -376,17 +374,15 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
     const key = profileKey(profile.workspaceId, profile.runtimeProfile);
     profilesByWorkspaceRuntime.set(key, [...(profilesByWorkspaceRuntime.get(key) ?? []), profile]);
   }
-  const bindingsByWorkItem = new Map<string, typeof prBindings>();
-  for (const binding of prBindings) {
-    const key = `${binding.projectId}:${binding.workItemId}`;
-    bindingsByWorkItem.set(key, [...(bindingsByWorkItem.get(key) ?? []), binding]);
-  }
-  const baseCommitReason = (bindings: readonly typeof prBindings[number][]): string | null => {
-    if (bindings.length === 0) return 'No linked PR head SHA is recorded.';
-    if (bindings.length !== 1) return 'More than one linked PR head SHA is recorded.';
-    return typeof bindings[0]!.metadata.headSha === 'string' && /^[0-9a-f]{40}$/.test(bindings[0]!.metadata.headSha)
+  const repositoryBindingByProject = new Map(
+    repositoryBindings.map((binding) => [binding.projectId, binding])
+  );
+  const baseCommitReason = (binding: typeof repositoryBindings[number] | undefined): string | null => {
+    if (binding === undefined) return 'No repository default branch head is recorded.';
+    return typeof binding.metadata.defaultBranch === 'string' && binding.metadata.defaultBranch.length > 0 &&
+      typeof binding.metadata.headSha === 'string' && /^[0-9a-f]{40}$/.test(binding.metadata.headSha)
       ? null
-      : 'The linked PR head SHA is not recorded as a lowercase 40-character commit.';
+      : 'The repository default branch head is not recorded as a lowercase 40-character commit.';
   };
   return {
     runs: runs.flatMap((run) => {
@@ -401,7 +397,7 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       const project = projectById.get(packet.projectId);
       if (project === undefined) return [];
       const eligibleProfiles = profilesByWorkspaceRuntime.get(profileKey(project.workspaceId, packet.runtimeProfile)) ?? [];
-      const baseReason = baseCommitReason(bindingsByWorkItem.get(`${packet.projectId}:${packet.workItemId}`) ?? []);
+      const baseReason = baseCommitReason(repositoryBindingByProject.get(packet.projectId));
       const nonRunnableReason = baseReason ?? (eligibleProfiles.length === 0 ? 'No enabled agent profile matches the packet runtime profile.' : null);
       return [{
         ...packet,

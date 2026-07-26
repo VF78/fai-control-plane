@@ -1089,6 +1089,8 @@ export type TrackerRepositorySnapshot = Readonly<{
     externalVersion: string;
     owner: string;
     name: string;
+    defaultBranch: string;
+    headSha: string;
   }>;
   externalVersion: string;
   workItems: readonly TrackerWorkItemSnapshot[];
@@ -1102,6 +1104,7 @@ export type TrackerRepositorySnapshotValidationInput = Readonly<{
 }>;
 
 const trackerSnapshotIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const trackerSnapshotGitShaPattern = /^[0-9a-f]{40}$/;
 const trackerCheckConclusions = [
   'action_required', 'cancelled', 'failure', 'neutral', 'skipped', 'stale', 'success', 'timed_out'
 ] as const satisfies readonly TrackerCheckConclusion[];
@@ -1370,12 +1373,17 @@ export const validateTrackerRepositorySnapshot = (
   ]);
   if (snapshot === null) return null;
   const repository = trackerSnapshotObject(snapshot.repository, [
-    'externalId', 'externalVersion', 'owner', 'name'
+    'externalId', 'externalVersion', 'owner', 'name', 'defaultBranch', 'headSha'
   ]);
   if (repository === null) return null;
   const externalId = trackerSnapshotIdentifier(repository.externalId, 512);
   const repositoryExternalVersion = trackerSnapshotIdentifier(repository.externalVersion, 512);
   const externalVersion = trackerSnapshotIdentifier(snapshot.externalVersion, 512);
+  const defaultBranch = trackerSnapshotString(repository.defaultBranch, 255);
+  const headSha = typeof repository.headSha === 'string' &&
+    trackerSnapshotGitShaPattern.test(repository.headSha)
+    ? repository.headSha
+    : null;
   const workItems = trackerSnapshotCollection(
     snapshot.workItems,
     trackerSnapshotWorkItem,
@@ -1388,13 +1396,15 @@ export const validateTrackerRepositorySnapshot = (
   );
   const checks = trackerSnapshotCollection(snapshot.checks, trackerSnapshotCheck, (check) => check.externalId);
   return externalId === null || repositoryExternalVersion === null || externalVersion === null ||
+    defaultBranch === null || headSha === null ||
     repository.owner !== input.repository.owner || repository.name !== input.repository.repository ||
     externalId !== input.repositoryExternalId || workItems === null || pullRequests === null || checks === null
     ? null
     : {
         repository: {
           externalId, externalVersion: repositoryExternalVersion,
-          owner: input.repository.owner, name: input.repository.repository
+          owner: input.repository.owner, name: input.repository.repository,
+          defaultBranch, headSha
         },
         externalVersion, workItems, pullRequests, checks
       };

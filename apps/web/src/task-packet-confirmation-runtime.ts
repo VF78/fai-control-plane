@@ -9,11 +9,9 @@ import {
   agentRuns,
   createDatabase,
   createPostgresUnitOfWork,
-  prLinks,
   projects,
   taskPackets,
-  trackerBindings,
-  workItems
+  trackerBindings
 } from '@fai-control-plane/db';
 import {createActorContextIssuer, type Capability} from '@fai-control-plane/domain';
 
@@ -28,9 +26,10 @@ type PacketLookup = Readonly<{
   baseCommit: string;
 }>;
 
-const baseCommitFrom = (bindings: readonly Readonly<{metadata: Record<string, unknown>}>[]): string | null => {
-  if (bindings.length !== 1) return null;
-  const headSha = bindings[0]!.metadata.headSha;
+const baseCommitFrom = (metadata: Record<string, unknown> | undefined): string | null => {
+  if (metadata === undefined || typeof metadata.defaultBranch !== 'string' ||
+    metadata.defaultBranch.length === 0) return null;
+  const headSha = metadata.headSha;
   return typeof headSha === 'string' && shaPattern.test(headSha) ? headSha : null;
 };
 
@@ -89,21 +88,17 @@ const createRuntime = (db: Database): TaskPacketConfirmationRuntime => ({
       .limit(1);
     if (profile === undefined) return null;
 
-    const bindings = await db.select({metadata: trackerBindings.metadata})
-      .from(prLinks)
-      .innerJoin(workItems, and(
-        eq(workItems.id, prLinks.workItemId),
-        eq(workItems.projectId, packet.projectId)
-      ))
-      .innerJoin(trackerBindings, and(
+    const [repositoryBinding] = await db.select({metadata: trackerBindings.metadata})
+      .from(trackerBindings)
+      .where(and(
         eq(trackerBindings.projectId, packet.projectId),
         eq(trackerBindings.provider, 'github'),
-        eq(trackerBindings.surface, 'pull_request'),
-        eq(trackerBindings.entityType, 'pr_link'),
-        eq(trackerBindings.entityId, prLinks.id)
+        eq(trackerBindings.surface, 'repository'),
+        eq(trackerBindings.entityType, 'project'),
+        eq(trackerBindings.entityId, packet.projectId)
       ))
-      .where(eq(prLinks.workItemId, packet.workItemId));
-    const baseCommit = baseCommitFrom(bindings);
+      .limit(1);
+    const baseCommit = baseCommitFrom(repositoryBinding?.metadata);
     return baseCommit === null ? null : {
       packetId: packet.packetId,
       contentHash: packet.contentHash,

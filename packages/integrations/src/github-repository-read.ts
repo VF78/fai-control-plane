@@ -24,7 +24,7 @@ import {
 const pageSize = 100;
 const maximumPages = 10;
 const maximumProjectItemPages = 2;
-const maximumSnapshotRequests = 36;
+const maximumSnapshotRequests = 37;
 const maximumOpenPullRequestCheckFanout = 16;
 const projectCredentialPurpose = 'github_project_snapshot_read_oauth_token';
 const appPrivateKeyPurpose = 'github_app_installation_token_mint';
@@ -754,9 +754,20 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
       owner: input.repository.owner,
       name: input.repository.repository
     };
+    const defaultBranch = boundedString(repositoryPayload.default_branch, 255);
+    const defaultBranchCommit = object(await repositoryClient.get(
+      `/repos/${fullName}/commits/${encodeURIComponent(defaultBranch)}`
+    ));
+    const defaultBranchHeadSha = headSha(defaultBranchCommit.sha);
     const repositoryModel = {
       ...repository,
-      externalVersion: stableVersion(repository)
+      defaultBranch,
+      headSha: defaultBranchHeadSha,
+      externalVersion: stableVersion({
+        ...repository,
+        defaultBranch,
+        headSha: defaultBranchHeadSha
+      })
     };
 
     const issuePayloads = await repositoryClient.pages(

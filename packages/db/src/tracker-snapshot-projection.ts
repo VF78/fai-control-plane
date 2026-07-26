@@ -76,7 +76,9 @@ const repositoryMetadata = (
   snapshot: TrackerRepositorySnapshot
 ): Record<string, unknown> => ({
   owner: snapshot.repository.owner,
-  name: snapshot.repository.name
+  name: snapshot.repository.name,
+  defaultBranch: snapshot.repository.defaultBranch,
+  headSha: snapshot.repository.headSha
 });
 
 const projectStatusIdentityMatches = (

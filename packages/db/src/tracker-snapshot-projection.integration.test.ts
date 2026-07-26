@@ -83,15 +83,22 @@ const check = (externalId: string, pullRequestExternalId: string) => ({
   detailsUrl: 'https://github.com/VF78/MSA/actions/runs/1'
 });
 
+type SnapshotOverrides = Omit<Partial<TrackerRepositorySnapshot>, 'repository'> & Readonly<{
+  repository?: Partial<TrackerRepositorySnapshot['repository']>;
+}>;
+
 const snapshot = (
   version: string,
-  overrides: Partial<TrackerRepositorySnapshot> = {}
+  {repository: repositoryOverrides, ...overrides}: SnapshotOverrides = {}
 ): TrackerRepositorySnapshot => ({
   repository: {
     externalId: 'github:repository:1278325372',
     externalVersion: 'github:sha256:repository',
     owner: 'VF78',
-    name: 'MSA'
+    name: 'MSA',
+    defaultBranch: 'main',
+    headSha: 'b'.repeat(40),
+    ...repositoryOverrides
   },
   externalVersion: version,
   workItems: [issue('github:issue:1')],
@@ -759,7 +766,9 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       .toBe('github:repository:1278325372');
     expect(repositoryBinding?.metadata).toMatchObject({
       owner: 'VF78-renamed',
-      name: 'MSA-renamed'
+      name: 'MSA-renamed',
+      defaultBranch: 'main',
+      headSha: 'b'.repeat(40)
     });
     const [pullRequestRow] = await db.select().from(prLinks)
       .where(eq(prLinks.externalId, 'github:pull_request:10'));

@@ -22,6 +22,7 @@ const repositoryPayload = (
   id: fullName === 'VF78/MSA' ? 1278325372 : 1279114011,
   full_name: fullName,
   owner: {id: 75837222},
+  default_branch: 'main',
   ...overrides
 });
 
@@ -135,6 +136,7 @@ const routeFetch = (
       repositoryFullName
     ));
   }
+  if (url.pathname.endsWith('/commits/main')) return jsonResponse({sha: sha(0)});
   return routes(url, init);
 };
 
@@ -481,7 +483,7 @@ describe('GitHub repository read adapter', () => {
     expect(overLimit.counts()).toEqual({requestCount: 3, checkRequests: 0});
   });
 
-  it('allows request 36 and rejects request 37 within one snapshot', async () => {
+  it('allows request 37 and rejects request 38 within one snapshot', async () => {
     const run = async (exceed: boolean) => {
       let requestCount = 0;
       const fetch = routeFetch((url) => {
@@ -590,6 +592,10 @@ describe('GitHub repository read adapter', () => {
     const first = await readMsa(fetch);
     const second = await readMsa(fetch);
 
+    expect(first.repository).toMatchObject({
+      defaultBranch: 'main',
+      headSha: sha(0)
+    });
     expect(first.pullRequests).toEqual([expect.objectContaining({
       externalId: 'github:pull-request:8',
       externalVersion: expect.stringMatching(/^github:sha256:[0-9a-f]{64}$/),
