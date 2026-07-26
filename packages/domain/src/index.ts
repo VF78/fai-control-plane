@@ -104,6 +104,7 @@ export type RunnerClaimAuthorization = Readonly<{
   runnerId: string;
   projectIds: readonly string[];
   repositories: readonly RunnerRepositoryAuthorization[];
+  runtimeIds: readonly string[];
 }>;
 export type RunnerClaimRecord = Readonly<{
   runId: string;

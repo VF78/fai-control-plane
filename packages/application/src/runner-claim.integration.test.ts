@@ -76,10 +76,10 @@ describePostgres(
       const packetSecretRefId = randomUUID();
       const eligibleProfileId = randomUUID();
       const disabledProfileId = randomUUID();
-      const mismatchedProfileId = randomUUID();
+      const disallowedProfileId = randomUUID();
       const eligibleRunId = randomUUID();
       const disabledRunId = randomUUID();
-      const mismatchedRunId = randomUUID();
+      const disallowedRunId = randomUUID();
       const secretReference = 'file:///customer/webhook-token';
 
       await testDb.insert(workspaces).values({
@@ -147,7 +147,7 @@ describePostgres(
           id: eligibleProfileId,
           workspaceId,
           actorId,
-          runtimeId: 'local-runner',
+          runtimeId: 'coding-runner',
           runtimeProfile: 'codex-safe'
         },
         {
@@ -159,11 +159,11 @@ describePostgres(
           enabled: false
         },
         {
-          id: mismatchedProfileId,
+          id: disallowedProfileId,
           workspaceId,
           actorId,
-          runtimeId: 'mismatched-runner',
-          runtimeProfile: 'different-profile'
+          runtimeId: 'pm-qa-bot-runner',
+          runtimeProfile: 'codex-safe'
         }
       ]);
 
@@ -204,9 +204,9 @@ describePostgres(
         },
         {
           packetId: randomUUID(),
-          runId: mismatchedRunId,
-          profileId: mismatchedProfileId,
-          goal: 'Mismatched profile',
+          runId: disallowedRunId,
+          profileId: disallowedProfileId,
+          goal: 'Disallowed runtime',
           createdAt: new Date(Date.now() - 2_000)
         },
         {
@@ -271,7 +271,8 @@ describePostgres(
         workspaceId,
         runnerId: 'operator-workstation',
         projectIds: [projectId],
-        repositories: [{owner: 'VF78', name: 'fai-control-plane'}]
+        repositories: [{owner: 'VF78', name: 'fai-control-plane'}],
+        runtimeIds: ['coding-runner']
       };
       const claims = await Promise.all([
         service.claim(authorization),
@@ -314,7 +315,7 @@ describePostgres(
         .where(inArray(agentRuns.id, [
           eligibleRunId,
           disabledRunId,
-          mismatchedRunId
+          disallowedRunId
         ]));
       expect(rows.find((row) => row.id === eligibleRunId)).toMatchObject({
         status: 'running',

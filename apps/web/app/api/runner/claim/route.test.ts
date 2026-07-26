@@ -2,6 +2,13 @@ import {createHash} from 'node:crypto';
 import {afterEach, expect, it, vi} from 'vitest';
 
 const token = 'runner-test-token-0123456789abcdef';
+const runtimeConfigurationNames = [
+  'LOCAL_RUNNER_WORKSPACE_ID',
+  'LOCAL_RUNNER_ID',
+  'LOCAL_RUNNER_ALLOWED_PROJECT_IDS',
+  'LOCAL_RUNNER_ALLOWED_REPOSITORIES',
+  'LOCAL_RUNNER_ALLOWED_RUNTIME_IDS'
+] as const;
 
 vi.mock('../../../../src/runner-claim-runtime', async (importOriginal) => {
   const actual = await importOriginal<
@@ -14,7 +21,8 @@ vi.mock('../../../../src/runner-claim-runtime', async (importOriginal) => {
         workspaceId: '00000000-0000-4000-8000-000000000001',
         runnerId: 'test-runner',
         projectIds: ['00000000-0000-4000-8000-000000000002'],
-        repositories: [{owner: 'VF78', name: 'fai-control-plane'}]
+        repositories: [{owner: 'VF78', name: 'fai-control-plane'}],
+        runtimeIds: ['coding-runner']
       },
       tokenHash: createHash('sha256').update(token).digest(),
       service: {
@@ -66,6 +74,41 @@ it('fails closed when disabled and rejects an inexact bearer token', async () =>
     headers: {authorization: `Bearer ${token}`}
   }));
   expect(idle.status).toBe(204);
+});
+
+it('rejects missing or malformed runtime allowlists', async () => {
+  const previous = Object.fromEntries(
+    runtimeConfigurationNames.map((name) => [name, process.env[name]])
+  );
+  Object.assign(process.env, {
+    LOCAL_RUNNER_WORKSPACE_ID: '00000000-0000-4000-8000-000000000001',
+    LOCAL_RUNNER_ID: 'test-runner',
+    LOCAL_RUNNER_ALLOWED_PROJECT_IDS: '00000000-0000-4000-8000-000000000002',
+    LOCAL_RUNNER_ALLOWED_REPOSITORIES: 'VF78/fai-control-plane'
+  });
+  const {getLocalRunnerClaimRuntime} = await vi.importActual<
+    typeof import('../../../../src/runner-claim-runtime')
+  >('../../../../src/runner-claim-runtime');
+  try {
+    delete process.env.LOCAL_RUNNER_ALLOWED_RUNTIME_IDS;
+    await expect(getLocalRunnerClaimRuntime()).rejects.toThrow(
+      'Missing required configuration: LOCAL_RUNNER_ALLOWED_RUNTIME_IDS'
+    );
+
+    process.env.LOCAL_RUNNER_ALLOWED_RUNTIME_IDS = 'coding-runner,,pm-qa-bot-runner';
+    await expect(getLocalRunnerClaimRuntime()).rejects.toThrow(
+      'Invalid list configuration: LOCAL_RUNNER_ALLOWED_RUNTIME_IDS'
+    );
+  } finally {
+    for (const name of runtimeConfigurationNames) {
+      const value = previous[name];
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
 });
 
 it('keeps lease transport disabled by default and denies malformed completion without details', async () => {

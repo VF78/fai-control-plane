@@ -13,6 +13,7 @@ type Database = NodePgDatabase<typeof schema>;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const sha256Pattern = /^[0-9a-f]{64}$/;
+const runtimeIdPattern = /^[A-Za-z0-9._:-]{1,128}$/;
 const MAX_LEASE_MS = 2 * 60 * 1_000;
 const MAX_RECEIPT_BYTES = 1_024 * 1_024;
 
@@ -21,12 +22,15 @@ const validAuthorization = (input: {
   runnerId: string;
   projectIds: readonly string[];
   repositories: readonly {owner: string; name: string}[];
+  runtimeIds: readonly string[];
 }): boolean =>
   uuidPattern.test(input.workspaceId) &&
   input.runnerId.length >= 1 && input.runnerId.length <= 128 &&
   input.projectIds.length >= 1 &&
   input.projectIds.every((projectId) => uuidPattern.test(projectId)) &&
-  input.repositories.length >= 1;
+  input.repositories.length >= 1 &&
+  input.runtimeIds.length >= 1 &&
+  input.runtimeIds.every((runtimeId) => runtimeIdPattern.test(runtimeId));
 
 const repositoryAuthorizationFor = (
   repositories: readonly {owner: string; name: string}[]
@@ -127,6 +131,7 @@ export const createPostgresRunnerClaimStore = (
             eq(schema.agentProfiles.workspaceId, input.workspaceId),
             eq(schema.actors.workspaceId, input.workspaceId),
             eq(schema.agentProfiles.enabled, true),
+            inArray(schema.agentProfiles.runtimeId, [...input.runtimeIds]),
             eq(
               schema.agentProfiles.runtimeProfile,
               schema.taskPackets.runtimeProfile

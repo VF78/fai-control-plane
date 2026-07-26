@@ -20,6 +20,7 @@ type Runtime = Readonly<{
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const runnerIdPattern = /^[A-Za-z0-9._:-]{1,128}$/;
+const runtimeIdPattern = /^[A-Za-z0-9._:-]{1,128}$/;
 const repositoryPartPattern = /^[A-Za-z0-9._-]{1,100}$/;
 const bearerTokenPattern = /^[A-Za-z0-9._~+/=-]{32,256}$/;
 const MAX_AUTHORIZATIONS = 32;
@@ -53,6 +54,7 @@ const loadRuntime = async (): Promise<Runtime> => {
   const repositoryValues = uniqueList(
     'LOCAL_RUNNER_ALLOWED_REPOSITORIES'
   );
+  const runtimeIds = uniqueList('LOCAL_RUNNER_ALLOWED_RUNTIME_IDS');
   const tokenFile = required('LOCAL_RUNNER_TOKEN_FILE');
   const databaseUrl = required('DATABASE_URL');
   if (!uuidPattern.test(workspaceId)) {
@@ -63,6 +65,9 @@ const loadRuntime = async (): Promise<Runtime> => {
   }
   if (projectIds.some((projectId) => !uuidPattern.test(projectId))) {
     throw new Error('Invalid runner project authorization.');
+  }
+  if (runtimeIds.some((runtimeId) => !runtimeIdPattern.test(runtimeId))) {
+    throw new Error('Invalid runner runtime authorization.');
   }
   const repositories = repositoryValues.map((repository) => {
     const parts = repository.split('/');
@@ -87,7 +92,13 @@ const loadRuntime = async (): Promise<Runtime> => {
   }
   const {db} = createDatabase(databaseUrl);
   return {
-    authorization: {workspaceId, runnerId, projectIds, repositories},
+    authorization: {
+      workspaceId,
+      runnerId,
+      projectIds,
+      repositories,
+      runtimeIds
+    },
     tokenHash: createHash('sha256').update(token).digest(),
     service: createRunnerClaimService({
       store: createPostgresRunnerClaimStore(db)
