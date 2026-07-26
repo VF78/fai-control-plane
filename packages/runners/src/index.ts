@@ -91,7 +91,18 @@ export {
   createWorktreeManager,
   WorktreeManagerError,
   type AgentRunWorktree,
+  type AgentRunWorktreeInspection,
   type PrepareWorktreeInput,
   type WorktreeManager,
   type WorktreeManagerOptions
 } from './worktree-manager';
+
+export {
+  createLocalAgentRunOrchestrator,
+  LocalAgentRunOrchestratorError,
+  type LocalAgentRunEnvelope,
+  type LocalAgentRunOrchestrator,
+  type LocalAgentRunOrchestratorOptions,
+  type LocalAgentRunReceipt,
+  type LocalAgentRunResult
+} from './agent-run-orchestrator';

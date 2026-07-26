@@ -27,8 +27,14 @@ export type AgentRunWorktree = Readonly<{
   status: 'prepared' | 'existing';
 }>;
 
+export type AgentRunWorktreeInspection = Readonly<{
+  headCommit: string;
+  dirty: boolean;
+}>;
+
 export interface WorktreeManager {
   prepare(input: PrepareWorktreeInput): Promise<AgentRunWorktree>;
+  inspect(worktree: AgentRunWorktree): Promise<AgentRunWorktreeInspection>;
   cleanup(worktree: AgentRunWorktree): Promise<void>;
 }
 
@@ -288,6 +294,27 @@ export const createWorktreeManager = (options: WorktreeManagerOptions): Worktree
     return branchHead;
   };
 
+  const inspectWorktree = async (
+    worktree: AgentRunWorktree
+  ): Promise<AgentRunWorktreeInspection> => {
+    const roots = await validateRoots();
+    const refs = await refsFor(roots, worktree);
+    if (
+      worktree.repositoryRoot !== refs.repositoryRoot ||
+      worktree.worktreePath !== refs.worktreePath ||
+      worktree.branch !== refs.branch ||
+      worktree.baseCommit !== refs.baseCommit ||
+      (worktree.status !== 'prepared' && worktree.status !== 'existing')
+    ) {
+      fail('worktree_reference_mismatch');
+    }
+    const headCommit = await validateExistingWorktree(refs);
+    const status = await requireGit(refs.worktreePath, [
+      'status', '--porcelain=v1', '--untracked-files=all'
+    ]);
+    return {headCommit, dirty: status.stdout !== ''};
+  };
+
   return {
     async prepare(input) {
       const roots = await validateRoots();
@@ -320,25 +347,15 @@ export const createWorktreeManager = (options: WorktreeManagerOptions): Worktree
       fail('worktree_replay_mismatch');
     },
 
-    async cleanup(worktree) {
-      const roots = await validateRoots();
-      const refs = await refsFor(roots, worktree);
-      if (
-        worktree.repositoryRoot !== refs.repositoryRoot ||
-        worktree.worktreePath !== refs.worktreePath ||
-        worktree.branch !== refs.branch ||
-        worktree.baseCommit !== refs.baseCommit ||
-        (worktree.status !== 'prepared' && worktree.status !== 'existing')
-      ) {
-        fail('worktree_reference_mismatch');
-      }
-      await validateExistingWorktree(refs);
-      const status = await requireGit(refs.worktreePath, [
-        'status', '--porcelain=v1', '--untracked-files=all'
-      ]);
-      if (status.stdout !== '') fail('worktree_dirty');
+    inspect: inspectWorktree,
 
-      await requireGit(refs.repositoryRoot, ['worktree', 'remove', refs.worktreePath]);
+    async cleanup(worktree) {
+      const inspection = await inspectWorktree(worktree);
+      if (inspection.dirty) fail('worktree_dirty');
+
+      await requireGit(worktree.repositoryRoot, [
+        'worktree', 'remove', worktree.worktreePath
+      ]);
     }
   };
 };
