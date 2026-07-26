@@ -302,6 +302,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
 
 export type ProjectData = Readonly<{
   project: Project;
+  hermesAgentProfileId: string | null;
   snapshot: Readonly<{health: 'green' | 'yellow' | 'red'; capturedAt: Date}> | null;
   synchronizedAt: Date | null;
   workItems: readonly Readonly<{
@@ -314,7 +315,7 @@ export type ProjectData = Readonly<{
 export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
   const [project] = await scopedProjects(db, slug);
   if (project === undefined) return null;
-  const [snapshots, operations, items, bindings, repositoryScopes] = await Promise.all([
+  const [snapshots, operations, items, bindings, repositoryScopes, hermesProfiles] = await Promise.all([
     db.select({health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(eq(dashboardSnapshots.projectId, project.id)).orderBy(desc(dashboardSnapshots.capturedAt)).limit(1),
     db.select({createdAt: trackerSnapshotOperations.createdAt})
@@ -335,7 +336,13 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       .from(projectTrackerRepositoryScopes).where(and(
         eq(projectTrackerRepositoryScopes.projectId, project.id),
         eq(projectTrackerRepositoryScopes.provider, 'github')
-      ))
+      )),
+    db.select({id: agentProfiles.id}).from(agentProfiles).where(and(
+      eq(agentProfiles.workspaceId, project.workspaceId),
+      eq(agentProfiles.runtimeId, 'hermes'),
+      eq(agentProfiles.runtimeProfile, 'read_safe'),
+      eq(agentProfiles.enabled, true)
+    )).limit(2)
   ]);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
@@ -344,7 +351,12 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       ? [binding.entityId]
       : []));
   return {
-    project, snapshot: snapshots[0] ?? null, synchronizedAt: operations[0]?.createdAt ?? null,
+    project,
+    hermesAgentProfileId: process.env.HERMES_RUNNER_ENABLED === 'true' && hermesProfiles.length === 1
+      ? hermesProfiles[0]!.id
+      : null,
+    snapshot: snapshots[0] ?? null,
+    synchronizedAt: operations[0]?.createdAt ?? null,
     workItems: items.flatMap((item) => workItemStatuses.includes(item.status) ? [{
       ...item,
       externalUrl: externalUrlByItem.get(item.id) ?? null,
@@ -374,6 +386,7 @@ export type RunsData = Readonly<{
     forbiddenSurfaces: readonly string[]; dataPolicy: Record<string, unknown>;
     expectedOutputSchema: Record<string, unknown>; timeboxMinutes: number; reviewer: string;
     approver: string; approverActorId: string; authMode: string; runtimeProfile: string;
+    agentProfileSnapshotVersion: number | null; agentProfileSnapshotHash: string | null;
     contentHash: string; profiles: readonly Readonly<{
       id: string; name: string; runtimeId: string; policyPreview: AgentRunQueuePolicyPreview;
     }>[];
@@ -413,6 +426,9 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       expectedOutputSchema: taskPackets.expectedOutputSchema, timeboxMinutes: taskPackets.timeboxMinutes,
       reviewerActorId: taskPackets.reviewerActorId, approverActorId: taskPackets.approverActorId,
       authMode: taskPackets.authMode, runtimeProfile: taskPackets.runtimeProfile,
+      agentProfileSnapshotId: taskPackets.agentProfileSnapshotId,
+      agentProfileSnapshotVersion: taskPackets.agentProfileSnapshotVersion,
+      agentProfileSnapshotHash: taskPackets.agentProfileSnapshotHash,
       contentHash: taskPackets.contentHash
     }).from(taskPackets).innerJoin(workItems, eq(workItems.id, taskPackets.workItemId))
       .leftJoin(agentRuns, eq(agentRuns.taskPacketId, taskPackets.id))
@@ -478,14 +494,21 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
     packets: packetRows.flatMap((packet) => {
       const project = projectById.get(packet.projectId);
       if (project === undefined) return [];
-      const eligibleProfiles = profilesByWorkspaceRuntime.get(profileKey(project.workspaceId, packet.runtimeProfile)) ?? [];
+      const eligibleProfiles = (profilesByWorkspaceRuntime.get(profileKey(project.workspaceId, packet.runtimeProfile)) ?? [])
+        .filter((profile) =>
+          (packet.agentProfileSnapshotId === null && profile.runtimeId !== 'hermes') ||
+          (process.env.HERMES_RUNNER_ENABLED === 'true' && profile.id === packet.agentProfileSnapshotId));
       const repositoryBinding = repositoryBindingByProject.get(packet.projectId);
       const baseCommit = baseCommitFrom(repositoryBinding);
       const nonRunnableReason = baseCommit === null
         ? (repositoryBinding === undefined
           ? 'No repository default branch head is recorded.'
           : 'The repository default branch head is not recorded as a lowercase 40-character commit.')
-        : (eligibleProfiles.length === 0 ? 'No enabled agent profile matches the packet runtime profile.' : null);
+        : (eligibleProfiles.length === 0
+          ? packet.agentProfileSnapshotId === null
+            ? 'No enabled agent profile matches the packet runtime profile.'
+            : 'Hermes runner is disabled or its frozen profile no longer matches.'
+          : null);
       const packetProfiles = baseCommit === null ? [] : eligibleProfiles.map(({id, name, runtimeId}) => ({
         id,
         name,
@@ -522,6 +545,17 @@ export type AccessData = Readonly<{
   requests: readonly Readonly<{id: string; requester: string; targetSurface: string; requestedScope: readonly string[]; status: string; expiresAt: Date | null; decidedAt: Date | null}>[];
   secretRefs: readonly Readonly<{id: string; provider: string; scope: readonly string[]; lastRotatedAt: Date | null}>[];
   policy: readonly Readonly<{actorType: string; allow: number; ask: number; deny: number}>[];
+  hermes: Readonly<{
+    id: string;
+    runtimeProfile: string;
+    allowedTools: readonly string[];
+    forbiddenSurfaces: readonly string[];
+    instructions: string;
+    settings: Readonly<{resultFormat: 'structured_v1'; includeEvidence: boolean}>;
+    enabled: boolean;
+    version: number;
+    configHash: string;
+  }> | null;
   sharing: Readonly<{
     enabled: boolean;
     projects: readonly Readonly<{
@@ -567,11 +601,12 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
       requests: [],
       secretRefs: [],
       policy: policySummary(),
+      hermes: null,
       sharing: {enabled: sharingEnabled, projects: [], grants: []}
     };
   }
   const projectIds = configuredProjects.map(({id}) => id);
-  const [persistedActors, requests, persistedSecretRefs, shareItems, grants] = await Promise.all([
+  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, hermesProfiles] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
     db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt})
@@ -596,7 +631,22 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
       accessCount: projectShareGrants.accessCount
     }).from(projectShareGrants)
       .where(inArray(projectShareGrants.projectId, projectIds))
-      .orderBy(desc(projectShareGrants.createdAt), projectShareGrants.id)
+      .orderBy(desc(projectShareGrants.createdAt), projectShareGrants.id),
+    db.select({
+      id: agentProfiles.id,
+      runtimeProfile: agentProfiles.runtimeProfile,
+      allowedTools: agentProfiles.allowedTools,
+      forbiddenSurfaces: agentProfiles.forbiddenSurfaces,
+      instructions: agentProfiles.instructions,
+      settings: agentProfiles.settings,
+      enabled: agentProfiles.enabled,
+      version: agentProfiles.version,
+      configHash: agentProfiles.configHash
+    }).from(agentProfiles).where(and(
+      inArray(agentProfiles.workspaceId, workspaceIds),
+      eq(agentProfiles.runtimeId, 'hermes'),
+      eq(agentProfiles.runtimeProfile, 'read_safe')
+    )).limit(2)
   ]);
   const grantIds = grants.map(({shareId}) => shareId);
   const scopeRows = grantIds.length === 0
@@ -619,6 +669,13 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
     requests: requests.map((request) => ({...request, requester: request.requester ?? 'No recorded requester'})),
     secretRefs: persistedSecretRefs,
     policy: policySummary(),
+    hermes: hermesProfiles.length === 1 ? {
+      ...hermesProfiles[0]!,
+      settings: hermesProfiles[0]!.settings as Readonly<{
+        resultFormat: 'structured_v1';
+        includeEvidence: boolean;
+      }>
+    } : null,
     sharing: {
       enabled: sharingEnabled,
       projects: configuredProjects.map((project) => ({

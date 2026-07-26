@@ -3,6 +3,7 @@ import {and, eq, inArray, isNull} from 'drizzle-orm';
 import {createCanonicalCommandService} from '@fai-control-plane/application';
 import {
   actors,
+  agentProfiles,
   canonicalEvents,
   createDatabase,
   createPostgresUnitOfWork,
@@ -56,6 +57,7 @@ export type CodingTaskPacketRuntime = Readonly<{
     workspaceId: string;
     actorId: string;
     workItemId: string;
+    agentProfileId?: string;
   }>): Promise<
     | Readonly<{status: 'created' | 'replayed'; projectSlug: OperatorProjectSlug}>
     | Readonly<{status: 'forbidden' | 'ineligible' | 'unavailable'}>
@@ -77,6 +79,24 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
     if (operator === undefined || operator.capabilities[requiredCapability] !== true) {
       return {status: 'forbidden'};
     }
+    const [hermesProfile] = input.agentProfileId === undefined ? [] : await db.select({
+      id: agentProfiles.id,
+      runtimeId: agentProfiles.runtimeId,
+      runtimeProfile: agentProfiles.runtimeProfile,
+      allowedTools: agentProfiles.allowedTools,
+      forbiddenSurfaces: agentProfiles.forbiddenSurfaces,
+      instructions: agentProfiles.instructions,
+      settings: agentProfiles.settings,
+      version: agentProfiles.version,
+      configHash: agentProfiles.configHash
+    }).from(agentProfiles).where(and(
+      eq(agentProfiles.id, input.agentProfileId),
+      eq(agentProfiles.workspaceId, input.workspaceId),
+      eq(agentProfiles.runtimeId, 'hermes'),
+      eq(agentProfiles.runtimeProfile, 'read_safe'),
+      eq(agentProfiles.enabled, true)
+    )).limit(1);
+    if (input.agentProfileId !== undefined && hermesProfile === undefined) return {status: 'ineligible'};
 
     const candidates = await db.select({
       projectId: projects.id,
@@ -120,8 +140,11 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
       return {status: 'ineligible'};
     }
 
+    const profileIdentity = hermesProfile === undefined
+      ? ''
+      : `:hermes:${hermesProfile.id}:${hermesProfile.version}:${hermesProfile.configHash}`;
     const eventId = deterministicUuid(
-      `coding_task_packet.event.v1:${candidate.workItemId}:${candidate.workItemVersion}`
+      `coding_task_packet.event.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`
     );
     await db.insert(canonicalEvents).values({
       id: eventId,
@@ -130,7 +153,7 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
       eventType: 'coding_task_packet.requested.v1',
       aggregateType: 'work_item',
       aggregateId: candidate.workItemId,
-      deduplicationKey: `coding_task_packet.requested.v1:${candidate.workItemId}:${candidate.workItemVersion}`,
+      deduplicationKey: `coding_task_packet.requested.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`,
       payload: {
         schemaVersion: 1,
         workItemId: candidate.workItemId,
@@ -160,17 +183,17 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
     if (!actor.ok) return {status: 'forbidden'};
 
     const packetId = deterministicUuid(
-      `coding_task_packet.packet.v1:${candidate.workItemId}:${candidate.workItemVersion}`
+      `coding_task_packet.packet.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`
     );
     const result = await createCanonicalCommandService({
       unitOfWork: createPostgresUnitOfWork(db)
     }).execute({
       commandId: deterministicUuid(
-        `coding_task_packet.command.v1:${candidate.workItemId}:${candidate.workItemVersion}`
+        `coding_task_packet.command.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`
       ),
       workspaceId: input.workspaceId,
       correlationId: eventId,
-      idempotencyKey: `coding_task_packet.create.v1:${candidate.workItemId}:${candidate.workItemVersion}`,
+      idempotencyKey: `coding_task_packet.create.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`,
       issuedAt: event.occurredAt.toISOString(),
       actor: actor.value,
       type: 'task_packet.create',
@@ -186,16 +209,34 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
           outOfScope: ['production', 'deploy', 'merge', 'protected_config', 'customer_data'],
           relevantLinks: [sourceUrl],
           relevantFiles: [],
-          allowedTools: ['git', 'read', 'test', 'build', 'issue_read'],
-          forbiddenSurfaces: ['production', 'deploy', 'merge', 'protected_config', 'customer_data'],
+          allowedTools: hermesProfile?.allowedTools ?? ['git', 'read', 'test', 'build', 'issue_read'],
+          forbiddenSurfaces: hermesProfile?.forbiddenSurfaces ??
+            ['production', 'deploy', 'merge', 'protected_config', 'customer_data'],
           dataPolicy: {issueContent: 'untrusted_not_stored', source: 'canonical_title_and_issue_url'},
           timeboxMinutes: 45,
           expectedOutputSchema: {implementation: 'scoped', verificationEvidence: 'required'},
           reviewerActorId: input.actorId,
           approverActorId: input.actorId,
-          runtimeProfile: 'write_scoped',
+          runtimeProfile: hermesProfile?.runtimeProfile ?? 'write_scoped',
           authMode: 'agent',
           secretsRef: null,
+          ...(hermesProfile === undefined ? {} : {
+            agentProfileSnapshot: {
+              profileId: hermesProfile.id,
+              runtimeId: 'hermes' as const,
+              runtimeProfile: 'read_safe' as const,
+              allowedTools: hermesProfile.allowedTools,
+              forbiddenSurfaces: hermesProfile.forbiddenSurfaces,
+              enabled: true,
+              configVersion: hermesProfile.version,
+              configHash: hermesProfile.configHash,
+              instructions: hermesProfile.instructions,
+              settings: hermesProfile.settings as {
+                resultFormat: 'structured_v1';
+                includeEvidence: boolean;
+              }
+            }
+          }),
           createdFromEventId: eventId,
           createdByActorId: input.actorId
         }

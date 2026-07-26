@@ -1,5 +1,10 @@
 import {and, eq} from 'drizzle-orm';
 import {
+  DEFAULT_HERMES_INSTRUCTIONS,
+  DEFAULT_HERMES_SETTINGS,
+  hashAgentProfileConfiguration
+} from '@fai-control-plane/domain';
+import {
   createDatabase,
   actors,
   agentProfiles,
@@ -97,6 +102,48 @@ try {
     eq(actors.externalSubject, bootstrapExternalSubject)
   ));
   if (bootstrapActor === undefined) throw new Error('bootstrap operator seed failed');
+  const hermesActorSeed = {
+    workspaceId: persistedWorkspace.id,
+    type: 'agent' as const,
+    role: 'agent_operator' as const,
+    displayName: 'Hermes',
+    authMode: 'agent' as const,
+    externalSubject: 'agent:hermes:v1',
+    capabilities: {'read:control_plane:development': true}
+  };
+  await db.insert(actors).values(hermesActorSeed).onConflictDoUpdate({
+    target: [actors.workspaceId, actors.authMode, actors.externalSubject],
+    set: {
+      type: hermesActorSeed.type,
+      role: hermesActorSeed.role,
+      displayName: hermesActorSeed.displayName,
+      capabilities: hermesActorSeed.capabilities
+    }
+  });
+  const [hermesActor] = await db.select({id: actors.id}).from(actors).where(and(
+    eq(actors.workspaceId, persistedWorkspace.id),
+    eq(actors.authMode, 'agent'),
+    eq(actors.externalSubject, hermesActorSeed.externalSubject)
+  ));
+  if (hermesActor === undefined) throw new Error('Hermes actor seed failed');
+  const hermesConfig = {
+    runtimeId: 'hermes',
+    runtimeProfile: 'read_safe',
+    allowedTools: ['task_packet_read', 'artifact_write'] as string[],
+    forbiddenSurfaces: ['external_message', 'github_write', 'production', 'deploy', 'merge'] as string[],
+    instructions: DEFAULT_HERMES_INSTRUCTIONS,
+    settings: DEFAULT_HERMES_SETTINGS,
+    enabled: true,
+    version: 1
+  } as const;
+  await db.insert(agentProfiles).values({
+    workspaceId: persistedWorkspace.id,
+    actorId: hermesActor.id,
+    ...hermesConfig,
+    configHash: hashAgentProfileConfiguration(hermesConfig)
+  }).onConflictDoNothing({
+    target: [agentProfiles.actorId, agentProfiles.runtimeId, agentProfiles.runtimeProfile]
+  });
   await db.insert(agentProfiles).values({
     workspaceId: persistedWorkspace.id,
     actorId: bootstrapActor.id,

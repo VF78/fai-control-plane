@@ -2,6 +2,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {computeApprovalActionHash} from '@fai-control-plane/domain';
 import type {
   AccessRequest,
+  AgentProfileConfiguration,
   AgentRun,
   AgentRunView,
   Approval,
@@ -160,6 +161,15 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       invariant(
         mutation.aggregate.version === mutation.expectedPersistedVersion + 1,
         'WorkItem update version must equal expected version plus one.'
+      );
+      break;
+    case 'agent_profile':
+      uuid(mutation.aggregate.id, 'agentProfile.id');
+      uuid(mutation.aggregate.workspaceId, 'agentProfile.workspaceId');
+      uuid(mutation.aggregate.actorId, 'agentProfile.actorId');
+      invariant(
+        mutation.aggregate.version === mutation.expectedPersistedVersion + 1,
+        'AgentProfile update version must equal expected version plus one.'
       );
       break;
     case 'task_packet':
@@ -478,6 +488,9 @@ const taskPacketScope = (workspaceId: string): SQL =>
       and ${schema.projects.workspaceId} = ${workspaceId}
   )`;
 
+const agentProfileScope = (workspaceId: string): SQL =>
+  sql`${schema.agentProfiles.workspaceId} = ${workspaceId}`;
+
 const agentRunScope = (workspaceId: string): SQL =>
   sql`exists (
     select 1
@@ -511,6 +524,16 @@ const currentVersion = async (
             workItemScope(workspaceId)
           )
         );
+      return row?.version ?? null;
+    }
+    case 'agent_profile': {
+      const [row] = await tx
+        .select({version: schema.agentProfiles.version})
+        .from(schema.agentProfiles)
+        .where(and(
+          eq(schema.agentProfiles.id, mutation.aggregateId),
+          agentProfileScope(workspaceId)
+        ));
       return row?.version ?? null;
     }
     case 'task_packet': {
@@ -602,6 +625,44 @@ const persistWorkItem = async (
       };
 };
 
+const persistAgentProfile = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'agent_profile'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (aggregate.workspaceId !== workspaceId) return {status: 'not_found'};
+  const [row] = await tx
+    .update(schema.agentProfiles)
+    .set({
+      instructions: aggregate.instructions,
+      settings: aggregate.settings,
+      enabled: aggregate.enabled,
+      version: sql`${schema.agentProfiles.version} + 1`,
+      configHash: aggregate.configHash,
+      updatedAt: new Date()
+    })
+    .where(and(
+      eq(schema.agentProfiles.id, aggregate.id),
+      eq(schema.agentProfiles.workspaceId, workspaceId),
+      eq(schema.agentProfiles.actorId, aggregate.actorId),
+      eq(schema.agentProfiles.runtimeId, aggregate.runtimeId),
+      eq(schema.agentProfiles.runtimeProfile, aggregate.runtimeProfile),
+      eq(schema.agentProfiles.version, mutation.expectedPersistedVersion)
+    ))
+    .returning({version: schema.agentProfiles.version});
+  return row === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {
+          expectedPersistedVersion: mutation.expectedPersistedVersion,
+          persistedVersion: row.version
+        },
+        projectId: null
+      };
+};
+
 const validateTaskPacketOwnership = async (
   tx: Transaction,
   workspaceId: string,
@@ -634,6 +695,21 @@ const validateTaskPacketOwnership = async (
       )
     );
   if (event === undefined) return {status: 'not_found'};
+  const snapshot = content.agentProfileSnapshot;
+  if (snapshot !== undefined && snapshot !== null) {
+    const [profile] = await tx
+      .select({id: schema.agentProfiles.id})
+      .from(schema.agentProfiles)
+      .where(and(
+        eq(schema.agentProfiles.id, snapshot.profileId),
+        eq(schema.agentProfiles.workspaceId, workspaceId),
+        eq(schema.agentProfiles.runtimeId, snapshot.runtimeId),
+        eq(schema.agentProfiles.runtimeProfile, snapshot.runtimeProfile),
+        eq(schema.agentProfiles.version, snapshot.configVersion),
+        eq(schema.agentProfiles.configHash, snapshot.configHash)
+      ));
+    if (profile === undefined) return {status: 'not_found'};
+  }
   if (content.secretsRef === null) return {status: 'found', secretRefId: null};
   const [secretRef] = await tx
     .select({id: schema.secretRefs.id})
@@ -682,6 +758,19 @@ const persistTaskPacket = async (
       runtimeProfile: content.runtimeProfile,
       authMode: content.authMode,
       secretRefId: ownership.secretRefId,
+      agentProfileSnapshotId: content.agentProfileSnapshot?.profileId,
+      agentProfileSnapshotRuntimeId: content.agentProfileSnapshot?.runtimeId,
+      agentProfileSnapshotAllowedTools: content.agentProfileSnapshot == null
+        ? undefined
+        : [...content.agentProfileSnapshot.allowedTools],
+      agentProfileSnapshotForbiddenSurfaces: content.agentProfileSnapshot == null
+        ? undefined
+        : [...content.agentProfileSnapshot.forbiddenSurfaces],
+      agentProfileSnapshotEnabled: content.agentProfileSnapshot?.enabled,
+      agentProfileSnapshotVersion: content.agentProfileSnapshot?.configVersion,
+      agentProfileSnapshotHash: content.agentProfileSnapshot?.configHash,
+      agentProfileSnapshotInstructions: content.agentProfileSnapshot?.instructions,
+      agentProfileSnapshotSettings: content.agentProfileSnapshot?.settings,
       createdFromEventId: content.createdFromEventId,
       contentHash: packet.contentHash,
       createdByActorId: content.createdByActorId
@@ -706,7 +795,10 @@ const validateAgentRunOwnership = async (
     .select({
       projectId: schema.taskPackets.projectId,
       contentHash: schema.taskPackets.contentHash,
-      runtimeProfile: schema.taskPackets.runtimeProfile
+      runtimeProfile: schema.taskPackets.runtimeProfile,
+      agentProfileSnapshotId: schema.taskPackets.agentProfileSnapshotId,
+      agentProfileSnapshotVersion: schema.taskPackets.agentProfileSnapshotVersion,
+      agentProfileSnapshotHash: schema.taskPackets.agentProfileSnapshotHash
     })
     .from(schema.taskPackets)
     .where(
@@ -718,8 +810,15 @@ const validateAgentRunOwnership = async (
   if (packet === undefined || packet.contentHash !== aggregate.confirmedPacketHash) {
     return {status: 'not_found'};
   }
+  if (
+    packet.agentProfileSnapshotId !== null &&
+    (
+      process.env.HERMES_RUNNER_ENABLED !== 'true' ||
+      aggregate.agentProfileId !== packet.agentProfileSnapshotId
+    )
+  ) return {status: 'not_found'};
   const [profile] = await tx
-    .select({id: schema.agentProfiles.id})
+    .select({id: schema.agentProfiles.id, runtimeId: schema.agentProfiles.runtimeId})
     .from(schema.agentProfiles)
     .innerJoin(
       schema.actors,
@@ -732,9 +831,16 @@ const validateAgentRunOwnership = async (
         eq(schema.actors.workspaceId, workspaceId),
         eq(schema.agentProfiles.enabled, true),
         eq(schema.agentProfiles.runtimeProfile, packet.runtimeProfile),
+        ...(packet.agentProfileSnapshotId === null ? [] : [
+          eq(schema.agentProfiles.version, packet.agentProfileSnapshotVersion!),
+          eq(schema.agentProfiles.configHash, packet.agentProfileSnapshotHash!)
+        ]),
         isNull(schema.actors.disabledAt)
       )
     );
+  if (profile?.runtimeId === 'hermes' && packet.agentProfileSnapshotId === null) {
+    return {status: 'not_found'};
+  }
   return profile === undefined
     ? {status: 'not_found'}
     : {status: 'found', projectId: packet.projectId};
@@ -1020,6 +1126,8 @@ const persistAggregate = (
   switch (mutation.aggregateType) {
     case 'work_item':
       return persistWorkItem(tx, workspaceId, mutation);
+    case 'agent_profile':
+      return persistAgentProfile(tx, workspaceId, mutation);
     case 'task_packet':
       return persistTaskPacket(tx, workspaceId, mutation);
     case 'agent_run':
@@ -1265,6 +1373,38 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
           };
         },
 
+        async loadAgentProfile(
+          token,
+          agentProfileId
+        ): Promise<AgentProfileConfiguration | null> {
+          const state = requireClaim(token);
+          if (!isUuid(agentProfileId)) return null;
+          const [row] = await tx
+            .select({
+              id: schema.agentProfiles.id,
+              workspaceId: schema.agentProfiles.workspaceId,
+              actorId: schema.agentProfiles.actorId,
+              runtimeId: schema.agentProfiles.runtimeId,
+              runtimeProfile: schema.agentProfiles.runtimeProfile,
+              allowedTools: schema.agentProfiles.allowedTools,
+              forbiddenSurfaces: schema.agentProfiles.forbiddenSurfaces,
+              instructions: schema.agentProfiles.instructions,
+              settings: schema.agentProfiles.settings,
+              enabled: schema.agentProfiles.enabled,
+              version: schema.agentProfiles.version,
+              configHash: schema.agentProfiles.configHash
+            })
+            .from(schema.agentProfiles)
+            .where(and(
+              eq(schema.agentProfiles.id, agentProfileId),
+              eq(schema.agentProfiles.workspaceId, state.claim.workspaceId)
+            ));
+          return row === undefined ? null : {
+            ...row,
+            settings: row.settings as AgentProfileConfiguration['settings']
+          };
+        },
+
         async loadTaskPacket(
           token,
           taskPacketId
@@ -1275,17 +1415,43 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             .select({
               packetId: schema.taskPackets.id,
               approverActorId: schema.taskPackets.approverActorId,
-              contentHash: schema.taskPackets.contentHash
+              contentHash: schema.taskPackets.contentHash,
+              agentProfileSnapshotId: schema.taskPackets.agentProfileSnapshotId,
+              agentProfileSnapshotRuntimeId: schema.taskPackets.agentProfileSnapshotRuntimeId,
+              agentProfileSnapshotAllowedTools: schema.taskPackets.agentProfileSnapshotAllowedTools,
+              agentProfileSnapshotForbiddenSurfaces: schema.taskPackets.agentProfileSnapshotForbiddenSurfaces,
+              agentProfileSnapshotEnabled: schema.taskPackets.agentProfileSnapshotEnabled,
+              agentProfileSnapshotVersion: schema.taskPackets.agentProfileSnapshotVersion,
+              agentProfileSnapshotHash: schema.taskPackets.agentProfileSnapshotHash,
+              agentProfileSnapshotInstructions: schema.taskPackets.agentProfileSnapshotInstructions,
+              agentProfileSnapshotSettings: schema.taskPackets.agentProfileSnapshotSettings
             })
             .from(schema.taskPackets)
             .where(and(
               eq(schema.taskPackets.id, taskPacketId),
               taskPacketScope(state.claim.workspaceId)
             ));
-          return row === undefined ? null : {
+          if (row === undefined) return null;
+          const hasSnapshot = row.agentProfileSnapshotId !== null;
+          return {
             packetId: row.packetId,
-            content: {approverActorId: row.approverActorId},
-            contentHash: row.contentHash
+            content: {
+              approverActorId: row.approverActorId,
+              agentProfileSnapshot: hasSnapshot ? {
+                profileId: row.agentProfileSnapshotId!,
+                runtimeId: row.agentProfileSnapshotRuntimeId as 'hermes',
+                runtimeProfile: 'read_safe',
+                allowedTools: row.agentProfileSnapshotAllowedTools!,
+                forbiddenSurfaces: row.agentProfileSnapshotForbiddenSurfaces!,
+                enabled: row.agentProfileSnapshotEnabled!,
+                configVersion: row.agentProfileSnapshotVersion!,
+                configHash: row.agentProfileSnapshotHash!,
+                instructions: row.agentProfileSnapshotInstructions!,
+                settings: row.agentProfileSnapshotSettings as AgentProfileConfiguration['settings']
+              } : null
+            },
+            contentHash: row.contentHash,
+            hermesRunnerEnabled: process.env.HERMES_RUNNER_ENABLED === 'true'
           };
         },
 

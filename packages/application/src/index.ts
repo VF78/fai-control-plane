@@ -30,6 +30,7 @@ import {
   transitionAgentRun,
   transitionApproval,
   transitionWorkItem,
+  updateHermesAgentProfile,
   workItemStatuses,
   type AccessRequest,
   type ActionCategory,
@@ -533,6 +534,7 @@ export const CANONICAL_COMMAND_POLICY = {
 const commandTypes = new Set<CanonicalCommand['type']>([
   'work_item.transition',
   'work_item.set_blocked',
+  'agent_profile.update',
   'task_packet.create',
   'agent_run.queue',
   'agent_run.transition',
@@ -1199,6 +1201,16 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
     case 'work_item.set_blocked':
       return hasExactKeys(payload, ['workItemId', 'blocked', 'expectedVersion']) && isUuid(payload.workItemId) &&
         typeof payload.blocked === 'boolean' && isVersion(payload.expectedVersion);
+    case 'agent_profile.update':
+      return hasExactKeys(payload, [
+        'agentProfileId', 'expectedVersion', 'instructions', 'settings', 'enabled'
+      ]) && isUuid(payload.agentProfileId) && isVersion(payload.expectedVersion) &&
+        typeof payload.instructions === 'string' &&
+        isPlainObject(payload.settings) &&
+        hasExactKeys(payload.settings, ['resultFormat', 'includeEvidence']) &&
+        payload.settings.resultFormat === 'structured_v1' &&
+        typeof payload.settings.includeEvidence === 'boolean' &&
+        typeof payload.enabled === 'boolean';
     case 'task_packet.create':
       return hasExactKeys(payload, ['packetId', 'content']) && isUuid(payload.packetId) &&
         isPlainObject(payload.content) && packetIdsAreSafe(payload.content);
@@ -1418,6 +1430,7 @@ export const createCanonicalCommandService = (
     switch (command.type) {
       case 'work_item.transition': return workItemTransition(transaction, claimToken, claim, command);
       case 'work_item.set_blocked': return workItemBlocked(transaction, claimToken, claim, command);
+      case 'agent_profile.update': return agentProfileUpdate(transaction, claimToken, claim, command);
       case 'task_packet.create': return taskPacketCreate(transaction, claimToken, claim, command);
       case 'agent_run.queue': return agentRunQueue(transaction, claimToken, claim, command);
       case 'agent_run.transition': return agentRunTransition(transaction, claimToken, claim, command);
@@ -1522,6 +1535,65 @@ export const createCanonicalCommandService = (
     return {kind: 'non_approval' as const, value: commandReceipt, mutation: completion};
   }
 
+  async function agentProfileUpdate(
+    transaction: CanonicalCommandTransaction,
+    token: ReceiptClaimToken,
+    claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'agent_profile.update'}>
+  ) {
+    const target = targetFor(
+      'agent_profile',
+      command.payload.agentProfileId,
+      command.payload.expectedVersion
+    );
+    const profile = await transaction.loadAgentProfile(token, command.payload.agentProfileId);
+    if (profile === null) {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('NOT_FOUND', 'Resource was not found.')
+      );
+    }
+    if (profile.version !== command.payload.expectedVersion) {
+      return completeNoMutation(
+        transaction,
+        token,
+        claim,
+        command,
+        targetFor('agent_profile', profile.id, command.payload.expectedVersion, profile.version),
+        failed('VERSION_CONFLICT', 'Resource version conflicts with the command.')
+      );
+    }
+    const updated = updateHermesAgentProfile(profile, command.payload);
+    if (!updated.ok) {
+      return completeNoMutation(transaction, token, claim, command, target, updated);
+    }
+    const resultTarget = targetFor('agent_profile', updated.value.id, profile.version, updated.value.version);
+    const value = succeeded({
+      id: updated.value.id,
+      version: updated.value.version,
+      configHash: updated.value.configHash
+    });
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'agent_profile',
+        aggregateId: updated.value.id,
+        expectedPersistedVersion: profile.version,
+        aggregate: updated.value
+      },
+      audit: audit(
+        claim,
+        ids,
+        clock,
+        resultTarget,
+        command.actor.actorId,
+        command.type,
+        'write',
+        value
+      )
+    }, resultTarget, value);
+  }
+
   async function taskPacketCreate(
     transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
     command: Extract<CanonicalCommand, {type: 'task_packet.create'}>
@@ -1572,6 +1644,44 @@ export const createCanonicalCommandService = (
         transaction, token, claim, command, target,
         failed('VERSION_CONFLICT', 'Task packet confirmation hash conflicts with the stored packet.')
       );
+    }
+    const profile = await transaction.loadAgentProfile(token, command.payload.agentProfileId);
+    if (profile === null) {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('NOT_FOUND', 'Resource was not found.')
+      );
+    }
+    const snapshot = packet.content.agentProfileSnapshot;
+    if (profile.runtimeId === 'hermes' && (snapshot === undefined || snapshot === null)) {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('VERSION_CONFLICT', 'Hermes requires a profile-bound task packet.')
+      );
+    }
+    if (snapshot !== undefined && snapshot !== null) {
+      if (!packet.hermesRunnerEnabled) {
+        return completeNoMutation(
+          transaction, token, claim, command, target,
+          failed('POLICY_DENIED', 'Hermes runner is not enabled on this server.')
+        );
+      }
+      if (command.payload.agentProfileId !== snapshot.profileId) {
+        return completeNoMutation(
+          transaction, token, claim, command, target,
+          failed('VERSION_CONFLICT', 'Agent profile conflicts with the frozen packet profile.')
+        );
+      }
+      if (
+        !profile.enabled ||
+        profile.version !== snapshot.configVersion ||
+        profile.configHash !== snapshot.configHash
+      ) {
+        return completeNoMutation(
+          transaction, token, claim, command, target,
+          failed('VERSION_CONFLICT', 'Agent profile changed after the packet was created.')
+        );
+      }
     }
     const run: AgentRun = {
       id: command.payload.agentRunId,
@@ -1787,6 +1897,8 @@ const commandTarget = (command: CanonicalCommand): Target => {
   switch (command.type) {
     case 'work_item.transition':
     case 'work_item.set_blocked': return targetFor('work_item', command.payload.workItemId, command.payload.expectedVersion);
+    case 'agent_profile.update':
+      return targetFor('agent_profile', command.payload.agentProfileId, command.payload.expectedVersion);
     case 'task_packet.create': return targetFor('task_packet', command.payload.packetId);
     case 'agent_run.queue': return targetFor('agent_run', command.payload.agentRunId);
     case 'agent_run.transition': return targetFor('agent_run', command.payload.agentRunId, command.payload.expectedVersion);

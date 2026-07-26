@@ -328,7 +328,16 @@ export const agentProfiles = pgTable(
       .array()
       .default(sql`'{}'::text[]`)
       .notNull(),
+    instructions: text('instructions').default('').notNull(),
+    settings: jsonb('settings')
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
     enabled: boolean('enabled').default(true).notNull(),
+    version: integer('version').default(1).notNull(),
+    configHash: text('config_hash')
+      .default('0000000000000000000000000000000000000000000000000000000000000000')
+      .notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
@@ -337,7 +346,9 @@ export const agentProfiles = pgTable(
       table.actorId,
       table.runtimeId,
       table.runtimeProfile
-    )
+    ),
+    check('agent_profiles_version_positive', sql`${table.version} > 0`),
+    check('agent_profiles_config_hash_sha256', sql`${table.configHash} ~ '^[0-9a-f]{64}$'`)
   ]
 );
 
@@ -1026,6 +1037,17 @@ export const taskPackets = pgTable(
     secretRefId: uuid('secret_ref_id').references(() => secretRefs.id, {
       onDelete: 'restrict'
     }),
+    agentProfileSnapshotId: uuid('agent_profile_snapshot_id')
+      .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    agentProfileSnapshotRuntimeId: text('agent_profile_snapshot_runtime_id'),
+    agentProfileSnapshotAllowedTools: text('agent_profile_snapshot_allowed_tools').array(),
+    agentProfileSnapshotForbiddenSurfaces: text('agent_profile_snapshot_forbidden_surfaces').array(),
+    agentProfileSnapshotEnabled: boolean('agent_profile_snapshot_enabled'),
+    agentProfileSnapshotVersion: integer('agent_profile_snapshot_version'),
+    agentProfileSnapshotHash: text('agent_profile_snapshot_hash'),
+    agentProfileSnapshotInstructions: text('agent_profile_snapshot_instructions'),
+    agentProfileSnapshotSettings: jsonb('agent_profile_snapshot_settings')
+      .$type<Record<string, unknown>>(),
     createdFromEventId: uuid('created_from_event_id')
       .notNull()
       .references(() => canonicalEvents.id, {onDelete: 'restrict'}),
@@ -1041,7 +1063,31 @@ export const taskPackets = pgTable(
       table.contentHash
     ),
     check('task_packets_timebox_positive', sql`${table.timeboxMinutes} > 0`),
-    check('task_packets_work_item_version_positive', sql`${table.workItemVersion} > 0`)
+    check('task_packets_work_item_version_positive', sql`${table.workItemVersion} > 0`),
+    check(
+      'task_packets_agent_profile_snapshot_consistent',
+      sql`(
+        ${table.agentProfileSnapshotId} is null and
+        ${table.agentProfileSnapshotRuntimeId} is null and
+        ${table.agentProfileSnapshotAllowedTools} is null and
+        ${table.agentProfileSnapshotForbiddenSurfaces} is null and
+        ${table.agentProfileSnapshotEnabled} is null and
+        ${table.agentProfileSnapshotVersion} is null and
+        ${table.agentProfileSnapshotHash} is null and
+        ${table.agentProfileSnapshotInstructions} is null and
+        ${table.agentProfileSnapshotSettings} is null
+      ) or (
+        ${table.agentProfileSnapshotId} is not null and
+        ${table.agentProfileSnapshotRuntimeId} is not null and
+        ${table.agentProfileSnapshotAllowedTools} is not null and
+        ${table.agentProfileSnapshotForbiddenSurfaces} is not null and
+        ${table.agentProfileSnapshotEnabled} is not null and
+        ${table.agentProfileSnapshotVersion} > 0 and
+        ${table.agentProfileSnapshotHash} ~ '^[0-9a-f]{64}$' and
+        ${table.agentProfileSnapshotInstructions} is not null and
+        ${table.agentProfileSnapshotSettings} is not null
+      )`
+    )
   ]
 );
 

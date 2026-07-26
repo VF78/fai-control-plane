@@ -50,11 +50,24 @@ const csrfToken = (form: URLSearchParams | null): string | null => {
     : null;
 };
 
-const exactForm = (form: URLSearchParams | null): boolean => {
-  if (form === null) return false;
+const exactForm = (form: URLSearchParams | null): Readonly<{agentProfileId?: string}> | null => {
+  if (form === null) return null;
   const entries = [...form.entries()];
-  return entries.length === 1 && entries[0]![0] === '_csrf' && entries[0]![1].length > 0 &&
-    entries[0]![1].length <= 128;
+  if (
+    entries.length === 1 &&
+    entries[0]![0] === '_csrf' &&
+    entries[0]![1].length > 0 &&
+    entries[0]![1].length <= 128
+  ) return {};
+  if (
+    entries.length === 2 &&
+    entries[0]![0] === '_csrf' &&
+    entries[0]![1].length > 0 &&
+    entries[0]![1].length <= 128 &&
+    entries[1]![0] === 'agentProfileId' &&
+    UUID_PATTERN.test(entries[1]![1])
+  ) return {agentProfileId: entries[1]![1]};
+  return null;
 };
 
 const safe = (status: string, code: number): Response =>
@@ -68,12 +81,14 @@ export async function createCodingTaskPacketCommand(
   const form = await readBoundedForm(request);
   const authorization = await overrides.requireSession(request, {csrfToken: csrfToken(form)});
   if (!authorization.ok) return authorization.response;
-  if (!UUID_PATTERN.test(workItemId) || !exactForm(form)) return safe('invalid_request', 400);
+  const selection = exactForm(form);
+  if (!UUID_PATTERN.test(workItemId) || selection === null) return safe('invalid_request', 400);
   try {
     const result = await (await overrides.getRuntime()).create({
       workspaceId: authorization.runtime.config.workspaceId,
       actorId: authorization.session.actorId,
-      workItemId
+      workItemId,
+      ...selection
     });
     if (result.status === 'created' || result.status === 'replayed') {
       const location = new URL(`/runs?project=${result.projectSlug}`, request.url).toString();

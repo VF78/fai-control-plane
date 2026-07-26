@@ -108,7 +108,10 @@ export function ProjectView({data, csrfToken}: {data: ProjectData; csrfToken: st
         {items.length === 0 ? <p className="status-empty">No recorded WorkItems.</p> : <div className="work-list">{items.map((item) => <article className="work-row" key={item.id}>
           <div><strong>{item.title}</strong>{item.summary === null ? null : <span>{item.summary}</span>}</div><span>{item.owner ?? 'No recorded owner'}</span><span className={item.blocked ? 'blocked yes' : 'blocked'}>{item.blocked ? 'Blocked' : 'Not blocked'}</span><time dateTime={item.updatedAt.toISOString()}>{stamp(item.updatedAt)}</time>
           {item.externalUrl === null ? <span className="no-link">No source link</span> : <a href={item.externalUrl} rel="noreferrer" target="_blank">Open source</a>}
-          {csrfToken === null || !item.canBuildPacket ? null : <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><button type="submit">Build packet</button></form>}
+          {csrfToken === null || !item.canBuildPacket ? null : <div className="packet-build-actions">
+            <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><button type="submit">Build Codex packet</button></form>
+            {data.hermesAgentProfileId === null ? null : <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><input name="agentProfileId" type="hidden" value={data.hermesAgentProfileId} /><button type="submit">Build Hermes packet</button></form>}
+          </div>}
         </article>)}</div>}</section>; })}
     </section>
   </div>;
@@ -124,7 +127,7 @@ export function RunsView({data, csrfToken, operatorActorId}: {
       {data.packets.length === 0 ? <p className="muted">No persisted unqueued task packets are recorded in this scope.</p> : <div className="packet-list">{data.packets.map((packet) => <article className="packet-preview" key={packet.id}>
         <header><div><strong>{packet.workItemTitle}</strong><span>{packet.project} · Frozen task version {packet.frozenWorkItemVersion} · Current task version {packet.currentWorkItemVersion}</span></div><span className={`state ${packet.runnable ? 'active' : 'failed'}`}>{packet.runnable ? 'runnable' : 'not runnable'}</span></header>
         <p className="packet-goal">{packet.goal}</p>
-        <dl className="packet-facts"><div><dt>Content hash</dt><dd><code>{packet.contentHash}</code></dd></div><div><dt>Timebox</dt><dd>{packet.timeboxMinutes} minutes</dd></div><div><dt>Runtime</dt><dd>{packet.runtimeProfile}</dd></div><div><dt>Auth mode</dt><dd>{packet.authMode}</dd></div><div><dt>Reviewer</dt><dd>{packet.reviewer}</dd></div><div><dt>Approver</dt><dd>{packet.approver}</dd></div></dl>
+        <dl className="packet-facts"><div><dt>Content hash</dt><dd><code>{packet.contentHash}</code></dd></div><div><dt>Timebox</dt><dd>{packet.timeboxMinutes} minutes</dd></div><div><dt>Runtime</dt><dd>{packet.runtimeProfile}</dd></div><div><dt>Profile config</dt><dd>{packet.agentProfileSnapshotVersion === null ? 'Not profile-bound' : `v${packet.agentProfileSnapshotVersion} · ${packet.agentProfileSnapshotHash}`}</dd></div><div><dt>Auth mode</dt><dd>{packet.authMode}</dd></div><div><dt>Reviewer</dt><dd>{packet.reviewer}</dd></div><div><dt>Approver</dt><dd>{packet.approver}</dd></div></dl>
         <div className="packet-sections"><section><h3>Acceptance</h3><ul>{packet.acceptanceCriteria.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>In scope</h3><ul>{packet.inScope.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Out of scope</h3><ul>{packet.outOfScope.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Links</h3><ul>{packet.relevantLinks.length === 0 ? <li>No recorded links</li> : packet.relevantLinks.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Relevant files</h3><ul>{packet.relevantFiles.length === 0 ? <li>No recorded files</li> : packet.relevantFiles.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Allowed tools</h3><ul>{packet.allowedTools.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Forbidden surfaces</h3><ul>{packet.forbiddenSurfaces.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Data policy</h3><pre>{JSON.stringify(packet.dataPolicy, null, 2)}</pre></section><section><h3>Expected output</h3><pre>{JSON.stringify(packet.expectedOutputSchema, null, 2)}</pre></section></div>
         {operatorActorId !== packet.approverActorId ? <p className="packet-state">Only the recorded packet approver can confirm this packet.</p> : <TaskPacketConfirmationControls packet={packet} csrfToken={csrfToken} enabled={operatorActorId !== null} />}
       </article>)}</div>}
@@ -149,6 +152,43 @@ export function AccessView({csrfToken, data, policyVersion}: {
   policyVersion: number;
 }) {
   return <div className="control-surface">
+    <section className="agent-profile" aria-labelledby="hermes-title">
+      <header><p className="eyebrow">Governed external worker</p><h2 id="hermes-title">Hermes profile</h2></header>
+      {data.hermes === null ? <p className="muted">Hermes is not configured for this workspace.</p> : <>
+        <dl className="profile-facts">
+          <div><dt>Status</dt><dd>{data.hermes.enabled ? 'Enabled' : 'Disabled'}</dd></div>
+          <div><dt>Runtime</dt><dd>{data.hermes.runtimeProfile}</dd></div>
+          <div><dt>Revision</dt><dd>v{data.hermes.version}</dd></div>
+          <div><dt>Config hash</dt><dd><code>{data.hermes.configHash}</code></dd></div>
+          <div><dt>Tools</dt><dd>{data.hermes.allowedTools.join(', ') || 'None'}</dd></div>
+          <div><dt>Forbidden</dt><dd>{data.hermes.forbiddenSurfaces.join(', ') || 'None'}</dd></div>
+        </dl>
+        {csrfToken === null ? <p className="muted">An authenticated operator session is required.</p> :
+          <form action="/api/agent-profiles/hermes" className="profile-form" method="post">
+            <input name="_csrf" type="hidden" value={csrfToken} />
+            <input name="expectedVersion" type="hidden" value={data.hermes.version} />
+            <label className="profile-instructions">
+              <span>Instructions</span>
+              <textarea defaultValue={data.hermes.instructions} maxLength={2000} name="instructions" required rows={5} />
+            </label>
+            <label>
+              <span>Evidence</span>
+              <select defaultValue={String(data.hermes.settings.includeEvidence)} name="includeEvidence">
+                <option value="true">Required</option>
+                <option value="false">Optional</option>
+              </select>
+            </label>
+            <label>
+              <span>Status</span>
+              <select defaultValue={String(data.hermes.enabled)} name="enabled">
+                <option value="true">Enabled</option>
+                <option value="false">Disabled</option>
+              </select>
+            </label>
+            <button type="submit">Update profile</button>
+          </form>}
+      </>}
+    </section>
     <ProjectShareControls
       csrfToken={csrfToken}
       enabled={data.sharing.enabled}

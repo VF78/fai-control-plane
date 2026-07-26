@@ -617,6 +617,16 @@ export type SetBlockedCommand = CanonicalCommandEnvelope<
   'work_item.set_blocked',
   Readonly<{workItemId: string; blocked: boolean; expectedVersion: number}>
 >;
+export type UpdateAgentProfileCommand = CanonicalCommandEnvelope<
+  'agent_profile.update',
+  Readonly<{
+    agentProfileId: string;
+    expectedVersion: number;
+    instructions: string;
+    settings: HermesAgentSettings;
+    enabled: boolean;
+  }>
+>;
 export type CreateTaskPacketCommand = CanonicalCommandEnvelope<
   'task_packet.create',
   Readonly<{packetId: string; content: TaskPacketContent}>
@@ -665,6 +675,7 @@ export type DecideAccessRequestCommand = CanonicalCommandEnvelope<
 export type CanonicalCommand =
   | TransitionWorkItemCommand
   | SetBlockedCommand
+  | UpdateAgentProfileCommand
   | CreateTaskPacketCommand
   | QueueAgentRunCommand
   | TransitionAgentRunCommand
@@ -750,6 +761,39 @@ export type OpaqueSecretRef = Readonly<{
   scope: readonly string[];
 }>;
 
+export type HermesAgentSettings = Readonly<{
+  resultFormat: 'structured_v1';
+  includeEvidence: boolean;
+}>;
+
+export type AgentProfileConfiguration = Readonly<{
+  id: string;
+  workspaceId: string;
+  actorId: string;
+  runtimeId: string;
+  runtimeProfile: string;
+  allowedTools: readonly string[];
+  forbiddenSurfaces: readonly string[];
+  instructions: string;
+  settings: HermesAgentSettings;
+  enabled: boolean;
+  version: number;
+  configHash: string;
+}>;
+
+export type AgentProfileSnapshot = Readonly<{
+  profileId: string;
+  runtimeId: 'hermes';
+  runtimeProfile: 'read_safe';
+  allowedTools: readonly string[];
+  forbiddenSurfaces: readonly string[];
+  enabled: boolean;
+  configVersion: number;
+  configHash: string;
+  instructions: string;
+  settings: HermesAgentSettings;
+}>;
+
 export type TaskPacketContent = Readonly<{
   projectId: string;
   workItemId: string;
@@ -770,6 +814,7 @@ export type TaskPacketContent = Readonly<{
   runtimeProfile: string;
   authMode: 'user' | 'agent' | 'system';
   secretsRef: OpaqueSecretRef | null;
+  agentProfileSnapshot?: AgentProfileSnapshot | null;
   createdFromEventId: string;
   createdByActorId: string;
 }>;
@@ -783,8 +828,12 @@ export type TaskPacket = Readonly<{
 
 export type TaskPacketConfirmationView = Readonly<{
   packetId: string;
-  content: Readonly<Pick<TaskPacketContent, 'approverActorId'>>;
+  content: Readonly<{
+    approverActorId: string;
+    agentProfileSnapshot: AgentProfileSnapshot | null;
+  }>;
   contentHash: string;
+  hermesRunnerEnabled?: boolean;
 }>;
 
 const packetStringFields = [
@@ -803,7 +852,8 @@ const taskPacketContentKeys = new Set<keyof TaskPacketContent>([
   ...packetPositiveIntegerFields,
   'expectedOutputSchema',
   'authMode',
-  'secretsRef'
+  'secretsRef',
+  'agentProfileSnapshot'
 ]);
 const secretKeyPattern = /secret(?!sref)|token|password|credential|api_?key|private_?key/i;
 const opaqueSecretRefKeys = new Set(['provider', 'reference', 'scope']);
@@ -861,6 +911,98 @@ const isOpaqueSecretRef = (value: unknown): value is OpaqueSecretRef =>
   isPlainObject(value) && Object.keys(value).length === 3 &&
   Object.keys(value).every((key) => opaqueSecretRefKeys.has(key)) &&
   hasNonEmptyString(value.provider) && hasNonEmptyString(value.reference) && isStringArray(value.scope);
+
+const profileConfigHashPattern = /^[0-9a-f]{64}$/;
+const secretValuePattern =
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:^|[\s"'=])(github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|bearer\s+\S+|(?:password|token|api[_ -]?key|credential)\s*[:=]\s*\S+)/i;
+
+export const DEFAULT_HERMES_INSTRUCTIONS =
+  'Act only from canonical Task Packets. Return a structured result with status, evidence, artifacts, and next action.';
+
+export const DEFAULT_HERMES_SETTINGS: HermesAgentSettings = {
+  resultFormat: 'structured_v1',
+  includeEvidence: true
+};
+
+const isHermesSettings = (value: unknown): value is HermesAgentSettings =>
+  isPlainObject(value) &&
+  Object.keys(value).length === 2 &&
+  value.resultFormat === 'structured_v1' &&
+  typeof value.includeEvidence === 'boolean';
+
+export const hashAgentProfileConfiguration = (profile: Readonly<Pick<
+  AgentProfileConfiguration,
+  'runtimeId' | 'runtimeProfile' | 'allowedTools' | 'forbiddenSurfaces' |
+  'instructions' | 'settings' | 'enabled' | 'version'
+>>): string => createHash('sha256').update(canonicalJson({
+  runtimeId: profile.runtimeId,
+  runtimeProfile: profile.runtimeProfile,
+  allowedTools: [...profile.allowedTools],
+  forbiddenSurfaces: [...profile.forbiddenSurfaces],
+  instructions: profile.instructions,
+  settings: profile.settings,
+  enabled: profile.enabled,
+  version: profile.version
+})).digest('hex');
+
+export const updateHermesAgentProfile = (
+  profile: AgentProfileConfiguration,
+  input: Readonly<{
+    instructions: string;
+    settings: HermesAgentSettings;
+    enabled: boolean;
+  }>
+): CommandResult<AgentProfileConfiguration> => {
+  const instructions = input.instructions.trim();
+  if (
+    profile.runtimeId !== 'hermes' ||
+    profile.runtimeProfile !== 'read_safe' ||
+    instructions.length < 1 ||
+    instructions.length > 2_000 ||
+    secretValuePattern.test(instructions) ||
+    !isHermesSettings(input.settings) ||
+    typeof input.enabled !== 'boolean'
+  ) {
+    return failed('INVALID_COMMAND', 'Hermes profile configuration is invalid or may contain a secret.');
+  }
+  const next = {
+    ...profile,
+    instructions,
+    settings: {...input.settings},
+    enabled: input.enabled,
+    version: profile.version + 1
+  };
+  return succeeded({...next, configHash: hashAgentProfileConfiguration(next)});
+};
+
+const isAgentProfileSnapshot = (value: unknown): value is AgentProfileSnapshot =>
+  isPlainObject(value) &&
+  Object.keys(value).length === 10 &&
+  hasNonEmptyString(value.profileId) &&
+  value.runtimeId === 'hermes' &&
+  value.runtimeProfile === 'read_safe' &&
+  isStringArray(value.allowedTools) &&
+  isStringArray(value.forbiddenSurfaces) &&
+  typeof value.enabled === 'boolean' &&
+  Number.isSafeInteger(value.configVersion) &&
+  (value.configVersion as number) > 0 &&
+  typeof value.configHash === 'string' &&
+  profileConfigHashPattern.test(value.configHash) &&
+  typeof value.instructions === 'string' &&
+  value.instructions.trim().length > 0 &&
+  value.instructions.length <= 2_000 &&
+  !secretValuePattern.test(value.instructions) &&
+  isHermesSettings(value.settings) &&
+  hashAgentProfileConfiguration({
+    runtimeId: value.runtimeId,
+    runtimeProfile: value.runtimeProfile,
+    allowedTools: value.allowedTools,
+    forbiddenSurfaces: value.forbiddenSurfaces,
+    instructions: value.instructions,
+    settings: value.settings,
+    enabled: value.enabled,
+    version: value.configVersion as number
+  }) === value.configHash;
 
 export const canonicalJson = (value: CanonicalJson): string => {
   if (Array.isArray(value)) {
@@ -954,7 +1096,8 @@ export const createTaskPacket = (packetId: string, content: TaskPacketContent): 
     return failed('SECRET_VALUE_FORBIDDEN', 'Task packets may contain opaque secret references but never secret values.');
   }
   const contentKeys = Object.keys(content);
-  if (contentKeys.length !== taskPacketContentKeys.size ||
+  if (
+    contentKeys.length !== taskPacketContentKeys.size - (content.agentProfileSnapshot === undefined ? 1 : 0) ||
     !contentKeys.every((key) => taskPacketContentKeys.has(key as keyof TaskPacketContent))) {
     return failed('INVALID_TASK_PACKET', 'Task packet content must contain exactly the supported fields.');
   }
@@ -971,7 +1114,12 @@ export const createTaskPacket = (packetId: string, content: TaskPacketContent): 
     Number.isSafeInteger(content[field]) && content[field] > 0
   ) ||
     !isOneOf(['user', 'agent', 'system'] as const, content.authMode) ||
-    !(content.secretsRef === null || isOpaqueSecretRef(content.secretsRef))) {
+    !(content.secretsRef === null || isOpaqueSecretRef(content.secretsRef)) ||
+    !(
+      content.agentProfileSnapshot === undefined ||
+      content.agentProfileSnapshot === null ||
+      isAgentProfileSnapshot(content.agentProfileSnapshot)
+    )) {
     return failed('INVALID_TASK_PACKET', 'Task packet timebox, auth mode, or secret reference is invalid.');
   }
   const immutableContent = deepFreeze({
@@ -985,7 +1133,19 @@ export const createTaskPacket = (packetId: string, content: TaskPacketContent): 
     forbiddenSurfaces: [...content.forbiddenSurfaces],
     dataPolicy: cloneCanonicalJson(content.dataPolicy),
     expectedOutputSchema: cloneCanonicalJson(content.expectedOutputSchema),
-    secretsRef: cloneSecretRef(content.secretsRef)
+    secretsRef: cloneSecretRef(content.secretsRef),
+    ...(content.agentProfileSnapshot === undefined
+      ? {}
+      : {
+          agentProfileSnapshot: content.agentProfileSnapshot === null
+            ? null
+            : {
+                ...content.agentProfileSnapshot,
+                allowedTools: [...content.agentProfileSnapshot.allowedTools],
+                forbiddenSurfaces: [...content.agentProfileSnapshot.forbiddenSurfaces],
+                settings: {...content.agentProfileSnapshot.settings}
+              }
+        })
   }) as TaskPacketContent;
   const serialized = canonicalJson(immutableContent);
   const contentHash = createHash('sha256').update(serialized).digest('hex');
@@ -1608,6 +1768,12 @@ export type WorkItemUpdateMutation = Readonly<{
   expectedPersistedVersion: number;
   aggregate: WorkItem;
 }>;
+export type AgentProfileUpdateMutation = Readonly<{
+  aggregateType: 'agent_profile';
+  aggregateId: string;
+  expectedPersistedVersion: number;
+  aggregate: AgentProfileConfiguration;
+}>;
 export type TaskPacketInsertMutation = Readonly<{
   aggregateType: 'task_packet';
   aggregateId: string;
@@ -1640,6 +1806,7 @@ export type AccessRequestMutation = Readonly<{
 }>;
 export type CanonicalMutation =
   | WorkItemUpdateMutation
+  | AgentProfileUpdateMutation
   | TaskPacketInsertMutation
   | AgentRunMutation
   | ApprovalInsertMutation
@@ -1721,6 +1888,10 @@ export type CanonicalCommandOutcome = NonApprovalCommandOutcome | ApprovalRequir
 export interface CanonicalCommandTransaction {
   /** Loads only aggregates visible to the workspace bound to this command receipt. */
   loadWorkItem(claimToken: ReceiptClaimToken, workItemId: string): Promise<WorkItem | null>;
+  loadAgentProfile(
+    claimToken: ReceiptClaimToken,
+    agentProfileId: string
+  ): Promise<AgentProfileConfiguration | null>;
   loadTaskPacket(
     claimToken: ReceiptClaimToken,
     taskPacketId: string

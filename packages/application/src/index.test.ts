@@ -2,10 +2,14 @@ import {randomUUID} from 'node:crypto';
 import {describe, expect, it} from 'vitest';
 import {
   CURRENT_POLICY_VERSION,
+  DEFAULT_HERMES_INSTRUCTIONS,
+  DEFAULT_HERMES_SETTINGS,
   createActorContextIssuer,
   createApprovalBinding,
   createTaskPacket,
+  hashAgentProfileConfiguration,
   type AccessRequest,
+  type AgentProfileConfiguration,
   type AgentRunView,
   type Approval,
   type CanonicalCommand,
@@ -106,6 +110,7 @@ const command = <T extends CanonicalCommand['type']>(type: T, payload: Extract<C
 
 class FakeUnitOfWork implements UnitOfWork {
   readonly workItems = new Map<string, WorkItem>();
+  readonly agentProfiles = new Map<string, AgentProfileConfiguration>();
   readonly taskPackets = new Map<string, TaskPacket>();
   readonly agentRuns = new Map<string, AgentRunView>();
   readonly approvals = new Map<string, Approval>();
@@ -117,6 +122,7 @@ class FakeUnitOfWork implements UnitOfWork {
   failure: 'not_found' | 'version_conflict' | undefined;
   failCompletion = false;
   approvalCalls = 0;
+  hermesRunnerEnabled = true;
 
   async executeCommand<T>(claim: CommandReceiptClaim, work: (
     transaction: CanonicalCommandTransaction, claimToken: ReceiptClaimToken
@@ -127,6 +133,7 @@ class FakeUnitOfWork implements UnitOfWork {
       ? {status: 'replayed', receipt: existing}
       : {status: 'key_reused', existingRequestHash: existing.requestHash};
     const workItems = new Map(this.workItems);
+    const agentProfiles = new Map(this.agentProfiles);
     const taskPackets = new Map(this.taskPackets);
     const agentRuns = new Map(this.agentRuns);
     const approvals = new Map(this.approvals);
@@ -135,7 +142,19 @@ class FakeUnitOfWork implements UnitOfWork {
     const token = {} as ReceiptClaimToken;
     const transaction: CanonicalCommandTransaction = {
       loadWorkItem: async (_token, value) => this.workItems.get(value) ?? null,
-      loadTaskPacket: async (_token, value) => this.taskPackets.get(value) ?? null,
+      loadAgentProfile: async (_token, value) => this.agentProfiles.get(value) ?? null,
+      loadTaskPacket: async (_token, value) => {
+        const packet = this.taskPackets.get(value);
+        return packet === undefined ? null : {
+          packetId: packet.packetId,
+          content: {
+            approverActorId: packet.content.approverActorId,
+            agentProfileSnapshot: packet.content.agentProfileSnapshot ?? null
+          },
+          contentHash: packet.contentHash,
+          hermesRunnerEnabled: this.hermesRunnerEnabled
+        };
+      },
       loadAgentRun: async (_token, value) => this.agentRuns.get(value) ?? null,
       loadApproval: async (_token, value) => this.approvals.get(value) ?? null,
       loadAccessRequest: async (_token, value) => this.accessRequests.get(value) ?? null,
@@ -145,6 +164,7 @@ class FakeUnitOfWork implements UnitOfWork {
         if (this.failure === 'version_conflict') return {status: 'version_conflict' as const, expectedPersistedVersion: 1, persistedVersion: 2};
         const mutation = outcome.mutation;
         if (mutation.aggregateType === 'work_item') this.workItems.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'agent_profile') this.agentProfiles.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'task_packet') this.taskPackets.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'agent_run') this.agentRuns.set(mutation.aggregateId, {aggregate: mutation.aggregate, projectId});
         if (mutation.aggregateType === 'approval') this.approvals.set(mutation.aggregateId, mutation.aggregate);
@@ -174,6 +194,7 @@ class FakeUnitOfWork implements UnitOfWork {
       result = await work(transaction, token);
     } catch (cause) {
       this.workItems.clear(); workItems.forEach((value, key) => this.workItems.set(key, value));
+      this.agentProfiles.clear(); agentProfiles.forEach((value, key) => this.agentProfiles.set(key, value));
       this.taskPackets.clear(); taskPackets.forEach((value, key) => this.taskPackets.set(key, value));
       this.agentRuns.clear(); agentRuns.forEach((value, key) => this.agentRuns.set(key, value));
       this.approvals.clear(); approvals.forEach((value, key) => this.approvals.set(key, value));
@@ -544,5 +565,122 @@ describe('canonical command service', () => {
     expect(uow.mutations).toHaveLength(0);
     expect(uow.audits).toHaveLength(0);
     expect(uow.receipts).toHaveLength(0);
+  });
+
+  it('updates Hermes with optimistic locking and freezes its exact config in a packet', async () => {
+    const uow = new FakeUnitOfWork();
+    const profileBase = {
+      id: id(),
+      workspaceId,
+      actorId,
+      runtimeId: 'hermes',
+      runtimeProfile: 'read_safe',
+      allowedTools: ['task_packet_read', 'artifact_write'],
+      forbiddenSurfaces: ['external_message', 'github_write', 'production', 'deploy', 'merge'],
+      instructions: DEFAULT_HERMES_INSTRUCTIONS,
+      settings: DEFAULT_HERMES_SETTINGS,
+      enabled: true,
+      version: 1
+    } as const;
+    const profile: AgentProfileConfiguration = {
+      ...profileBase,
+      configHash: hashAgentProfileConfiguration(profileBase)
+    };
+    uow.agentProfiles.set(profile.id, profile);
+    const service = serviceFor(uow);
+    const firstInstructions = 'Act only from the packet and return structured evidence.';
+    await expect(service.execute(command('agent_profile.update', {
+      agentProfileId: profile.id,
+      expectedVersion: 1,
+      instructions: firstInstructions,
+      settings: {resultFormat: 'structured_v1', includeEvidence: true},
+      enabled: true
+    }))).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const frozenProfile = uow.agentProfiles.get(profile.id)!;
+    const packet = createTaskPacket(id(), {
+      ...packetContent(),
+      runtimeProfile: 'read_safe',
+      agentProfileSnapshot: {
+        profileId: frozenProfile.id,
+        runtimeId: 'hermes',
+        runtimeProfile: 'read_safe',
+        allowedTools: frozenProfile.allowedTools,
+        forbiddenSurfaces: frozenProfile.forbiddenSurfaces,
+        enabled: frozenProfile.enabled,
+        configVersion: frozenProfile.version,
+        configHash: frozenProfile.configHash,
+        instructions: frozenProfile.instructions,
+        settings: frozenProfile.settings
+      }
+    });
+    expect(packet.ok).toBe(true);
+    if (!packet.ok) throw new Error('Hermes packet did not initialize.');
+    expect(createTaskPacket(id(), {
+      ...packetContent(),
+      runtimeProfile: 'read_safe',
+      agentProfileSnapshot: {
+        ...packet.value.content.agentProfileSnapshot!,
+        configHash: '0'.repeat(64)
+      }
+    })).toMatchObject({ok: false, error: {code: 'INVALID_TASK_PACKET'}});
+    expect(createTaskPacket(id(), {
+      ...packetContent(),
+      runtimeProfile: 'read_safe',
+      agentProfileSnapshot: {
+        ...packet.value.content.agentProfileSnapshot!,
+        instructions: `Use github_pat_${'a'.repeat(24)}`
+      }
+    })).toMatchObject({ok: false, error: {code: 'INVALID_TASK_PACKET'}});
+    uow.taskPackets.set(packet.value.packetId, packet.value);
+    uow.hermesRunnerEnabled = false;
+    await expect(service.execute(command('agent_run.queue', {
+      agentRunId: id(),
+      taskPacketId: packet.value.packetId,
+      agentProfileId: frozenProfile.id,
+      confirmedPacketHash: packet.value.contentHash,
+      baseCommit: 'a'.repeat(40)
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'POLICY_DENIED'}}}});
+    uow.hermesRunnerEnabled = true;
+    await expect(service.execute(command('agent_run.queue', {
+      agentRunId: id(),
+      taskPacketId: packet.value.packetId,
+      agentProfileId: id(),
+      confirmedPacketHash: packet.value.contentHash,
+      baseCommit: 'a'.repeat(40)
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'NOT_FOUND'}}}});
+    await expect(service.execute(command('agent_profile.update', {
+      agentProfileId: profile.id,
+      expectedVersion: 1,
+      instructions: 'Stale change.',
+      settings: DEFAULT_HERMES_SETTINGS,
+      enabled: true
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    await service.execute(command('agent_profile.update', {
+      agentProfileId: profile.id,
+      expectedVersion: 2,
+      instructions: 'A later valid profile revision.',
+      settings: {resultFormat: 'structured_v1', includeEvidence: false},
+      enabled: true
+    }));
+    await expect(service.execute(command('agent_run.queue', {
+      agentRunId: id(),
+      taskPacketId: packet.value.packetId,
+      agentProfileId: frozenProfile.id,
+      confirmedPacketHash: packet.value.contentHash,
+      baseCommit: 'a'.repeat(40)
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    expect(packet.value.content.agentProfileSnapshot).toEqual({
+      profileId: frozenProfile.id,
+      runtimeId: 'hermes',
+      runtimeProfile: 'read_safe',
+      allowedTools: frozenProfile.allowedTools,
+      forbiddenSurfaces: frozenProfile.forbiddenSurfaces,
+      enabled: true,
+      configVersion: 2,
+      configHash: frozenProfile.configHash,
+      instructions: firstInstructions,
+      settings: {resultFormat: 'structured_v1', includeEvidence: true}
+    });
+    expect(uow.agentProfiles.get(profile.id)?.version).toBe(3);
   });
 });

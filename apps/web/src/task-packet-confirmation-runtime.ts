@@ -61,6 +61,9 @@ const createRuntime = (db: Database): TaskPacketConfirmationRuntime => ({
       packetId: taskPackets.id,
       contentHash: taskPackets.contentHash,
       runtimeProfile: taskPackets.runtimeProfile,
+      agentProfileSnapshotId: taskPackets.agentProfileSnapshotId,
+      agentProfileSnapshotVersion: taskPackets.agentProfileSnapshotVersion,
+      agentProfileSnapshotHash: taskPackets.agentProfileSnapshotHash,
       projectId: taskPackets.projectId,
       workItemId: taskPackets.workItemId
     }).from(taskPackets)
@@ -72,8 +75,15 @@ const createRuntime = (db: Database): TaskPacketConfirmationRuntime => ({
       .where(and(eq(taskPackets.id, packetId), isNull(agentRuns.id)))
       .limit(1);
     if (packet === undefined) return null;
+    if (
+      packet.agentProfileSnapshotId !== null &&
+      (
+        process.env.HERMES_RUNNER_ENABLED !== 'true' ||
+        packet.agentProfileSnapshotId !== agentProfileId
+      )
+    ) return null;
 
-    const [profile] = await db.select({id: agentProfiles.id})
+    const [profile] = await db.select({id: agentProfiles.id, runtimeId: agentProfiles.runtimeId})
       .from(agentProfiles).innerJoin(actors, and(
         eq(actors.id, agentProfiles.actorId),
         eq(actors.workspaceId, workspaceId)
@@ -83,10 +93,15 @@ const createRuntime = (db: Database): TaskPacketConfirmationRuntime => ({
         eq(agentProfiles.workspaceId, workspaceId),
         eq(agentProfiles.runtimeProfile, packet.runtimeProfile),
         eq(agentProfiles.enabled, true),
+        ...(packet.agentProfileSnapshotId === null ? [] : [
+          eq(agentProfiles.version, packet.agentProfileSnapshotVersion!),
+          eq(agentProfiles.configHash, packet.agentProfileSnapshotHash!)
+        ]),
         isNull(actors.disabledAt)
       ))
       .limit(1);
     if (profile === undefined) return null;
+    if (profile.runtimeId === 'hermes' && packet.agentProfileSnapshotId === null) return null;
 
     const [repositoryBinding] = await db.select({metadata: trackerBindings.metadata})
       .from(trackerBindings)
