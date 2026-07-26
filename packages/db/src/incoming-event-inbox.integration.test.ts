@@ -21,9 +21,15 @@ import {
   INCOMING_EVENT_QUEUE
 } from './incoming-event-inbox';
 import {createPostgresIncomingEventProcessor} from './incoming-event-consumer';
+import {createPostgresTelegramStatusResponseOutbox} from './telegram-status-response';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {createDatabase} from './index';
-import {canonicalEvents, incomingEvents} from './schema';
+import {
+  canonicalEvents,
+  dailyPmReports,
+  incomingEvents,
+  outboxEvents
+} from './schema';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (process.env.CI && databaseUrl === undefined) {
@@ -64,6 +70,26 @@ const event = (overrides: Partial<IncomingEvent> = {}): IncomingEvent => ({
   },
   projection: {issue: {id: 10, number: 4, state: 'open'}},
   ...overrides
+});
+
+const telegramStatusEvent = (): IncomingEvent => ({
+  eventId: randomUUID(),
+  workspaceId: fixture.workspaceId,
+  projectId: fixture.projectId,
+  provider: 'telegram',
+  deliveryId: `tgid:v1:${'a'.repeat(64)}`,
+  eventType: 'chat_command',
+  action: 'status',
+  receivedAt: '2026-07-26T09:00:00.000Z',
+  payloadSha256: 'b'.repeat(64),
+  verification: {outcome: 'verified', method: 'shared-token'},
+  source: {
+    kind: 'telegram',
+    messageId: `tgid:v1:${'c'.repeat(64)}`,
+    chatId: `tgid:v1:${'d'.repeat(64)}`,
+    userId: `tgid:v1:${'e'.repeat(64)}`
+  },
+  projection: {command: {name: 'status'}}
 });
 
 const jobs = async () => boss.findJobs<{eventId: string}>(
@@ -395,6 +421,69 @@ describePostgres(
           provider: 'github',
           deliveryId: candidate.deliveryId,
           projection: candidate.projection
+        }
+      });
+    });
+
+    it('creates one status outbox response from a processed canonical Telegram command on replay', async () => {
+      const candidate = telegramStatusEvent();
+      const inbox = createPostgresIncomingEventInbox(testDb, boss);
+      const processor = createPostgresIncomingEventProcessor(testDb);
+      const responder = createPostgresTelegramStatusResponseOutbox(testDb, {
+        workspaceId: fixture.workspaceId,
+        projectId: fixture.projectId
+      });
+      await testDb.insert(dailyPmReports).values({
+        projectId: fixture.projectId,
+        reportDate: '2026-07-26',
+        createdAt: new Date('2026-07-26T09:00:00.000Z'),
+        payload: {
+          schemaVersion: 1,
+          timezone: 'UTC',
+          reportDate: '2026-07-26',
+          generatedAt: '2026-07-26T09:00:00.000Z',
+          dataAsOf: '2026-07-26T09:00:00.000Z',
+          workItems: {
+            statusCounts: {backlog: 1, ready: 2, in_dev: 3, qa: 4, acceptance: 5, done: 6},
+            blockedCount: 2
+          },
+          riskSignals: {unresolvedCountsBySeverity: {green: 3, yellow: 2, red: 1}},
+          approvals: {pendingCount: 7},
+          github: {
+            failedWritebackCount: 8,
+            latestSuccessfulTrackerSnapshot: {at: null, freshness: 'missing'}
+          }
+        }
+      });
+      await inbox.accept(candidate);
+
+      await expect(processor.process(candidate.eventId)).resolves.toEqual({
+        status: 'processed', eventId: candidate.eventId
+      });
+      await expect(responder.prepare(candidate.eventId)).resolves.toBe('prepared');
+      await expect(processor.process(candidate.eventId)).resolves.toEqual({
+        status: 'replayed', eventId: candidate.eventId
+      });
+      await expect(responder.prepare(candidate.eventId)).resolves.toBe('prepared');
+
+      const responses = await testDb.select().from(outboxEvents).where(eq(
+        outboxEvents.idempotencyKey,
+        `telegram-status:${candidate.eventId}`
+      ));
+      expect(responses).toHaveLength(1);
+      expect(responses[0]).toMatchObject({
+        workspaceId: fixture.workspaceId,
+        projectId: fixture.projectId,
+        destination: 'telegram',
+        eventType: 'telegram.status.response.v1',
+        status: 'pending',
+        payload: {
+          chatIdentity: candidate.source.kind === 'telegram' ? candidate.source.chatId : undefined,
+          userIdentity: candidate.source.kind === 'telegram' ? candidate.source.userId : undefined,
+          text: 'Status 2026-07-26 UTC\n' +
+            'Work: backlog 1, ready 2, in_dev 3, qa 4, acceptance 5, done 6\n' +
+            'Blocked: 2\nPending approvals: 7\nRisks: green 3, yellow 2, red 1\n' +
+            'Tracker: missing\nGitHub writebacks failed: 8'
         }
       });
     });

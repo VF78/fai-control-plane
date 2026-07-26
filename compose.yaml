@@ -18,7 +18,10 @@ x-runtime-environment: &runtime-environment
   GITHUB_ASCON_INSTALLATION_ID: ${GITHUB_ASCON_INSTALLATION_ID:-}
   GITHUB_APP_PRIVATE_KEY_HOST_FILE: ${GITHUB_APP_PRIVATE_KEY_HOST_FILE:-./infra/compose/secrets/github-app-private-key.disabled}
   TELEGRAM_INGRESS_ENABLED: ${TELEGRAM_INGRESS_ENABLED:-false}
+  TELEGRAM_STATUS_RESPONSE_ENABLED: ${TELEGRAM_STATUS_RESPONSE_ENABLED:-false}
   TELEGRAM_WEBHOOK_SECRET_FILE: ${TELEGRAM_WEBHOOK_SECRET_FILE:-/run/secrets/telegram-webhook}
+  TELEGRAM_IDENTITY_SECRET_FILE: ${TELEGRAM_IDENTITY_SECRET_FILE:-/run/secrets/telegram-identity}
+  TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-/run/secrets/telegram-bot-token}
   TELEGRAM_PROJECT_ID: ${TELEGRAM_PROJECT_ID:-}
   TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
   TELEGRAM_ALLOWED_PRIVATE_CHAT_IDS: ${TELEGRAM_ALLOWED_PRIVATE_CHAT_IDS:-}
@@ -96,6 +99,10 @@ services:
         target: ${TELEGRAM_WEBHOOK_SECRET_FILE:-/run/secrets/telegram-webhook}
         read_only: true
       - type: bind
+        source: ${TELEGRAM_IDENTITY_SECRET_HOST_FILE:-./infra/compose/secrets/telegram-identity.disabled}
+        target: ${TELEGRAM_IDENTITY_SECRET_FILE:-/run/secrets/telegram-identity}
+        read_only: true
+      - type: bind
         source: ${GITHUB_LOGIN_CLIENT_SECRET_HOST_FILE:-./infra/compose/secrets/github-login-client-secret.disabled}
         target: ${GITHUB_LOGIN_CLIENT_SECRET_FILE:-/run/secrets/github-login-client-secret}
         read_only: true
@@ -142,6 +149,14 @@ services:
       - type: bind
         source: ${GITHUB_APP_PRIVATE_KEY_HOST_FILE:-./infra/compose/secrets/github-app-private-key.disabled}
         target: ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/github-app-private-key}
+        read_only: true
+      - type: bind
+        source: ${TELEGRAM_IDENTITY_SECRET_HOST_FILE:-./infra/compose/secrets/telegram-identity.disabled}
+        target: ${TELEGRAM_IDENTITY_SECRET_FILE:-/run/secrets/telegram-identity}
+        read_only: true
+      - type: bind
+        source: ${TELEGRAM_BOT_TOKEN_HOST_FILE:-./infra/compose/secrets/telegram-bot-token.disabled}
+        target: ${TELEGRAM_BOT_TOKEN_FILE:-/run/secrets/telegram-bot-token}
         read_only: true
     depends_on:
       postgres:

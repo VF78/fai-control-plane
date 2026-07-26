@@ -6,17 +6,27 @@ import {
   verifyAndProjectTelegramWebhook
 } from './telegram-webhook';
 
-const secret = 'telegram-webhook-secret';
+const webhookSecret = 'telegram-webhook-secret';
+const identitySecret = 'telegram-identity-secret-value-0001';
 const config = createTelegramWebhookConfig({
   webhookSecretRef: {
     provider: 'test',
     reference: 'telegram-webhook-secret',
     scope: ['telegram:webhook:verify']
   },
+  identitySecretRef: {
+    provider: 'test',
+    reference: 'telegram-identity-secret',
+    scope: ['telegram:identity:keying']
+  },
   allowedUserIds: [700_001],
   allowedPrivateChatIds: [800_001]
 });
-const secrets: SecretsProvider = {resolve: async () => ({value: secret})};
+const secrets: SecretsProvider = {
+  resolve: async (reference) => ({
+    value: reference.reference === 'telegram-identity-secret' ? identitySecret : webhookSecret
+  })
+};
 
 const body = (overrides: Record<string, unknown> = {}): Uint8Array => new TextEncoder().encode(
   JSON.stringify({
@@ -44,7 +54,7 @@ const body = (overrides: Record<string, unknown> = {}): Uint8Array => new TextEn
 
 const verify = (
   rawBody: Uint8Array,
-  suppliedSecret = secret,
+  suppliedSecret = webhookSecret,
   provider: SecretsProvider = secrets
 ) =>
   verifyAndProjectTelegramWebhook({
@@ -83,16 +93,20 @@ describe('Telegram /status webhook boundary', () => {
     const alternate = await verify(
       rawBody,
       'alternate_webhook_secret',
-      {resolve: async () => ({value: 'alternate_webhook_secret'})}
+      {resolve: async (reference) => ({
+        value: reference.reference === 'telegram-identity-secret'
+          ? identitySecret
+          : 'alternate_webhook_secret'
+      })}
     );
     expect(alternate).toMatchObject({outcome: 'accepted'});
     if (alternate.outcome !== 'accepted') throw new Error('Expected alternate accepted update.');
-    expect(alternate.projection.payloadSha256).not.toBe(first.projection.payloadSha256);
+    expect(alternate.projection).toEqual(first.projection);
 
-    await expect(verify(rawBody, `${secret}-suffix`)).resolves.toEqual({
+    await expect(verify(rawBody, `${webhookSecret}-suffix`)).resolves.toEqual({
       outcome: 'rejected', code: 'telegram_secret_invalid'
     });
-    await expect(verify(rawBody, secret, {
+    await expect(verify(rawBody, webhookSecret, {
       resolve: async () => ({value: 'invalid secret!'})
     })).resolves.toEqual({
       outcome: 'rejected', code: 'telegram_secret_config_invalid'

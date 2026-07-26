@@ -20,6 +20,11 @@ export {
   createPostgresIncomingEventProcessor
 } from './incoming-event-consumer';
 export {
+  createPostgresTelegramStatusPublisher,
+  createPostgresTelegramStatusResponseOutbox,
+  formatTelegramStatusResponse
+} from './telegram-status-response';
+export {
   createPostgresIncomingEventInbox,
   INCOMING_EVENT_QUEUE,
   type PgBossTransactionalSender

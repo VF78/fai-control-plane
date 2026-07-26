@@ -9,6 +9,7 @@ const identityPattern = /^tgid:v1:[0-9a-f]{64}$/;
 
 export type TelegramWebhookConfig = Readonly<{
   webhookSecretRef: OpaqueSecretRef;
+  identitySecretRef: OpaqueSecretRef;
   allowedUserIds: readonly number[];
   allowedPrivateChatIds: readonly number[];
 }>;
@@ -127,21 +128,36 @@ const parseAllowlist = (value: unknown): number[] | null => {
 export const createTelegramWebhookConfig = (input: unknown): TelegramWebhookConfig => {
   const value = snapshotObject(input);
   if (value === null || !exactKeys(value, [
-    'allowedPrivateChatIds', 'allowedUserIds', 'webhookSecretRef'
+    'allowedPrivateChatIds', 'allowedUserIds', 'identitySecretRef', 'webhookSecretRef'
   ])) {
     throw new Error('Telegram webhook configuration is invalid.');
   }
   const webhookSecretRef = snapshotSecretRef(value.webhookSecretRef);
+  const identitySecretRef = snapshotSecretRef(value.identitySecretRef);
   const allowedUserIds = parseAllowlist(value.allowedUserIds);
   const allowedPrivateChatIds = parseAllowlist(value.allowedPrivateChatIds);
-  if (webhookSecretRef === null || allowedUserIds === null || allowedPrivateChatIds === null) {
+  if (
+    webhookSecretRef === null || identitySecretRef === null ||
+    allowedUserIds === null || allowedPrivateChatIds === null
+  ) {
     throw new Error('Telegram webhook configuration is invalid.');
+  }
+  if (
+    webhookSecretRef.provider === identitySecretRef.provider &&
+    webhookSecretRef.reference === identitySecretRef.reference
+  ) {
+    throw new Error('Telegram webhook and identity secret references must differ.');
   }
   return Object.freeze({
     webhookSecretRef: Object.freeze({
       provider: webhookSecretRef.provider,
       reference: webhookSecretRef.reference,
       scope: Object.freeze([...webhookSecretRef.scope])
+    }),
+    identitySecretRef: Object.freeze({
+      provider: identitySecretRef.provider,
+      reference: identitySecretRef.reference,
+      scope: Object.freeze([...identitySecretRef.scope])
     }),
     allowedUserIds: Object.freeze(allowedUserIds),
     allowedPrivateChatIds: Object.freeze(allowedPrivateChatIds)
@@ -200,7 +216,7 @@ export const readTelegramWebhookBody = async (
   return {ok: true, body};
 };
 
-const keyedId = (secret: string, kind: string, value: number): string =>
+export const telegramKeyedIdentifier = (secret: string, kind: string, value: number): string =>
   `tgid:v1:${createHmac('sha256', secret)
     .update(`telegram:${kind}:${value}`)
     .digest('hex')}`;
@@ -215,7 +231,7 @@ const parsesUpdate = (body: Uint8Array): Record<string, unknown> | null => {
 
 const projectUpdate = (
   config: TelegramWebhookConfig,
-  secret: string,
+  identitySecret: string,
   body: Uint8Array
 ): TelegramWebhookResult => {
   const update = parsesUpdate(body);
@@ -244,18 +260,18 @@ const projectUpdate = (
     outcome: 'accepted',
     projection: {
       provider: 'telegram',
-      deliveryId: keyedId(secret, 'update', update.update_id),
+      deliveryId: telegramKeyedIdentifier(identitySecret, 'update', update.update_id),
       eventType: 'chat_command',
       action: 'status',
-      payloadSha256: createHmac('sha256', secret)
+      payloadSha256: createHmac('sha256', identitySecret)
         .update('telegram:payload:v1\0')
         .update(body)
         .digest('hex'),
       source: {
         kind: 'telegram',
-        messageId: keyedId(secret, 'message', messageId),
-        chatId: keyedId(secret, 'chat', chat.id),
-        userId: keyedId(secret, 'user', actor.id)
+        messageId: telegramKeyedIdentifier(identitySecret, 'message', messageId),
+        chatId: telegramKeyedIdentifier(identitySecret, 'chat', chat.id),
+        userId: telegramKeyedIdentifier(identitySecret, 'user', actor.id)
       },
       projection: {command: {name: 'status'}}
     }
@@ -302,7 +318,19 @@ export const verifyAndProjectTelegramWebhook = async (input: Readonly<{
   ) {
     return reject('telegram_secret_invalid');
   }
-  return projectUpdate(input.config, expectedSecret, input.body);
+  let identitySecret: string;
+  try {
+    identitySecret = (await input.secrets.resolve(
+      input.config.identitySecretRef,
+      'telegram.identity.keying'
+    )).value;
+  } catch {
+    return reject('telegram_secret_unavailable');
+  }
+  if (typeof identitySecret !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(identitySecret)) {
+    return reject('telegram_secret_config_invalid');
+  }
+  return projectUpdate(input.config, identitySecret, input.body);
 };
 
 export const isTelegramKeyedIdentifier = (value: string): boolean => identityPattern.test(value);

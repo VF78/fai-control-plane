@@ -171,11 +171,16 @@ real host file with mode `0600`. Keep `GITHUB_INGRESS_ENABLED=false` until the
 incoming-event consumer is deployed; the webhook route returns `404` while
 either synchronization or ingress is disabled.
 
-Telegram ingress is also disabled by default. When explicitly enabled, the
-webhook accepts only `/status` from the configured private chat and user
-allowlists, then records a sanitized durable command event. It does not send a
-reply or start a runner. Point `TELEGRAM_WEBHOOK_SECRET_HOST_FILE` at a `0600`
-file containing the exact Bot API webhook secret without a trailing newline.
+Telegram ingress and its status response are disabled by default. The webhook
+accepts only `/status` from the configured private chat and user allowlists,
+then records a sanitized durable command event. It does not start a runner.
+`TELEGRAM_WEBHOOK_SECRET_HOST_FILE` verifies the webhook only; use the separate,
+stable `TELEGRAM_IDENTITY_SECRET_HOST_FILE` for keyed delivery/message/chat/user
+identities and payload fingerprints. The worker also requires a mounted
+`TELEGRAM_BOT_TOKEN_HOST_FILE` before it can send. Keep
+`TELEGRAM_STATUS_RESPONSE_ENABLED=false` until Vladimir explicitly approves the
+exact Telegram response template and policy; this repository never sends while
+the flag is disabled.
 
 ### Verify
 
