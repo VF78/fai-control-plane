@@ -127,6 +127,13 @@
       "when": 1785069979006,
       "tag": "0017_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785073667457,
+      "tag": "0018_rotate_repository_scope_credentials",
+      "breakpoints": true
     }
   ]
 }
