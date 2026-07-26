@@ -32,6 +32,7 @@ export function ProjectShareControls({
   const [selectedIds, setSelectedIds] = useState<readonly string[]>([]);
   const [expiresAt, setExpiresAt] = useState('');
   const [oneTimeUrl, setOneTimeUrl] = useState<string | null>(null);
+  const [copyMessage, setCopyMessage] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [bounds] = useState(() => {
@@ -62,6 +63,7 @@ export function ProjectShareControls({
     setPending(true);
     setMessage(null);
     setOneTimeUrl(null);
+    setCopyMessage(null);
     try {
       const response = await fetch('/api/project-shares', {
         method: 'POST',
@@ -117,6 +119,16 @@ export function ProjectShareControls({
       setMessage('Share link was not revoked.');
     } finally {
       setPending(false);
+    }
+  };
+
+  const copyOneTimeUrl = async () => {
+    if (oneTimeUrl === null) return;
+    try {
+      await navigator.clipboard.writeText(oneTimeUrl);
+      setCopyMessage('Share URL copied.');
+    } catch {
+      setCopyMessage('Share URL could not be copied.');
     }
   };
 
@@ -178,9 +190,11 @@ export function ProjectShareControls({
             >Create link</button>
           </div>
         </form>}
-    {oneTimeUrl === null ? null : <div className="one-time-share" role="status">
+    {oneTimeUrl === null ? null : <div className="one-time-share">
       <strong>Copy this URL now. It will not be shown again.</strong>
       <input aria-label="One-time project share URL" readOnly value={oneTimeUrl} />
+      <button onClick={() => void copyOneTimeUrl()} type="button">Copy</button>
+      {copyMessage === null ? null : <p aria-live="polite" className={copyMessage === 'Share URL copied.' ? 'share-copy-message' : 'share-copy-message failed'}>{copyMessage}</p>}
     </div>}
     {message === null ? null : <p aria-live="polite" className="share-message">{message}</p>}
     {grants.length === 0 ? <p className="muted share-empty">No share grants are recorded.</p>

@@ -57,11 +57,12 @@ export function TaskPacketConfirmationControls({
     }
   };
 
-  if (preview === undefined) return <p className="packet-state">{packet.nonRunnableReason}</p>;
+  if (preview === undefined) return packet.nonRunnableReason === null ? null : <p className="packet-state">{packet.nonRunnableReason}</p>;
   if (!enabled || csrfToken === null) {
     return <p className="packet-state">An authenticated operator session is required to confirm this packet.</p>;
   }
-  return <div className="packet-confirmation">
+  return <>{packet.runnable || packet.nonRunnableReason === null ? null : <p className="packet-state">{packet.nonRunnableReason}</p>}
+  <div className="packet-confirmation">
     <label className="packet-profile"><span>Enabled runtime profile</span><select
       disabled={pending}
       onChange={(event) => setAgentProfileId(event.target.value)}
@@ -87,5 +88,5 @@ export function TaskPacketConfirmationControls({
       {pending ? 'Queueing' : 'Confirm and queue'}
     </button>
     {message === null ? null : <p aria-live="polite" className="packet-message">{message}</p>}
-  </div>;
+  </div></>;
 }
