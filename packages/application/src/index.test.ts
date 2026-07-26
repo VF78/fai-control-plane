@@ -78,6 +78,7 @@ const approvalDecision = (approval: Approval, status: 'approved' | 'rejected') =
 const packetContent = () => ({
   projectId,
   workItemId: id(),
+  workItemVersion: 1,
   goal: 'Test packet',
   acceptanceCriteria: ['works'],
   inScope: ['packages/application/**'],
@@ -233,6 +234,7 @@ describe('canonical command service', () => {
         id: id(),
         taskPacketId: id(),
         agentProfileId: id(),
+        confirmedPacketHash: 'a'.repeat(64),
         baseCommit: 'a'.repeat(40),
         status: 'queued' as const,
         idempotencyKey: 'run',
@@ -452,6 +454,7 @@ describe('canonical command service', () => {
       id: id(),
       taskPacketId: id(),
       agentProfileId: id(),
+      confirmedPacketHash: 'a'.repeat(64),
       baseCommit: 'a'.repeat(40),
       status: 'queued' as const,
       idempotencyKey: 'run',

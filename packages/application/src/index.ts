@@ -1577,6 +1577,7 @@ export const createCanonicalCommandService = (
       id: command.payload.agentRunId,
       taskPacketId: command.payload.taskPacketId,
       agentProfileId: command.payload.agentProfileId,
+      confirmedPacketHash: command.payload.confirmedPacketHash,
       baseCommit: command.payload.baseCommit,
       status: 'queued',
       idempotencyKey: command.idempotencyKey,

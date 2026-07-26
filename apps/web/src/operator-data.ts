@@ -14,6 +14,7 @@ import {
   projectShareGrants,
   projectShareWorkItems,
   projects,
+  prLinks,
   riskSignals,
   scheduledJobs,
   secretRefs,
@@ -256,14 +257,26 @@ export type RunsData = Readonly<{
     id: string; project: string; projectSlug: OperatorProjectSlug; actionCategory: string; surface: string;
     environment: string; status: string; policyVersion: number; expiresAt: Date; decidedAt: Date | null;
   }>[];
+  packets: readonly Readonly<{
+    id: string; project: string; projectSlug: OperatorProjectSlug; workItemTitle: string;
+    frozenWorkItemVersion: number; currentWorkItemVersion: number; goal: string;
+    acceptanceCriteria: readonly string[]; inScope: readonly string[]; outOfScope: readonly string[];
+    relevantLinks: readonly string[]; relevantFiles: readonly string[]; allowedTools: readonly string[];
+    forbiddenSurfaces: readonly string[]; dataPolicy: Record<string, unknown>;
+    expectedOutputSchema: Record<string, unknown>; timeboxMinutes: number; reviewer: string;
+    approver: string; approverActorId: string; authMode: string; runtimeProfile: string;
+    contentHash: string; profiles: readonly Readonly<{id: string; name: string; runtimeId: string}>[];
+    runnable: boolean; nonRunnableReason: string | null;
+  }> [];
 }>;
 
 export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<RunsData>> => readDatabase(async (db) => {
   const configuredProjects = await scopedProjects(db, scope);
-  if (configuredProjects.length === 0) return {runs: [], approvals: []};
+  if (configuredProjects.length === 0) return {runs: [], approvals: [], packets: []};
   const projectIds = configuredProjects.map(({id}) => id);
+  const workspaceIds = [...new Set(configuredProjects.map(({workspaceId}) => workspaceId))];
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
-  const [runs, approvals] = await Promise.all([
+  const [runs, approvals, packetRows, profiles, prBindings] = await Promise.all([
     db.select({
       id: agentRuns.id, projectId: taskPackets.projectId, workItem: workItems.title, agent: actors.displayName,
       status: agentRuns.status, runtimeProfile: taskPackets.runtimeProfile, packetGoal: taskPackets.goal,
@@ -277,7 +290,40 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       surface: approvalRequests.surface, environment: approvalRequests.environment, status: approvalRequests.status,
       policyVersion: approvalRequests.policyVersion, expiresAt: approvalRequests.expiresAt, decidedAt: approvalRequests.decidedAt
     }).from(approvalRequests).where(inArray(approvalRequests.projectId, projectIds)).orderBy(desc(approvalRequests.updatedAt), approvalRequests.id)
+    ,
+    db.select({
+      id: taskPackets.id, projectId: taskPackets.projectId, workItemId: taskPackets.workItemId,
+      workItemTitle: workItems.title, frozenWorkItemVersion: taskPackets.workItemVersion,
+      currentWorkItemVersion: workItems.version, goal: taskPackets.goal,
+      acceptanceCriteria: taskPackets.acceptanceCriteria, inScope: taskPackets.inScope,
+      outOfScope: taskPackets.outOfScope, relevantLinks: taskPackets.relevantLinks,
+      relevantFiles: taskPackets.relevantFiles, allowedTools: taskPackets.allowedTools,
+      forbiddenSurfaces: taskPackets.forbiddenSurfaces, dataPolicy: taskPackets.dataPolicy,
+      expectedOutputSchema: taskPackets.expectedOutputSchema, timeboxMinutes: taskPackets.timeboxMinutes,
+      reviewerActorId: taskPackets.reviewerActorId, approverActorId: taskPackets.approverActorId,
+      authMode: taskPackets.authMode, runtimeProfile: taskPackets.runtimeProfile,
+      contentHash: taskPackets.contentHash
+    }).from(taskPackets).innerJoin(workItems, eq(workItems.id, taskPackets.workItemId))
+      .leftJoin(agentRuns, eq(agentRuns.taskPacketId, taskPackets.id))
+      .where(and(inArray(taskPackets.projectId, projectIds), isNull(agentRuns.id)))
+      .orderBy(desc(taskPackets.createdAt), taskPackets.id),
+    db.select({id: agentProfiles.id, name: actors.displayName, runtimeId: agentProfiles.runtimeId, runtimeProfile: agentProfiles.runtimeProfile, workspaceId: agentProfiles.workspaceId})
+      .from(agentProfiles).innerJoin(actors, eq(actors.id, agentProfiles.actorId))
+      .where(and(inArray(agentProfiles.workspaceId, workspaceIds), eq(agentProfiles.enabled, true), isNull(actors.disabledAt)))
+      .orderBy(agentProfiles.runtimeProfile, agentProfiles.runtimeId),
+    db.select({projectId: trackerBindings.projectId, workItemId: prLinks.workItemId, metadata: trackerBindings.metadata})
+      .from(prLinks).innerJoin(workItems, eq(workItems.id, prLinks.workItemId))
+      .innerJoin(trackerBindings, and(
+        eq(trackerBindings.projectId, workItems.projectId),
+        eq(trackerBindings.provider, 'github'),
+        eq(trackerBindings.surface, 'pull_request'),
+        eq(trackerBindings.entityType, 'pr_link'),
+        eq(trackerBindings.entityId, prLinks.id)
+      )).where(inArray(trackerBindings.projectId, projectIds))
   ]);
+  const actorIds = [...new Set(packetRows.flatMap((packet) => [packet.reviewerActorId, packet.approverActorId]))];
+  const packetActors = actorIds.length === 0 ? [] : await db.select({id: actors.id, name: actors.displayName})
+    .from(actors).where(inArray(actors.id, actorIds));
   const runIds = runs.map(({id}) => id);
   const [receipts, evidenceArtifacts] = runIds.length === 0 ? [[], []] : await Promise.all([
     db.select({agentRunId: agentRunReceipts.agentRunId, terminal: agentRunReceipts.terminal, completedAt: agentRunReceipts.completedAt})
@@ -288,6 +334,25 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
   const receiptByRun = new Map(receipts.map((receipt) => [receipt.agentRunId, receipt]));
   const artifactsByRun = new Map<string, typeof evidenceArtifacts>();
   for (const artifact of evidenceArtifacts) artifactsByRun.set(artifact.agentRunId, [...(artifactsByRun.get(artifact.agentRunId) ?? []), artifact]);
+  const actorNameById = new Map(packetActors.map((actor) => [actor.id, actor.name]));
+  const profilesByWorkspaceRuntime = new Map<string, typeof profiles>();
+  const profileKey = (workspaceId: string, runtimeProfile: string): string => `${workspaceId}:${runtimeProfile}`;
+  for (const profile of profiles) {
+    const key = profileKey(profile.workspaceId, profile.runtimeProfile);
+    profilesByWorkspaceRuntime.set(key, [...(profilesByWorkspaceRuntime.get(key) ?? []), profile]);
+  }
+  const bindingsByWorkItem = new Map<string, typeof prBindings>();
+  for (const binding of prBindings) {
+    const key = `${binding.projectId}:${binding.workItemId}`;
+    bindingsByWorkItem.set(key, [...(bindingsByWorkItem.get(key) ?? []), binding]);
+  }
+  const baseCommitReason = (bindings: readonly typeof prBindings[number][]): string | null => {
+    if (bindings.length === 0) return 'No linked PR head SHA is recorded.';
+    if (bindings.length !== 1) return 'More than one linked PR head SHA is recorded.';
+    return typeof bindings[0]!.metadata.headSha === 'string' && /^[0-9a-f]{40}$/.test(bindings[0]!.metadata.headSha)
+      ? null
+      : 'The linked PR head SHA is not recorded as a lowercase 40-character commit.';
+  };
   return {
     runs: runs.flatMap((run) => {
       const project = projectById.get(run.projectId);
@@ -296,6 +361,23 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
     approvals: approvals.flatMap((approval) => {
       const project = projectById.get(approval.projectId);
       return project === undefined ? [] : [{...approval, project: project.name, projectSlug: project.slug}];
+    }),
+    packets: packetRows.flatMap((packet) => {
+      const project = projectById.get(packet.projectId);
+      if (project === undefined) return [];
+      const eligibleProfiles = profilesByWorkspaceRuntime.get(profileKey(project.workspaceId, packet.runtimeProfile)) ?? [];
+      const baseReason = baseCommitReason(bindingsByWorkItem.get(`${packet.projectId}:${packet.workItemId}`) ?? []);
+      const nonRunnableReason = baseReason ?? (eligibleProfiles.length === 0 ? 'No enabled agent profile matches the packet runtime profile.' : null);
+      return [{
+        ...packet,
+        project: project.name,
+        projectSlug: project.slug,
+        reviewer: actorNameById.get(packet.reviewerActorId) ?? 'No recorded reviewer',
+        approver: actorNameById.get(packet.approverActorId) ?? 'No recorded approver',
+        profiles: eligibleProfiles.map(({id, name, runtimeId}) => ({id, name, runtimeId})),
+        runnable: nonRunnableReason === null,
+        nonRunnableReason
+      }];
     })
   };
 });

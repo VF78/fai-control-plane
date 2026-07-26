@@ -900,6 +900,7 @@ export const taskPackets = pgTable(
     workItemId: uuid('work_item_id')
       .notNull()
       .references(() => workItems.id, {onDelete: 'restrict'}),
+    workItemVersion: integer('work_item_version').notNull(),
     goal: text('goal').notNull(),
     acceptanceCriteria: text('acceptance_criteria')
       .array()
@@ -958,7 +959,8 @@ export const taskPackets = pgTable(
       table.workItemId,
       table.contentHash
     ),
-    check('task_packets_timebox_positive', sql`${table.timeboxMinutes} > 0`)
+    check('task_packets_timebox_positive', sql`${table.timeboxMinutes} > 0`),
+    check('task_packets_work_item_version_positive', sql`${table.workItemVersion} > 0`)
   ]
 );
 
@@ -972,6 +974,7 @@ export const agentRuns = pgTable(
     agentProfileId: uuid('agent_profile_id')
       .notNull()
       .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    confirmedPacketHash: text('confirmed_packet_hash').notNull(),
     baseCommit: text('base_commit').notNull(),
     status: runStatusEnum('status').default('queued').notNull(),
     idempotencyKey: text('idempotency_key').notNull(),
@@ -1003,6 +1006,10 @@ export const agentRuns = pgTable(
     check(
       'agent_runs_base_commit_sha1',
       sql`${table.baseCommit} ~ '^[0-9a-f]{40}$'`
+    ),
+    check(
+      'agent_runs_confirmed_packet_hash_sha256',
+      sql`${table.confirmedPacketHash} ~ '^[0-9a-f]{64}$'`
     ),
     check(
       'agent_runs_lease_token_hash_sha256',

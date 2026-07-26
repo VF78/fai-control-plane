@@ -16,6 +16,6 @@ export default async function RunsPage({searchParams}: {searchParams: Promise<{p
   if (auth.enabled && auth.session === null) return <OperatorLogin />;
   return <OperatorShell active="runs" scope={scope ?? undefined} session={auth.session}>
     <PageHeader eyebrow="Execution ledger" title="Runs & Approvals" detail={scope === undefined ? 'MSA and ASCON canonical scope' : scope === null ? 'Unsupported project scope' : `${scope.toUpperCase()} canonical scope`} />
-    {scope === null ? <State title="Project scope is unavailable">Only MSA and ASCON are available in this operator view.</State> : <LoadState load={await loadRunsData(scope)}>{(data) => <RunsView data={data} />}</LoadState>}
+    {scope === null ? <State title="Project scope is unavailable">Only MSA and ASCON are available in this operator view.</State> : <LoadState load={await loadRunsData(scope)}>{(data) => <RunsView data={data} csrfToken={auth.session?.csrfToken ?? null} operatorActorId={auth.session?.actorId ?? null} />}</LoadState>}
   </OperatorShell>;
 }

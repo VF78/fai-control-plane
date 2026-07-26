@@ -48,6 +48,7 @@ import {
 const packetContent = (): TaskPacketContent => ({
   projectId: 'project-1',
   workItemId: 'work-item-1',
+  workItemVersion: 1,
   goal: 'Implement the bounded change.',
   acceptanceCriteria: ['Tests pass', 'No secrets leave the secret provider'],
   inScope: ['packages/domain/**'],
@@ -72,6 +73,7 @@ const agentRun = (status: AgentRunStatus): AgentRun => ({
   id: 'run',
   taskPacketId: 'packet',
   agentProfileId: 'profile',
+  confirmedPacketHash: 'b'.repeat(64),
   baseCommit: 'a'.repeat(40),
   status,
   idempotencyKey: 'key',
@@ -330,7 +332,7 @@ describe('task packets', () => {
     expect(result).toMatchObject({ok: true, value: {packetId: 'packet-1'}});
     if (result.ok) {
       expect(result.value.contentHash).toBe(
-        '142e913a1939d943c38f1220947658ef914f89524898aa297eb92f9c54375df8'
+        'e58c4b6cd439a285500ddc5a5024aa2370f3fa725c50505c11a063610e77f252'
       );
     }
   });

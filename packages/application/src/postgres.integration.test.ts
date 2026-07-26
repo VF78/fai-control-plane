@@ -106,6 +106,7 @@ const packetContent = (
   return {
     projectId: other ? fixture.otherProjectId : fixture.projectId,
     workItemId: other ? fixture.otherWorkItemId : fixture.workItemId,
+    workItemVersion: 1,
     goal: `Integration packet ${randomUUID()}`,
     acceptanceCriteria: ['Receipt is completed'],
     inScope: ['packages/application/**'],

@@ -153,6 +153,7 @@ const taskPacketContent = (
 ): TaskPacketContent => ({
   projectId: fixture.projectId,
   workItemId: fixture.workItemId,
+  workItemVersion: 2,
   goal: 'Persist an immutable task packet.',
   acceptanceCriteria: ['Persistence is atomic'],
   inScope: ['packages/db/**'],
@@ -416,12 +417,12 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO task_packets (
-           id, project_id, work_item_id, goal, data_policy,
+           id, project_id, work_item_id, work_item_version, goal, data_policy,
            timebox_minutes, expected_output_schema, reviewer_actor_id,
            approver_actor_id, runtime_profile, auth_mode,
            created_from_event_id, content_hash, created_by_actor_id
          ) VALUES (
-           $1, $2, $3, 'Verify persistence', '{}', 15, '{}', $4, $4,
+           $1, $2, $3, 2, 'Verify persistence', '{}', 15, '{}', $4, $4,
            'test', 'user', $5, $6, $4
          )`,
         [
@@ -430,7 +431,7 @@ describePostgres(
           fixture.workItemId,
           fixture.actorId,
           fixture.eventId,
-          `packet-${randomUUID()}`
+          'a'.repeat(64)
         ]
       );
       await testPool.query(
@@ -488,12 +489,12 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO task_packets (
-           id, project_id, work_item_id, goal, data_policy,
+           id, project_id, work_item_id, work_item_version, goal, data_policy,
            timebox_minutes, expected_output_schema, reviewer_actor_id,
            approver_actor_id, runtime_profile, auth_mode,
            created_from_event_id, content_hash, created_by_actor_id
          ) VALUES (
-           $1, $2, $3, 'Other packet', '{}', 15, '{}', $4, $4,
+           $1, $2, $3, 2, 'Other packet', '{}', 15, '{}', $4, $4,
            'test', 'user', $5, $6, $4
          )`,
         [
@@ -502,31 +503,33 @@ describePostgres(
           fixture.otherWorkItemId,
           fixture.otherActorId,
           fixture.otherEventId,
-          `other-packet-${randomUUID()}`
+          'b'.repeat(64)
         ]
       );
       await testPool.query(
         `INSERT INTO agent_runs (
-           id, task_packet_id, agent_profile_id, base_commit, status,
+           id, task_packet_id, agent_profile_id, confirmed_packet_hash, base_commit, status,
            idempotency_key, version
-         ) VALUES ($1, $2, $3, $4, 'queued', $5, 1)`,
+         ) VALUES ($1, $2, $3, $4, $5, 'queued', $6, 1)`,
         [
           fixture.otherRunId,
           fixture.otherPacketId,
           fixture.otherProfileId,
+          'b'.repeat(64),
           'b'.repeat(40),
           `other-run-${randomUUID()}`
         ]
       );
       await testPool.query(
         `INSERT INTO agent_runs (
-           id, task_packet_id, agent_profile_id, base_commit, status,
+           id, task_packet_id, agent_profile_id, confirmed_packet_hash, base_commit, status,
            idempotency_key, version
-         ) VALUES ($1, $2, $3, $4, 'queued', $5, 1)`,
+         ) VALUES ($1, $2, $3, $4, $5, 'queued', $6, 1)`,
         [
           fixture.runId,
           fixture.packetId,
           fixture.profileId,
+          'a'.repeat(64),
           'a'.repeat(40),
           `run-${randomUUID()}`
         ]
@@ -955,6 +958,7 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.packetId,
         agentProfileId: fixture.profileId,
+        confirmedPacketHash: 'a'.repeat(64),
         baseCommit: 'a'.repeat(40),
         status: 'queued',
         idempotencyKey: userKey,
@@ -964,6 +968,7 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.otherPacketId,
         agentProfileId: fixture.otherProfileId,
+        confirmedPacketHash: 'b'.repeat(64),
         baseCommit: 'b'.repeat(40),
         status: 'queued',
         idempotencyKey: userKey,
@@ -1268,6 +1273,7 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.packetId,
         agentProfileId: randomUUID(),
+        confirmedPacketHash: 'a'.repeat(64),
         baseCommit: 'a'.repeat(40),
         status: 'queued',
         idempotencyKey: `run-${randomUUID()}`,
@@ -1292,9 +1298,9 @@ describePostgres(
       await expect(
         testPool.query(
           `INSERT INTO agent_runs (
-             id, task_packet_id, status, idempotency_key, version
-           ) VALUES ($1, $2, 'queued', $3, 1)`,
-          [randomUUID(), fixture.packetId, `missing-profile-${randomUUID()}`]
+             id, task_packet_id, confirmed_packet_hash, status, idempotency_key, version
+           ) VALUES ($1, $2, $3, 'queued', $4, 1)`,
+          [randomUUID(), fixture.packetId, 'a'.repeat(64), `missing-profile-${randomUUID()}`]
         )
       ).rejects.toMatchObject({code: '23502'});
     });

@@ -30,7 +30,7 @@ import type {
   UnitOfWork,
   WorkItem
 } from '@fai-control-plane/domain';
-import {and, eq, sql} from 'drizzle-orm';
+import {and, eq, isNull, sql} from 'drizzle-orm';
 import type {ExtractTablesWithRelations, SQL} from 'drizzle-orm';
 import type {
   NodePgDatabase,
@@ -170,6 +170,11 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.packetId, 'taskPacket.packetId');
       uuid(mutation.aggregate.content.projectId, 'taskPacket.projectId');
       uuid(mutation.aggregate.content.workItemId, 'taskPacket.workItemId');
+      invariant(
+        Number.isSafeInteger(mutation.aggregate.content.workItemVersion) &&
+          mutation.aggregate.content.workItemVersion > 0,
+        'taskPacket.workItemVersion must be a positive safe integer.'
+      );
       uuid(
         mutation.aggregate.content.reviewerActorId,
         'taskPacket.reviewerActorId'
@@ -191,6 +196,10 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.id, 'agentRun.id');
       uuid(mutation.aggregate.taskPacketId, 'agentRun.taskPacketId');
       uuid(mutation.aggregate.agentProfileId, 'agentRun.agentProfileId');
+      invariant(
+        sha256Pattern.test(mutation.aggregate.confirmedPacketHash),
+        'agentRun.confirmedPacketHash must be a lowercase SHA-256 digest.'
+      );
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
     case 'approval':
@@ -601,7 +610,7 @@ const validateTaskPacketOwnership = async (
   const content = packet.content;
   if (!await workspaceHasProject(tx, workspaceId, content.projectId)) return {status: 'not_found'};
   const [item] = await tx
-    .select({id: schema.workItems.id})
+    .select({id: schema.workItems.id, version: schema.workItems.version})
     .from(schema.workItems)
     .where(
       and(
@@ -610,7 +619,7 @@ const validateTaskPacketOwnership = async (
         workItemScope(workspaceId)
       )
     );
-  if (item === undefined) return {status: 'not_found'};
+  if (item === undefined || item.version !== content.workItemVersion) return {status: 'not_found'};
   if (!await workspaceHasActor(tx, workspaceId, content.reviewerActorId) ||
     !await workspaceHasActor(tx, workspaceId, content.approverActorId) ||
     !await workspaceHasActor(tx, workspaceId, content.createdByActorId)) return {status: 'not_found'};
@@ -656,6 +665,7 @@ const persistTaskPacket = async (
       id: packet.packetId,
       projectId: content.projectId,
       workItemId: content.workItemId,
+      workItemVersion: content.workItemVersion,
       goal: content.goal,
       acceptanceCriteria: [...content.acceptanceCriteria],
       inScope: [...content.inScope],
@@ -693,7 +703,11 @@ const validateAgentRunOwnership = async (
   aggregate: AgentRun
 ): Promise<Readonly<{status: 'found'; projectId: string}> | Readonly<{status: 'not_found'}>> => {
   const [packet] = await tx
-    .select({projectId: schema.taskPackets.projectId})
+    .select({
+      projectId: schema.taskPackets.projectId,
+      contentHash: schema.taskPackets.contentHash,
+      runtimeProfile: schema.taskPackets.runtimeProfile
+    })
     .from(schema.taskPackets)
     .where(
       and(
@@ -701,7 +715,9 @@ const validateAgentRunOwnership = async (
         taskPacketScope(workspaceId)
       )
     );
-  if (packet === undefined) return {status: 'not_found'};
+  if (packet === undefined || packet.contentHash !== aggregate.confirmedPacketHash) {
+    return {status: 'not_found'};
+  }
   const [profile] = await tx
     .select({id: schema.agentProfiles.id})
     .from(schema.agentProfiles)
@@ -713,7 +729,10 @@ const validateAgentRunOwnership = async (
       and(
         eq(schema.agentProfiles.id, aggregate.agentProfileId),
         eq(schema.agentProfiles.workspaceId, workspaceId),
-        eq(schema.actors.workspaceId, workspaceId)
+        eq(schema.actors.workspaceId, workspaceId),
+        eq(schema.agentProfiles.enabled, true),
+        eq(schema.agentProfiles.runtimeProfile, packet.runtimeProfile),
+        isNull(schema.actors.disabledAt)
       )
     );
   return profile === undefined
@@ -737,6 +756,7 @@ const persistAgentRun = async (
         id: aggregate.id,
         taskPacketId: aggregate.taskPacketId,
         agentProfileId: aggregate.agentProfileId,
+        confirmedPacketHash: aggregate.confirmedPacketHash,
         baseCommit: aggregate.baseCommit,
         status: aggregate.status,
         idempotencyKey: agentRunIdempotencyKey(
@@ -1277,6 +1297,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               id: schema.agentRuns.id,
               taskPacketId: schema.agentRuns.taskPacketId,
               agentProfileId: schema.agentRuns.agentProfileId,
+              confirmedPacketHash: schema.agentRuns.confirmedPacketHash,
               baseCommit: schema.agentRuns.baseCommit,
               status: schema.agentRuns.status,
               idempotencyKey: schema.agentRuns.idempotencyKey,
@@ -1294,6 +1315,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               id: row.id,
               taskPacketId: row.taskPacketId,
               agentProfileId: row.agentProfileId,
+              confirmedPacketHash: row.confirmedPacketHash,
               baseCommit: row.baseCommit,
               status: row.status as AgentRun['status'],
               idempotencyKey: row.idempotencyKey,

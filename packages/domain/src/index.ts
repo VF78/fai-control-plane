@@ -84,6 +84,7 @@ export type AgentRun = Readonly<{
   id: string;
   taskPacketId: string;
   agentProfileId: string;
+  confirmedPacketHash: string;
   baseCommit: string;
   status: AgentRunStatus;
   idempotencyKey: string;
@@ -751,6 +752,7 @@ export type OpaqueSecretRef = Readonly<{
 export type TaskPacketContent = Readonly<{
   projectId: string;
   workItemId: string;
+  workItemVersion: number;
   goal: string;
   acceptanceCriteria: readonly string[];
   inScope: readonly string[];
@@ -788,6 +790,7 @@ const packetStringFields = [
   'projectId', 'workItemId', 'goal', 'reviewerActorId', 'approverActorId',
   'runtimeProfile', 'createdFromEventId', 'createdByActorId'
 ] as const satisfies readonly (keyof TaskPacketContent)[];
+const packetPositiveIntegerFields = ['workItemVersion', 'timeboxMinutes'] as const satisfies readonly (keyof TaskPacketContent)[];
 const packetArrayFields = [
   'acceptanceCriteria', 'inScope', 'outOfScope', 'relevantLinks', 'relevantFiles',
   'allowedTools', 'forbiddenSurfaces'
@@ -796,7 +799,7 @@ const taskPacketContentKeys = new Set<keyof TaskPacketContent>([
   ...packetStringFields,
   ...packetArrayFields,
   'dataPolicy',
-  'timeboxMinutes',
+  ...packetPositiveIntegerFields,
   'expectedOutputSchema',
   'authMode',
   'secretsRef'
@@ -963,7 +966,9 @@ export const createTaskPacket = (packetId: string, content: TaskPacketContent): 
   if (!isCanonicalJson(content.dataPolicy) || !isCanonicalJson(content.expectedOutputSchema)) {
     return failed('INVALID_TASK_PACKET', 'Task packet JSON fields must be canonical JSON.');
   }
-  if (!Number.isInteger(content.timeboxMinutes) || content.timeboxMinutes <= 0 ||
+  if (!packetPositiveIntegerFields.every((field) =>
+    Number.isSafeInteger(content[field]) && content[field] > 0
+  ) ||
     !isOneOf(['user', 'agent', 'system'] as const, content.authMode) ||
     !(content.secretsRef === null || isOpaqueSecretRef(content.secretsRef))) {
     return failed('INVALID_TASK_PACKET', 'Task packet timebox, auth mode, or secret reference is invalid.');

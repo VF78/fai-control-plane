@@ -3,6 +3,7 @@ import type {ReactNode} from 'react';
 import type {OperatorSession} from './operator-auth';
 import {workItemStatuses, type AccessData, type HealthData, type OperatorLoad, type OperatorProjectSlug, type PortfolioData, type ProjectData, type RunsData} from './operator-data';
 import {ProjectShareControls} from './project-share-controls';
+import {TaskPacketConfirmationControls} from './task-packet-confirmation-controls';
 
 type PageKey = 'portfolio' | 'project' | 'runs' | 'access' | 'health';
 
@@ -112,8 +113,21 @@ export function ProjectView({data}: {data: ProjectData}) {
   </div>;
 }
 
-export function RunsView({data}: {data: RunsData}) {
+export function RunsView({data, csrfToken, operatorActorId}: {
+  data: RunsData;
+  csrfToken: string | null;
+  operatorActorId: string | null;
+}) {
   return <div className="control-surface">
+    <section className="packet-ledger" aria-labelledby="packets-title"><header><p className="eyebrow">Immutable task packets</p><h2 id="packets-title">Packet preview and confirmation</h2></header>
+      {data.packets.length === 0 ? <p className="muted">No persisted unqueued task packets are recorded in this scope.</p> : <div className="packet-list">{data.packets.map((packet) => <article className="packet-preview" key={packet.id}>
+        <header><div><strong>{packet.workItemTitle}</strong><span>{packet.project} · Frozen task version {packet.frozenWorkItemVersion} · Current task version {packet.currentWorkItemVersion}</span></div><span className={`state ${packet.runnable ? 'active' : 'failed'}`}>{packet.runnable ? 'runnable' : 'not runnable'}</span></header>
+        <p className="packet-goal">{packet.goal}</p>
+        <dl className="packet-facts"><div><dt>Content hash</dt><dd><code>{packet.contentHash}</code></dd></div><div><dt>Timebox</dt><dd>{packet.timeboxMinutes} minutes</dd></div><div><dt>Runtime</dt><dd>{packet.runtimeProfile}</dd></div><div><dt>Auth mode</dt><dd>{packet.authMode}</dd></div><div><dt>Reviewer</dt><dd>{packet.reviewer}</dd></div><div><dt>Approver</dt><dd>{packet.approver}</dd></div></dl>
+        <div className="packet-sections"><section><h3>Acceptance</h3><ul>{packet.acceptanceCriteria.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>In scope</h3><ul>{packet.inScope.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Out of scope</h3><ul>{packet.outOfScope.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Links</h3><ul>{packet.relevantLinks.length === 0 ? <li>No recorded links</li> : packet.relevantLinks.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Relevant files</h3><ul>{packet.relevantFiles.length === 0 ? <li>No recorded files</li> : packet.relevantFiles.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Allowed tools</h3><ul>{packet.allowedTools.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Forbidden surfaces</h3><ul>{packet.forbiddenSurfaces.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Data policy</h3><pre>{JSON.stringify(packet.dataPolicy, null, 2)}</pre></section><section><h3>Expected output</h3><pre>{JSON.stringify(packet.expectedOutputSchema, null, 2)}</pre></section></div>
+        {operatorActorId !== packet.approverActorId ? <p className="packet-state">Only the recorded packet approver can confirm this packet.</p> : <TaskPacketConfirmationControls packet={packet} csrfToken={csrfToken} enabled={operatorActorId !== null} />}
+      </article>)}</div>}
+    </section>
     <section className="runs-ledger" aria-labelledby="runs-title"><header><p className="eyebrow">Persisted execution</p><h2 id="runs-title">Runs</h2></header>
       {data.runs.length === 0 ? <p className="muted">No persisted runs in this scope.</p> : <div className="run-list">{data.runs.map((run) => <article className="run-row" key={run.id}>
         <div><strong>{run.workItem ?? 'No recorded WorkItem title'}</strong><span>{run.project} · {run.runtimeProfile} · {run.timeboxMinutes} min packet</span></div><span className={`state ${run.status}`}>{label(run.status)}</span>

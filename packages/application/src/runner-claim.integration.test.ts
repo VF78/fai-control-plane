@@ -170,6 +170,7 @@ describePostgres(
       const packetContent = (goal: string): TaskPacketContent => ({
         projectId,
         workItemId,
+        workItemVersion: 1,
         goal,
         acceptanceCriteria: ['Only one claim succeeds'],
         inScope: ['packages/application/**'],
@@ -226,6 +227,7 @@ describePostgres(
           id: fixture.packetId,
           projectId,
           workItemId,
+          workItemVersion: packet.value.content.workItemVersion,
           goal: packet.value.content.goal,
           acceptanceCriteria: [...packet.value.content.acceptanceCriteria],
           inScope: [...packet.value.content.inScope],
@@ -252,6 +254,7 @@ describePostgres(
           id: fixture.runId,
           taskPacketId: fixture.packetId,
           agentProfileId: fixture.profileId,
+          confirmedPacketHash: packet.value.contentHash,
           baseCommit: 'a'.repeat(40),
           idempotencyKey: `runner-claim-${fixture.runId}`,
           createdAt: fixture.createdAt,
