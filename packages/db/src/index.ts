@@ -53,6 +53,11 @@ export {
   QA_INTAKE_QUEUE,
   qaIntakeCron
 } from './qa-intake';
+export {
+  createPostgresQaIntakeTaskPacketConsumer,
+  type QaIntakeTaskPacketCommandExecutor,
+  type QaIntakeTaskPacketConsumerResult
+} from './qa-intake-task-packet';
 export {createPostgresRunnerClaimStore} from './runner-claim';
 export {createPostgresProjectShareStore} from './project-share';
 

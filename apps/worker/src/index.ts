@@ -2,7 +2,10 @@ import {readFile} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {isAbsolute} from 'node:path';
 import {PgBoss} from 'pg-boss';
-import {createIncomingEventQueueConsumer} from '@fai-control-plane/application';
+import {
+  createCanonicalCommandService,
+  createIncomingEventQueueConsumer
+} from '@fai-control-plane/application';
 import {
   createDatabase,
   createPostgresDailyPmReportProducer,
@@ -13,6 +16,8 @@ import {
   createPostgresTelegramStatusResponseOutbox,
   createPostgresPmReportCheckProducer,
   createPostgresQaIntakeProducer,
+  createPostgresQaIntakeTaskPacketConsumer,
+  createPostgresUnitOfWork,
   createPostgresRecoveryScanProducer,
   DAILY_PM_REPORT_QUEUE,
   HEALTHCHECK_QUEUE,
@@ -141,6 +146,10 @@ const recoveryScanProducer = createPostgresRecoveryScanProducer(db, boss);
 const dailyPmReportProducer = createPostgresDailyPmReportProducer(db);
 const pmReportCheckProducer = createPostgresPmReportCheckProducer(db);
 const qaIntakeProducer = createPostgresQaIntakeProducer(db);
+const qaIntakeTaskPacketConsumer = createPostgresQaIntakeTaskPacketConsumer(
+  db,
+  createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)})
+);
 let telegramStatusResponder: Readonly<{prepare(eventId: string): Promise<'prepared' | 'skipped'>}> | undefined;
 let telegramStatusPublisher: Readonly<{publishAvailable(): Promise<'published' | 'failed' | 'idle'>}> | undefined;
 if (telegramStatusResponseEnabled) {
@@ -230,7 +239,10 @@ await boss.work(HEALTHCHECK_QUEUE, async () => healthcheckProducer.run());
 await boss.work(RECOVERY_SCAN_QUEUE, async () => recoveryScanProducer.run());
 await boss.work(DAILY_PM_REPORT_QUEUE, async () => dailyPmReportProducer.run());
 await boss.work(PM_REPORT_CHECK_QUEUE, async () => pmReportCheckProducer.run());
-await boss.work(QA_INTAKE_QUEUE, async () => qaIntakeProducer.run());
+await boss.work(QA_INTAKE_QUEUE, async () => {
+  const eventIds = await qaIntakeProducer.run();
+  return Promise.all(eventIds.map((eventId) => qaIntakeTaskPacketConsumer.consume(eventId)));
+});
 await recoveryScanProducer.run();
 if (telegramStatusPublisher !== undefined) {
   let publishing = false;

@@ -122,19 +122,20 @@ const reviewRequestPayload = async (
 export const createPostgresQaIntakeProducer = (
   db: Database,
   options: Readonly<{now?: () => Date}> = {}
-): Readonly<{run(): Promise<void>}> => {
+): Readonly<{run(): Promise<readonly string[]>}> => {
   const now = options.now ?? (() => new Date());
 
   return {
-    async run(): Promise<void> {
+    async run(): Promise<readonly string[]> {
       const projects = await configuredProjects(db);
       const runAt = now();
       const runKey = runKeyFor(runAt);
       let firstFailure: unknown;
+      const eventIds: string[] = [];
 
       for (const project of projects) {
         try {
-          await db.transaction(async (tx) => {
+          const eventId = await db.transaction(async (tx) => {
             await tx.select({id: schema.projects.id}).from(schema.projects)
               .where(eq(schema.projects.id, project.id)).for('update');
             await tx.insert(schema.scheduledJobs).values({
@@ -164,9 +165,10 @@ export const createPostgresQaIntakeProducer = (
                 eq(schema.canonicalEvents.workspaceId, project.workspaceId),
                 eq(schema.canonicalEvents.deduplicationKey, deduplicationKey)
               )).limit(1);
-            if (existing === undefined) {
+            let canonicalEventId = existing?.id;
+            if (canonicalEventId === undefined) {
               const payload = await reviewRequestPayload(tx, project.id, runAt);
-              await tx.insert(schema.canonicalEvents).values({
+              const [created] = await tx.insert(schema.canonicalEvents).values({
                 workspaceId: project.workspaceId,
                 projectId: project.id,
                 eventType: payload.outcome === 'no_work'
@@ -176,7 +178,9 @@ export const createPostgresQaIntakeProducer = (
                 deduplicationKey,
                 payload,
                 occurredAt: runAt
-              });
+              }).returning({id: schema.canonicalEvents.id});
+              if (created === undefined) throw new Error('QA intake event was not persisted.');
+              canonicalEventId = created.id;
             }
             await tx.update(schema.scheduledJobs).set({
               status: 'active',
@@ -188,7 +192,9 @@ export const createPostgresQaIntakeProducer = (
               eq(schema.scheduledJobs.projectId, project.id),
               eq(schema.scheduledJobs.name, qaIntakeName)
             ));
+            return canonicalEventId;
           });
+          eventIds.push(eventId);
         } catch (error) {
           await db.insert(schema.scheduledJobs).values({
             projectId: project.id,
@@ -215,6 +221,7 @@ export const createPostgresQaIntakeProducer = (
         }
       }
       if (firstFailure !== undefined) throw firstFailure;
+      return eventIds;
     }
   };
 };
