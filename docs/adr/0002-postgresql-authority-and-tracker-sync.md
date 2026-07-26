@@ -19,6 +19,11 @@ PostgreSQL is the canonical source of truth for all durable control-plane state.
 Every state transition is committed there before external effects are attempted.
 Drizzle migrations are the only supported schema-change mechanism.
 
+GitHub Project Status is an authorized command surface, not a second canonical
+store: PostgreSQL remains canonical, and each GitHub status observation must
+pass policy, domain transition validation, CAS, audit, command receipt, and
+outbox handling before it can change a WorkItem.
+
 GitHub is accessed through a provider-neutral `TrackerAdapter`. Domain code
 does not call GitHub SDKs or APIs directly. The adapter is bidirectional and
 uses two durable PostgreSQL boundaries:
@@ -38,7 +43,7 @@ control plane's own writes. Reconciliation polling repairs missed webhooks.
 
 | Data | Authority | Synchronization rule |
 | --- | --- | --- |
-| Workflow phase, run state, approvals, policy decisions | PostgreSQL | May be projected to namespaced GitHub labels or comments; inbound GitHub edits cannot mutate it |
+| Workflow phase, run state, approvals, policy decisions | PostgreSQL | GitHub Project Status is an authorized command surface only through policy/domain/CAS/audit/receipt/outbox; all other inbound GitHub edits cannot mutate it |
 | Run requests, results, artifact metadata, share grants | PostgreSQL | Never reconstructed from GitHub |
 | Queue state, inbox/outbox state, cursors, delivery attempts | PostgreSQL | Internal only |
 | Secret references and credential metadata | PostgreSQL | Values remain outside the database and are never synchronized |
@@ -57,8 +62,14 @@ Repository snapshot ingestion has two distinct operations. An explicit,
 audited, idempotent bootstrap may create canonical WorkItems and immutable
 tracker bindings. Steady-state synchronization requires the repository
 binding's prior snapshot version, updates only existing WorkItem bindings and
-provider-owned mirror fields, and reports unknown or unmappable tracker
-objects. It never infers or silently creates a canonical WorkItem. Each
+provider-owned mirror fields, and records each mapped GitHub Project Status as
+an immutable observation with its expected canonical version. A processor turns
+only pending observations into canonical commands; outbound echoes are
+acknowledged without an inbound command, and outbound races or failed CAS/domain
+transitions become persisted conflicts. It never infers or silently creates a
+canonical WorkItem. Bootstrap may set an initial status only while creating a
+new WorkItem; steady-state synchronization never writes `work_items.status`
+directly. Each
 repository snapshot, including its issue, pull request, and check projections,
 is committed in one PostgreSQL transaction. Snapshot operation receipts store
 only structured identifiers, versions, counters, and reason codes; raw GitHub

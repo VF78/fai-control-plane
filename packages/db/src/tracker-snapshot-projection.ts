@@ -358,7 +358,7 @@ export const createPostgresTrackerSnapshotProjector = (
       );
       let createdWorkItems = 0;
       let updatedWorkItems = 0;
-      let updatedWorkItemStatuses = 0;
+      const updatedWorkItemStatuses = 0;
       const unknownWorkItemExternalIds: string[] = [];
       const unknownProjectStatusWorkItemExternalIds: string[] = [];
 
@@ -411,21 +411,15 @@ export const createPostgresTrackerSnapshotProjector = (
           unknownProjectStatusWorkItemExternalIds.push(item.externalId);
           continue;
         }
-        if (
-          input.mode === 'synchronize' &&
-          binding.lastOutboundMutationId !== null &&
-          (
-            observedProjectStatus === null ||
-            observedProjectStatus.status === null ||
-            observedProjectStatus.status !== workItem.status
-          )
-        ) {
-          providerStatusMismatch = true;
-          continue;
-        }
+        const mappedProjectStatus = observedProjectStatus?.status ?? null;
         const confirmsOutboundMutation =
           binding.lastOutboundMutationId !== null &&
-          observedProjectStatus?.status === workItem.status;
+          mappedProjectStatus === workItem.status;
+        const outboundRace =
+          binding.lastOutboundMutationId !== null &&
+          mappedProjectStatus !== null &&
+          mappedProjectStatus !== workItem.status;
+        providerStatusMismatch ||= outboundRace;
         const [updatedBinding] = await tx.update(schema.trackerBindings).set({
           externalVersion: item.externalVersion,
           lastInboundVersion: item.externalVersion,
@@ -460,29 +454,29 @@ export const createPostgresTrackerSnapshotProjector = (
           unknownProjectStatusWorkItemExternalIds.push(item.externalId);
           continue;
         }
-        const mappedProjectStatus = item.projectStatus?.status ?? null;
-        if (mappedProjectStatus !== null && mappedProjectStatus !== workItem.status) {
-          const [updatedWorkItem] = await tx.update(schema.workItems).set({
-            status: mappedProjectStatus,
-            version: sql`${schema.workItems.version} + 1`,
-            updatedAt: new Date()
-          }).where(and(
-            eq(schema.workItems.id, workItemId),
-            eq(schema.workItems.projectId, input.projectId)
-          )).returning({id: schema.workItems.id});
-          if (updatedWorkItem === undefined) {
-            throw new Error('tracker_snapshot_work_item_disappeared');
-          }
-          await tx.insert(schema.statusTransitions).values({
+        if (mappedProjectStatus !== null) {
+          await tx.insert(schema.trackerStatusObservationInbox).values({
             id: randomUUID(),
+            snapshotOperationId: input.operationId,
+            workspaceId: input.workspaceId,
+            projectId: input.projectId,
+            bindingId: binding.id,
             workItemId,
-            fromStatus: workItem.status,
-            toStatus: mappedProjectStatus,
             actorId: input.actorId,
-            reason: 'github_project_status_sync',
-            idempotencyKey: `tracker-project-status:${input.operationId}:${workItemId}`
+            correlationId: input.correlationId,
+            provider: input.provider,
+            mappedStatus: mappedProjectStatus,
+            expectedCanonicalVersion: workItem.version,
+            bindingInboundVersion: item.externalVersion,
+            ...(binding.lastOutboundMutationId === null
+              ? {}
+              : {outboundMutationId: binding.lastOutboundMutationId}),
+            ...(confirmsOutboundMutation || mappedProjectStatus === workItem.status
+              ? {state: 'acknowledged' as const}
+              : outboundRace
+                ? {state: 'conflict' as const, conflictCode: 'outbound_race'}
+                : {})
           });
-          updatedWorkItemStatuses += 1;
         }
       }
 

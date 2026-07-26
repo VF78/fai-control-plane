@@ -1,12 +1,18 @@
 import {randomUUID} from 'node:crypto';
-import type {TrackerRepositorySnapshot} from '@fai-control-plane/domain';
+import {
+  createActorContextIssuer,
+  type TrackerRepositorySnapshot
+} from '@fai-control-plane/domain';
 import {and, eq} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import {createCanonicalCommandService} from '../../application/src/index.ts';
 import {
   createDatabase,
-  createPostgresTrackerSnapshotProjector
+  createPostgresTrackerStatusObservationProcessor,
+  createPostgresTrackerSnapshotProjector,
+  createPostgresUnitOfWork
 } from './index';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
@@ -16,6 +22,7 @@ import {
   prLinks,
   trackerBindings,
   trackerSnapshotOperations,
+  trackerStatusObservationInbox,
   workItems
 } from './schema';
 
@@ -362,6 +369,180 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     });
     expect(audits).toHaveLength(1);
     expect(writes).toHaveLength(0);
+  });
+
+  it('projects a status observation, applies it through the canonical command, and acknowledges its echo', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Status command', $3)`,
+      [projectId, ids.workspace, `status-command-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const ready = {
+      projectExternalId: 'PVT_status_command',
+      projectItemExternalId: 'PVTI_status_command',
+      fieldExternalId: 'PVTSSF_status_command',
+      optionExternalId: 'option-ready',
+      status: 'ready' as const
+    };
+    const initial = snapshot('github:sha256:status-command-1', {
+      repository: {
+        externalId: 'github:repository:9002',
+        externalVersion: 'github:sha256:repository-status-command',
+        owner: 'VF78',
+        name: 'StatusCommand'
+      },
+      workItems: [{...issue('github:issue:9002'), projectStatus: ready}],
+      pullRequests: [],
+      checks: []
+    });
+    await projector.bootstrap({...operation(initial), projectId});
+    const inDev = {...ready, optionExternalId: 'option-in-dev', status: 'in_dev' as const};
+    const projected = await projector.synchronize({
+      ...operation({...initial, externalVersion: 'github:sha256:status-command-2', workItems: [{
+        ...issue('github:issue:9002'), projectStatus: inDev
+      }]}),
+      projectId,
+      expectedPreviousExternalVersion: 'github:sha256:status-command-1'
+    });
+    expect(projected).toMatchObject({status: 'applied', updatedWorkItemStatuses: 0});
+
+    const [beforeCommand, observation] = await Promise.all([
+      db.select().from(workItems).where(eq(workItems.projectId, projectId)),
+      db.select().from(trackerStatusObservationInbox).where(eq(
+        trackerStatusObservationInbox.projectId,
+        projectId
+      ))
+    ]);
+    expect(beforeCommand[0]).toMatchObject({status: 'ready', version: 1});
+    expect(observation).toHaveLength(1);
+    expect(observation[0]).toMatchObject({
+      mappedStatus: 'in_dev', expectedCanonicalVersion: 1, state: 'pending'
+    });
+
+    const issuer = createActorContextIssuer({
+      users: [], agents: [],
+      systems: [{actorId: ids.actor, capabilities: ['write:control_plane:development']}]
+    });
+    if (!issuer.ok) throw new Error('Test actor issuer did not initialize.');
+    const actor = issuer.value.issueSystem(ids.actor);
+    if (!actor.ok) throw new Error('Test system actor did not initialize.');
+    const processor = createPostgresTrackerStatusObservationProcessor(
+      db,
+      createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)}),
+      actor.value
+    );
+    await expect(processor.processAvailable()).resolves.toEqual({
+      status: 'applied', observationId: observation[0]!.id
+    });
+    const [afterCommand, bound] = await Promise.all([
+      db.select().from(workItems).where(eq(workItems.projectId, projectId)),
+      db.select().from(trackerBindings).where(eq(trackerBindings.id, observation[0]!.bindingId))
+    ]);
+    expect(afterCommand[0]).toMatchObject({status: 'in_dev', version: 2});
+    expect(bound[0]?.lastOutboundMutationId).not.toBeNull();
+
+    await projector.synchronize({
+      ...operation({...initial, externalVersion: 'github:sha256:status-command-3', workItems: [{
+        ...issue('github:issue:9002'), projectStatus: inDev
+      }]}),
+      projectId,
+      expectedPreviousExternalVersion: 'github:sha256:status-command-2'
+    });
+    const echoes = await db.select().from(trackerStatusObservationInbox).where(eq(
+      trackerStatusObservationInbox.projectId,
+      projectId
+    ));
+    expect(echoes).toHaveLength(2);
+    expect(echoes[1]).toMatchObject({state: 'acknowledged', mappedStatus: 'in_dev'});
+    await expect(processor.processAvailable()).resolves.toEqual({status: 'idle'});
+  });
+
+  it('persists outbound-race and invalid-transition conflicts without mutating canonical status', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Status conflict', $3)`,
+      [projectId, ids.workspace, `status-conflict-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const ready = {
+      projectExternalId: 'PVT_status_conflict',
+      projectItemExternalId: 'PVTI_status_conflict',
+      fieldExternalId: 'PVTSSF_status_conflict',
+      optionExternalId: 'option-ready',
+      status: 'ready' as const
+    };
+    const initial = snapshot('github:sha256:status-conflict-1', {
+      repository: {
+        externalId: 'github:repository:9003',
+        externalVersion: 'github:sha256:repository-status-conflict',
+        owner: 'VF78',
+        name: 'StatusConflict'
+      },
+      workItems: [{...issue('github:issue:9003'), projectStatus: ready}],
+      pullRequests: [],
+      checks: []
+    });
+    await projector.bootstrap({...operation(initial), projectId});
+    const [binding] = await db.select().from(trackerBindings).where(and(
+      eq(trackerBindings.projectId, projectId),
+      eq(trackerBindings.surface, 'issue')
+    ));
+    await db.update(workItems).set({status: 'in_dev', version: 2})
+      .where(eq(workItems.id, binding!.entityId));
+    await db.update(trackerBindings).set({lastOutboundMutationId: randomUUID()})
+      .where(eq(trackerBindings.id, binding!.id));
+
+    await projector.synchronize({
+      ...operation({...initial, externalVersion: 'github:sha256:status-conflict-2'}),
+      projectId,
+      expectedPreviousExternalVersion: 'github:sha256:status-conflict-1'
+    });
+    const [outboundRace] = await db.select().from(trackerStatusObservationInbox).where(eq(
+      trackerStatusObservationInbox.projectId,
+      projectId
+    ));
+    expect(outboundRace).toMatchObject({state: 'conflict', conflictCode: 'outbound_race'});
+
+    await db.update(trackerBindings).set({lastOutboundMutationId: null})
+      .where(eq(trackerBindings.id, binding!.id));
+    const done = {...ready, optionExternalId: 'option-done', status: 'done' as const};
+    await projector.synchronize({
+      ...operation({...initial, externalVersion: 'github:sha256:status-conflict-3', workItems: [{
+        ...issue('github:issue:9003'), projectStatus: done
+      }]}),
+      projectId,
+      expectedPreviousExternalVersion: 'github:sha256:status-conflict-2'
+    });
+    const issuer = createActorContextIssuer({
+      users: [], agents: [],
+      systems: [{actorId: ids.actor, capabilities: ['write:control_plane:development']}]
+    });
+    if (!issuer.ok) throw new Error('Test actor issuer did not initialize.');
+    const actor = issuer.value.issueSystem(ids.actor);
+    if (!actor.ok) throw new Error('Test system actor did not initialize.');
+    const processor = createPostgresTrackerStatusObservationProcessor(
+      db,
+      createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)}),
+      actor.value
+    );
+    await expect(processor.processAvailable()).resolves.toMatchObject({
+      status: 'conflict', code: 'invalid_transition'
+    });
+    const [canonical, observations] = await Promise.all([
+      db.select().from(workItems).where(eq(workItems.id, binding!.entityId)),
+      db.select().from(trackerStatusObservationInbox).where(eq(
+        trackerStatusObservationInbox.projectId,
+        projectId
+      ))
+    ]);
+    expect(canonical[0]).toMatchObject({status: 'in_dev', version: 2});
+    expect(observations.map(({conflictCode}) => conflictCode).sort()).toEqual([
+      'invalid_transition',
+      'outbound_race'
+    ]);
   });
 
   it('serializes simultaneous identical bootstrap and synchronize operations', async () => {

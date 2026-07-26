@@ -9,6 +9,10 @@ export {
 } from './github-project-status-writeback';
 export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
 export {
+  createPostgresTrackerStatusObservationProcessor,
+  type TrackerStatusObservationProcessorResult
+} from './tracker-status-observation-processor';
+export {
   createPostgresHealthcheckProducer,
   HEALTHCHECK_QUEUE,
   healthcheckCron

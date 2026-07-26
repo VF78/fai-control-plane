@@ -99,6 +99,10 @@ export const commandReceiptStateEnum = pgEnum('command_receipt_state', [
   'claimed',
   'completed'
 ]);
+export const trackerStatusObservationStateEnum = pgEnum(
+  'tracker_status_observation_state',
+  ['pending', 'processing', 'applied', 'acknowledged', 'conflict']
+);
 export const auditOutcomeEnum = pgEnum('audit_outcome', [
   'succeeded',
   'failed',
@@ -506,6 +510,83 @@ export const trackerSnapshotOperations = pgTable(
     check(
       'tracker_snapshot_operations_mode_valid',
       sql`${table.mode} in ('bootstrap', 'synchronize')`
+    )
+  ]
+);
+
+/**
+ * Immutable GitHub Project Status observations. Only delivery state and a
+ * conflict code may change after insertion; the observed provider value and
+ * canonical CAS expectation remain evidence for the eventual command.
+ */
+export const trackerStatusObservationInbox = pgTable(
+  'tracker_status_observation_inbox',
+  {
+    id: id(),
+    snapshotOperationId: uuid('snapshot_operation_id').notNull(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    bindingId: uuid('binding_id')
+      .notNull()
+      .references(() => trackerBindings.id, {onDelete: 'restrict'}),
+    workItemId: uuid('work_item_id')
+      .notNull()
+      .references(() => workItems.id, {onDelete: 'restrict'}),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    correlationId: uuid('correlation_id').notNull(),
+    provider: text('provider').notNull(),
+    mappedStatus: workItemStatusEnum('mapped_status').notNull(),
+    expectedCanonicalVersion: integer('expected_canonical_version').notNull(),
+    bindingInboundVersion: text('binding_inbound_version').notNull(),
+    outboundMutationId: uuid('outbound_mutation_id'),
+    state: trackerStatusObservationStateEnum('state').default('pending').notNull(),
+    conflictCode: text('conflict_code'),
+    processingToken: uuid('processing_token'),
+    processingLeaseExpiresAt: timestamp('processing_lease_expires_at', {
+      withTimezone: true
+    }),
+    processedAt: timestamp('processed_at', {withTimezone: true}),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('tracker_status_observation_binding_snapshot_unique').on(
+      table.bindingId,
+      table.snapshotOperationId
+    ),
+    index('tracker_status_observation_claim_idx').on(
+      table.state,
+      table.createdAt
+    ),
+    index('tracker_status_observation_work_item_idx').on(
+      table.workItemId,
+      table.createdAt
+    ),
+    check(
+      'tracker_status_observation_expected_version_positive',
+      sql`${table.expectedCanonicalVersion} > 0`
+    ),
+    check(
+      'tracker_status_observation_processing_claim_valid',
+      sql`(
+        ${table.state} = 'processing'
+        and ${table.processingToken} is not null
+        and ${table.processingLeaseExpiresAt} is not null
+      ) or (
+        ${table.state} <> 'processing'
+        and ${table.processingToken} is null
+        and ${table.processingLeaseExpiresAt} is null
+      )`
+    ),
+    check(
+      'tracker_status_observation_conflict_code_valid',
+      sql`(${table.state} = 'conflict' and ${table.conflictCode} is not null)
+        or (${table.state} <> 'conflict' and ${table.conflictCode} is null)`
     )
   ]
 );
