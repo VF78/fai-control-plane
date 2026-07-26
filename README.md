@@ -6,6 +6,10 @@ tracked work, approvals, isolated execution, and client-safe result sharing.
 > This repository and its Compose stack are for local development only. They do
 > not define or authorize a production deployment.
 
+A separate, non-authorizing production topology proposal for
+`app.f-ai.studio` is documented in
+[the production deployment preparation](docs/ops/APP_F_AI_STUDIO_DEPLOYMENT_PREPARATION.md).
+
 ## Architecture
 
 The system is a modular monolith with two process entry points:
