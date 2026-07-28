@@ -16,7 +16,7 @@ describe('operator GitHub OAuth replay boundary', () => {
       clientSecret: 'client-secret-not-persisted',
       sessionSecret: Buffer.alloc(32, 7),
       publicBaseUrl: new URL('https://control.example/'),
-      callbackUrl: 'https://control.example/api/auth/github/callback',
+      callbackUrl: 'https://control.example/oauth/github/complete',
       allowedUserIds: new Set([123, 456]),
       secureCookies: true
     };

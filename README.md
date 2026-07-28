@@ -164,7 +164,7 @@ An enabled runtime fails closed unless all of the following are exact:
 - `AUTH_PUBLIC_BASE_URL` is an HTTPS origin (HTTP loopback is accepted only
   outside production);
 - `GITHUB_LOGIN_CALLBACK_URL` is
-  `<AUTH_PUBLIC_BASE_URL>/api/auth/github/callback`;
+  `<AUTH_PUBLIC_BASE_URL>/oauth/github/complete`;
 - `GITHUB_LOGIN_CLIENT_ID` identifies the login-only OAuth application;
 - `GITHUB_LOGIN_CLIENT_SECRET_FILE` and `AUTH_SESSION_SECRET_FILE` are absolute
   mounted secret-file paths;
@@ -184,7 +184,7 @@ operator-owned host files and keep their contents out of `.env`, logs, and
 PostgreSQL. The session secret must contain at least 32 bytes.
 
 Production ingress and application request logging must suppress callback query
-strings on `/api/auth/github/callback`, because GitHub necessarily returns the
+strings on `/oauth/github/complete`, because GitHub necessarily returns the
 short-lived authorization code in that query. The application never emits the
 callback URL, code, verifier, tokens, secrets, or GitHub profile payload.
 

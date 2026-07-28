@@ -32,7 +32,7 @@ it('enforces operator CSRF and returns a one-time configured-origin URL without 
     clientSecret: 'not-used-by-test',
     sessionSecret: Buffer.alloc(32, 1),
     publicBaseUrl: new URL('https://control.example/base-is-ignored'),
-    callbackUrl: 'https://control.example/api/auth/github/callback',
+    callbackUrl: 'https://control.example/oauth/github/complete',
     allowedUserIds: new Set([123, 456]),
     secureCookies: true
   };
