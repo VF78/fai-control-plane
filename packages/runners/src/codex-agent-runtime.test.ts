@@ -78,6 +78,17 @@ describe('Codex CLI agent runtime', () => {
     const result = await runtime.run(input);
 
     expect(result.status).toBe('succeeded');
+    expect(result).toMatchObject({
+      evidence: {
+        status: 'completed',
+        changedFiles: ['packages/runners/src/index.ts'],
+        checks: [{name: 'typecheck', status: 'passed'}],
+        artifact: {
+          sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+          sizeBytes: expect.any(Number)
+        }
+      }
+    });
     expect(requests).toHaveLength(1);
     const request = requests[0]!;
     expect(request.executable).toBe('codex');

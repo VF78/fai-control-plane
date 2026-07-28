@@ -137,6 +137,20 @@ the latter. Use an HTTPS base URL except for loopback local development
 allowlists remain authoritative; the workstation also rejects claims for a
 repository other than its configured value.
 
+Repository-host publication is a second, independent workstation gate and is
+disabled unless `LOCAL_WORKSTATION_REPOSITORY_PUBLISH_ENABLED=true`. When it is
+enabled, `LOCAL_WORKSTATION_REPOSITORY_PUBLISH_ALLOWED_REPOSITORY` must exactly
+match `LOCAL_WORKSTATION_RUNNER_REPOSITORY`; also set
+`LOCAL_WORKSTATION_REPOSITORY_PUBLISH_BASE_REF`, a comma-separated exact list in
+`LOCAL_WORKSTATION_REPOSITORY_PUBLISH_REQUIRED_CHECKS`, and the opaque secret
+file reference `LOCAL_WORKSTATION_REPOSITORY_PUBLISH_TOKEN_FILE`. The
+orchestrator publishes only after a successful run with a clean worktree, a new
+commit, the exact generated `fai/run/<runId>` branch, nonempty changed-file
+evidence, and every reported and required check passing. The concrete adapter
+pushes that exact commit and may create or reuse only a draft change request;
+it does not merge, release, or deploy. Missing or mismatched configuration
+fails closed, and disabled operation does not read or require write credentials.
+
 ### Operator authentication
 
 `AUTH_ENABLED=false` is the default local-development bypass. When it is

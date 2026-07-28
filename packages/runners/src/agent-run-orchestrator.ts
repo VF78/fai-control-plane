@@ -9,6 +9,10 @@ import type {
   RuntimeProfile
 } from './index';
 import type {
+  RepositoryHostPublicationFailureReason,
+  RepositoryHostPublisher
+} from './repository-host-publisher';
+import type {
   AgentRunWorktree,
   WorktreeManager
 } from './worktree-manager';
@@ -16,6 +20,8 @@ import type {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const RECEIPT_FILENAME = 'agent-run-receipt.json';
+const SAFE_CHECK_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 .,_:()/-]{0,127}$/;
+const SAFE_BASE_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$/;
 
 export type LocalAgentRunEnvelope = Readonly<{
   runId: string;
@@ -60,7 +66,31 @@ export type LocalAgentRunReceipt = Readonly<{
     reason: 'codex_cli_usage_not_available';
   }>;
   nextAction: 'review_receipt' | 'review_worktree' | 'retry_explicitly';
-  writeBack: Readonly<{state: 'not_attempted'}>;
+  writeBack:
+    | Readonly<{
+        state: 'not_attempted';
+        reason: 'repository_host_publication_disabled';
+      }>
+    | Readonly<{
+        state: 'blocked';
+        reason:
+          | 'runtime_not_succeeded'
+          | 'worktree_dirty'
+          | 'no_changes'
+          | 'unsafe_generated_branch'
+          | 'evidence_unavailable'
+          | 'evidence_not_satisfied';
+      }>
+    | Readonly<{
+        state: 'failed';
+        reason: RepositoryHostPublicationFailureReason | 'publisher_failed';
+      }>
+    | Readonly<{
+        state: 'published';
+        externalChangeRef: string;
+        externalChangeUrl: string;
+        externalChangeStatus: 'draft';
+      }>;
 }>;
 
 export type LocalAgentRunResult = Readonly<{
@@ -75,6 +105,13 @@ export type LocalAgentRunOrchestratorOptions = Readonly<{
   worktrees: WorktreeManager;
   runtime: AgentRuntime;
   clock?: Readonly<{now(): Date}>;
+  publication?: Readonly<{
+    enabled: true;
+    repositoryTarget: string;
+    baseRef: string;
+    requiredCheckNames: readonly string[];
+    publisher: RepositoryHostPublisher;
+  }>;
 }>;
 
 export interface LocalAgentRunOrchestrator {
@@ -148,17 +185,130 @@ const summaryArtifact = (
   }
   return {
     name: path.basename(result.summaryRef),
-    sha256: result.summarySha256,
-    sizeBytes: result.summarySizeBytes
+    sha256: result.evidence.artifact.sha256,
+    sizeBytes: result.evidence.artifact.sizeBytes
   };
 };
 
 const nextActionFor = (
   result: AgentRuntimeResult,
-  dirty: boolean
+  dirty: boolean,
+  writeBack: LocalAgentRunReceipt['writeBack']
 ): LocalAgentRunReceipt['nextAction'] => {
+  if (dirty) return 'review_worktree';
   if (result.status !== 'succeeded') return 'retry_explicitly';
-  return dirty ? 'review_worktree' : 'review_receipt';
+  if (writeBack.state === 'failed') return 'retry_explicitly';
+  if (writeBack.state === 'blocked' && writeBack.reason !== 'no_changes') {
+    return 'retry_explicitly';
+  }
+  return 'review_receipt';
+};
+
+const safeRef = (value: string): boolean =>
+  SAFE_BASE_REF_PATTERN.test(value) &&
+  !value.includes('//') &&
+  !value.split('/').some((part) => part === '.' || part === '..');
+
+const validatePublicationOptions = (
+  publication: LocalAgentRunOrchestratorOptions['publication']
+): void => {
+  if (publication === undefined) return;
+  if (
+    publication.enabled !== true ||
+    publication.repositoryTarget.length === 0 ||
+    publication.repositoryTarget.length > 256 ||
+    publication.repositoryTarget.includes('\0') ||
+    !safeRef(publication.baseRef) ||
+    publication.requiredCheckNames.length === 0 ||
+    publication.requiredCheckNames.length > 24 ||
+    new Set(publication.requiredCheckNames).size !==
+      publication.requiredCheckNames.length ||
+    publication.requiredCheckNames.some(
+      (name) => !SAFE_CHECK_NAME_PATTERN.test(name)
+    )
+  ) {
+    fail('invalid_publication_configuration');
+  }
+};
+
+const publicationWriteBack = async (
+  options: LocalAgentRunOrchestratorOptions,
+  envelope: LocalAgentRunEnvelope,
+  worktree: AgentRunWorktree,
+  result: AgentRuntimeResult,
+  inspection: Readonly<{headCommit: string; dirty: boolean}>,
+  summary: ReceiptArtifact | undefined
+): Promise<LocalAgentRunReceipt['writeBack']> => {
+  const publication = options.publication;
+  if (publication === undefined) {
+    return {
+      state: 'not_attempted',
+      reason: 'repository_host_publication_disabled'
+    };
+  }
+  if (result.status !== 'succeeded') {
+    return {state: 'blocked', reason: 'runtime_not_succeeded'};
+  }
+  if (inspection.dirty) return {state: 'blocked', reason: 'worktree_dirty'};
+  if (inspection.headCommit === worktree.baseCommit) {
+    return {state: 'blocked', reason: 'no_changes'};
+  }
+  if (worktree.branch !== `fai/run/${envelope.runId}`) {
+    return {state: 'blocked', reason: 'unsafe_generated_branch'};
+  }
+  if (summary === undefined) {
+    return {state: 'blocked', reason: 'evidence_unavailable'};
+  }
+  const values = result.evidence;
+  if (
+    values.status !== 'completed' ||
+    values.changedFiles.length === 0 ||
+    values.checks.length === 0 ||
+    values.checks.some((check) => check.status !== 'passed') ||
+    publication.requiredCheckNames.some(
+      (required) => !values.checks.some(
+        (check) => check.name === required && check.status === 'passed'
+      )
+    )
+  ) {
+    return {state: 'blocked', reason: 'evidence_not_satisfied'};
+  }
+
+  const idempotencyKey = sha256(Buffer.from([
+    publication.repositoryTarget,
+    publication.baseRef,
+    worktree.branch,
+    inspection.headCommit
+  ].join('\0'), 'utf8'));
+  try {
+    const published = await publication.publisher.publishDraftChange({
+      repositoryTarget: publication.repositoryTarget,
+      baseRef: publication.baseRef,
+      baseCommit: worktree.baseCommit,
+      headCommit: inspection.headCommit,
+      branch: worktree.branch,
+      title: `Automated change for run ${envelope.runId}`,
+      body: [
+        'Automated draft change request.',
+        '',
+        `Run: ${envelope.runId}`,
+        `Packet: ${envelope.packetId}`,
+        `Evidence: ${values.artifact.sha256}`
+      ].join('\n'),
+      idempotencyKey
+    });
+    if (published.status === 'failed') {
+      return {state: 'failed', reason: published.reason};
+    }
+    return {
+      state: 'published',
+      externalChangeRef: published.externalChangeRef,
+      externalChangeUrl: published.externalChangeUrl,
+      externalChangeStatus: published.externalChangeStatus
+    };
+  } catch {
+    return {state: 'failed', reason: 'publisher_failed'};
+  }
 };
 
 const runtimeInput = (
@@ -180,6 +330,7 @@ const runtimeInput = (
 export const createLocalAgentRunOrchestrator = (
   options: LocalAgentRunOrchestratorOptions
 ): LocalAgentRunOrchestrator => {
+  validatePublicationOptions(options.publication);
   const clock = options.clock ?? {now: () => new Date()};
 
   return {
@@ -202,8 +353,16 @@ export const createLocalAgentRunOrchestrator = (
       const worktreeDisposition = inspection.dirty
         ? 'retained_dirty'
         : 'removed_clean';
-      if (!inspection.dirty) await options.worktrees.cleanup(worktree);
       const summary = summaryArtifact(runtimeResult, artifactPath);
+      const writeBack = await publicationWriteBack(
+        options,
+        envelope,
+        worktree,
+        runtimeResult,
+        inspection,
+        summary
+      );
+      if (!inspection.dirty) await options.worktrees.cleanup(worktree);
 
       const receipt: LocalAgentRunReceipt = {
         schemaVersion: 1,
@@ -230,8 +389,8 @@ export const createLocalAgentRunOrchestrator = (
           state: 'unknown',
           reason: 'codex_cli_usage_not_available'
         },
-        nextAction: nextActionFor(runtimeResult, inspection.dirty),
-        writeBack: {state: 'not_attempted'}
+        nextAction: nextActionFor(runtimeResult, inspection.dirty, writeBack),
+        writeBack
       };
       const body = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
       try {

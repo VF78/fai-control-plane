@@ -5,9 +5,11 @@ import {
   readCodexStructuredSummary,
   type CodexStructuredSummary
 } from './codex-agent-runtime';
+import {createGitHubRepositoryHostPublisher} from './github-repository-host-publisher';
 import {
   createLocalAgentRunOrchestrator,
   type LocalAgentRunOrchestrator,
+  type LocalAgentRunOrchestratorOptions,
   type LocalAgentRunResult
 } from './agent-run-orchestrator';
 import type {RuntimeProfile} from './index';
@@ -68,6 +70,11 @@ export type WorkstationRunnerEnvironment = Readonly<Record<
   LOCAL_WORKSTATION_RUNNER_WORKTREE_ROOT?: string;
   LOCAL_WORKSTATION_RUNNER_ARTIFACT_ROOT?: string;
   LOCAL_WORKSTATION_RUNNER_CODEX_HOME?: string;
+  LOCAL_WORKSTATION_REPOSITORY_PUBLISH_ENABLED?: string;
+  LOCAL_WORKSTATION_REPOSITORY_PUBLISH_ALLOWED_REPOSITORY?: string;
+  LOCAL_WORKSTATION_REPOSITORY_PUBLISH_BASE_REF?: string;
+  LOCAL_WORKSTATION_REPOSITORY_PUBLISH_REQUIRED_CHECKS?: string;
+  LOCAL_WORKSTATION_REPOSITORY_PUBLISH_TOKEN_FILE?: string;
   PATH?: string;
   PATHEXT?: string;
   SYSTEMROOT?: string;
@@ -131,6 +138,19 @@ const parseBaseUrl = (value: string): string => {
   return parsed.origin;
 };
 
+const publicationRequiredChecks = (value: string): readonly string[] => {
+  const checks = value.split(',');
+  if (
+    checks.length === 0 ||
+    checks.length > 24 ||
+    new Set(checks).size !== checks.length ||
+    checks.some((check) => !SAFE_CHECK_NAME_PATTERN.test(check))
+  ) {
+    fail('invalid_repository_publish_required_checks');
+  }
+  return checks;
+};
+
 const absolutePath = (value: string, field: string): string => {
   if (
     value.includes('\0') ||
@@ -158,6 +178,64 @@ const readBearerToken = async (
   )).replace(/\r?\n$/, '');
   if (!BEARER_TOKEN_PATTERN.test(token)) fail('invalid_token');
   return token;
+};
+
+const repositoryPublicationFromEnvironment = (
+  environment: WorkstationRunnerEnvironment,
+  repository: Repository,
+  repositoryRoot: string,
+  processEnvironment: Readonly<Record<string, string>>
+): LocalAgentRunOrchestratorOptions['publication'] => {
+  if (environment.LOCAL_WORKSTATION_REPOSITORY_PUBLISH_ENABLED !== 'true') {
+    return undefined;
+  }
+  const allowed = parseRepository(requireValue(
+    environment,
+    'LOCAL_WORKSTATION_REPOSITORY_PUBLISH_ALLOWED_REPOSITORY'
+  ));
+  if (allowed.owner !== repository.owner || allowed.name !== repository.name) {
+    fail('repository_publish_allowlist_mismatch');
+  }
+  const baseRef = requireValue(
+    environment,
+    'LOCAL_WORKSTATION_REPOSITORY_PUBLISH_BASE_REF'
+  );
+  if (!safeReference(baseRef)) fail('invalid_repository_publish_base_ref');
+  const credentialRef = absolutePath(requireValue(
+    environment,
+    'LOCAL_WORKSTATION_REPOSITORY_PUBLISH_TOKEN_FILE'
+  ), 'repository_publish_token_file');
+  const requiredCheckNames = publicationRequiredChecks(requireValue(
+    environment,
+    'LOCAL_WORKSTATION_REPOSITORY_PUBLISH_REQUIRED_CHECKS'
+  ));
+  const repositoryTarget = `repository:${allowed.owner}/${allowed.name}`;
+  return {
+    enabled: true,
+    repositoryTarget,
+    baseRef,
+    requiredCheckNames,
+    publisher: createGitHubRepositoryHostPublisher({
+      repositoryTarget,
+      owner: allowed.owner,
+      repository: allowed.name,
+      repositoryRoot,
+      credentialRef,
+      secrets: {
+        async resolve(reference, purpose) {
+          if (
+            reference !== credentialRef ||
+            purpose !== 'repository_host_publish_draft_change'
+          ) {
+            throw new Error('workstation_runner_invalid_secret_reference');
+          }
+          const value = (await readFile(reference, 'utf8')).replace(/\r?\n$/, '');
+          return {value};
+        }
+      },
+      environment: processEnvironment
+    })
+  };
 };
 
 const parseClaim = (value: unknown, repository: Repository): RunnerClaimEnvelope => {
@@ -418,15 +496,26 @@ export const runWorkstationRunnerFromEnvironment = async (
     ...(environment.TEMP === undefined ? {} : {TEMP: environment.TEMP}),
     ...(environment.TMP === undefined ? {} : {TMP: environment.TMP})
   };
+  const repository = parseRepository(requireValue(
+    environment,
+    'LOCAL_WORKSTATION_RUNNER_REPOSITORY'
+  ));
+  const publication = repositoryPublicationFromEnvironment(
+    environment,
+    repository,
+    repositoryRoot,
+    runtimeEnvironment
+  );
   const orchestrator = createLocalAgentRunOrchestrator({
     artifactRoot,
     worktrees: createWorktreeManager({repositoryRoot, worktreeRoot}),
-    runtime: createCodexAgentRuntime({codexHome, environment: runtimeEnvironment})
+    runtime: createCodexAgentRuntime({codexHome, environment: runtimeEnvironment}),
+    ...(publication === undefined ? {} : {publication})
   });
   return runWorkstationRunnerOnce({
     baseUrl: requireValue(environment, 'LOCAL_WORKSTATION_RUNNER_BASE_URL'),
     bearerToken: token,
-    repository: parseRepository(requireValue(environment, 'LOCAL_WORKSTATION_RUNNER_REPOSITORY')),
+    repository,
     orchestrator
   });
 };

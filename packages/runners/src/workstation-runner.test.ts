@@ -54,7 +54,10 @@ describe('workstation runner', () => {
         worktreeDisposition: 'retained_dirty',
         cost: {state: 'unknown', reason: 'codex_cli_usage_not_available'},
         nextAction: 'review_worktree',
-        writeBack: {state: 'not_attempted'}
+        writeBack: {
+          state: 'not_attempted',
+          reason: 'repository_host_publication_disabled'
+        }
       },
       receiptRef: path.join(artifactRoot, 'agent-run-receipt.json'),
       receiptSha256: 'e'.repeat(64),

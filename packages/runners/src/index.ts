@@ -20,6 +20,19 @@ export type RedactedProcessOutputMetadata = Readonly<{
   contentRetained: false;
 }>;
 
+export type AgentRuntimeEvidence = Readonly<{
+  status: 'completed' | 'blocked';
+  changedFiles: readonly string[];
+  checks: readonly Readonly<{
+    name: string;
+    status: 'passed' | 'failed' | 'not_run';
+  }>[];
+  artifact: Readonly<{
+    sha256: string;
+    sizeBytes: number;
+  }>;
+}>;
+
 type AgentRuntimeResultBase = Readonly<{
   runtimeId: string;
   runId: string;
@@ -39,9 +52,8 @@ export type AgentRuntimeResult =
       status: 'succeeded';
       exitCode: 0;
       summaryRef: string;
-      summarySha256: string;
-      summarySizeBytes: number;
       schemaRef: string;
+      evidence: AgentRuntimeEvidence;
     }>)
   | (AgentRuntimeResultBase & Readonly<{
       status: 'process_failed';
@@ -108,6 +120,20 @@ export {
   type LocalAgentRunReceipt,
   type LocalAgentRunResult
 } from './agent-run-orchestrator';
+
+export {
+  type RepositoryHostPublicationFailureReason,
+  type RepositoryHostPublicationReceipt,
+  type RepositoryHostPublisher,
+  type RepositoryHostPublishDraftChangeInput
+} from './repository-host-publisher';
+
+export {
+  createGitHubRepositoryHostPublisher,
+  type GitHubRepositoryHostPublisherOptions,
+  type RepositoryHostProcessExecutor,
+  type RepositoryHostProcessRequest
+} from './github-repository-host-publisher';
 
 export {
   runWorkstationRunnerFromEnvironment,

@@ -692,9 +692,19 @@ export const createCodexAgentRuntime = (
           status: 'succeeded',
           exitCode: 0,
           summaryRef: summaryPath,
-          summarySha256: summary.sha256,
-          summarySizeBytes: summary.sizeBytes,
-          schemaRef: schemaPath
+          schemaRef: schemaPath,
+          evidence: {
+            status: summary.summary.status,
+            changedFiles: [...summary.summary.changedFiles],
+            checks: summary.summary.checks.map(({name, status}) => ({
+              name,
+              status
+            })),
+            artifact: {
+              sha256: summary.sha256,
+              sizeBytes: summary.sizeBytes
+            }
+          }
         };
       } catch {
         return {
