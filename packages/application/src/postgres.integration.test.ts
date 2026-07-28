@@ -1,7 +1,9 @@
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {
+  CURRENT_POLICY_VERSION,
   createActorContextIssuer,
+  createTaskPacket,
   type CanonicalCommand,
   type TaskPacketContent,
   type TrustedUserActorContext
@@ -13,8 +15,13 @@ import {
   commandReceipts,
   createDatabase,
   createPostgresUnitOfWork,
-  taskPackets
+  outboxEvents,
+  statusTransitions,
+  taskPackets,
+  trackerBindings,
+  workItems
 } from '@fai-control-plane/db';
+import {dropDatabaseWhenDisconnected} from '../../db/src/integration-test-utils';
 import {eq, inArray} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
@@ -99,6 +106,7 @@ const packetContent = (
   return {
     projectId: other ? fixture.otherProjectId : fixture.projectId,
     workItemId: other ? fixture.otherWorkItemId : fixture.workItemId,
+    workItemVersion: other ? 1 : 2,
     goal: `Integration packet ${randomUUID()}`,
     acceptanceCriteria: ['Receipt is completed'],
     inScope: ['packages/application/**'],
@@ -127,6 +135,13 @@ const service = () =>
     idGenerator: {next: randomUUID},
     clock: {now: () => new Date()}
   });
+
+const approvalBinding = () => ({
+  subjectHash: 'a'.repeat(64),
+  expectedPolicyVersion: CURRENT_POLICY_VERSION,
+  executionIdentity: randomUUID(),
+  expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString()
+});
 
 const receiptErrorCode = (
   result: Awaited<ReturnType<ReturnType<typeof service>['execute']>>
@@ -251,14 +266,11 @@ describePostgres(
     afterAll(async () => {
       await testPool?.end();
       if (adminPool !== undefined) {
-        await adminPool.query(
-          `SELECT pg_terminate_backend(pid)
-           FROM pg_stat_activity
-           WHERE datname = $1 AND pid <> pg_backend_pid()`,
-          [databaseName]
-        );
-        await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-        await adminPool.end();
+        try {
+          await dropDatabaseWhenDisconnected(adminPool, databaseName);
+        } finally {
+          await adminPool.end();
+        }
       }
     });
 
@@ -281,6 +293,92 @@ describePostgres(
           result: {ok: true}
         }
       });
+    });
+
+    it('atomically enqueues a GitHub Project status write-back for a WorkItem transition', async () => {
+      const workItemId = randomUUID();
+      const bindingId = randomUUID();
+      await testDb.insert(workItems).values({
+        id: workItemId,
+        projectId: fixture.projectId,
+        title: 'GitHub-bound item',
+        status: 'ready',
+        version: 1
+      });
+      await testDb.insert(trackerBindings).values({
+        id: bindingId,
+        projectId: fixture.projectId,
+        provider: 'github',
+        surface: 'issue',
+        externalId: 'github:issue:9001',
+        entityType: 'work_item',
+        entityId: workItemId,
+        externalVersion: 'github:sha256:inbound',
+        lastInboundVersion: 'github:sha256:inbound',
+        metadata: {
+          repositoryExternalId: 'github:repository:1278325372',
+          projectStatus: {
+            projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+            projectItemExternalId: 'PVTI_test_9001',
+            fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
+            optionExternalId: '1f121483',
+            status: 'ready'
+          }
+        }
+      });
+      const transition = command(
+        fixture.workspaceId,
+        primaryActor,
+        'work_item.transition',
+        {workItemId, status: 'in_dev', expectedVersion: 1}
+      );
+
+      await expect(service().execute(transition)).resolves.toMatchObject({
+        status: 'completed', receipt: {result: {ok: true}, resultVersion: 2}
+      });
+      await expect(testDb.select({status: workItems.status, version: workItems.version})
+        .from(workItems).where(eq(workItems.id, workItemId))).resolves.toEqual([
+        {status: 'in_dev', version: 2}
+      ]);
+      await expect(testDb.select({fromStatus: statusTransitions.fromStatus, toStatus: statusTransitions.toStatus})
+        .from(statusTransitions).where(eq(statusTransitions.workItemId, workItemId))).resolves.toEqual([
+        {fromStatus: 'ready', toStatus: 'in_dev'}
+      ]);
+      await expect(testDb.select({lastOutboundMutationId: trackerBindings.lastOutboundMutationId})
+        .from(trackerBindings).where(eq(trackerBindings.id, bindingId))).resolves.toEqual([
+        {lastOutboundMutationId: transition.commandId}
+      ]);
+      await expect(testDb.select({payload: outboxEvents.payload, status: outboxEvents.status})
+        .from(outboxEvents).where(eq(outboxEvents.idempotencyKey,
+          `github-project-status:${bindingId}:${transition.commandId}`))).resolves.toMatchObject([
+        {
+          status: 'pending',
+          payload: {
+            version: 1,
+            bindingId,
+            workItemId,
+            canonicalVersion: 2,
+            status: 'in_dev',
+            expected: {
+              bindingExternalVersion: 'github:sha256:inbound',
+              providerOptionId: '1f121483'
+            },
+            target: {
+              repositoryExternalId: 'github:repository:1278325372',
+              projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+              projectItemExternalId: 'PVTI_test_9001',
+              fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc'
+            },
+            mutationId: transition.commandId
+          }
+        }
+      ]);
+      await expect(testDb.select().from(auditEvents)
+        .where(eq(auditEvents.commandId, transition.commandId))).resolves.toHaveLength(1);
+      await expect(testDb.select().from(commandReceipts)
+        .where(eq(commandReceipts.commandId, transition.commandId))).resolves.toMatchObject([
+        {state: 'completed'}
+      ]);
     });
 
     it('completes duplicate packet content as an audited conflict', async () => {
@@ -321,17 +419,23 @@ describePostgres(
     it('stores the same run key independently in two workspaces', async () => {
       const primaryPacketId = randomUUID();
       const otherPacketId = randomUUID();
+      const primaryContent = packetContent();
+      const primaryPacket = createTaskPacket(primaryPacketId, primaryContent);
+      if (!primaryPacket.ok) throw new Error('Primary packet did not initialize.');
       await service().execute(command(
         fixture.workspaceId,
         primaryActor,
         'task_packet.create',
-        {packetId: primaryPacketId, content: packetContent()}
+        {packetId: primaryPacketId, content: primaryContent}
       ));
+      const otherContent = packetContent('other');
+      const otherPacket = createTaskPacket(otherPacketId, otherContent);
+      if (!otherPacket.ok) throw new Error('Other packet did not initialize.');
       await service().execute(command(
         fixture.otherWorkspaceId,
         otherActor,
         'task_packet.create',
-        {packetId: otherPacketId, content: packetContent('other')}
+        {packetId: otherPacketId, content: otherContent}
       ));
       const userKey = `shared-user-key-${randomUUID()}`;
       const first = command(
@@ -341,7 +445,9 @@ describePostgres(
         {
           agentRunId: randomUUID(),
           taskPacketId: primaryPacketId,
-          agentProfileId: fixture.profileId
+          agentProfileId: fixture.profileId,
+          confirmedPacketHash: primaryPacket.value.contentHash,
+          baseCommit: 'a'.repeat(40)
         },
         userKey
       );
@@ -352,7 +458,9 @@ describePostgres(
         {
           agentRunId: randomUUID(),
           taskPacketId: otherPacketId,
-          agentProfileId: fixture.otherProfileId
+          agentProfileId: fixture.otherProfileId,
+          confirmedPacketHash: otherPacket.value.contentHash,
+          baseCommit: 'b'.repeat(40)
         },
         userKey
       );
@@ -443,11 +551,14 @@ describePostgres(
       expect(receiptErrorCode(crossPacket)).toBe('NOT_FOUND');
 
       const validPacketId = randomUUID();
+      const validContent = packetContent();
+      const validPacket = createTaskPacket(validPacketId, validContent);
+      if (!validPacket.ok) throw new Error('Valid packet did not initialize.');
       await service().execute(command(
         fixture.workspaceId,
         primaryActor,
         'task_packet.create',
-        {packetId: validPacketId, content: packetContent()}
+        {packetId: validPacketId, content: validContent}
       ));
       const missingProfile = await service().execute(command(
         fixture.workspaceId,
@@ -456,7 +567,9 @@ describePostgres(
         {
           agentRunId: randomUUID(),
           taskPacketId: validPacketId,
-          agentProfileId: randomUUID()
+          agentProfileId: randomUUID(),
+          confirmedPacketHash: validPacket.value.contentHash,
+          baseCommit: 'a'.repeat(40)
         }
       ));
       expect(receiptErrorCode(missingProfile)).toBe('NOT_FOUND');
@@ -472,7 +585,8 @@ describePostgres(
             surface: 'runner',
             environment: 'development'
           },
-          target: {workItemId: fixture.otherWorkItemId}
+          target: {workItemId: fixture.otherWorkItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(missingApprovalTarget)).toBe('NOT_FOUND');
@@ -490,7 +604,8 @@ describePostgres(
             surface: 'control_plane',
             environment: 'development'
           },
-          target: {workItemId: fixture.workItemId}
+          target: {workItemId: fixture.workItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(allowed)).toBe('INVALID_COMMAND');
@@ -507,7 +622,8 @@ describePostgres(
             surface: 'runner',
             environment: 'development'
           },
-          target: {workItemId: fixture.workItemId}
+          target: {workItemId: fixture.workItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(asked)).toBe('APPROVAL_REQUIRED');
@@ -529,7 +645,8 @@ describePostgres(
             surface: 'control_plane',
             environment: 'production'
           },
-          target: {workItemId: fixture.workItemId}
+          target: {workItemId: fixture.workItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(denied)).toBe('POLICY_DENIED');
@@ -545,7 +662,8 @@ describePostgres(
             surface: 'runner',
             environment: 'development'
           },
-          target: {workItemId: fixture.workItemId}
+          target: {workItemId: fixture.workItemId},
+          binding: approvalBinding()
         }
       ));
       expect(receiptErrorCode(capabilityDenied)).toBe('CAPABILITY_DENIED');

@@ -1,7 +1,9 @@
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {
+  CURRENT_POLICY_VERSION,
+  createApprovalBinding,
   createTaskPacket,
   type AgentRun,
   type ApprovalRequiredCommandOutcome,
@@ -21,6 +23,7 @@ import {
   it
 } from 'vitest';
 import {createDatabase, createPostgresUnitOfWork} from './index';
+import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
   approvalRequests,
   agentRuns,
@@ -78,60 +81,79 @@ const claim = (
 const approvalOutcome = (
   receiptClaim: CommandReceiptClaim,
   approvalId = randomUUID()
-): ApprovalRequiredCommandOutcome => ({
-  kind: 'approval_required',
-  approval: {
-    aggregateType: 'approval',
-    aggregateId: approvalId,
-    expectedPersistedVersion: null,
-    aggregate: {
-      id: approvalId,
-      projectId: fixture.projectId,
-      workItemId: fixture.workItemId,
+): ApprovalRequiredCommandOutcome => {
+  const action = {actionCategory: 'deploy', surface: 'runner', environment: 'production'} as const;
+  const target = {workItemId: fixture.workItemId} as const;
+  const now = new Date();
+  const binding = createApprovalBinding(action, target, {
+    subjectHash: 'a'.repeat(64),
+    expectedPolicyVersion: CURRENT_POLICY_VERSION,
+    executionIdentity: randomUUID(),
+    expiresAt: new Date(now.getTime() + 60 * 60 * 1_000).toISOString()
+  }, fixture.actorId, now);
+  if (!binding.ok) throw new Error('Approval binding fixture did not initialize.');
+  const approval = {
+    id: approvalId,
+    projectId: fixture.projectId,
+    ...target,
+    ...action,
+    requestedByActorId: fixture.actorId,
+    binding: binding.value,
+    status: 'pending' as const,
+    version: 1
+  };
+  return {
+    kind: 'approval_required',
+    approval: {
+      aggregateType: 'approval',
+      aggregateId: approvalId,
+      expectedPersistedVersion: null,
+      aggregate: approval
+    },
+    audit: {
+      id: randomUUID(),
+      workspaceId: fixture.workspaceId,
+      commandId: receiptClaim.commandId,
+      correlationId: receiptClaim.correlationId,
+      actorId: fixture.actorId,
       actionCategory: 'deploy',
-      surface: 'runner',
-      environment: 'production',
-      requestedByActorId: fixture.actorId,
-      status: 'pending',
-      version: 1
-    }
-  },
-  audit: {
-    id: randomUUID(),
-    workspaceId: fixture.workspaceId,
-    commandId: receiptClaim.commandId,
-    correlationId: receiptClaim.correlationId,
-    actorId: fixture.actorId,
-    actionCategory: 'deploy',
-    action: 'approval.request',
-    targetType: 'approval',
-    targetId: approvalId,
-    policyDecision: 'ask',
-    outcome: 'approval_required',
-    reasonCode: 'APPROVAL_REQUIRED',
-    resultVersion: 1,
-    occurredAt: new Date().toISOString()
-  },
-  receipt: {
-    ...receiptClaim,
-    aggregateType: 'approval',
-    aggregateId: approvalId,
-    resultVersion: 1,
-    result: {
-      ok: false,
-      error: {
-        code: 'APPROVAL_REQUIRED',
-        message: 'Approval is required.'
+      action: 'approval.request',
+      targetType: 'approval',
+      targetId: approvalId,
+      policyDecision: 'ask',
+      outcome: 'approval_required',
+      reasonCode: 'APPROVAL_REQUIRED',
+      resultVersion: 1,
+      occurredAt: new Date().toISOString()
+    },
+    receipt: {
+      ...receiptClaim,
+      aggregateType: 'approval',
+      aggregateId: approvalId,
+      resultVersion: 1,
+      result: {
+        ok: false,
+        error: {
+          code: 'APPROVAL_REQUIRED',
+          message: 'Approval is required.',
+          approval: {
+            id: approval.id,
+            status: approval.status,
+            version: approval.version,
+            binding: approval.binding
+          }
+        }
       }
     }
-  }
-});
+  };
+};
 
 const taskPacketContent = (
   overrides: Partial<TaskPacketContent> = {}
 ): TaskPacketContent => ({
   projectId: fixture.projectId,
   workItemId: fixture.workItemId,
+  workItemVersion: 2,
   goal: 'Persist an immutable task packet.',
   acceptanceCriteria: ['Persistence is atomic'],
   inScope: ['packages/db/**'],
@@ -395,12 +417,12 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO task_packets (
-           id, project_id, work_item_id, goal, data_policy,
+           id, project_id, work_item_id, work_item_version, goal, data_policy,
            timebox_minutes, expected_output_schema, reviewer_actor_id,
            approver_actor_id, runtime_profile, auth_mode,
            created_from_event_id, content_hash, created_by_actor_id
          ) VALUES (
-           $1, $2, $3, 'Verify persistence', '{}', 15, '{}', $4, $4,
+           $1, $2, $3, 2, 'Verify persistence', '{}', 15, '{}', $4, $4,
            'test', 'user', $5, $6, $4
          )`,
         [
@@ -409,7 +431,7 @@ describePostgres(
           fixture.workItemId,
           fixture.actorId,
           fixture.eventId,
-          `packet-${randomUUID()}`
+          'a'.repeat(64)
         ]
       );
       await testPool.query(
@@ -467,12 +489,12 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO task_packets (
-           id, project_id, work_item_id, goal, data_policy,
+           id, project_id, work_item_id, work_item_version, goal, data_policy,
            timebox_minutes, expected_output_schema, reviewer_actor_id,
            approver_actor_id, runtime_profile, auth_mode,
            created_from_event_id, content_hash, created_by_actor_id
          ) VALUES (
-           $1, $2, $3, 'Other packet', '{}', 15, '{}', $4, $4,
+           $1, $2, $3, 2, 'Other packet', '{}', 15, '{}', $4, $4,
            'test', 'user', $5, $6, $4
          )`,
         [
@@ -481,32 +503,69 @@ describePostgres(
           fixture.otherWorkItemId,
           fixture.otherActorId,
           fixture.otherEventId,
-          `other-packet-${randomUUID()}`
+          'b'.repeat(64)
         ]
       );
       await testPool.query(
         `INSERT INTO agent_runs (
-           id, task_packet_id, agent_profile_id, status, idempotency_key, version
-         ) VALUES ($1, $2, $3, 'queued', $4, 1)`,
+           id, task_packet_id, agent_profile_id, confirmed_packet_hash, base_commit, status,
+           idempotency_key, version
+         ) VALUES ($1, $2, $3, $4, $5, 'queued', $6, 1)`,
         [
           fixture.otherRunId,
           fixture.otherPacketId,
           fixture.otherProfileId,
+          'b'.repeat(64),
+          'b'.repeat(40),
           `other-run-${randomUUID()}`
         ]
       );
       await testPool.query(
         `INSERT INTO agent_runs (
-           id, task_packet_id, agent_profile_id, status, idempotency_key, version
-         ) VALUES ($1, $2, $3, 'queued', $4, 1)`,
-        [fixture.runId, fixture.packetId, fixture.profileId, `run-${randomUUID()}`]
+           id, task_packet_id, agent_profile_id, confirmed_packet_hash, base_commit, status,
+           idempotency_key, version
+         ) VALUES ($1, $2, $3, $4, $5, 'queued', $6, 1)`,
+        [
+          fixture.runId,
+          fixture.packetId,
+          fixture.profileId,
+          'a'.repeat(64),
+          'a'.repeat(40),
+          `run-${randomUUID()}`
+        ]
       );
+      const approvalBindingNow = new Date();
+      const seededApprovalBinding = createApprovalBinding({
+        actionCategory: 'deploy',
+        surface: 'runner',
+        environment: 'production'
+      }, {workItemId: fixture.workItemId}, {
+        subjectHash: createHash('sha256').update(fixture.packetId).digest('hex'),
+        expectedPolicyVersion: CURRENT_POLICY_VERSION,
+        executionIdentity: fixture.runId,
+        expiresAt: new Date(approvalBindingNow.getTime() + 60 * 60 * 1_000).toISOString()
+      }, fixture.actorId, approvalBindingNow);
+      if (!seededApprovalBinding.ok) throw new Error('Seeded approval binding did not initialize.');
       await testPool.query(
         `INSERT INTO approval_requests (
            id, project_id, work_item_id, action_category, surface, environment,
+           subject_hash, policy_version, execution_identity, action_hash, expires_at,
            status, requested_by_actor_id, version
-         ) VALUES ($1, $2, $3, 'deploy', 'runner', 'production', 'pending', $4, 1)`,
-        [fixture.approvalId, fixture.projectId, fixture.workItemId, fixture.actorId]
+         ) VALUES (
+           $1, $2, $3, 'deploy', 'runner', 'production', $4, $5, $6, $7, $8,
+           'pending', $9, 1
+         )`,
+        [
+          fixture.approvalId,
+          fixture.projectId,
+          fixture.workItemId,
+          seededApprovalBinding.value.subjectHash,
+          seededApprovalBinding.value.policyVersion,
+          seededApprovalBinding.value.executionIdentity,
+          seededApprovalBinding.value.actionHash,
+          seededApprovalBinding.value.expiresAt,
+          fixture.actorId
+        ]
       );
       await testPool.query(
         `INSERT INTO access_requests (
@@ -519,14 +578,11 @@ describePostgres(
     afterAll(async () => {
       await testPool?.end();
       if (adminPool !== undefined) {
-        await adminPool.query(
-          `SELECT pg_terminate_backend(pid)
-           FROM pg_stat_activity
-           WHERE datname = $1 AND pid <> pg_backend_pid()`,
-          [databaseName]
-        );
-        await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-        await adminPool.end();
+        try {
+          await dropDatabaseWhenDisconnected(adminPool, databaseName);
+        } finally {
+          await adminPool.end();
+        }
       }
     });
 
@@ -618,6 +674,8 @@ describePostgres(
           id: fixture.runId,
           taskPacketId: fixture.packetId,
           agentProfileId: fixture.profileId,
+          confirmedPacketHash: 'a'.repeat(64),
+          baseCommit: 'a'.repeat(40),
           status: 'queued',
           idempotencyKey: expect.any(String),
           version: 1
@@ -901,6 +959,8 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.packetId,
         agentProfileId: fixture.profileId,
+        confirmedPacketHash: 'a'.repeat(64),
+        baseCommit: 'a'.repeat(40),
         status: 'queued',
         idempotencyKey: userKey,
         version: 1
@@ -909,6 +969,8 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.otherPacketId,
         agentProfileId: fixture.otherProfileId,
+        confirmedPacketHash: 'b'.repeat(64),
+        baseCommit: 'b'.repeat(40),
         status: 'queued',
         idempotencyKey: userKey,
         version: 1
@@ -965,6 +1027,18 @@ describePostgres(
         approvalClaim,
         randomUUID()
       );
+      const original = invalidApproval.approval.aggregate;
+      const crossWorkspaceBinding = createApprovalBinding({
+        actionCategory: original.actionCategory,
+        surface: original.surface,
+        environment: original.environment
+      }, {workItemId: fixture.otherWorkItemId}, {
+        subjectHash: original.binding.subjectHash,
+        expectedPolicyVersion: original.binding.policyVersion,
+        executionIdentity: original.binding.executionIdentity,
+        expiresAt: original.binding.expiresAt
+      }, original.requestedByActorId, new Date());
+      if (!crossWorkspaceBinding.ok) throw new Error('Cross-workspace approval binding did not initialize.');
       const crossWorkspaceApproval: ApprovalRequiredCommandOutcome = {
         ...invalidApproval,
         approval: {
@@ -979,6 +1053,7 @@ describePostgres(
             environment: invalidApproval.approval.aggregate.environment,
             requestedByActorId:
               invalidApproval.approval.aggregate.requestedByActorId,
+            binding: crossWorkspaceBinding.value,
             status: invalidApproval.approval.aggregate.status,
             version: invalidApproval.approval.aggregate.version
           }
@@ -1129,15 +1204,21 @@ describePostgres(
         testPool.query(
           `INSERT INTO approval_requests (
              id, project_id, work_item_id, agent_run_id, action_category,
-             surface, environment, status, requested_by_actor_id, version
+             surface, environment, subject_hash, policy_version,
+             execution_identity, action_hash, expires_at, status,
+             requested_by_actor_id, version
            ) VALUES (
-             $1, $2, $3, $4, 'deploy', 'runner', 'production', 'pending', $5, 1
+             $1, $2, $3, $4, 'deploy', 'runner', 'production', $5, $6, $4,
+             $7, now() + interval '1 hour', 'pending', $8, 1
            )`,
           [
             randomUUID(),
             fixture.projectId,
             fixture.workItemId,
             fixture.otherRunId,
+            'a'.repeat(64),
+            CURRENT_POLICY_VERSION,
+            'b'.repeat(64),
             fixture.actorId
           ]
         )
@@ -1193,6 +1274,8 @@ describePostgres(
         id: randomUUID(),
         taskPacketId: fixture.packetId,
         agentProfileId: randomUUID(),
+        confirmedPacketHash: 'a'.repeat(64),
+        baseCommit: 'a'.repeat(40),
         status: 'queued',
         idempotencyKey: `run-${randomUUID()}`,
         version: 1
@@ -1216,9 +1299,9 @@ describePostgres(
       await expect(
         testPool.query(
           `INSERT INTO agent_runs (
-             id, task_packet_id, status, idempotency_key, version
-           ) VALUES ($1, $2, 'queued', $3, 1)`,
-          [randomUUID(), fixture.packetId, `missing-profile-${randomUUID()}`]
+             id, task_packet_id, confirmed_packet_hash, status, idempotency_key, version
+           ) VALUES ($1, $2, $3, 'queued', $4, 1)`,
+          [randomUUID(), fixture.packetId, 'a'.repeat(64), `missing-profile-${randomUUID()}`]
         )
       ).rejects.toMatchObject({code: '23502'});
     });
@@ -1566,13 +1649,7 @@ describePostgres(
         expect(audit.rows[0]?.occurred_at).toBeInstanceOf(Date);
       } finally {
         await legacyPool.end();
-        await adminPool.query(
-          `SELECT pg_terminate_backend(pid)
-           FROM pg_stat_activity
-           WHERE datname = $1 AND pid <> pg_backend_pid()`,
-          [legacyDatabase]
-        );
-        await adminPool.query(`DROP DATABASE IF EXISTS "${legacyDatabase}"`);
+        await dropDatabaseWhenDisconnected(adminPool, legacyDatabase);
       }
     }, 30_000);
   }

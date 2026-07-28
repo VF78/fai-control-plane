@@ -3,11 +3,13 @@ import {
   bigint,
   boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -97,6 +99,10 @@ export const commandReceiptStateEnum = pgEnum('command_receipt_state', [
   'claimed',
   'completed'
 ]);
+export const trackerStatusObservationStateEnum = pgEnum(
+  'tracker_status_observation_state',
+  ['pending', 'processing', 'applied', 'acknowledged', 'conflict']
+);
 export const auditOutcomeEnum = pgEnum('audit_outcome', [
   'succeeded',
   'failed',
@@ -145,6 +151,59 @@ export const actors = pgTable(
   ]
 );
 
+export const oauthLoginAttempts = pgTable(
+  'oauth_login_attempts',
+  {
+    stateHash: text('state_hash').primaryKey(),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
+    consumedAt: timestamp('consumed_at', {withTimezone: true})
+  },
+  (table) => [
+    index('oauth_login_attempts_expires_idx').on(table.expiresAt),
+    check(
+      'oauth_login_attempts_state_hash_sha256',
+      sql`${table.stateHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'oauth_login_attempts_expiry_after_creation',
+      sql`${table.expiresAt} > ${table.createdAt}`
+    )
+  ]
+);
+
+export const operatorSessions = pgTable(
+  'operator_sessions',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'cascade'}),
+    githubUserId: bigint('github_user_id', {mode: 'number'}).notNull(),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
+    revokedAt: timestamp('revoked_at', {withTimezone: true}),
+    lastSeenAt: timestamp('last_seen_at', {withTimezone: true}).notNull()
+  },
+  (table) => [
+    index('operator_sessions_actor_idx').on(table.actorId),
+    index('operator_sessions_expires_idx').on(table.expiresAt),
+    check(
+      'operator_sessions_token_hash_sha256',
+      sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check('operator_sessions_github_user_id_positive', sql`${table.githubUserId} > 0`),
+    check(
+      'operator_sessions_expiry_after_creation',
+      sql`${table.expiresAt} > ${table.createdAt}`
+    ),
+    check(
+      'operator_sessions_last_seen_after_creation',
+      sql`${table.lastSeenAt} >= ${table.createdAt}`
+    )
+  ]
+);
+
 export const projects = pgTable(
   'projects',
   {
@@ -166,6 +225,69 @@ export const projects = pgTable(
       table.slug
     ),
     check('projects_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const projectShareGrants = pgTable(
+  'project_share_grants',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'cascade'}),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'cascade'}),
+    createdByActorId: uuid('created_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    tokenHash: text('token_hash').notNull(),
+    fieldScope: jsonb('field_scope')
+      .$type<readonly [
+        'publicTitle',
+        'publicStatus',
+        'publicSummary',
+        'updatedTime'
+      ]>()
+      .default(sql`'["publicTitle","publicStatus","publicSummary","updatedTime"]'::jsonb`)
+      .notNull(),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
+    revokedAt: timestamp('revoked_at', {withTimezone: true}),
+    revokedByActorId: uuid('revoked_by_actor_id').references(() => actors.id, {
+      onDelete: 'restrict'
+    }),
+    lastAccessedAt: timestamp('last_accessed_at', {withTimezone: true}),
+    accessCount: integer('access_count').default(0).notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('project_share_grants_token_hash_unique').on(table.tokenHash),
+    index('project_share_grants_project_idx').on(table.projectId),
+    index('project_share_grants_expires_idx').on(table.expiresAt),
+    check(
+      'project_share_grants_token_hash_sha256',
+      sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'project_share_grants_field_scope_fixed',
+      sql`${table.fieldScope} = '["publicTitle","publicStatus","publicSummary","updatedTime"]'::jsonb`
+    ),
+    check(
+      'project_share_grants_expiry_after_creation',
+      sql`${table.expiresAt} > ${table.createdAt}`
+    ),
+    check(
+      'project_share_grants_revocation_consistent',
+      sql`(${table.revokedAt} is null and ${table.revokedByActorId} is null)
+        or (${table.revokedAt} is not null and ${table.revokedByActorId} is not null
+          and ${table.revokedAt} >= ${table.createdAt})`
+    ),
+    check(
+      'project_share_grants_access_consistent',
+      sql`(${table.accessCount} = 0 and ${table.lastAccessedAt} is null)
+        or (${table.accessCount} > 0 and ${table.lastAccessedAt} is not null
+          and ${table.lastAccessedAt} >= ${table.createdAt})`
+    )
   ]
 );
 
@@ -206,7 +328,16 @@ export const agentProfiles = pgTable(
       .array()
       .default(sql`'{}'::text[]`)
       .notNull(),
+    instructions: text('instructions').default('').notNull(),
+    settings: jsonb('settings')
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
     enabled: boolean('enabled').default(true).notNull(),
+    version: integer('version').default(1).notNull(),
+    configHash: text('config_hash')
+      .default('0000000000000000000000000000000000000000000000000000000000000000')
+      .notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
@@ -215,7 +346,9 @@ export const agentProfiles = pgTable(
       table.actorId,
       table.runtimeId,
       table.runtimeProfile
-    )
+    ),
+    check('agent_profiles_version_positive', sql`${table.version} > 0`),
+    check('agent_profiles_config_hash_sha256', sql`${table.configHash} ~ '^[0-9a-f]{64}$'`)
   ]
 );
 
@@ -269,6 +402,25 @@ export const workItems = pgTable(
   (table) => [
     index('work_items_project_status_idx').on(table.projectId, table.status),
     check('work_items_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const projectShareWorkItems = pgTable(
+  'project_share_work_items',
+  {
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => projectShareGrants.id, {onDelete: 'cascade'}),
+    workItemId: uuid('work_item_id')
+      .notNull()
+      .references(() => workItems.id, {onDelete: 'cascade'})
+  },
+  (table) => [
+    primaryKey({
+      name: 'project_share_work_items_pk',
+      columns: [table.grantId, table.workItemId]
+    }),
+    index('project_share_work_items_work_item_idx').on(table.workItemId)
   ]
 );
 
@@ -332,6 +484,120 @@ export const trackerBindings = pgTable(
       table.surface,
       table.entityType,
       table.entityId
+    )
+  ]
+);
+
+export const trackerSnapshotOperations = pgTable(
+  'tracker_snapshot_operations',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    provider: text('provider').notNull(),
+    repositoryExternalId: text('repository_external_id').notNull(),
+    mode: text('mode').notNull(),
+    requestHash: text('request_hash').notNull(),
+    previousExternalVersion: text('previous_external_version'),
+    snapshotExternalVersion: text('snapshot_external_version').notNull(),
+    result: jsonb('result').$type<Record<string, unknown>>().notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('tracker_snapshot_operations_workspace_id_unique').on(
+      table.workspaceId,
+      table.id
+    ),
+    index('tracker_snapshot_operations_repository_idx').on(
+      table.projectId,
+      table.provider,
+      table.repositoryExternalId,
+      table.createdAt
+    ),
+    check(
+      'tracker_snapshot_operations_mode_valid',
+      sql`${table.mode} in ('bootstrap', 'synchronize')`
+    )
+  ]
+);
+
+/**
+ * Immutable GitHub Project Status observations. Only delivery state and a
+ * conflict code may change after insertion; the observed provider value and
+ * canonical CAS expectation remain evidence for the eventual command.
+ */
+export const trackerStatusObservationInbox = pgTable(
+  'tracker_status_observation_inbox',
+  {
+    id: id(),
+    snapshotOperationId: uuid('snapshot_operation_id').notNull(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    bindingId: uuid('binding_id')
+      .notNull()
+      .references(() => trackerBindings.id, {onDelete: 'restrict'}),
+    workItemId: uuid('work_item_id')
+      .notNull()
+      .references(() => workItems.id, {onDelete: 'restrict'}),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    correlationId: uuid('correlation_id').notNull(),
+    provider: text('provider').notNull(),
+    mappedStatus: workItemStatusEnum('mapped_status').notNull(),
+    expectedCanonicalVersion: integer('expected_canonical_version').notNull(),
+    bindingInboundVersion: text('binding_inbound_version').notNull(),
+    outboundMutationId: uuid('outbound_mutation_id'),
+    state: trackerStatusObservationStateEnum('state').default('pending').notNull(),
+    conflictCode: text('conflict_code'),
+    processingToken: uuid('processing_token'),
+    processingLeaseExpiresAt: timestamp('processing_lease_expires_at', {
+      withTimezone: true
+    }),
+    processedAt: timestamp('processed_at', {withTimezone: true}),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('tracker_status_observation_binding_snapshot_unique').on(
+      table.bindingId,
+      table.snapshotOperationId
+    ),
+    index('tracker_status_observation_claim_idx').on(
+      table.state,
+      table.createdAt
+    ),
+    index('tracker_status_observation_work_item_idx').on(
+      table.workItemId,
+      table.createdAt
+    ),
+    check(
+      'tracker_status_observation_expected_version_positive',
+      sql`${table.expectedCanonicalVersion} > 0`
+    ),
+    check(
+      'tracker_status_observation_processing_claim_valid',
+      sql`(
+        ${table.state} = 'processing'
+        and ${table.processingToken} is not null
+        and ${table.processingLeaseExpiresAt} is not null
+      ) or (
+        ${table.state} <> 'processing'
+        and ${table.processingToken} is null
+        and ${table.processingLeaseExpiresAt} is null
+      )`
+    ),
+    check(
+      'tracker_status_observation_conflict_code_valid',
+      sql`(${table.state} = 'conflict' and ${table.conflictCode} is not null)
+        or (${table.state} <> 'conflict' and ${table.conflictCode} is null)`
     )
   ]
 );
@@ -447,14 +713,68 @@ export const scheduledJobs = pgTable(
   ]
 );
 
+export type DailyPmReportPayload = Readonly<{
+  schemaVersion: 1;
+  timezone: 'UTC';
+  reportDate: string;
+  generatedAt: string;
+  dataAsOf: string;
+  workItems: Readonly<{
+    statusCounts: Readonly<Record<
+      'backlog' | 'ready' | 'in_dev' | 'qa' | 'acceptance' | 'done',
+      number
+    >>;
+    blockedCount: number;
+  }>;
+  riskSignals: Readonly<{
+    unresolvedCountsBySeverity: Readonly<Record<'green' | 'yellow' | 'red', number>>;
+  }>;
+  approvals: Readonly<{pendingCount: number}>;
+  github: Readonly<{
+    failedWritebackCount: number;
+    latestSuccessfulTrackerSnapshot: Readonly<{
+      at: string | null;
+      freshness: 'fresh' | 'stale' | 'missing';
+    }>;
+  }>;
+}>;
+
+export const dailyPmReports = pgTable(
+  'daily_pm_reports',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    reportDate: date('report_date').notNull(),
+    payload: jsonb('payload').$type<DailyPmReportPayload>().notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('daily_pm_reports_project_date_unique').on(
+      table.projectId,
+      table.reportDate
+    )
+  ]
+);
+
 export const incomingEvents = pgTable(
   'incoming_events',
   {
     id: id(),
+    projectId: uuid('project_id')
+      .references(() => projects.id, {onDelete: 'restrict'}),
     provider: text('provider').notNull(),
     deliveryId: text('delivery_id').notNull(),
     eventType: text('event_type').notNull(),
     action: text('action'),
+    installationId: text('installation_id'),
+    repositoryId: text('repository_id'),
+    projectNodeId: text('project_node_id'),
+    telegramMessageId: text('telegram_message_id'),
+    telegramChatId: text('telegram_chat_id'),
+    telegramUserId: text('telegram_user_id'),
+    payloadSha256: text('payload_sha256'),
     verification: jsonb('verification')
       .$type<
         | {outcome: 'unverified'; method: 'none'}
@@ -463,13 +783,16 @@ export const incomingEvents = pgTable(
             method: 'hmac-sha256' | 'signature-sha256' | 'shared-token';
           }
       >()
-      .default(sql`'{"outcome":"unverified","method":"none"}'::jsonb`)
       .notNull(),
     sanitizedPayload: jsonb('sanitized_payload')
       .$type<Record<string, unknown>>()
       .notNull(),
     status: eventStatusEnum('status').default('pending').notNull(),
     attemptCount: integer('attempt_count').default(0).notNull(),
+    processingToken: uuid('processing_token'),
+    processingLeaseExpiresAt: timestamp('processing_lease_expires_at', {
+      withTimezone: true
+    }),
     receivedAt: timestamp('received_at', {withTimezone: true})
       .defaultNow()
       .notNull(),
@@ -483,6 +806,26 @@ export const incomingEvents = pgTable(
     ),
     index('incoming_events_status_received_idx').on(
       table.status,
+      table.receivedAt
+    ),
+    index('incoming_events_processing_lease_idx').on(
+      table.status,
+      table.processingLeaseExpiresAt
+    ).where(sql`${table.status} = 'processing'`),
+    check(
+      'incoming_events_processing_claim_valid',
+      sql`(
+        ${table.status} = 'processing'
+        and ${table.processingToken} is not null
+        and ${table.processingLeaseExpiresAt} is not null
+      ) or (
+        ${table.status} <> 'processing'
+        and ${table.processingToken} is null
+        and ${table.processingLeaseExpiresAt} is null
+      )`
+    ),
+    index('incoming_events_project_received_idx').on(
+      table.projectId,
       table.receivedAt
     ),
     check(
@@ -500,6 +843,44 @@ export const incomingEvents = pgTable(
     check(
       'incoming_events_sanitized_payload_object',
       sql`jsonb_typeof(${table.sanitizedPayload}) = 'object'`
+    ),
+    check(
+      'incoming_events_payload_sha256_valid',
+      sql`(
+        (
+          ${table.provider} like 'legacy-%'
+          and ${table.projectId} is null
+          and ${table.payloadSha256} is null
+        )
+        or
+        (
+          ${table.provider} not like 'legacy-%'
+          and ${table.projectId} is not null
+          and coalesce(${table.payloadSha256} ~ '^[0-9a-f]{64}$', false)
+        )
+      )`
+    ),
+    check(
+      'incoming_events_github_verified_source',
+      sql`${table.provider} <> 'github' or (
+        ${table.verification} = '{"outcome":"verified","method":"hmac-sha256"}'::jsonb
+        and ${table.installationId} ~ '^[1-9][0-9]{0,19}$'
+        and ${table.repositoryId} ~ '^[1-9][0-9]{0,19}$'
+        and ${table.projectNodeId} is not null
+        and length(${table.projectNodeId}) between 1 and 128
+      )`
+    ),
+    check(
+      'incoming_events_telegram_verified_source',
+      sql`${table.provider} <> 'telegram' or (
+        ${table.verification} = '{"outcome":"verified","method":"shared-token"}'::jsonb
+        and ${table.installationId} is null
+        and ${table.repositoryId} is null
+        and ${table.projectNodeId} is null
+        and ${table.telegramMessageId} ~ '^tgid:v1:[0-9a-f]{64}$'
+        and ${table.telegramChatId} ~ '^tgid:v1:[0-9a-f]{64}$'
+        and ${table.telegramUserId} ~ '^tgid:v1:[0-9a-f]{64}$'
+      )`
     )
   ]
 );
@@ -531,6 +912,9 @@ export const canonicalEvents = pgTable(
       table.workspaceId,
       table.deduplicationKey
     ),
+    uniqueIndex('canonical_events_incoming_event_unique')
+      .on(table.incomingEventId)
+      .where(sql`${table.incomingEventId} is not null`),
     index('canonical_events_aggregate_idx').on(
       table.aggregateType,
       table.aggregateId,
@@ -566,6 +950,38 @@ export const secretRefs = pgTable(
   ]
 );
 
+/** Immutable configured repository identity used to authorize tracker reads before bootstrap. */
+export const projectTrackerRepositoryScopes = pgTable(
+  'project_tracker_repository_scopes',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'cascade'}),
+    provider: text('provider').notNull(),
+    repositoryOwner: text('repository_owner').notNull(),
+    repositoryName: text('repository_name').notNull(),
+    repositoryExternalId: text('repository_external_id').notNull(),
+    credentialRefId: uuid('credential_ref_id')
+      .notNull()
+      .references(() => secretRefs.id, {onDelete: 'restrict'}),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('project_tracker_repository_scopes_config_unique').on(
+      table.projectId,
+      table.provider,
+      table.repositoryOwner,
+      table.repositoryName
+    ),
+    uniqueIndex('project_tracker_repository_scopes_external_unique').on(
+      table.projectId,
+      table.provider,
+      table.repositoryExternalId
+    )
+  ]
+);
+
 export const taskPackets = pgTable(
   'task_packets',
   {
@@ -576,6 +992,7 @@ export const taskPackets = pgTable(
     workItemId: uuid('work_item_id')
       .notNull()
       .references(() => workItems.id, {onDelete: 'restrict'}),
+    workItemVersion: integer('work_item_version').notNull(),
     goal: text('goal').notNull(),
     acceptanceCriteria: text('acceptance_criteria')
       .array()
@@ -620,6 +1037,17 @@ export const taskPackets = pgTable(
     secretRefId: uuid('secret_ref_id').references(() => secretRefs.id, {
       onDelete: 'restrict'
     }),
+    agentProfileSnapshotId: uuid('agent_profile_snapshot_id')
+      .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    agentProfileSnapshotRuntimeId: text('agent_profile_snapshot_runtime_id'),
+    agentProfileSnapshotAllowedTools: text('agent_profile_snapshot_allowed_tools').array(),
+    agentProfileSnapshotForbiddenSurfaces: text('agent_profile_snapshot_forbidden_surfaces').array(),
+    agentProfileSnapshotEnabled: boolean('agent_profile_snapshot_enabled'),
+    agentProfileSnapshotVersion: integer('agent_profile_snapshot_version'),
+    agentProfileSnapshotHash: text('agent_profile_snapshot_hash'),
+    agentProfileSnapshotInstructions: text('agent_profile_snapshot_instructions'),
+    agentProfileSnapshotSettings: jsonb('agent_profile_snapshot_settings')
+      .$type<Record<string, unknown>>(),
     createdFromEventId: uuid('created_from_event_id')
       .notNull()
       .references(() => canonicalEvents.id, {onDelete: 'restrict'}),
@@ -634,7 +1062,32 @@ export const taskPackets = pgTable(
       table.workItemId,
       table.contentHash
     ),
-    check('task_packets_timebox_positive', sql`${table.timeboxMinutes} > 0`)
+    check('task_packets_timebox_positive', sql`${table.timeboxMinutes} > 0`),
+    check('task_packets_work_item_version_positive', sql`${table.workItemVersion} > 0`),
+    check(
+      'task_packets_agent_profile_snapshot_consistent',
+      sql`(
+        ${table.agentProfileSnapshotId} is null and
+        ${table.agentProfileSnapshotRuntimeId} is null and
+        ${table.agentProfileSnapshotAllowedTools} is null and
+        ${table.agentProfileSnapshotForbiddenSurfaces} is null and
+        ${table.agentProfileSnapshotEnabled} is null and
+        ${table.agentProfileSnapshotVersion} is null and
+        ${table.agentProfileSnapshotHash} is null and
+        ${table.agentProfileSnapshotInstructions} is null and
+        ${table.agentProfileSnapshotSettings} is null
+      ) or (
+        ${table.agentProfileSnapshotId} is not null and
+        ${table.agentProfileSnapshotRuntimeId} is not null and
+        ${table.agentProfileSnapshotAllowedTools} is not null and
+        ${table.agentProfileSnapshotForbiddenSurfaces} is not null and
+        ${table.agentProfileSnapshotEnabled} is not null and
+        ${table.agentProfileSnapshotVersion} > 0 and
+        ${table.agentProfileSnapshotHash} ~ '^[0-9a-f]{64}$' and
+        ${table.agentProfileSnapshotInstructions} is not null and
+        ${table.agentProfileSnapshotSettings} is not null
+      )`
+    )
   ]
 );
 
@@ -648,6 +1101,8 @@ export const agentRuns = pgTable(
     agentProfileId: uuid('agent_profile_id')
       .notNull()
       .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    confirmedPacketHash: text('confirmed_packet_hash').notNull(),
+    baseCommit: text('base_commit').notNull(),
     status: runStatusEnum('status').default('queued').notNull(),
     idempotencyKey: text('idempotency_key').notNull(),
     queueJobId: text('queue_job_id'),
@@ -658,6 +1113,10 @@ export const agentRuns = pgTable(
     startedAt: timestamp('started_at', {withTimezone: true}),
     completedAt: timestamp('completed_at', {withTimezone: true}),
     failureCode: text('failure_code'),
+    runnerId: text('runner_id'),
+    leaseTokenHash: text('lease_token_hash'),
+    leaseExpiresAt: timestamp('lease_expires_at', {withTimezone: true}),
+    attempt: integer('attempt').default(0).notNull(),
     version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
@@ -668,7 +1127,29 @@ export const agentRuns = pgTable(
       table.status,
       table.heartbeatAt
     ),
-    check('agent_runs_version_positive', sql`${table.version} > 0`)
+    index('agent_runs_claim_order_idx').on(table.status, table.createdAt),
+    check('agent_runs_version_positive', sql`${table.version} > 0`),
+    check('agent_runs_attempt_nonnegative', sql`${table.attempt} >= 0`),
+    check(
+      'agent_runs_base_commit_sha1',
+      sql`${table.baseCommit} ~ '^[0-9a-f]{40}$'`
+    ),
+    check(
+      'agent_runs_confirmed_packet_hash_sha256',
+      sql`${table.confirmedPacketHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'agent_runs_lease_token_hash_sha256',
+      sql`${table.leaseTokenHash} is null or ${table.leaseTokenHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'agent_runs_lease_fields_together',
+      sql`num_nonnulls(${table.runnerId}, ${table.leaseTokenHash}, ${table.leaseExpiresAt}) in (0, 3)`
+    ),
+    check(
+      'agent_runs_runner_id_nonempty',
+      sql`${table.runnerId} is null or length(${table.runnerId}) between 1 and 128`
+    )
   ]
 );
 
@@ -688,6 +1169,10 @@ export const approvalRequests = pgTable(
     actionCategory: actionCategoryEnum('action_category').notNull(),
     surface: text('surface').notNull(),
     environment: text('environment').notNull(),
+    subjectHash: text('subject_hash').notNull(),
+    policyVersion: integer('policy_version').notNull(),
+    executionIdentity: uuid('execution_identity').notNull(),
+    actionHash: text('action_hash').notNull(),
     status: approvalStatusEnum('status').default('pending').notNull(),
     requestedByActorId: uuid('requested_by_actor_id')
       .notNull()
@@ -697,7 +1182,7 @@ export const approvalRequests = pgTable(
       {onDelete: 'restrict'}
     ),
     decisionReason: text('decision_reason'),
-    expiresAt: timestamp('expires_at', {withTimezone: true}),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
     decidedAt: timestamp('decided_at', {withTimezone: true}),
     version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
@@ -708,9 +1193,27 @@ export const approvalRequests = pgTable(
       table.status,
       table.expiresAt
     ),
+    index('approval_requests_agent_run_binding_idx').on(
+      table.agentRunId,
+      table.subjectHash,
+      table.actionHash,
+      table.status,
+      table.expiresAt
+    ),
     check(
       'approval_requests_exactly_one_target',
       sql`(${table.workItemId} is null) <> (${table.agentRunId} is null)`
+    ),
+    check(
+      'approval_requests_execution_identity_target',
+      sql`${table.agentRunId} is null or ${table.executionIdentity} = ${table.agentRunId}`
+    ),
+    check('approval_requests_subject_hash_sha256', sql`${table.subjectHash} ~ '^[0-9a-f]{64}$'`),
+    check('approval_requests_action_hash_sha256', sql`${table.actionHash} ~ '^[0-9a-f]{64}$'`),
+    check('approval_requests_policy_version_positive', sql`${table.policyVersion} > 0`),
+    check(
+      'approval_requests_expiry_bounded',
+      sql`${table.expiresAt} > ${table.createdAt} and ${table.expiresAt} <= ${table.createdAt} + interval '24 hours'`
     ),
     check('approval_requests_version_positive', sql`${table.version} > 0`)
   ]
@@ -774,6 +1277,43 @@ export const artifacts = pgTable(
       table.storageKey
     ),
     check('artifacts_size_non_negative', sql`${table.sizeBytes} >= 0`)
+  ]
+);
+
+export const agentRunReceipts = pgTable(
+  'agent_run_receipts',
+  {
+    agentRunId: uuid('agent_run_id')
+      .primaryKey()
+      .references(() => agentRuns.id, {onDelete: 'restrict'}),
+    runnerId: text('runner_id').notNull(),
+    attempt: integer('attempt').notNull(),
+    terminal: runStatusEnum('terminal').notNull(),
+    receiptSha256: text('receipt_sha256').notNull(),
+    receiptSizeBytes: bigint('receipt_size_bytes', {mode: 'number'}).notNull(),
+    completionReplayHash: text('completion_replay_hash').notNull(),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull(),
+    completedAt: timestamp('completed_at', {withTimezone: true}).notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    check(
+      'agent_run_receipts_terminal_status',
+      sql`${table.terminal} in ('done', 'failed')`
+    ),
+    check('agent_run_receipts_attempt_positive', sql`${table.attempt} > 0`),
+    check(
+      'agent_run_receipts_sha256',
+      sql`${table.receiptSha256} ~ '^[0-9a-f]{64}$' and ${table.completionReplayHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      'agent_run_receipts_size_positive',
+      sql`${table.receiptSizeBytes} > 0 and ${table.receiptSizeBytes} <= 1048576`
+    ),
+    check(
+      'agent_run_receipts_runner_id_nonempty',
+      sql`length(${table.runnerId}) between 1 and 128`
+    )
   ]
 );
 

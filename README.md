@@ -6,6 +6,10 @@ tracked work, approvals, isolated execution, and client-safe result sharing.
 > This repository and its Compose stack are for local development only. They do
 > not define or authorize a production deployment.
 
+A separate, non-authorizing production topology proposal for
+`app.f-ai.studio` is documented in
+[the production deployment preparation](docs/ops/APP_F_AI_STUDIO_DEPLOYMENT_PREPARATION.md).
+
 ## Architecture
 
 The system is a modular monolith with two process entry points:
@@ -46,11 +50,13 @@ Browser -> Next.js BFF -> domain -> PostgreSQL
                                                +-> isolated runner -> artifacts
 ```
 
-GitHub is a bidirectional `TrackerAdapter`, not a second control-plane database.
-Inbound webhooks and polling results enter a durable inbox. Domain changes that
-must be reflected in GitHub enter a durable outbox. The field-level authority
-matrix in [ADR 0002](docs/adr/0002-postgresql-authority-and-tracker-sync.md)
-prevents ambiguous last-writer-wins behavior.
+GitHub is an inbound reconciliation `TrackerAdapter`, not a second
+control-plane database. Webhooks and polling results enter a durable inbox and
+mapped observations transition canonical PostgreSQL state; the WorkItem UI is
+display-only. The GitHub writer remains deferred and disabled in this week-one
+local foundation. The field-level authority matrix in
+[ADR 0002](docs/adr/0002-postgresql-authority-and-tracker-sync.md) prevents
+ambiguous last-writer-wins behavior when an explicit writer is later approved.
 
 ## Local Bootstrap
 
@@ -73,6 +79,31 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
+### Populate the panel from GitHub
+
+This local tracker-snapshot bootstrap is separate from login OAuth. Set
+`FCP_OPERATOR_GITHUB_USER_IDS` to exactly two unique canonical positive GitHub
+user IDs and set `FCP_BOOTSTRAP_HUMAN_SUBJECT` to `github:user:<id>` for one of
+them. The seed idempotently creates both human user Actors, keeps the bootstrap
+operator as `workspace_admin`, and attaches its enabled `pm-qa-bot` /
+`read_safe` profile for QA intake packet creation. Mount the GitHub App private
+key at `GITHUB_APP_PRIVATE_KEY_FILE`, and mount the exact-scope
+Projects OAuth token at `GITHUB_PROJECTS_OAUTH_TOKEN_FILE`. The App mints an
+installation token in memory for repository, issue, pull-request, check, and
+PR-link reads. The OAuth token is used only for the two allowlisted ProjectV2
+status snapshots. The seed stores only the OAuth file reference; it never stores
+tokens or personal credentials.
+
+```bash
+pnpm db:migrate
+pnpm --filter @fai-control-plane/db db:seed
+pnpm github:bootstrap
+```
+
+Then open <http://localhost:3000>. The bootstrap command reads only the seeded
+MSA and ASCON repository scopes. It does not write to GitHub or GitHub Project
+V2, post comments, change status, merge, deploy, or log token or path values.
+
 Compose starts PostgreSQL, waits for it to become ready, applies the compiled
 migration once, then starts the compiled web and worker processes directly:
 
@@ -81,9 +112,108 @@ node apps/web/.next/standalone/apps/web/server.js
 node apps/worker/dist/index.js
 ```
 
-GitHub synchronization and runner execution are disabled by default. Enabling
-either requires explicit local configuration and must not put secret values in
-PostgreSQL.
+GitHub inbound reconciliation and runner execution are disabled by default.
+The WorkItem UI remains display-only, and the GitHub writer is deferred and
+disabled; enabling any integration requires explicit local configuration and
+must not put secret values in PostgreSQL.
+
+### Workstation Runner
+
+`pnpm runner:once` performs one claim poll and exits. It prints only
+`disabled`, `idle`, or `completed`; it never prints bearer tokens, prompts, or
+artifact paths. It remains disabled until
+`LOCAL_WORKSTATION_RUNNER_ENABLED=true`.
+
+When enabled, set `LOCAL_WORKSTATION_RUNNER_BASE_URL`,
+`LOCAL_WORKSTATION_RUNNER_REPOSITORY` (`owner/name`),
+`LOCAL_WORKSTATION_RUNNER_REPOSITORY_ROOT`,
+`LOCAL_WORKSTATION_RUNNER_WORKTREE_ROOT`,
+`LOCAL_WORKSTATION_RUNNER_ARTIFACT_ROOT`, and
+`LOCAL_WORKSTATION_RUNNER_CODEX_HOME`. Set exactly one of
+`LOCAL_WORKSTATION_RUNNER_TOKEN` or
+`LOCAL_WORKSTATION_RUNNER_TOKEN_FILE`; use an operator-owned `0600` file for
+the latter. Use an HTTPS base URL except for loopback local development
+(`localhost`, `127.0.0.1`, or `::1`). The server transport's workspace, project, and repository
+allowlists remain authoritative; the workstation also rejects claims for a
+repository other than its configured value.
+
+Repository-host publication is a second, independent workstation gate and is
+disabled unless `LOCAL_WORKSTATION_REPOSITORY_PUBLISH_ENABLED=true`. When it is
+enabled, `LOCAL_WORKSTATION_REPOSITORY_PUBLISH_ALLOWED_REPOSITORY` must exactly
+match `LOCAL_WORKSTATION_RUNNER_REPOSITORY`; also set
+`LOCAL_WORKSTATION_REPOSITORY_PUBLISH_BASE_REF`, a comma-separated exact list in
+`LOCAL_WORKSTATION_REPOSITORY_PUBLISH_REQUIRED_CHECKS`, and the opaque secret
+file reference `LOCAL_WORKSTATION_REPOSITORY_PUBLISH_TOKEN_FILE`. The
+orchestrator publishes only after a successful run with a clean worktree, a new
+commit, the exact generated `fai/run/<runId>` branch, nonempty changed-file
+evidence, and every reported and required check passing. The concrete adapter
+pushes that exact commit and may create or reuse only a draft change request;
+it does not merge, release, or deploy. Missing or mismatched configuration
+fails closed, and disabled operation does not read or require write credentials.
+
+### Operator authentication
+
+`AUTH_ENABLED=false` is the default local-development bypass. When it is
+`true`, the operator page and later mutation routes using
+`requireOperatorSession` require a short-lived, revocable server-side session.
+Login uses a separate GitHub OAuth application, not the GitHub App or repository
+token used by tracker synchronization.
+
+An enabled runtime fails closed unless all of the following are exact:
+
+- `AUTH_PUBLIC_BASE_URL` is an HTTPS origin (HTTP loopback is accepted only
+  outside production);
+- `GITHUB_LOGIN_CALLBACK_URL` is
+  `<AUTH_PUBLIC_BASE_URL>/api/auth/github/callback`;
+- `GITHUB_LOGIN_CLIENT_ID` identifies the login-only OAuth application;
+- `GITHUB_LOGIN_CLIENT_SECRET_FILE` and `AUTH_SESSION_SECRET_FILE` are absolute
+  mounted secret-file paths;
+- `FCP_OPERATOR_GITHUB_USER_IDS` contains exactly two unique, canonical
+  positive decimal GitHub user IDs, assigned operationally to Vladimir and
+  Vitaliy;
+- `FCP_WORKSPACE_ID` is the canonical workspace UUID;
+- `FCP_BOOTSTRAP_HUMAN_SUBJECT` is exactly `github:user:<id>` for one of those
+  two IDs;
+- each allowlisted ID has one enabled Actor in that workspace with
+  `type=human`, `auth_mode=user`, and `external_subject=github:user:<id>`.
+
+The callback URL and client credentials must be configured in GitHub before
+auth is enabled; this repository does not create or mutate that external
+configuration. Replace the committed disabled secret placeholders with
+operator-owned host files and keep their contents out of `.env`, logs, and
+PostgreSQL. The session secret must contain at least 32 bytes.
+
+Production ingress and application request logging must suppress callback query
+strings on `/api/auth/github/callback`, because GitHub necessarily returns the
+short-lived authorization code in that query. The application never emits the
+callback URL, code, verifier, tokens, secrets, or GitHub profile payload.
+
+OAuth state and session tokens are persisted only as SHA-256 hashes. The PKCE
+verifier is held in a ten-minute authenticated-encrypted HttpOnly cookie, while
+the matching hash-only database attempt is consumed atomically. Sessions expire
+after eight hours; logout revokes them server-side. Cookies are HttpOnly,
+SameSite=Lax, Path `/`, and Secure whenever the public origin is HTTPS
+(mandatory in production).
+
+The committed webhook secret mount is a non-secret disabled placeholder.
+Before enabling GitHub ingestion, point `GITHUB_WEBHOOK_SECRET_HOST_FILE` at a
+real host file with mode `0600`. Keep `GITHUB_INGRESS_ENABLED=false` until the
+incoming-event consumer is deployed; the webhook route returns `404` while
+either synchronization or ingress is disabled.
+
+Telegram ingress and its status response are disabled by default. The webhook
+accepts only `/status msa` and `/status ascon` from the configured private chat
+and user allowlists, then records a sanitized durable command event against the
+corresponding `TELEGRAM_MSA_PROJECT_ID` or `TELEGRAM_ASCON_PROJECT_ID`. Bare
+`/status`, project UUIDs, slugs, and other arguments are not accepted. It does
+not start a runner.
+`TELEGRAM_WEBHOOK_SECRET_HOST_FILE` verifies the webhook only; use the separate,
+stable `TELEGRAM_IDENTITY_SECRET_HOST_FILE` for keyed delivery/message/chat/user
+identities and payload fingerprints. The worker also requires a mounted
+`TELEGRAM_BOT_TOKEN_HOST_FILE` before it can send. Keep
+`TELEGRAM_STATUS_RESPONSE_ENABLED=false` until Vladimir explicitly approves the
+exact Telegram response template and policy; this repository never sends while
+the flag is disabled.
 
 ### Verify
 
@@ -139,6 +269,8 @@ docker compose down --volumes
   behind `TrackerAdapter`.
 - Secret values stay in an external secret provider, mounted files, or process
   environment. The database stores only references and non-sensitive metadata.
+- GitHub usernames are display-only; only exact numeric GitHub IDs bound to
+  canonical human Actors can authorize an operator session.
 - Runner jobs are isolated, deny network access by default, and cannot connect
   directly to the control-plane database.
 - Artifacts are immutable, content-addressed where practical, access-controlled,
@@ -162,7 +294,7 @@ docker compose down --volumes
 ## Decisions
 
 - [ADR 0001: Modular monolith with a worker](docs/adr/0001-modular-monolith-and-worker.md)
-- [ADR 0002: PostgreSQL authority and bidirectional tracker sync](docs/adr/0002-postgresql-authority-and-tracker-sync.md)
+- [ADR 0002: PostgreSQL authority and inbound tracker reconciliation](docs/adr/0002-postgresql-authority-and-tracker-sync.md)
 - [ADR 0003: Authentication and secret handling](docs/adr/0003-authentication-and-secrets.md)
 - [ADR 0004: Runner isolation and artifacts](docs/adr/0004-runner-isolation-and-artifacts.md)
 - [ADR 0005: Telemetry, retention, and public sharing](docs/adr/0005-telemetry-retention-and-public-sharing.md)

@@ -8,6 +8,8 @@ const requiredTables = [
   schema.milestones,
   schema.workItems,
   schema.statusTransitions,
+  schema.trackerBindings,
+  schema.trackerSnapshotOperations,
   schema.prLinks,
   schema.buildChecks,
   schema.deployments,
@@ -24,6 +26,7 @@ const requiredTables = [
   schema.artifacts,
   schema.riskSignals,
   schema.secretRefs,
+  schema.projectTrackerRepositoryScopes,
   schema.auditEvents,
   schema.dashboardSnapshots
 ];
@@ -36,6 +39,8 @@ describe('canonical schema foundation', () => {
       'milestones',
       'work_items',
       'status_transitions',
+      'tracker_bindings',
+      'tracker_snapshot_operations',
       'pr_links',
       'build_checks',
       'deployments',
@@ -52,6 +57,7 @@ describe('canonical schema foundation', () => {
       'artifacts',
       'risk_signals',
       'secret_refs',
+      'project_tracker_repository_scopes',
       'audit_events',
       'dashboard_snapshots'
     ]);

@@ -36,6 +36,125 @@
       "when": 1784997348263,
       "tag": "0004_approval_target_xor",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785004424449,
+      "tag": "0005_incoming_event_inbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785052800000,
+      "tag": "0006_incoming_event_consumer",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785052800001,
+      "tag": "0007_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785052800002,
+      "tag": "0008_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785040212085,
+      "tag": "0009_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785041565006,
+      "tag": "0010_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785043054907,
+      "tag": "0011_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785044512606,
+      "tag": "0012_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1785049352095,
+      "tag": "0013_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1785051468663,
+      "tag": "0014_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1785058794165,
+      "tag": "0015_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1785067756407,
+      "tag": "0016_packet_confirmation_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785069979006,
+      "tag": "0017_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785073667457,
+      "tag": "0018_rotate_repository_scope_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785084710792,
+      "tag": "0019_repair_skipped_0009_0014",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785089657181,
+      "tag": "0020_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1785090607643,
+      "tag": "0021_foundation",
+      "breakpoints": true
     }
   ]
 }

@@ -1,8 +1,15 @@
 import {randomUUID} from 'node:crypto';
 import {describe, expect, it} from 'vitest';
 import {
+  CURRENT_POLICY_VERSION,
+  DEFAULT_HERMES_INSTRUCTIONS,
+  DEFAULT_HERMES_SETTINGS,
   createActorContextIssuer,
+  createApprovalBinding,
+  createTaskPacket,
+  hashAgentProfileConfiguration,
   type AccessRequest,
+  type AgentProfileConfiguration,
   type AgentRunView,
   type Approval,
   type CanonicalCommand,
@@ -12,6 +19,7 @@ import {
   type CommandExecutionResult,
   type CompletedCanonicalCommand,
   type ReceiptClaimToken,
+  type TaskPacket,
   type UnitOfWork,
   type WorkItem
 } from '@fai-control-plane/domain';
@@ -36,9 +44,45 @@ if (!issuerResult.ok) throw new Error('Test actor issuer did not initialize.');
 const actor = issuerResult.value.issueUser(actorId);
 if (!actor.ok) throw new Error('Test actor did not initialize.');
 
+const approvalBindingRequest = (
+  overrides: Partial<Extract<CanonicalCommand, {type: 'approval.request'}>['payload']['binding']> = {}
+) => ({
+  subjectHash: 'a'.repeat(64),
+  expectedPolicyVersion: CURRENT_POLICY_VERSION,
+  executionIdentity: id(),
+  expiresAt: '2026-07-25T13:00:00.000Z',
+  ...overrides
+});
+
+const approvalFixture = (status: Approval['status']): Approval => {
+  const workItemId = id();
+  const action = {actionCategory: 'deploy', surface: 'runner', environment: 'development'} as const;
+  const binding = createApprovalBinding(
+    action,
+    {workItemId},
+    approvalBindingRequest(),
+    actorId,
+    new Date('2026-07-25T11:00:00.000Z')
+  );
+  if (!binding.ok) throw new Error('Test approval binding did not initialize.');
+  return {
+    id: id(), projectId, workItemId, ...action, requestedByActorId: actorId,
+    binding: binding.value, status, version: 1
+  };
+};
+
+const approvalDecision = (approval: Approval, status: 'approved' | 'rejected') => ({
+  approvalId: approval.id,
+  status,
+  expectedVersion: approval.version,
+  expectedActionHash: approval.binding.actionHash,
+  expectedPolicyVersion: approval.binding.policyVersion
+});
+
 const packetContent = () => ({
   projectId,
   workItemId: id(),
+  workItemVersion: 1,
   goal: 'Test packet',
   acceptanceCriteria: ['works'],
   inScope: ['packages/application/**'],
@@ -66,6 +110,8 @@ const command = <T extends CanonicalCommand['type']>(type: T, payload: Extract<C
 
 class FakeUnitOfWork implements UnitOfWork {
   readonly workItems = new Map<string, WorkItem>();
+  readonly agentProfiles = new Map<string, AgentProfileConfiguration>();
+  readonly taskPackets = new Map<string, TaskPacket>();
   readonly agentRuns = new Map<string, AgentRunView>();
   readonly approvals = new Map<string, Approval>();
   readonly accessRequests = new Map<string, AccessRequest>();
@@ -76,6 +122,7 @@ class FakeUnitOfWork implements UnitOfWork {
   failure: 'not_found' | 'version_conflict' | undefined;
   failCompletion = false;
   approvalCalls = 0;
+  hermesRunnerEnabled = true;
 
   async executeCommand<T>(claim: CommandReceiptClaim, work: (
     transaction: CanonicalCommandTransaction, claimToken: ReceiptClaimToken
@@ -86,6 +133,8 @@ class FakeUnitOfWork implements UnitOfWork {
       ? {status: 'replayed', receipt: existing}
       : {status: 'key_reused', existingRequestHash: existing.requestHash};
     const workItems = new Map(this.workItems);
+    const agentProfiles = new Map(this.agentProfiles);
+    const taskPackets = new Map(this.taskPackets);
     const agentRuns = new Map(this.agentRuns);
     const approvals = new Map(this.approvals);
     const accessRequests = new Map(this.accessRequests);
@@ -93,6 +142,19 @@ class FakeUnitOfWork implements UnitOfWork {
     const token = {} as ReceiptClaimToken;
     const transaction: CanonicalCommandTransaction = {
       loadWorkItem: async (_token, value) => this.workItems.get(value) ?? null,
+      loadAgentProfile: async (_token, value) => this.agentProfiles.get(value) ?? null,
+      loadTaskPacket: async (_token, value) => {
+        const packet = this.taskPackets.get(value);
+        return packet === undefined ? null : {
+          packetId: packet.packetId,
+          content: {
+            approverActorId: packet.content.approverActorId,
+            agentProfileSnapshot: packet.content.agentProfileSnapshot ?? null
+          },
+          contentHash: packet.contentHash,
+          hermesRunnerEnabled: this.hermesRunnerEnabled
+        };
+      },
       loadAgentRun: async (_token, value) => this.agentRuns.get(value) ?? null,
       loadApproval: async (_token, value) => this.approvals.get(value) ?? null,
       loadAccessRequest: async (_token, value) => this.accessRequests.get(value) ?? null,
@@ -102,6 +164,8 @@ class FakeUnitOfWork implements UnitOfWork {
         if (this.failure === 'version_conflict') return {status: 'version_conflict' as const, expectedPersistedVersion: 1, persistedVersion: 2};
         const mutation = outcome.mutation;
         if (mutation.aggregateType === 'work_item') this.workItems.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'agent_profile') this.agentProfiles.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'task_packet') this.taskPackets.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'agent_run') this.agentRuns.set(mutation.aggregateId, {aggregate: mutation.aggregate, projectId});
         if (mutation.aggregateType === 'approval') this.approvals.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'access_request') this.accessRequests.set(mutation.aggregateId, mutation.aggregate);
@@ -112,7 +176,7 @@ class FakeUnitOfWork implements UnitOfWork {
         this.approvals.set(outcome.approval.aggregateId, outcome.approval.aggregate);
         this.audits.push(outcome.audit);
         completedReceipt = outcome.receipt;
-        return {status: 'completed' as const, command: {kind: 'approval_required' as const, approval: {expectedPersistedVersion: null, persistedVersion: 1}, audit: {} as never, receipt: {} as never} as never};
+        return {status: 'completed' as const, command: {kind: 'approval_required' as const, approval: {expectedPersistedVersion: null, persistedVersion: 1}, audit: {} as never, receipt: {} as never, commandReceipt: outcome.receipt} as never};
       },
       completeReceipt: async ({receipt}) => {
         if (this.failCompletion) throw new Error('completion failed');
@@ -130,6 +194,8 @@ class FakeUnitOfWork implements UnitOfWork {
       result = await work(transaction, token);
     } catch (cause) {
       this.workItems.clear(); workItems.forEach((value, key) => this.workItems.set(key, value));
+      this.agentProfiles.clear(); agentProfiles.forEach((value, key) => this.agentProfiles.set(key, value));
+      this.taskPackets.clear(); taskPackets.forEach((value, key) => this.taskPackets.set(key, value));
       this.agentRuns.clear(); agentRuns.forEach((value, key) => this.agentRuns.set(key, value));
       this.approvals.clear(); approvals.forEach((value, key) => this.approvals.set(key, value));
       this.accessRequests.clear(); accessRequests.forEach((value, key) => this.accessRequests.set(key, value));
@@ -141,7 +207,8 @@ class FakeUnitOfWork implements UnitOfWork {
   }
 }
 
-const serviceFor = (uow: FakeUnitOfWork) => createCanonicalCommandService({unitOfWork: uow, clock: fixedClock, idGenerator: fixedIds});
+const serviceFor = (uow: FakeUnitOfWork, clock: Clock = fixedClock) =>
+  createCanonicalCommandService({unitOfWork: uow, clock, idGenerator: fixedIds});
 const item = (overrides: Partial<WorkItem> = {}): WorkItem => ({id: id(), projectId, status: 'ready', blocked: false, version: 1, ...overrides});
 
 describe('canonical command service', () => {
@@ -170,20 +237,59 @@ describe('canonical command service', () => {
       return command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 1});
     }],
     ['task_packet.create', () => command('task_packet.create', {packetId: id(), content: packetContent()})],
-    ['agent_run.queue', () => command('agent_run.queue', {agentRunId: id(), taskPacketId: id(), agentProfileId: id()})],
+    ['agent_run.queue', (uow: FakeUnitOfWork) => {
+      const packetId = id();
+      const packet = createTaskPacket(packetId, packetContent());
+      if (!packet.ok) throw new Error('Test packet did not initialize.');
+      uow.taskPackets.set(packetId, packet.value);
+      const agentProfileId = id();
+      const profileBase = {
+        id: agentProfileId,
+        workspaceId,
+        actorId,
+        runtimeId: 'codex-cli',
+        runtimeProfile: 'test',
+        allowedTools: ['test'],
+        forbiddenSurfaces: ['production'],
+        instructions: 'Execute only the confirmed test packet.',
+        settings: {resultFormat: 'structured_v1' as const, includeEvidence: true},
+        enabled: true,
+        version: 1
+      };
+      uow.agentProfiles.set(agentProfileId, {
+        ...profileBase,
+        configHash: hashAgentProfileConfiguration(profileBase)
+      });
+      return command('agent_run.queue', {
+        agentRunId: id(),
+        taskPacketId: packetId,
+        agentProfileId,
+        confirmedPacketHash: packet.value.contentHash,
+        baseCommit: 'a'.repeat(40)
+      });
+    }],
     ['agent_run.transition', (uow: FakeUnitOfWork) => {
-      const aggregate = {id: id(), taskPacketId: id(), agentProfileId: id(), status: 'queued' as const, idempotencyKey: 'run', version: 1};
+      const aggregate = {
+        id: id(),
+        taskPacketId: id(),
+        agentProfileId: id(),
+        confirmedPacketHash: 'a'.repeat(64),
+        baseCommit: 'a'.repeat(40),
+        status: 'queued' as const,
+        idempotencyKey: 'run',
+        version: 1
+      };
       uow.agentRuns.set(aggregate.id, {aggregate, projectId});
       return command('agent_run.transition', {agentRunId: aggregate.id, status: 'running', expectedVersion: 1});
     }],
     ['approval.request', (uow: FakeUnitOfWork) => {
       const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
-      return command('approval.request', {approvalId: id(), action: {actionCategory: 'deploy', surface: 'runner', environment: 'development'}, target: {workItemId: aggregate.id}});
+      return command('approval.request', {approvalId: id(), action: {actionCategory: 'deploy', surface: 'runner', environment: 'development'}, target: {workItemId: aggregate.id}, binding: approvalBindingRequest()});
     }],
     ['approval.decide', (uow: FakeUnitOfWork) => {
-      const approval: Approval = {id: id(), projectId, workItemId: id(), actionCategory: 'deploy', surface: 'runner', environment: 'development', requestedByActorId: actorId, status: 'pending', version: 1};
+      const approval = approvalFixture('pending');
       uow.approvals.set(approval.id, approval);
-      return command('approval.decide', {approvalId: approval.id, status: 'approved', expectedVersion: 1});
+      return command('approval.decide', approvalDecision(approval, 'approved'));
     }],
     ['access_request.request', () => command('access_request.request', {requestId: id(), targetSurface: 'repository', requestedScope: ['read']})],
     ['access_request.decide', (uow: FakeUnitOfWork) => {
@@ -198,16 +304,172 @@ describe('canonical command service', () => {
     if (result.status !== 'completed') return;
     expect(JSON.stringify(result.receipt)).not.toContain('secretsRef');
     expect(result.receipt.result.ok).toBe(_name !== 'approval.request');
+    if (_name === 'agent_run.queue') {
+      const runCount = uow.agentRuns.size;
+      const packet = [...uow.taskPackets.values()][0];
+      if (packet === undefined) throw new Error('Test packet was not initialized.');
+      const wrongApproverId = id();
+      const agentId = id();
+      const confirmationIssuer = createActorContextIssuer({
+        users: [
+          {actorId, capabilities: ['write:control_plane:development']},
+          {actorId: wrongApproverId, capabilities: ['write:control_plane:development']}
+        ],
+        agents: [{
+          actorId: agentId,
+          delegatedByActorIds: [actorId],
+          capabilities: ['write:control_plane:development']
+        }],
+        systems: []
+      });
+      if (!confirmationIssuer.ok) throw new Error('Confirmation actors did not initialize.');
+      const wrongApprover = confirmationIssuer.value.issueUser(wrongApproverId);
+      const confirmingUser = confirmationIssuer.value.issueUser(actorId);
+      if (!wrongApprover.ok || !confirmingUser.ok) {
+        throw new Error('Confirmation users did not initialize.');
+      }
+      const nonHuman = confirmationIssuer.value.issueAgent({
+        actorId: agentId,
+        delegatedBy: confirmingUser.value
+      });
+      if (!nonHuman.ok) throw new Error('Confirmation agent did not initialize.');
+      const queuePayload = {
+        taskPacketId: packet.packetId,
+        agentProfileId: id(),
+        confirmedPacketHash: packet.contentHash,
+        baseCommit: 'a'.repeat(40)
+      };
+      const rejected = await Promise.all([
+        serviceFor(uow).execute(command('agent_run.queue', {
+          ...queuePayload,
+          agentRunId: id(),
+          confirmedPacketHash: '0'.repeat(64)
+        })),
+        serviceFor(uow).execute({
+          ...command('agent_run.queue', {...queuePayload, agentRunId: id()}),
+          actor: nonHuman.value
+        }),
+        serviceFor(uow).execute({
+          ...command('agent_run.queue', {...queuePayload, agentRunId: id()}),
+          actor: wrongApprover.value
+        }),
+        serviceFor(uow).execute(command('agent_run.queue', {
+          ...queuePayload,
+          agentRunId: id(),
+          taskPacketId: id()
+        }))
+      ]);
+      expect(rejected).toMatchObject([
+        {receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}},
+        {receipt: {result: {error: {code: 'POLICY_DENIED'}}}},
+        {receipt: {result: {error: {code: 'INVALID_ACTOR_CONTEXT'}}}},
+        {receipt: {result: {error: {code: 'NOT_FOUND'}}}}
+      ]);
+      expect(uow.agentRuns.size).toBe(runCount);
+      expect(uow.audits).toHaveLength(4);
+    }
   });
 
   it('persists an approval-required receipt atomically', async () => {
     const uow = new FakeUnitOfWork();
     const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
     const result = await serviceFor(uow).execute(command('approval.request', {
-      approvalId: id(), action: {actionCategory: 'deploy', surface: 'runner', environment: 'development'}, target: {workItemId: aggregate.id}
+      approvalId: id(), action: {actionCategory: 'deploy', surface: 'runner', environment: 'development'}, target: {workItemId: aggregate.id}, binding: approvalBindingRequest()
     }));
     expect(result).toMatchObject({status: 'completed', receipt: {result: {ok: false, error: {code: 'APPROVAL_REQUIRED'}}}});
     expect(uow.approvalCalls).toBe(1);
+  });
+
+  it('approves only the exact current unexpired action binding', async () => {
+    let now = new Date('2026-07-25T12:00:00.000Z');
+    const clock: Clock = {now: () => new Date(now)};
+    const uow = new FakeUnitOfWork();
+    const aggregate = item();
+    uow.workItems.set(aggregate.id, aggregate);
+    const action = {actionCategory: 'deploy', surface: 'runner', environment: 'development'} as const;
+    const target = {workItemId: aggregate.id} as const;
+    const bindingRequest = approvalBindingRequest({expiresAt: '2026-07-25T12:30:00.000Z'});
+    const service = serviceFor(uow, clock);
+
+    const staleVersion = await service.execute(command('approval.request', {
+      approvalId: id(), action, target,
+      binding: {...bindingRequest, expectedPolicyVersion: CURRENT_POLICY_VERSION + 1}
+    }));
+    expect(staleVersion).toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+
+    const approvalId = id();
+    const requested = await service.execute(command('approval.request', {
+      approvalId, action, target, binding: bindingRequest
+    }));
+    const pending = uow.approvals.get(approvalId);
+    if (pending === undefined) throw new Error('Bound approval was not persisted.');
+    expect(requested).toMatchObject({
+      receipt: {result: {error: {approval: {binding: {actionHash: pending.binding.actionHash}}}}}
+    });
+
+    const materiallyChanged = createApprovalBinding(
+      action,
+      target,
+      {...bindingRequest, subjectHash: 'b'.repeat(64)},
+      actorId,
+      now
+    );
+    if (!materiallyChanged.ok) throw new Error('Changed binding did not initialize.');
+    const staleHash = await service.execute(command('approval.decide', {
+      ...approvalDecision(pending, 'approved'),
+      expectedActionHash: materiallyChanged.value.actionHash
+    }));
+    expect(staleHash).toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    expect(uow.approvals.get(approvalId)?.status).toBe('pending');
+
+    const delegatorId = id();
+    const agentId = id();
+    const systemId = id();
+    const nonHumanIssuer = createActorContextIssuer({
+      users: [{
+        actorId: delegatorId,
+        capabilities: ['write:control_plane:development', 'deploy:runner:development']
+      }],
+      agents: [{
+        actorId: agentId,
+        delegatedByActorIds: [delegatorId],
+        capabilities: ['write:control_plane:development', 'deploy:runner:development']
+      }],
+      systems: [{
+        actorId: systemId,
+        capabilities: ['write:control_plane:development', 'deploy:runner:development']
+      }]
+    });
+    if (!nonHumanIssuer.ok) throw new Error('Non-human actor issuer did not initialize.');
+    const delegator = nonHumanIssuer.value.issueUser(delegatorId);
+    if (!delegator.ok) throw new Error('Agent delegator did not initialize.');
+    const agent = nonHumanIssuer.value.issueAgent({actorId: agentId, delegatedBy: delegator.value});
+    const system = nonHumanIssuer.value.issueSystem(systemId);
+    if (!agent.ok || !system.ok) throw new Error('Non-human actors did not initialize.');
+    for (const nonHuman of [agent.value, system.value]) {
+      const rejected = await service.execute({
+        ...command('approval.decide', approvalDecision(pending, 'rejected')),
+        actor: nonHuman
+      });
+      expect(rejected).toMatchObject({status: 'completed', receipt: {result: {ok: false}}});
+      expect(uow.approvals.get(approvalId)?.status).toBe('pending');
+    }
+
+    const exactApprovalId = id();
+    await service.execute(command('approval.request', {
+      approvalId: exactApprovalId, action, target, binding: approvalBindingRequest({
+        expiresAt: '2026-07-25T12:30:00.000Z'
+      })
+    }));
+    const exactPending = uow.approvals.get(exactApprovalId);
+    if (exactPending === undefined) throw new Error('Exact approval was not persisted.');
+    const exact = await service.execute(command('approval.decide', approvalDecision(exactPending, 'approved')));
+    expect(exact).toMatchObject({receipt: {result: {ok: true, value: {status: 'approved'}}}});
+
+    now = new Date('2026-07-25T12:31:00.000Z');
+    const expired = await service.execute(command('approval.decide', approvalDecision(pending, 'approved')));
+    expect(expired).toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    expect(uow.approvals.get(approvalId)?.status).toBe('pending');
   });
 
   it('records transition, authorization, no-op, conflict, and secret validation errors in receipts', async () => {
@@ -227,13 +489,22 @@ describe('canonical command service', () => {
 
   it('records invalid transitions for every transition aggregate and a CAS race', async () => {
     const uow = new FakeUnitOfWork();
-    const run = {id: id(), taskPacketId: id(), agentProfileId: id(), status: 'queued' as const, idempotencyKey: 'run', version: 1};
-    const approval: Approval = {id: id(), projectId, workItemId: id(), actionCategory: 'deploy', surface: 'runner', environment: 'development', requestedByActorId: actorId, status: 'approved', version: 1};
+    const run = {
+      id: id(),
+      taskPacketId: id(),
+      agentProfileId: id(),
+      confirmedPacketHash: 'a'.repeat(64),
+      baseCommit: 'a'.repeat(40),
+      status: 'queued' as const,
+      idempotencyKey: 'run',
+      version: 1
+    };
+    const approval = approvalFixture('approved');
     const request: AccessRequest = {id: id(), workspaceId, requesterActorId: actorId, targetSurface: 'repository', requestedScope: ['read'], status: 'granted', version: 1};
     uow.agentRuns.set(run.id, {aggregate: run, projectId}); uow.approvals.set(approval.id, approval); uow.accessRequests.set(request.id, request);
     await expect(serviceFor(uow).execute(command('agent_run.transition', {agentRunId: run.id, status: 'done', expectedVersion: 1})))
       .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
-    await expect(serviceFor(uow).execute(command('approval.decide', {approvalId: approval.id, status: 'rejected', expectedVersion: 1})))
+    await expect(serviceFor(uow).execute(command('approval.decide', approvalDecision(approval, 'rejected'))))
       .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
     await expect(serviceFor(uow).execute(command('access_request.decide', {requestId: request.id, status: 'rejected', expectedVersion: 1})))
       .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
@@ -246,7 +517,7 @@ describe('canonical command service', () => {
     const uow = new FakeUnitOfWork();
     const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);
     const allowed = await serviceFor(uow).execute(command('approval.request', {
-      approvalId: id(), action: {actionCategory: 'write', surface: 'control_plane', environment: 'development'}, target: {workItemId: aggregate.id}
+      approvalId: id(), action: {actionCategory: 'write', surface: 'control_plane', environment: 'development'}, target: {workItemId: aggregate.id}, binding: approvalBindingRequest()
     }));
     expect(allowed).toMatchObject({receipt: {result: {error: {code: 'INVALID_COMMAND'}}}});
     expect(uow.approvalCalls).toBe(0);
@@ -266,7 +537,7 @@ describe('canonical command service', () => {
     const policyActor = policyIssuer.value.issueUser(policyActorId);
     if (!policyActor.ok) throw new Error('Policy actor did not initialize.');
     const policyDenied = await serviceFor(uow).execute({...command('approval.request', {
-      approvalId: id(), action: {actionCategory: 'write', surface: 'control_plane', environment: 'production'}, target: {workItemId: aggregate.id}
+      approvalId: id(), action: {actionCategory: 'write', surface: 'control_plane', environment: 'production'}, target: {workItemId: aggregate.id}, binding: approvalBindingRequest()
     }), actor: policyActor.value});
     expect(policyDenied).toMatchObject({receipt: {result: {error: {code: 'POLICY_DENIED'}}}});
   });
@@ -312,5 +583,122 @@ describe('canonical command service', () => {
     expect(uow.mutations).toHaveLength(0);
     expect(uow.audits).toHaveLength(0);
     expect(uow.receipts).toHaveLength(0);
+  });
+
+  it('updates Hermes with optimistic locking and freezes its exact config in a packet', async () => {
+    const uow = new FakeUnitOfWork();
+    const profileBase = {
+      id: id(),
+      workspaceId,
+      actorId,
+      runtimeId: 'hermes',
+      runtimeProfile: 'read_safe',
+      allowedTools: ['task_packet_read', 'artifact_write'],
+      forbiddenSurfaces: ['external_message', 'github_write', 'production', 'deploy', 'merge'],
+      instructions: DEFAULT_HERMES_INSTRUCTIONS,
+      settings: DEFAULT_HERMES_SETTINGS,
+      enabled: true,
+      version: 1
+    } as const;
+    const profile: AgentProfileConfiguration = {
+      ...profileBase,
+      configHash: hashAgentProfileConfiguration(profileBase)
+    };
+    uow.agentProfiles.set(profile.id, profile);
+    const service = serviceFor(uow);
+    const firstInstructions = 'Act only from the packet and return structured evidence.';
+    await expect(service.execute(command('agent_profile.update', {
+      agentProfileId: profile.id,
+      expectedVersion: 1,
+      instructions: firstInstructions,
+      settings: {resultFormat: 'structured_v1', includeEvidence: true},
+      enabled: true
+    }))).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const frozenProfile = uow.agentProfiles.get(profile.id)!;
+    const packet = createTaskPacket(id(), {
+      ...packetContent(),
+      runtimeProfile: 'read_safe',
+      agentProfileSnapshot: {
+        profileId: frozenProfile.id,
+        runtimeId: 'hermes',
+        runtimeProfile: 'read_safe',
+        allowedTools: frozenProfile.allowedTools,
+        forbiddenSurfaces: frozenProfile.forbiddenSurfaces,
+        enabled: frozenProfile.enabled,
+        configVersion: frozenProfile.version,
+        configHash: frozenProfile.configHash,
+        instructions: frozenProfile.instructions,
+        settings: frozenProfile.settings
+      }
+    });
+    expect(packet.ok).toBe(true);
+    if (!packet.ok) throw new Error('Hermes packet did not initialize.');
+    expect(createTaskPacket(id(), {
+      ...packetContent(),
+      runtimeProfile: 'read_safe',
+      agentProfileSnapshot: {
+        ...packet.value.content.agentProfileSnapshot!,
+        configHash: '0'.repeat(64)
+      }
+    })).toMatchObject({ok: false, error: {code: 'INVALID_TASK_PACKET'}});
+    expect(createTaskPacket(id(), {
+      ...packetContent(),
+      runtimeProfile: 'read_safe',
+      agentProfileSnapshot: {
+        ...packet.value.content.agentProfileSnapshot!,
+        instructions: `Use github_pat_${'a'.repeat(24)}`
+      }
+    })).toMatchObject({ok: false, error: {code: 'SECRET_VALUE_FORBIDDEN'}});
+    uow.taskPackets.set(packet.value.packetId, packet.value);
+    uow.hermesRunnerEnabled = false;
+    await expect(service.execute(command('agent_run.queue', {
+      agentRunId: id(),
+      taskPacketId: packet.value.packetId,
+      agentProfileId: frozenProfile.id,
+      confirmedPacketHash: packet.value.contentHash,
+      baseCommit: 'a'.repeat(40)
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'POLICY_DENIED'}}}});
+    uow.hermesRunnerEnabled = true;
+    await expect(service.execute(command('agent_run.queue', {
+      agentRunId: id(),
+      taskPacketId: packet.value.packetId,
+      agentProfileId: id(),
+      confirmedPacketHash: packet.value.contentHash,
+      baseCommit: 'a'.repeat(40)
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'NOT_FOUND'}}}});
+    await expect(service.execute(command('agent_profile.update', {
+      agentProfileId: profile.id,
+      expectedVersion: 1,
+      instructions: 'Stale change.',
+      settings: DEFAULT_HERMES_SETTINGS,
+      enabled: true
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    await service.execute(command('agent_profile.update', {
+      agentProfileId: profile.id,
+      expectedVersion: 2,
+      instructions: 'A later valid profile revision.',
+      settings: {resultFormat: 'structured_v1', includeEvidence: false},
+      enabled: true
+    }));
+    await expect(service.execute(command('agent_run.queue', {
+      agentRunId: id(),
+      taskPacketId: packet.value.packetId,
+      agentProfileId: frozenProfile.id,
+      confirmedPacketHash: packet.value.contentHash,
+      baseCommit: 'a'.repeat(40)
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    expect(packet.value.content.agentProfileSnapshot).toEqual({
+      profileId: frozenProfile.id,
+      runtimeId: 'hermes',
+      runtimeProfile: 'read_safe',
+      allowedTools: frozenProfile.allowedTools,
+      forbiddenSurfaces: frozenProfile.forbiddenSurfaces,
+      enabled: true,
+      configVersion: 2,
+      configHash: frozenProfile.configHash,
+      instructions: firstInstructions,
+      settings: {resultFormat: 'structured_v1', includeEvidence: true}
+    });
+    expect(uow.agentProfiles.get(profile.id)?.version).toBe(3);
   });
 });

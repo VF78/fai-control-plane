@@ -1,6 +1,8 @@
-import {createHash} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
+import {computeApprovalActionHash} from '@fai-control-plane/domain';
 import type {
   AccessRequest,
+  AgentProfileConfiguration,
   AgentRun,
   AgentRunView,
   Approval,
@@ -25,10 +27,11 @@ import type {
   PersistedVersionCas,
   ReceiptClaimToken,
   TaskPacket,
+  TaskPacketConfirmationView,
   UnitOfWork,
   WorkItem
 } from '@fai-control-plane/domain';
-import {and, eq, sql} from 'drizzle-orm';
+import {and, eq, isNull, sql} from 'drizzle-orm';
 import type {ExtractTablesWithRelations, SQL} from 'drizzle-orm';
 import type {
   NodePgDatabase,
@@ -63,8 +66,14 @@ type PersistenceFailure =
     }>
   | Readonly<{status: 'not_found'}>;
 
+type GitHubBindingEffect = Readonly<{
+  bindingId: string;
+  payload: Record<string, unknown>;
+}>;
+
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const sha256Pattern = /^[0-9a-f]{64}$/;
 
 const isUuid = (value: string): boolean => uuidPattern.test(value);
 
@@ -154,6 +163,15 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
         'WorkItem update version must equal expected version plus one.'
       );
       break;
+    case 'agent_profile':
+      uuid(mutation.aggregate.id, 'agentProfile.id');
+      uuid(mutation.aggregate.workspaceId, 'agentProfile.workspaceId');
+      uuid(mutation.aggregate.actorId, 'agentProfile.actorId');
+      invariant(
+        mutation.aggregate.version === mutation.expectedPersistedVersion + 1,
+        'AgentProfile update version must equal expected version plus one.'
+      );
+      break;
     case 'task_packet':
       invariant(
         mutation.expectedPersistedVersion === null,
@@ -162,6 +180,11 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.packetId, 'taskPacket.packetId');
       uuid(mutation.aggregate.content.projectId, 'taskPacket.projectId');
       uuid(mutation.aggregate.content.workItemId, 'taskPacket.workItemId');
+      invariant(
+        Number.isSafeInteger(mutation.aggregate.content.workItemVersion) &&
+          mutation.aggregate.content.workItemVersion > 0,
+        'taskPacket.workItemVersion must be a positive safe integer.'
+      );
       uuid(
         mutation.aggregate.content.reviewerActorId,
         'taskPacket.reviewerActorId'
@@ -183,12 +206,48 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.id, 'agentRun.id');
       uuid(mutation.aggregate.taskPacketId, 'agentRun.taskPacketId');
       uuid(mutation.aggregate.agentProfileId, 'agentRun.agentProfileId');
+      invariant(
+        sha256Pattern.test(mutation.aggregate.confirmedPacketHash),
+        'agentRun.confirmedPacketHash must be a lowercase SHA-256 digest.'
+      );
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
     case 'approval':
       uuid(mutation.aggregate.id, 'approval.id');
       uuid(mutation.aggregate.projectId, 'approval.projectId');
       uuid(mutation.aggregate.requestedByActorId, 'approval.requestedByActorId');
+      invariant(
+        mutation.aggregate.binding.actorId === mutation.aggregate.requestedByActorId,
+        'Approval binding actor must match the requester.'
+      );
+      uuid(mutation.aggregate.binding.actorId, 'approval.binding.actorId');
+      uuid(mutation.aggregate.binding.executionIdentity, 'approval.binding.executionIdentity');
+      invariant(
+        sha256Pattern.test(mutation.aggregate.binding.subjectHash) &&
+          sha256Pattern.test(mutation.aggregate.binding.actionHash),
+        'Approval binding hashes must be lowercase SHA-256 digests.'
+      );
+      {
+        const {actionHash, ...bindingFields} = mutation.aggregate.binding;
+        invariant(
+          computeApprovalActionHash({
+            actionCategory: mutation.aggregate.actionCategory,
+            surface: mutation.aggregate.surface,
+            environment: mutation.aggregate.environment
+          }, mutation.aggregate, bindingFields) === actionHash,
+          'Approval action hash must match its structured action binding.'
+        );
+      }
+      invariant(
+        Number.isInteger(mutation.aggregate.binding.policyVersion) &&
+          mutation.aggregate.binding.policyVersion > 0,
+        'Approval binding policy version must be positive.'
+      );
+      invariant(
+        date(mutation.aggregate.binding.expiresAt, 'approval.binding.expiresAt').toISOString() ===
+          mutation.aggregate.binding.expiresAt,
+        'Approval binding expiry must be canonical.'
+      );
       {
         const runtimeApproval = mutation.aggregate as Approval & {
           workItemId?: unknown;
@@ -204,7 +263,29 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
           uuid(runtimeApproval.workItemId as string, 'approval.workItemId');
         } else {
           uuid(runtimeApproval.agentRunId as string, 'approval.agentRunId');
+          invariant(
+            mutation.aggregate.binding.executionIdentity === runtimeApproval.agentRunId,
+            'AgentRun approval execution identity must match its target.'
+          );
         }
+      }
+      if (mutation.expectedPersistedVersion === null) {
+        invariant(
+          mutation.aggregate.status === 'pending' &&
+            mutation.aggregate.decidedByActorId === undefined && mutation.aggregate.decidedAt === undefined,
+          'New approvals must be pending and undecided.'
+        );
+      } else {
+        invariant(
+          mutation.aggregate.status !== 'pending' &&
+            mutation.aggregate.decidedByActorId !== undefined && mutation.aggregate.decidedAt !== undefined,
+          'Approval decisions must retain the deciding actor and timestamp.'
+        );
+        uuid(mutation.aggregate.decidedByActorId, 'approval.decidedByActorId');
+        invariant(
+          date(mutation.aggregate.decidedAt, 'approval.decidedAt').toISOString() === mutation.aggregate.decidedAt,
+          'Approval decision timestamp must be canonical.'
+        );
       }
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
@@ -407,6 +488,9 @@ const taskPacketScope = (workspaceId: string): SQL =>
       and ${schema.projects.workspaceId} = ${workspaceId}
   )`;
 
+const agentProfileScope = (workspaceId: string): SQL =>
+  sql`${schema.agentProfiles.workspaceId} = ${workspaceId}`;
+
 const agentRunScope = (workspaceId: string): SQL =>
   sql`exists (
     select 1
@@ -440,6 +524,16 @@ const currentVersion = async (
             workItemScope(workspaceId)
           )
         );
+      return row?.version ?? null;
+    }
+    case 'agent_profile': {
+      const [row] = await tx
+        .select({version: schema.agentProfiles.version})
+        .from(schema.agentProfiles)
+        .where(and(
+          eq(schema.agentProfiles.id, mutation.aggregateId),
+          agentProfileScope(workspaceId)
+        ));
       return row?.version ?? null;
     }
     case 'task_packet': {
@@ -531,6 +625,44 @@ const persistWorkItem = async (
       };
 };
 
+const persistAgentProfile = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'agent_profile'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (aggregate.workspaceId !== workspaceId) return {status: 'not_found'};
+  const [row] = await tx
+    .update(schema.agentProfiles)
+    .set({
+      instructions: aggregate.instructions,
+      settings: aggregate.settings,
+      enabled: aggregate.enabled,
+      version: sql`${schema.agentProfiles.version} + 1`,
+      configHash: aggregate.configHash,
+      updatedAt: new Date()
+    })
+    .where(and(
+      eq(schema.agentProfiles.id, aggregate.id),
+      eq(schema.agentProfiles.workspaceId, workspaceId),
+      eq(schema.agentProfiles.actorId, aggregate.actorId),
+      eq(schema.agentProfiles.runtimeId, aggregate.runtimeId),
+      eq(schema.agentProfiles.runtimeProfile, aggregate.runtimeProfile),
+      eq(schema.agentProfiles.version, mutation.expectedPersistedVersion)
+    ))
+    .returning({version: schema.agentProfiles.version});
+  return row === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {
+          expectedPersistedVersion: mutation.expectedPersistedVersion,
+          persistedVersion: row.version
+        },
+        projectId: null
+      };
+};
+
 const validateTaskPacketOwnership = async (
   tx: Transaction,
   workspaceId: string,
@@ -539,7 +671,7 @@ const validateTaskPacketOwnership = async (
   const content = packet.content;
   if (!await workspaceHasProject(tx, workspaceId, content.projectId)) return {status: 'not_found'};
   const [item] = await tx
-    .select({id: schema.workItems.id})
+    .select({id: schema.workItems.id, version: schema.workItems.version})
     .from(schema.workItems)
     .where(
       and(
@@ -548,7 +680,7 @@ const validateTaskPacketOwnership = async (
         workItemScope(workspaceId)
       )
     );
-  if (item === undefined) return {status: 'not_found'};
+  if (item === undefined || item.version !== content.workItemVersion) return {status: 'not_found'};
   if (!await workspaceHasActor(tx, workspaceId, content.reviewerActorId) ||
     !await workspaceHasActor(tx, workspaceId, content.approverActorId) ||
     !await workspaceHasActor(tx, workspaceId, content.createdByActorId)) return {status: 'not_found'};
@@ -563,6 +695,21 @@ const validateTaskPacketOwnership = async (
       )
     );
   if (event === undefined) return {status: 'not_found'};
+  const snapshot = content.agentProfileSnapshot;
+  if (snapshot !== undefined && snapshot !== null) {
+    const [profile] = await tx
+      .select({id: schema.agentProfiles.id})
+      .from(schema.agentProfiles)
+      .where(and(
+        eq(schema.agentProfiles.id, snapshot.profileId),
+        eq(schema.agentProfiles.workspaceId, workspaceId),
+        eq(schema.agentProfiles.runtimeId, snapshot.runtimeId),
+        eq(schema.agentProfiles.runtimeProfile, snapshot.runtimeProfile),
+        eq(schema.agentProfiles.version, snapshot.configVersion),
+        eq(schema.agentProfiles.configHash, snapshot.configHash)
+      ));
+    if (profile === undefined) return {status: 'not_found'};
+  }
   if (content.secretsRef === null) return {status: 'found', secretRefId: null};
   const [secretRef] = await tx
     .select({id: schema.secretRefs.id})
@@ -594,6 +741,7 @@ const persistTaskPacket = async (
       id: packet.packetId,
       projectId: content.projectId,
       workItemId: content.workItemId,
+      workItemVersion: content.workItemVersion,
       goal: content.goal,
       acceptanceCriteria: [...content.acceptanceCriteria],
       inScope: [...content.inScope],
@@ -610,6 +758,19 @@ const persistTaskPacket = async (
       runtimeProfile: content.runtimeProfile,
       authMode: content.authMode,
       secretRefId: ownership.secretRefId,
+      agentProfileSnapshotId: content.agentProfileSnapshot?.profileId,
+      agentProfileSnapshotRuntimeId: content.agentProfileSnapshot?.runtimeId,
+      agentProfileSnapshotAllowedTools: content.agentProfileSnapshot == null
+        ? undefined
+        : [...content.agentProfileSnapshot.allowedTools],
+      agentProfileSnapshotForbiddenSurfaces: content.agentProfileSnapshot == null
+        ? undefined
+        : [...content.agentProfileSnapshot.forbiddenSurfaces],
+      agentProfileSnapshotEnabled: content.agentProfileSnapshot?.enabled,
+      agentProfileSnapshotVersion: content.agentProfileSnapshot?.configVersion,
+      agentProfileSnapshotHash: content.agentProfileSnapshot?.configHash,
+      agentProfileSnapshotInstructions: content.agentProfileSnapshot?.instructions,
+      agentProfileSnapshotSettings: content.agentProfileSnapshot?.settings,
       createdFromEventId: content.createdFromEventId,
       contentHash: packet.contentHash,
       createdByActorId: content.createdByActorId
@@ -631,7 +792,14 @@ const validateAgentRunOwnership = async (
   aggregate: AgentRun
 ): Promise<Readonly<{status: 'found'; projectId: string}> | Readonly<{status: 'not_found'}>> => {
   const [packet] = await tx
-    .select({projectId: schema.taskPackets.projectId})
+    .select({
+      projectId: schema.taskPackets.projectId,
+      contentHash: schema.taskPackets.contentHash,
+      runtimeProfile: schema.taskPackets.runtimeProfile,
+      agentProfileSnapshotId: schema.taskPackets.agentProfileSnapshotId,
+      agentProfileSnapshotVersion: schema.taskPackets.agentProfileSnapshotVersion,
+      agentProfileSnapshotHash: schema.taskPackets.agentProfileSnapshotHash
+    })
     .from(schema.taskPackets)
     .where(
       and(
@@ -639,9 +807,18 @@ const validateAgentRunOwnership = async (
         taskPacketScope(workspaceId)
       )
     );
-  if (packet === undefined) return {status: 'not_found'};
+  if (packet === undefined || packet.contentHash !== aggregate.confirmedPacketHash) {
+    return {status: 'not_found'};
+  }
+  if (
+    packet.agentProfileSnapshotId !== null &&
+    (
+      process.env.HERMES_RUNNER_ENABLED !== 'true' ||
+      aggregate.agentProfileId !== packet.agentProfileSnapshotId
+    )
+  ) return {status: 'not_found'};
   const [profile] = await tx
-    .select({id: schema.agentProfiles.id})
+    .select({id: schema.agentProfiles.id, runtimeId: schema.agentProfiles.runtimeId})
     .from(schema.agentProfiles)
     .innerJoin(
       schema.actors,
@@ -651,9 +828,19 @@ const validateAgentRunOwnership = async (
       and(
         eq(schema.agentProfiles.id, aggregate.agentProfileId),
         eq(schema.agentProfiles.workspaceId, workspaceId),
-        eq(schema.actors.workspaceId, workspaceId)
+        eq(schema.actors.workspaceId, workspaceId),
+        eq(schema.agentProfiles.enabled, true),
+        eq(schema.agentProfiles.runtimeProfile, packet.runtimeProfile),
+        ...(packet.agentProfileSnapshotId === null ? [] : [
+          eq(schema.agentProfiles.version, packet.agentProfileSnapshotVersion!),
+          eq(schema.agentProfiles.configHash, packet.agentProfileSnapshotHash!)
+        ]),
+        isNull(schema.actors.disabledAt)
       )
     );
+  if (profile?.runtimeId === 'hermes' && packet.agentProfileSnapshotId === null) {
+    return {status: 'not_found'};
+  }
   return profile === undefined
     ? {status: 'not_found'}
     : {status: 'found', projectId: packet.projectId};
@@ -675,6 +862,8 @@ const persistAgentRun = async (
         id: aggregate.id,
         taskPacketId: aggregate.taskPacketId,
         agentProfileId: aggregate.agentProfileId,
+        confirmedPacketHash: aggregate.confirmedPacketHash,
+        baseCommit: aggregate.baseCommit,
         status: aggregate.status,
         idempotencyKey: agentRunIdempotencyKey(
           workspaceId,
@@ -704,6 +893,7 @@ const persistAgentRun = async (
         eq(schema.agentRuns.id, aggregate.id),
         eq(schema.agentRuns.taskPacketId, aggregate.taskPacketId),
         eq(schema.agentRuns.agentProfileId, aggregate.agentProfileId),
+        eq(schema.agentRuns.baseCommit, aggregate.baseCommit),
         eq(schema.agentRuns.idempotencyKey, aggregate.idempotencyKey),
         eq(schema.agentRuns.version, mutation.expectedPersistedVersion),
         agentRunScope(workspaceId)
@@ -778,8 +968,13 @@ const persistApproval = async (
         actionCategory: aggregate.actionCategory,
         surface: aggregate.surface,
         environment: aggregate.environment,
+        subjectHash: aggregate.binding.subjectHash,
+        policyVersion: aggregate.binding.policyVersion,
+        executionIdentity: aggregate.binding.executionIdentity,
+        actionHash: aggregate.binding.actionHash,
         status: aggregate.status,
         requestedByActorId: aggregate.requestedByActorId,
+        expiresAt: new Date(aggregate.binding.expiresAt),
         version: 1
       })
       .onConflictDoNothing({target: schema.approvalRequests.id})
@@ -796,6 +991,8 @@ const persistApproval = async (
     .update(schema.approvalRequests)
     .set({
       status: aggregate.status,
+      decidedByActorId: aggregate.decidedByActorId,
+      decidedAt: new Date(aggregate.decidedAt!),
       version: sql`${schema.approvalRequests.version} + 1`,
       updatedAt: new Date()
     })
@@ -812,10 +1009,16 @@ const persistApproval = async (
         eq(schema.approvalRequests.actionCategory, aggregate.actionCategory),
         eq(schema.approvalRequests.surface, aggregate.surface),
         eq(schema.approvalRequests.environment, aggregate.environment),
+        eq(schema.approvalRequests.subjectHash, aggregate.binding.subjectHash),
+        eq(schema.approvalRequests.policyVersion, aggregate.binding.policyVersion),
+        eq(schema.approvalRequests.executionIdentity, aggregate.binding.executionIdentity),
+        eq(schema.approvalRequests.actionHash, aggregate.binding.actionHash),
+        eq(schema.approvalRequests.expiresAt, new Date(aggregate.binding.expiresAt)),
         eq(
           schema.approvalRequests.requestedByActorId,
           aggregate.requestedByActorId
         ),
+        eq(schema.approvalRequests.status, 'pending'),
         eq(schema.approvalRequests.version, mutation.expectedPersistedVersion),
         approvalScope(workspaceId)
       )
@@ -923,6 +1126,8 @@ const persistAggregate = (
   switch (mutation.aggregateType) {
     case 'work_item':
       return persistWorkItem(tx, workspaceId, mutation);
+    case 'agent_profile':
+      return persistAgentProfile(tx, workspaceId, mutation);
     case 'task_packet':
       return persistTaskPacket(tx, workspaceId, mutation);
     case 'agent_run':
@@ -932,6 +1137,50 @@ const persistAggregate = (
     case 'access_request':
       return persistAccessRequest(tx, workspaceId, mutation);
   }
+};
+
+const githubStatusEffect = (
+  binding: typeof schema.trackerBindings.$inferSelect,
+  workItem: WorkItem,
+  mutationId: string
+): GitHubBindingEffect | null => {
+  const metadata = binding.metadata as Record<string, unknown>;
+  const projectStatus = metadata.projectStatus;
+  const repositoryExternalId = metadata.repositoryExternalId;
+  if (
+    typeof repositoryExternalId !== 'string' ||
+    !/^github:repository:[1-9][0-9]*$/.test(repositoryExternalId) ||
+    projectStatus === null || typeof projectStatus !== 'object' ||
+    Array.isArray(projectStatus)
+  ) return null;
+  const status = projectStatus as Record<string, unknown>;
+  if (
+    typeof status.projectExternalId !== 'string' ||
+    typeof status.projectItemExternalId !== 'string' ||
+    typeof status.fieldExternalId !== 'string' ||
+    (status.optionExternalId !== null && typeof status.optionExternalId !== 'string')
+  ) return null;
+  return {
+    bindingId: binding.id,
+    payload: {
+      version: 1,
+      bindingId: binding.id,
+      workItemId: workItem.id,
+      canonicalVersion: workItem.version,
+      status: workItem.status,
+      expected: {
+        bindingExternalVersion: binding.externalVersion,
+        providerOptionId: status.optionExternalId as string | null
+      },
+      target: {
+        repositoryExternalId,
+        projectExternalId: status.projectExternalId,
+        projectItemExternalId: status.projectItemExternalId,
+        fieldExternalId: status.fieldExternalId
+      },
+      mutationId
+    }
+  };
 };
 
 const auditProjectId = async (
@@ -1124,6 +1373,88 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
           };
         },
 
+        async loadAgentProfile(
+          token,
+          agentProfileId
+        ): Promise<AgentProfileConfiguration | null> {
+          const state = requireClaim(token);
+          if (!isUuid(agentProfileId)) return null;
+          const [row] = await tx
+            .select({
+              id: schema.agentProfiles.id,
+              workspaceId: schema.agentProfiles.workspaceId,
+              actorId: schema.agentProfiles.actorId,
+              runtimeId: schema.agentProfiles.runtimeId,
+              runtimeProfile: schema.agentProfiles.runtimeProfile,
+              allowedTools: schema.agentProfiles.allowedTools,
+              forbiddenSurfaces: schema.agentProfiles.forbiddenSurfaces,
+              instructions: schema.agentProfiles.instructions,
+              settings: schema.agentProfiles.settings,
+              enabled: schema.agentProfiles.enabled,
+              version: schema.agentProfiles.version,
+              configHash: schema.agentProfiles.configHash
+            })
+            .from(schema.agentProfiles)
+            .where(and(
+              eq(schema.agentProfiles.id, agentProfileId),
+              eq(schema.agentProfiles.workspaceId, state.claim.workspaceId)
+            ));
+          return row === undefined ? null : {
+            ...row,
+            settings: row.settings as AgentProfileConfiguration['settings']
+          };
+        },
+
+        async loadTaskPacket(
+          token,
+          taskPacketId
+        ): Promise<TaskPacketConfirmationView | null> {
+          const state = requireClaim(token);
+          if (!isUuid(taskPacketId)) return null;
+          const [row] = await tx
+            .select({
+              packetId: schema.taskPackets.id,
+              approverActorId: schema.taskPackets.approverActorId,
+              contentHash: schema.taskPackets.contentHash,
+              agentProfileSnapshotId: schema.taskPackets.agentProfileSnapshotId,
+              agentProfileSnapshotRuntimeId: schema.taskPackets.agentProfileSnapshotRuntimeId,
+              agentProfileSnapshotAllowedTools: schema.taskPackets.agentProfileSnapshotAllowedTools,
+              agentProfileSnapshotForbiddenSurfaces: schema.taskPackets.agentProfileSnapshotForbiddenSurfaces,
+              agentProfileSnapshotEnabled: schema.taskPackets.agentProfileSnapshotEnabled,
+              agentProfileSnapshotVersion: schema.taskPackets.agentProfileSnapshotVersion,
+              agentProfileSnapshotHash: schema.taskPackets.agentProfileSnapshotHash,
+              agentProfileSnapshotInstructions: schema.taskPackets.agentProfileSnapshotInstructions,
+              agentProfileSnapshotSettings: schema.taskPackets.agentProfileSnapshotSettings
+            })
+            .from(schema.taskPackets)
+            .where(and(
+              eq(schema.taskPackets.id, taskPacketId),
+              taskPacketScope(state.claim.workspaceId)
+            ));
+          if (row === undefined) return null;
+          const hasSnapshot = row.agentProfileSnapshotId !== null;
+          return {
+            packetId: row.packetId,
+            content: {
+              approverActorId: row.approverActorId,
+              agentProfileSnapshot: hasSnapshot ? {
+                profileId: row.agentProfileSnapshotId!,
+                runtimeId: row.agentProfileSnapshotRuntimeId as 'hermes',
+                runtimeProfile: 'read_safe',
+                allowedTools: row.agentProfileSnapshotAllowedTools!,
+                forbiddenSurfaces: row.agentProfileSnapshotForbiddenSurfaces!,
+                enabled: row.agentProfileSnapshotEnabled!,
+                configVersion: row.agentProfileSnapshotVersion!,
+                configHash: row.agentProfileSnapshotHash!,
+                instructions: row.agentProfileSnapshotInstructions!,
+                settings: row.agentProfileSnapshotSettings as AgentProfileConfiguration['settings']
+              } : null
+            },
+            contentHash: row.contentHash,
+            hermesRunnerEnabled: process.env.HERMES_RUNNER_ENABLED === 'true'
+          };
+        },
+
         async loadAgentRun(token, agentRunId): Promise<AgentRunView | null> {
           const state = requireClaim(token);
           if (!isUuid(agentRunId)) return null;
@@ -1132,6 +1463,8 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               id: schema.agentRuns.id,
               taskPacketId: schema.agentRuns.taskPacketId,
               agentProfileId: schema.agentRuns.agentProfileId,
+              confirmedPacketHash: schema.agentRuns.confirmedPacketHash,
+              baseCommit: schema.agentRuns.baseCommit,
               status: schema.agentRuns.status,
               idempotencyKey: schema.agentRuns.idempotencyKey,
               version: schema.agentRuns.version,
@@ -1148,6 +1481,8 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               id: row.id,
               taskPacketId: row.taskPacketId,
               agentProfileId: row.agentProfileId,
+              confirmedPacketHash: row.confirmedPacketHash,
+              baseCommit: row.baseCommit,
               status: row.status as AgentRun['status'],
               idempotencyKey: row.idempotencyKey,
               version: row.version
@@ -1168,7 +1503,14 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               actionCategory: schema.approvalRequests.actionCategory,
               surface: schema.approvalRequests.surface,
               environment: schema.approvalRequests.environment,
+              subjectHash: schema.approvalRequests.subjectHash,
+              policyVersion: schema.approvalRequests.policyVersion,
+              executionIdentity: schema.approvalRequests.executionIdentity,
+              actionHash: schema.approvalRequests.actionHash,
               requestedByActorId: schema.approvalRequests.requestedByActorId,
+              decidedByActorId: schema.approvalRequests.decidedByActorId,
+              expiresAt: schema.approvalRequests.expiresAt,
+              decidedAt: schema.approvalRequests.decidedAt,
               status: schema.approvalRequests.status,
               version: schema.approvalRequests.version
             })
@@ -1182,6 +1524,16 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             surface: row.surface as Approval['surface'],
             environment: row.environment as Approval['environment'],
             requestedByActorId: row.requestedByActorId,
+            binding: {
+              subjectHash: row.subjectHash,
+              policyVersion: row.policyVersion,
+              executionIdentity: row.executionIdentity,
+              actorId: row.requestedByActorId,
+              expiresAt: row.expiresAt.toISOString(),
+              actionHash: row.actionHash
+            },
+            ...(row.decidedByActorId === null ? {} : {decidedByActorId: row.decidedByActorId}),
+            ...(row.decidedAt === null ? {} : {decidedAt: row.decidedAt.toISOString()}),
             status: row.status as Approval['status'],
             version: row.version
           };
@@ -1245,6 +1597,96 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
           return {status: 'persisted', mutation};
         },
 
+        async persistAuditedWorkItemTransition({
+          claimToken: token,
+          outcome,
+          fromStatus,
+          mutationId
+        }) {
+          const state = requireClaim(token);
+          if (outcome.mutation.aggregateType !== 'work_item') {
+            return {status: 'invalid_effect'} as const;
+          }
+          validateAggregateIdentity(outcome.mutation);
+          validateAuditEnvelope(outcome.audit, state.claim, outcome.mutation);
+          await actorBelongsToWorkspace(
+            tx,
+            state.claim.workspaceId,
+            outcome.audit.actorId
+          );
+          const bindings = await tx
+            .select({binding: schema.trackerBindings})
+            .from(schema.trackerBindings)
+            .innerJoin(
+              schema.workItems,
+              and(
+                eq(schema.workItems.id, schema.trackerBindings.entityId),
+                eq(schema.workItems.projectId, schema.trackerBindings.projectId),
+                workItemScope(state.claim.workspaceId)
+              )
+            )
+            .where(and(
+              eq(schema.trackerBindings.provider, 'github'),
+              eq(schema.trackerBindings.surface, 'issue'),
+              eq(schema.trackerBindings.entityType, 'work_item'),
+              eq(schema.trackerBindings.entityId, outcome.mutation.aggregateId)
+            ))
+            .limit(2)
+            .for('update');
+          if (bindings.length > 1) {
+            return {status: 'invalid_effect'} as const;
+          }
+          const [binding] = bindings;
+          const effect = binding === undefined
+            ? null
+            : githubStatusEffect(binding.binding, outcome.mutation.aggregate, mutationId);
+          if (binding !== undefined && effect === null) {
+            return {status: 'invalid_effect'} as const;
+          }
+          const persisted = await persistWorkItem(
+            tx,
+            state.claim.workspaceId,
+            outcome.mutation
+          );
+          if (persisted.status !== 'persisted') return persisted;
+          await tx.insert(schema.statusTransitions).values({
+            id: randomUUID(),
+            workItemId: outcome.mutation.aggregateId,
+            fromStatus,
+            toStatus: outcome.mutation.aggregate.status,
+            actorId: outcome.audit.actorId,
+            reason: 'canonical_work_item_transition',
+            idempotencyKey: `canonical-work-item-transition:${state.claim.commandId}`
+          });
+          if (effect !== null) {
+            await tx.update(schema.trackerBindings).set({
+              lastOutboundMutationId: mutationId,
+              updatedAt: new Date()
+            }).where(eq(schema.trackerBindings.id, effect.bindingId));
+            await tx.insert(schema.outboxEvents).values({
+              workspaceId: state.claim.workspaceId,
+              projectId: persisted.projectId,
+              destination: 'github',
+              eventType: 'github.project_status.write.v1',
+              idempotencyKey: `github-project-status:${effect.bindingId}:${mutationId}`,
+              payload: effect.payload
+            });
+          }
+          const appended = await appendAudit(tx, outcome.audit, persisted.projectId);
+          const mutation = {
+            cas: persisted.cas,
+            audit: appended
+          } as PersistedCanonicalMutation;
+          mutations.set(mutation as object, {
+            claimToken: token,
+            aggregateType: outcome.mutation.aggregateType,
+            aggregateId: outcome.mutation.aggregateId,
+            cas: persisted.cas,
+            auditToken: appended
+          });
+          return {status: 'persisted' as const, mutation};
+        },
+
         async persistApprovalRequired({
           claimToken: token,
           outcome
@@ -1278,7 +1720,8 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             kind: 'approval_required',
             approval: persisted.cas,
             audit: appended,
-            receipt
+            receipt,
+            commandReceipt: outcome.receipt
           } as CompletedApprovalRequiredCommand;
           completed.add(command as object);
           return {status: 'completed', command};

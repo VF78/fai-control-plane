@@ -7,13 +7,19 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
+    },
+    "./runtime": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
     }
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
+    "test": "vitest run --root ../.. packages/integrations/src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fai-control-plane/application": "workspace:*",
     "@fai-control-plane/domain": "workspace:*"
   }
 }

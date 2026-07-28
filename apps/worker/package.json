@@ -4,12 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "pnpm --filter @fai-control-plane/db build && pnpm --filter @fai-control-plane/integrations build",
     "dev": "tsx watch src/index.ts",
     "build": "tsup src/index.ts --format esm --sourcemap",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fai-control-plane/application": "workspace:*",
+    "@fai-control-plane/db": "workspace:*",
+    "@fai-control-plane/integrations": "workspace:*",
     "@fai-control-plane/observability": "workspace:*",
     "pg-boss": "12.26.3"
   }

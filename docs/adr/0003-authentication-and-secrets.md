@@ -43,6 +43,16 @@ The default Compose configuration disables authentication-dependent external
 features and contains only disposable PostgreSQL credentials. It is not a
 production authentication design.
 
+For the bounded two-operator alpha, the authenticated-environment provider is a
+dedicated GitHub OAuth application using authorization code, unpredictable
+state, PKCE S256, and exact callback validation. Authorization uses exactly two
+runtime-allowlisted immutable numeric GitHub user IDs. Each identity must bind
+to an enabled canonical human Actor through `github:user:<id>`; usernames never
+grant access. OAuth state and session tokens are stored only as hashes, the
+transient verifier is held in a short-lived authenticated-encrypted cookie, and
+the GitHub access token is discarded after the official user identity request.
+This alpha profile does not add OIDC, roles, tenants, or a second Actor model.
+
 ## Consequences
 
 - A database backup does not contain GitHub keys, OIDC client secrets, signing

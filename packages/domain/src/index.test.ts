@@ -48,6 +48,7 @@ import {
 const packetContent = (): TaskPacketContent => ({
   projectId: 'project-1',
   workItemId: 'work-item-1',
+  workItemVersion: 1,
   goal: 'Implement the bounded change.',
   acceptanceCriteria: ['Tests pass', 'No secrets leave the secret provider'],
   inScope: ['packages/domain/**'],
@@ -72,6 +73,8 @@ const agentRun = (status: AgentRunStatus): AgentRun => ({
   id: 'run',
   taskPacketId: 'packet',
   agentProfileId: 'profile',
+  confirmedPacketHash: 'b'.repeat(64),
+  baseCommit: 'a'.repeat(40),
   status,
   idempotencyKey: 'key',
   version: 4
@@ -85,6 +88,14 @@ const approval = (status: ApprovalStatus): Approval => ({
   surface: 'runner',
   environment: 'production',
   requestedByActorId: 'requester',
+  binding: {
+    subjectHash: 'a'.repeat(64),
+    policyVersion: 1,
+    executionIdentity: 'execution',
+    actorId: 'requester',
+    expiresAt: '2026-07-25T13:00:00.000Z',
+    actionHash: 'b'.repeat(64)
+  },
   status,
   version: 4
 });
@@ -321,7 +332,7 @@ describe('task packets', () => {
     expect(result).toMatchObject({ok: true, value: {packetId: 'packet-1'}});
     if (result.ok) {
       expect(result.value.contentHash).toBe(
-        '142e913a1939d943c38f1220947658ef914f89524898aa297eb92f9c54375df8'
+        'e58c4b6cd439a285500ddc5a5024aa2370f3fa725c50505c11a063610e77f252'
       );
     }
   });
@@ -379,6 +390,8 @@ describe('task packets', () => {
     ['required array', 'packet-1', {...packetContent(), allowedTools: ['']}, 'INVALID_TASK_PACKET'],
     ['invalid JSON', 'packet-1', {...packetContent(), dataPolicy: new Date()} as unknown as TaskPacketContent, 'INVALID_TASK_PACKET'],
     ['timebox', 'packet-1', {...packetContent(), timeboxMinutes: 0}, 'INVALID_TASK_PACKET'],
+    ['bounded timebox', 'packet-1', {...packetContent(), timeboxMinutes: 121}, 'INVALID_TASK_PACKET'],
+    ['bounded content', 'packet-1', {...packetContent(), goal: 'x'.repeat(64 * 1024)}, 'INVALID_TASK_PACKET'],
     ['auth mode', 'packet-1', {...packetContent(), authMode: 'unknown'} as unknown as TaskPacketContent, 'INVALID_TASK_PACKET'],
     ['opaque ref', 'packet-1', {...packetContent(), secretsRef: {provider: '', reference: 'x', scope: []}}, 'INVALID_TASK_PACKET'],
     ['unknown field', 'packet-1', {...packetContent(), retryHint: 'safe'} as TaskPacketContent, 'INVALID_TASK_PACKET'],

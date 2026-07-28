@@ -1,31 +1,23 @@
-import type {WorkItemStatus} from '@fai-control-plane/domain';
-
 export * from './inbound-events';
-
-export type TrackerCapabilities = {
-  readWorkItems: boolean;
-  writeWorkItems: boolean;
-  readPullRequests: boolean;
-  readChecks: boolean;
-};
-
-export interface TrackerAdapter {
-  readonly provider: string;
-  capabilities(): TrackerCapabilities;
-  transitionWorkItem(input: {
-    bindingId: string;
-    expectedVersion: number;
-    status: WorkItemStatus;
-    idempotencyKey: string;
-  }): Promise<{externalVersion: string}>;
-}
-
-export interface ChatAdapter {
-  readonly provider: string;
-  sendSafeNotification(input: {
-    destinationRef: string;
-    template: string;
-    variables: Record<string, string>;
-    idempotencyKey: string;
-  }): Promise<{externalMessageId: string}>;
-}
+export * from './github-webhook';
+export * from './github-incoming-event';
+export * from './telegram-webhook';
+export * from './telegram-chat';
+export * from './github-repository-read';
+export * from './github-project-status-write';
+export type {
+  ChatAdapter,
+  TrackerAdapter,
+  TrackerCapabilities,
+  TrackerCheckConclusion,
+  TrackerCheckStatus,
+  TrackerCheckSnapshot,
+  TrackerIdentity,
+  TrackerLabel,
+  TrackerMilestone,
+  TrackerPullRequestSnapshot,
+  TrackerRepositoryReadInput,
+  TrackerRepositoryRef,
+  TrackerRepositorySnapshot,
+  TrackerWorkItemSnapshot
+} from '@fai-control-plane/domain';
