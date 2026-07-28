@@ -133,7 +133,7 @@ new installation:
 sudo install -d -m 0700 -o root -g root /etc/fai-control-plane/secrets
 sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/fai-control-plane/secrets/postgres-password'
 sudo sh -c 'p=$(cat /etc/fai-control-plane/secrets/postgres-password); printf "postgresql://fai:%s@postgres:5432/fai_control_plane\n" "$p" > /etc/fai-control-plane/secrets/database-url'
-sudo sh -c 'umask 077; for f in github-projects-oauth-token github-webhook telegram-webhook telegram-identity telegram-bot-token github-login-client-secret auth-session-secret local-runner-token share-signing-key; do openssl rand -hex 32 > "/etc/fai-control-plane/secrets/$f"; done'
+sudo sh -c 'umask 077; for f in github-projects-oauth-token github-webhook telegram-webhook telegram-identity telegram-bot-token github-login-client-secret auth-session-secret local-runner-token share-signing-key; do value=$(openssl rand -hex 32); printf %s "$value" > "/etc/fai-control-plane/secrets/$f"; done'
 sudo install -m 0600 -o root -g root /dev/null /etc/fai-control-plane/secrets/github-app-private-key
 ```
 
