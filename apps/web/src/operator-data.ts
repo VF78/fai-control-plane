@@ -309,13 +309,18 @@ export type ProjectData = Readonly<{
     id: string; title: string; summary: string | null; status: (typeof workItemStatuses)[number];
     blocked: boolean; owner: string | null; updatedAt: Date; externalUrl: string | null;
     canBuildPacket: boolean;
+    handoff: Readonly<{
+      label: string;
+      state: 'pending' | 'queued' | 'running' | 'waiting_approval' | 'failed';
+      href: string;
+    }> | null;
   }>[];
 }>;
 
 export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
   const [project] = await scopedProjects(db, slug);
   if (project === undefined) return null;
-  const [snapshots, operations, items, bindings, repositoryScopes, hermesProfiles] = await Promise.all([
+  const [snapshots, operations, items, bindings, repositoryScopes, hermesProfiles, packetFacts, runFacts, approvalFacts] = await Promise.all([
     db.select({health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(eq(dashboardSnapshots.projectId, project.id)).orderBy(desc(dashboardSnapshots.capturedAt)).limit(1),
     db.select({createdAt: trackerSnapshotOperations.createdAt})
@@ -343,9 +348,45 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       eq(agentProfiles.runtimeProfile, 'read_safe'),
       eq(agentProfiles.enabled, true)
     )).limit(2)
+    ,
+    db.select({
+      id: taskPackets.id, workItemId: taskPackets.workItemId, createdAt: taskPackets.createdAt
+    }).from(taskPackets).where(eq(taskPackets.projectId, project.id))
+      .orderBy(desc(taskPackets.createdAt), taskPackets.id),
+    db.select({
+      id: agentRuns.id, taskPacketId: agentRuns.taskPacketId, workItemId: taskPackets.workItemId,
+      status: agentRuns.status, updatedAt: agentRuns.updatedAt
+    }).from(agentRuns).innerJoin(taskPackets, eq(agentRuns.taskPacketId, taskPackets.id))
+      .where(eq(taskPackets.projectId, project.id)).orderBy(desc(agentRuns.updatedAt), agentRuns.id),
+    db.select({
+      id: approvalRequests.id, workItemId: approvalRequests.workItemId,
+      agentRunId: approvalRequests.agentRunId, status: approvalRequests.status,
+      updatedAt: approvalRequests.updatedAt
+    }).from(approvalRequests).where(eq(approvalRequests.projectId, project.id))
+      .orderBy(desc(approvalRequests.updatedAt), approvalRequests.id)
   ]);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
+  const workItemByRunId = new Map(runFacts.map((run) => [run.id, run.workItemId]));
+  const runPacketIds = new Set(runFacts.map((run) => run.taskPacketId));
+  const pendingApprovalByItem = new Map<string, (typeof approvalFacts)[number]>();
+  for (const approval of approvalFacts) {
+    if (approval.status !== 'pending') continue;
+    const workItemId = approval.workItemId ?? (approval.agentRunId === null ? undefined : workItemByRunId.get(approval.agentRunId));
+    if (workItemId !== undefined && !pendingApprovalByItem.has(workItemId)) pendingApprovalByItem.set(workItemId, approval);
+  }
+  const activeRunByItem = new Map<string, (typeof runFacts)[number]>();
+  const latestRunByItem = new Map<string, (typeof runFacts)[number]>();
+  for (const run of runFacts) {
+    if (!latestRunByItem.has(run.workItemId)) latestRunByItem.set(run.workItemId, run);
+    if (run.status === 'queued' || run.status === 'running' || run.status === 'waiting_approval') {
+      if (!activeRunByItem.has(run.workItemId)) activeRunByItem.set(run.workItemId, run);
+    }
+  }
+  const unconfirmedPacketByItem = new Map<string, (typeof packetFacts)[number]>();
+  for (const packet of packetFacts) {
+    if (!runPacketIds.has(packet.id) && !unconfirmedPacketByItem.has(packet.workItemId)) unconfirmedPacketByItem.set(packet.workItemId, packet);
+  }
   const packetEligibleItems = new Set(bindings.flatMap((binding) =>
     binding.provider === 'github' && binding.surface === 'issue' && confirmedGitHubIssueUrl(binding.metadata, repository) !== null
       ? [binding.entityId]
@@ -357,11 +398,37 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       : null,
     snapshot: snapshots[0] ?? null,
     synchronizedAt: operations[0]?.createdAt ?? null,
-    workItems: items.flatMap((item) => workItemStatuses.includes(item.status) ? [{
-      ...item,
-      externalUrl: externalUrlByItem.get(item.id) ?? null,
-      canBuildPacket: (item.status === 'ready' || item.status === 'in_dev') && packetEligibleItems.has(item.id)
-    }] : [])
+    workItems: items.flatMap((item) => {
+      if (!workItemStatuses.includes(item.status)) return [];
+      const approval = pendingApprovalByItem.get(item.id);
+      const activeRun = activeRunByItem.get(item.id);
+      const latestRun = latestRunByItem.get(item.id);
+      const failedRun = latestRun?.status === 'failed' ? latestRun : undefined;
+      const packet = unconfirmedPacketByItem.get(item.id);
+      const handoff = approval !== undefined
+        ? {label: 'Approval pending', state: 'pending' as const, href: `/runs?project=${slug}#approval-${approval.id}`}
+        : activeRun !== undefined
+          ? {
+              label: activeRun.status === 'waiting_approval'
+                ? 'Run waiting approval'
+                : activeRun.status === 'running' ? 'Run running' : 'Run queued',
+              state: activeRun.status === 'waiting_approval'
+                ? 'waiting_approval' as const
+                : activeRun.status === 'running' ? 'running' as const : 'queued' as const,
+              href: `/runs?project=${slug}#run-${activeRun.id}`
+            }
+          : failedRun !== undefined && (packet === undefined || failedRun.updatedAt >= packet.createdAt)
+            ? {label: 'Run failed', state: 'failed' as const, href: `/runs?project=${slug}#run-${failedRun.id}`}
+            : packet !== undefined
+              ? {label: 'Packet needs confirmation', state: 'queued' as const, href: `/runs?project=${slug}#packet-${packet.id}`}
+              : null;
+      return [{
+        ...item,
+        externalUrl: externalUrlByItem.get(item.id) ?? null,
+        canBuildPacket: (item.status === 'ready' || item.status === 'in_dev') && packetEligibleItems.has(item.id),
+        handoff
+      }];
+    })
   };
 });
 

@@ -113,7 +113,10 @@ export function ProjectView({data, csrfToken}: {data: ProjectData; csrfToken: st
       {workItemStatuses.map((status) => { const items = data.workItems.filter((item) => item.status === status); return <section className="status-group" key={status}><h3>{label(status)} <span>{items.length}</span></h3>
         {items.length === 0 ? <p className="status-empty">No recorded WorkItems.</p> : <div className="work-list">{items.map((item) => <article className="work-row" key={item.id}>
           <div><strong>{item.title}</strong>{item.summary === null ? null : <span>{item.summary}</span>}</div><span>{item.owner ?? 'No recorded owner'}</span><span className={item.blocked ? 'blocked yes' : 'blocked'}>{item.blocked ? 'Blocked' : 'Not blocked'}</span><time dateTime={item.updatedAt.toISOString()}>{stamp(item.updatedAt)}</time>
-          {item.externalUrl === null ? <span className="no-link">No source link</span> : <a href={item.externalUrl} rel="noreferrer" target="_blank">Open source</a>}
+          <div className="work-actions">
+            {item.handoff === null ? null : <Link className={`state ${item.handoff.state}`} href={item.handoff.href}>{item.handoff.label}</Link>}
+            {item.externalUrl === null ? <span className="no-link">No source link</span> : <a href={item.externalUrl} rel="noreferrer" target="_blank">Open source</a>}
+          </div>
           {csrfToken === null || !item.canBuildPacket ? null : <div className="packet-build-actions">
             <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><button type="submit">Build Codex packet</button></form>
             {data.hermesAgentProfileId === null ? null : <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><input name="agentProfileId" type="hidden" value={data.hermesAgentProfileId} /><button type="submit">Build Hermes packet</button></form>}
@@ -130,7 +133,7 @@ export function RunsView({data, csrfToken, operatorActorId}: {
 }) {
   return <div className="control-surface">
     <section className="packet-ledger" aria-labelledby="packets-title"><header><p className="eyebrow">Immutable task packets</p><h2 id="packets-title">Packet preview and confirmation</h2></header>
-      {data.packets.length === 0 ? <p className="muted">No persisted unqueued task packets are recorded in this scope.</p> : <div className="packet-list">{data.packets.map((packet) => <article className="packet-preview" key={packet.id}>
+      {data.packets.length === 0 ? <p className="muted">No persisted unqueued task packets are recorded in this scope.</p> : <div className="packet-list">{data.packets.map((packet) => <article className="packet-preview" id={`packet-${packet.id}`} key={packet.id}>
         <header><div><strong>{packet.workItemTitle}</strong><span>{packet.project} · Frozen task version {packet.frozenWorkItemVersion} · Current task version {packet.currentWorkItemVersion}</span></div><span className={`state ${packet.runnable ? 'active' : 'failed'}`}>{packet.runnable ? 'runnable' : 'not runnable'}</span></header>
         <p className="packet-goal">{packet.goal}</p>
         <dl className="packet-facts"><div><dt>Content hash</dt><dd><code>{packet.contentHash}</code></dd></div><div><dt>Timebox</dt><dd>{packet.timeboxMinutes} minutes</dd></div><div><dt>Runtime</dt><dd>{packet.runtimeProfile}</dd></div><div><dt>Profile config</dt><dd>{packet.agentProfileSnapshotVersion === null ? 'Not profile-bound' : `v${packet.agentProfileSnapshotVersion} · ${packet.agentProfileSnapshotHash}`}</dd></div><div><dt>Auth mode</dt><dd>{packet.authMode}</dd></div><div><dt>Reviewer</dt><dd>{packet.reviewer}</dd></div><div><dt>Approver</dt><dd>{packet.approver}</dd></div></dl>
@@ -139,13 +142,13 @@ export function RunsView({data, csrfToken, operatorActorId}: {
       </article>)}</div>}
     </section>
     <section className="runs-ledger" aria-labelledby="runs-title"><header><p className="eyebrow">Persisted execution</p><h2 id="runs-title">Runs</h2></header>
-      {data.runs.length === 0 ? <p className="muted">No persisted runs in this scope.</p> : <div className="run-list">{data.runs.map((run) => <article className="run-row" key={run.id}>
+      {data.runs.length === 0 ? <p className="muted">No persisted runs in this scope.</p> : <div className="run-list">{data.runs.map((run) => <article className="run-row" id={`run-${run.id}`} key={run.id}>
         <div><strong>{run.workItem ?? 'No recorded WorkItem title'}</strong><span>{run.project} · {run.runtimeProfile} · {run.timeboxMinutes} min packet</span></div><span className={`state ${run.status}`}>{label(run.status)}</span>
         <div><span>Started: {stamp(run.startedAt)}</span><span>Completed: {stamp(run.completedAt)}</span><span>Heartbeat: {stamp(run.heartbeatAt)}</span><span>Duration: {duration(run.receipt?.durationMs ?? null)}</span></div><div><span>{run.receipt === null ? 'No receipt recorded' : `Receipt: ${run.receipt.terminal}, ${stamp(run.receipt.completedAt)}`}</span><span>Runtime: {run.receipt?.runtimeId ?? 'Unknown (not recorded)'} · {run.receipt?.runtimeProfile ?? 'Unknown (not recorded)'}</span><span>Cost: {unknownReceiptValue(run.receipt?.cost ?? null)}</span><span>Usage: {unknownReceiptValue(run.receipt?.usage ?? null)}</span><span>ROI: Not configured</span><span>{run.artifacts.length === 0 ? 'No artifacts recorded' : `${run.artifacts.length} recorded artifacts`}</span>{run.failureCode === null ? null : <span>Failure code: {run.failureCode}</span>}</div><p>{run.packetGoal}</p>
       </article>)}</div>}
     </section>
     <section className="approvals-ledger" aria-labelledby="approvals-title"><header><p className="eyebrow">Persisted policy records</p><h2 id="approvals-title">Approvals</h2></header>
-      {data.approvals.length === 0 ? <p className="muted">No persisted approvals in this scope.</p> : <div className="table-list">{data.approvals.map((approval) => <article className="table-row" key={approval.id}>
+      {data.approvals.length === 0 ? <p className="muted">No persisted approvals in this scope.</p> : <div className="table-list">{data.approvals.map((approval) => <article className="table-row" id={`approval-${approval.id}`} key={approval.id}>
         <strong>{approval.project}</strong><span>{label(approval.actionCategory)} · {label(approval.surface)} · {approval.environment}</span><span className={`state ${approval.status}`}>{approval.status}</span><span>Policy v{approval.policyVersion}</span><span>Expires: {stamp(approval.expiresAt)}</span><span>Decided: {stamp(approval.decidedAt)}</span>
       </article>)}</div>}
     </section>
