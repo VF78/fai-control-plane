@@ -69,6 +69,18 @@ export {
   createPostgresPolicySimulationStore,
   type PolicySimulationStoreResult
 } from './policy-simulation';
+export {
+  COST_LEDGER_COMMAND,
+  VALUE_LEDGER_COMMAND,
+  createPostgresCostValueLedgerStore,
+  ledgerRoi,
+  parseLedgerRecord,
+  type CostState,
+  type LedgerCost,
+  type LedgerRecord,
+  type LedgerRoi,
+  type ValueEvidence
+} from './cost-value-ledger';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});
