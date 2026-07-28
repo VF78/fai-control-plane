@@ -93,7 +93,13 @@ const createDependencies = async (): Promise<TelegramWebhookHandlerDependencies>
     scope: identitySecretScope
   });
   const workspaceId = requiredUuid('FCP_WORKSPACE_ID');
-  const projectId = requiredUuid('TELEGRAM_PROJECT_ID');
+  const projectIds = Object.freeze({
+    msa: requiredUuid('TELEGRAM_MSA_PROJECT_ID'),
+    ascon: requiredUuid('TELEGRAM_ASCON_PROJECT_ID')
+  });
+  if (projectIds.msa === projectIds.ascon) {
+    throw new Error('Telegram project configuration must contain distinct projects.');
+  }
   const config = createTelegramWebhookConfig({
     webhookSecretRef,
     identitySecretRef,
@@ -103,7 +109,7 @@ const createDependencies = async (): Promise<TelegramWebhookHandlerDependencies>
   const {db, pool} = createDatabase(required('DATABASE_URL'));
   return {
     workspaceId,
-    projectId,
+    projectIds,
     config,
     secrets: createTelegramFileSecretsProvider(webhookSecretRef, identitySecretRef),
     ingestion: createIncomingEventIngestionService({

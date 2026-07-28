@@ -200,15 +200,21 @@ if (telegramStatusResponseEnabled) {
     allowedUserIds: requiredTelegramAllowlist('TELEGRAM_ALLOWED_USER_IDS'),
     allowedPrivateChatIds: requiredTelegramAllowlist('TELEGRAM_ALLOWED_PRIVATE_CHAT_IDS')
   }, createTelegramFileSecretsProvider(identityRef, botTokenRef));
-  const telegramStatusProject = {
+  const telegramStatusProjectIds = [
+    requiredUuid('TELEGRAM_MSA_PROJECT_ID'),
+    requiredUuid('TELEGRAM_ASCON_PROJECT_ID')
+  ];
+  if (new Set(telegramStatusProjectIds).size !== telegramStatusProjectIds.length) {
+    throw new Error('Telegram project configuration must contain distinct projects.');
+  }
+  telegramStatusResponder = createPostgresTelegramStatusResponseOutbox(db, {
     workspaceId: requiredUuid('FCP_WORKSPACE_ID'),
-    projectId: requiredUuid('TELEGRAM_PROJECT_ID')
-  };
-  telegramStatusResponder = createPostgresTelegramStatusResponseOutbox(db, telegramStatusProject);
+    projectIds: telegramStatusProjectIds
+  });
   telegramStatusPublisher = createPostgresTelegramStatusPublisher(
     db,
     adapter,
-    telegramStatusProject.projectId
+    telegramStatusProjectIds
   );
 }
 let statusPublisherTimer: NodeJS.Timeout | undefined;

@@ -1,5 +1,5 @@
 import type {ChatAdapter} from '@fai-control-plane/domain';
-import {and, desc, eq} from 'drizzle-orm';
+import {and, desc, eq, inArray} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -61,7 +61,7 @@ const parsePayload = (value: Record<string, unknown>): StatusPayload | null => {
 
 export const createPostgresTelegramStatusResponseOutbox = (
   db: Database,
-  config: Readonly<{workspaceId: string; projectId: string}>
+  config: Readonly<{workspaceId: string; projectIds: readonly string[]}>
 ): Readonly<{prepare(eventId: string): Promise<'prepared' | 'skipped'>}> => ({
   async prepare(eventId) {
     return db.transaction(async (tx) => {
@@ -78,11 +78,12 @@ export const createPostgresTelegramStatusResponseOutbox = (
         .innerJoin(schema.projects, eq(schema.projects.id, schema.incomingEvents.projectId))
         .where(and(
           eq(schema.incomingEvents.id, eventId),
-          eq(schema.incomingEvents.projectId, config.projectId)
+          inArray(schema.incomingEvents.projectId, config.projectIds)
         ))
         .limit(1);
       if (
         incoming === undefined || incoming.workspaceId !== config.workspaceId ||
+        incoming.projectId === null ||
         incoming.status !== 'processed' ||
         incoming.provider !== 'telegram' || incoming.eventType !== 'chat_command' ||
         incoming.action !== 'status' || incoming.chatIdentity === null || incoming.userIdentity === null ||
@@ -91,19 +92,19 @@ export const createPostgresTelegramStatusResponseOutbox = (
       const [canonical] = await tx.select({id: schema.canonicalEvents.id})
         .from(schema.canonicalEvents).where(and(
           eq(schema.canonicalEvents.incomingEventId, eventId),
-          eq(schema.canonicalEvents.projectId, config.projectId),
+          eq(schema.canonicalEvents.projectId, incoming.projectId),
           eq(schema.canonicalEvents.eventType, canonicalEventType)
         )).limit(1);
       if (canonical === undefined) return 'skipped';
       const [report] = await tx.select({payload: schema.dailyPmReports.payload})
-        .from(schema.dailyPmReports).where(eq(schema.dailyPmReports.projectId, config.projectId))
+        .from(schema.dailyPmReports).where(eq(schema.dailyPmReports.projectId, incoming.projectId))
         .orderBy(desc(schema.dailyPmReports.reportDate), desc(schema.dailyPmReports.createdAt)).limit(1);
       if (report === undefined) return 'skipped';
       const text = formatTelegramStatusResponse(report.payload);
       if (text === null) return 'skipped';
       await tx.insert(schema.outboxEvents).values({
         workspaceId: incoming.workspaceId,
-        projectId: config.projectId,
+        projectId: incoming.projectId,
         destination,
         eventType,
         idempotencyKey: `telegram-status:${eventId}`,
@@ -121,14 +122,14 @@ export const createPostgresTelegramStatusResponseOutbox = (
 export const createPostgresTelegramStatusPublisher = (
   db: Database,
   adapter: Pick<ChatAdapter, 'sendNotification'>,
-  projectId: string
+  projectIds: readonly string[]
 ): Readonly<{publishAvailable(): Promise<'published' | 'failed' | 'idle'>}> => ({
   async publishAvailable() {
     const claimed = await db.transaction(async (tx) => {
       const [candidate] = await tx.select().from(schema.outboxEvents).where(and(
         eq(schema.outboxEvents.destination, destination),
         eq(schema.outboxEvents.eventType, eventType),
-        eq(schema.outboxEvents.projectId, projectId),
+        inArray(schema.outboxEvents.projectId, projectIds),
         eq(schema.outboxEvents.status, 'pending')
       )).orderBy(schema.outboxEvents.availableAt, schema.outboxEvents.createdAt)
         .limit(1).for('update', {skipLocked: true});

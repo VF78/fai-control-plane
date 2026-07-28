@@ -72,10 +72,10 @@ const event = (overrides: Partial<IncomingEvent> = {}): IncomingEvent => ({
   ...overrides
 });
 
-const telegramStatusEvent = (): IncomingEvent => ({
+const telegramStatusEvent = (projectId = fixture.projectId): IncomingEvent => ({
   eventId: randomUUID(),
   workspaceId: fixture.workspaceId,
-  projectId: fixture.projectId,
+  projectId,
   provider: 'telegram',
   deliveryId: `tgid:v1:${'a'.repeat(64)}`,
   eventType: 'chat_command',
@@ -426,15 +426,15 @@ describePostgres(
     });
 
     it('creates one status outbox response from a processed canonical Telegram command on replay', async () => {
-      const candidate = telegramStatusEvent();
+      const candidate = telegramStatusEvent(fixture.otherProjectId);
       const inbox = createPostgresIncomingEventInbox(testDb, boss);
       const processor = createPostgresIncomingEventProcessor(testDb);
       const responder = createPostgresTelegramStatusResponseOutbox(testDb, {
         workspaceId: fixture.workspaceId,
-        projectId: fixture.projectId
+        projectIds: [fixture.projectId, fixture.otherProjectId]
       });
       await testDb.insert(dailyPmReports).values({
-        projectId: fixture.projectId,
+        projectId: fixture.otherProjectId,
         reportDate: '2026-07-26',
         createdAt: new Date('2026-07-26T09:00:00.000Z'),
         payload: {
@@ -473,7 +473,7 @@ describePostgres(
       expect(responses).toHaveLength(1);
       expect(responses[0]).toMatchObject({
         workspaceId: fixture.workspaceId,
-        projectId: fixture.projectId,
+        projectId: fixture.otherProjectId,
         destination: 'telegram',
         eventType: 'telegram.status.response.v1',
         status: 'pending',

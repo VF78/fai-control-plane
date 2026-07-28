@@ -46,7 +46,7 @@ const body = (overrides: Record<string, unknown> = {}): Uint8Array => new TextEn
         first_name: 'Actor Name',
         username: 'actor_handle'
       },
-      text: '/status'
+      text: '/status msa'
     },
     ...overrides
   })
@@ -80,7 +80,8 @@ describe('Telegram /status webhook boundary', () => {
         eventType: 'chat_command',
         action: 'status',
         projection: {command: {name: 'status'}}
-      }
+      },
+      project: 'msa'
     });
     if (first.outcome !== 'accepted') throw new Error('Expected accepted Telegram update.');
     expect(isTelegramKeyedIdentifier(first.projection.deliveryId)).toBe(true);
@@ -88,7 +89,7 @@ describe('Telegram /status webhook boundary', () => {
     expect(isTelegramKeyedIdentifier(first.projection.source.chatId)).toBe(true);
     expect(isTelegramKeyedIdentifier(first.projection.source.userId)).toBe(true);
     expect(JSON.stringify(first.projection)).not.toMatch(
-      /900001|300001|800001|700001|Private Name|Actor Name|private_handle|actor_handle|\/status/
+      /900001|300001|800001|700001|Private Name|Actor Name|private_handle|actor_handle|\/status msa/
     );
     const alternate = await verify(
       rawBody,
@@ -112,9 +113,20 @@ describe('Telegram /status webhook boundary', () => {
       outcome: 'rejected', code: 'telegram_secret_config_invalid'
     });
     await expect(verify(body({message: {...JSON.parse(new TextDecoder().decode(rawBody)).message,
-      chat: {id: 999_999, type: 'private'}, from: {id: 700_001}, text: '/status'}}))).resolves.toEqual({
+      chat: {id: 999_999, type: 'private'}, from: {id: 700_001}, text: '/status msa'}}))).resolves.toEqual({
       outcome: 'rejected', code: 'telegram_chat_unauthorized'
     });
+    await expect(verify(body({message: {...JSON.parse(new TextDecoder().decode(rawBody)).message,
+      text: '/status ascon'}}))).resolves.toMatchObject({
+      outcome: 'accepted', project: 'ascon'
+    });
+    for (const text of ['/status', '/status MSA', '/status msa extra', '/status project-slug',
+      '/status 00000000-0000-4000-8000-000000000000']) {
+      await expect(verify(body({message: {...JSON.parse(new TextDecoder().decode(rawBody)).message,
+        text}}))).resolves.toEqual({
+        outcome: 'rejected', code: 'telegram_command_unsupported'
+      });
+    }
     await expect(verify(body({message: {...JSON.parse(new TextDecoder().decode(rawBody)).message,
       chat: {id: 800_001, type: 'private'}, from: {id: 700_001}, text: '/run'}}))).resolves.toEqual({
       outcome: 'rejected', code: 'telegram_command_unsupported'

@@ -4,12 +4,13 @@ import {
   readTelegramWebhookBody,
   verifyAndProjectTelegramWebhook,
   type TelegramWebhookConfig,
-  type TelegramWebhookRejectionCode
+  type TelegramWebhookRejectionCode,
+  type TelegramStatusProject
 } from '@fai-control-plane/integrations';
 
 export type TelegramWebhookHandlerDependencies = Readonly<{
   workspaceId: string;
-  projectId: string;
+  projectIds: Readonly<Record<TelegramStatusProject, string>>;
   config: TelegramWebhookConfig;
   secrets: SecretsProvider;
   ingestion: IncomingEventIngestionService;
@@ -66,7 +67,7 @@ export const createTelegramWebhookHandler = (
   }
   const accepted = await dependencies.ingestion.ingest({
     workspaceId: dependencies.workspaceId,
-    projectId: dependencies.projectId,
+    projectId: dependencies.projectIds[verified.project],
     verification: {outcome: 'verified', method: 'shared-token'},
     ...verified.projection
   });

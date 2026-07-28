@@ -14,6 +14,8 @@ export type TelegramWebhookConfig = Readonly<{
   allowedPrivateChatIds: readonly number[];
 }>;
 
+export type TelegramStatusProject = 'msa' | 'ascon';
+
 export type TelegramWebhookRejectionCode =
   | 'telegram_headers_invalid'
   | 'telegram_media_type_invalid'
@@ -33,6 +35,7 @@ export type TelegramWebhookRejectionCode =
 export type TelegramWebhookResult =
   | Readonly<{
       outcome: 'accepted';
+      project: TelegramStatusProject;
       projection: Readonly<{
         provider: 'telegram';
         deliveryId: string;
@@ -254,10 +257,16 @@ const projectUpdate = (
   }
   if (!config.allowedPrivateChatIds.includes(chat.id)) return reject('telegram_chat_unauthorized');
   if (!config.allowedUserIds.includes(actor.id)) return reject('telegram_actor_unauthorized');
-  if (text !== '/status') return reject('telegram_command_unsupported');
+  const project: TelegramStatusProject | undefined = text === '/status msa'
+    ? 'msa'
+    : text === '/status ascon'
+      ? 'ascon'
+      : undefined;
+  if (project === undefined) return reject('telegram_command_unsupported');
 
   return {
     outcome: 'accepted',
+    project,
     projection: {
       provider: 'telegram',
       deliveryId: telegramKeyedIdentifier(identitySecret, 'update', update.update_id),

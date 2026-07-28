@@ -188,8 +188,11 @@ incoming-event consumer is deployed; the webhook route returns `404` while
 either synchronization or ingress is disabled.
 
 Telegram ingress and its status response are disabled by default. The webhook
-accepts only `/status` from the configured private chat and user allowlists,
-then records a sanitized durable command event. It does not start a runner.
+accepts only `/status msa` and `/status ascon` from the configured private chat
+and user allowlists, then records a sanitized durable command event against the
+corresponding `TELEGRAM_MSA_PROJECT_ID` or `TELEGRAM_ASCON_PROJECT_ID`. Bare
+`/status`, project UUIDs, slugs, and other arguments are not accepted. It does
+not start a runner.
 `TELEGRAM_WEBHOOK_SECRET_HOST_FILE` verifies the webhook only; use the separate,
 stable `TELEGRAM_IDENTITY_SECRET_HOST_FILE` for keyed delivery/message/chat/user
 identities and payload fingerprints. The worker also requires a mounted
