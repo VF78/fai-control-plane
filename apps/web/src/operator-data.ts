@@ -574,6 +574,8 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
     return typeof binding.metadata.headSha === 'string' &&
       /^[0-9a-f]{40}$/.test(binding.metadata.headSha) ? binding.metadata.headSha : null;
   };
+  const runnerQueueEnabled = process.env.RUNNER_ENABLED === 'true' &&
+    process.env.LOCAL_RUNNER_TRANSPORT_ENABLED === 'true';
   return {
     runs: runs.flatMap((run) => {
       const project = projectById.get(run.projectId);
@@ -592,7 +594,9 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
           (process.env.HERMES_RUNNER_ENABLED === 'true' && profile.id === packet.agentProfileSnapshotId));
       const repositoryBinding = repositoryBindingByProject.get(packet.projectId);
       const baseCommit = baseCommitFrom(repositoryBinding);
-      const nonRunnableReason = baseCommit === null
+      const nonRunnableReason = !runnerQueueEnabled
+        ? 'Agent runner is disabled.'
+        : baseCommit === null
         ? (repositoryBinding === undefined
           ? 'No repository default branch head is recorded.'
           : 'The repository default branch head is not recorded as a lowercase 40-character commit.')
@@ -601,7 +605,8 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
             ? 'No enabled agent profile matches the packet runtime profile.'
             : 'Hermes runner is disabled or its frozen profile no longer matches.'
           : null);
-      const packetProfiles = baseCommit === null ? [] : eligibleProfiles.map(({id, name, runtimeId}) => ({
+      const packetProfiles = !runnerQueueEnabled || baseCommit === null
+        ? [] : eligibleProfiles.map(({id, name, runtimeId}) => ({
         id,
         name,
         runtimeId,

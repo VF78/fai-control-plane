@@ -17,6 +17,7 @@ it('rejects a stale authenticated packet hash before issuing a queue command', a
       session: {actorId: '00000000-0000-4000-8000-000000000004'},
       runtime: {config: {workspaceId}}
     }) as never,
+    isQueueEnabled: () => true,
     getRuntime: async () => ({
       load: async () => ({
         packetId,
@@ -78,6 +79,7 @@ it('rejects a stale policy preview before issuing a queue command', async () => 
       session: {actorId: '00000000-0000-4000-8000-000000000004'},
       runtime: {config: {workspaceId}}
     }) as never,
+    isQueueEnabled: () => true,
     getRuntime: async () => ({
       load: async () => currentPacket,
       queue
@@ -100,4 +102,34 @@ it('rejects a stale policy preview before issuing a queue command', async () => 
   expect(response.status).toBe(409);
   expect(await response.json()).toEqual({status: 'action_changed'});
   expect(queue).not.toHaveBeenCalled();
+});
+
+it('does not load or queue a packet while the runner transport is disabled', async () => {
+  const getRuntime = vi.fn();
+  const response = await confirmTaskPacketCommand(new Request(
+    `https://control.example.test/api/task-packets/${packetId}/confirm`,
+    {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({
+        _csrf: 'csrf-token',
+        confirmedPacketHash: 'a'.repeat(64),
+        agentProfileId: profileId,
+        actionHash: 'd'.repeat(64)
+      })
+    }
+  ), packetId, {
+    requireSession: async () => ({
+      ok: true,
+      session: {actorId: '00000000-0000-4000-8000-000000000004'},
+      runtime: {config: {workspaceId}}
+    }) as never,
+    isQueueEnabled: () => false,
+    getRuntime
+  });
+
+  expect(response.status).toBe(503);
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  expect(await response.json()).toEqual({status: 'runner_disabled'});
+  expect(getRuntime).not.toHaveBeenCalled();
 });

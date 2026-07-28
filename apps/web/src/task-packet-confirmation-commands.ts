@@ -12,11 +12,15 @@ type Runtime = Awaited<ReturnType<typeof getTaskPacketConfirmationRuntime>>;
 export type TaskPacketConfirmationCommandDependencies = Readonly<{
   requireSession: typeof requireOperatorSession;
   getRuntime(): Promise<Runtime>;
+  isQueueEnabled(): boolean;
 }>;
 
 const dependencies: TaskPacketConfirmationCommandDependencies = {
   requireSession: requireOperatorSession,
-  getRuntime: getTaskPacketConfirmationRuntime
+  getRuntime: getTaskPacketConfirmationRuntime,
+  isQueueEnabled: () =>
+    process.env.RUNNER_ENABLED === 'true' &&
+    process.env.LOCAL_RUNNER_TRANSPORT_ENABLED === 'true'
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -81,6 +85,9 @@ export async function confirmTaskPacketCommand(
   if (!authorization.ok) return authorization.response;
   if (!UUID_PATTERN.test(packetId) || input === null) {
     return Response.json({status: 'invalid_request'}, {status: 400, headers: noStore});
+  }
+  if (!overrides.isQueueEnabled()) {
+    return Response.json({status: 'runner_disabled'}, {status: 503, headers: noStore});
   }
   try {
     const runtime = await overrides.getRuntime();
