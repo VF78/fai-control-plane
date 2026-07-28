@@ -648,7 +648,7 @@ describe('canonical command service', () => {
         ...packet.value.content.agentProfileSnapshot!,
         instructions: `Use github_pat_${'a'.repeat(24)}`
       }
-    })).toMatchObject({ok: false, error: {code: 'INVALID_TASK_PACKET'}});
+    })).toMatchObject({ok: false, error: {code: 'SECRET_VALUE_FORBIDDEN'}});
     uow.taskPackets.set(packet.value.packetId, packet.value);
     uow.hermesRunnerEnabled = false;
     await expect(service.execute(command('agent_run.queue', {
