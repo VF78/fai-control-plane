@@ -73,13 +73,34 @@ const duration = (value: number | null): string => value === null
   ? 'Unknown (not recorded)'
   : `${(value / 1_000).toLocaleString('en-US', {maximumFractionDigits: 1})} seconds`;
 const unknownReceiptValue = (
-  value: Readonly<{state: 'unknown'; reason: 'runtime_usage_not_available'}> | null
-): string => value === null ? 'Unknown (not recorded)' : `Unknown (${value.reason})`;
+  value: Readonly<Record<string, unknown>> | null
+): string => value === null
+  ? 'Unknown (not recorded)'
+  : Object.entries(value)
+      .map(([key, item]) => `${label(key)}: ${String(item)}`)
+      .join(', ');
 const age = (value: Date | null): 'fresh' | 'stale' | 'unknown' => {
   if (value === null) return 'unknown';
   return Date.now() - value.getTime() > 24 * 60 * 60 * 1000 ? 'stale' : 'fresh';
 };
 const label = (value: string): string => value.replaceAll('_', ' ');
+const money = (amountMinor: number, currency: string): string =>
+  `${currency} ${(amountMinor / 100).toFixed(2)}`;
+const roiText = (roi: RunsData['runs'][number]['ledger']['roi']): string => {
+  if (roi.state === 'calculated') return `ROI: ${(roi.ratio * 100).toFixed(1)}%`;
+  const reasons = {
+    cost_not_calculated: 'cost is not calculated',
+    value_evidence_missing: 'value evidence is missing',
+    currency_mismatch: 'cost and value currencies differ',
+    formula_version_unsupported: 'value formula is unsupported'
+  } as const;
+  return `ROI not configured: ${reasons[roi.reason]}`;
+};
+const costText = (
+  cost: RunsData['runs'][number]['ledger']['latestCost']
+): string => cost.state === 'calculated'
+  ? `${money(cost.amountMinor, cost.currency)} · pricing ${cost.pricingVersion} effective ${cost.pricingEffectiveAt} · allocation ${cost.allocationFormulaVersion}`
+  : `${label(cost.state)} (${cost.reason})`;
 
 export function PortfolioView({data}: {data: PortfolioData}) {
   return <div className="control-surface">
@@ -149,7 +170,7 @@ export function RunsView({data, csrfToken, operatorActorId}: {
     <section className="runs-ledger" aria-labelledby="runs-title"><header><p className="eyebrow">Persisted execution</p><h2 id="runs-title">Runs</h2></header>
       {data.runs.length === 0 ? <p className="muted">No persisted runs in this scope.</p> : <div className="run-list">{data.runs.map((run) => <article className="run-row" id={`run-${run.id}`} key={run.id}>
         <div><strong>{run.workItem ?? 'No recorded WorkItem title'}</strong><span>{run.project} · {run.runtimeProfile} · {run.timeboxMinutes} min packet</span></div><span className={`state ${run.status}`}>{label(run.status)}</span>
-        <div><span>Started: {stamp(run.startedAt)}</span><span>Completed: {stamp(run.completedAt)}</span><span>Heartbeat: {stamp(run.heartbeatAt)}</span><span>Duration: {duration(run.receipt?.durationMs ?? null)}</span></div><div><span>{run.receipt === null ? 'No receipt recorded' : `Receipt: ${run.receipt.terminal}, ${stamp(run.receipt.completedAt)}`}</span><span>Runtime: {run.receipt?.runtimeId ?? 'Unknown (not recorded)'} · {run.receipt?.runtimeProfile ?? 'Unknown (not recorded)'}</span><span>Cost: {unknownReceiptValue(run.receipt?.cost ?? null)}</span><span>Usage: {unknownReceiptValue(run.receipt?.usage ?? null)}</span><span>ROI: Not configured</span><span>{run.artifacts.length === 0 ? 'No artifacts recorded' : `${run.artifacts.length} recorded artifacts`}</span>{run.failureCode === null ? null : <span>Failure code: {run.failureCode}</span>}</div><p>{run.packetGoal}</p>
+        <div><span>Started: {stamp(run.startedAt)}</span><span>Completed: {stamp(run.completedAt)}</span><span>Heartbeat: {stamp(run.heartbeatAt)}</span><span>Duration: {duration(run.receipt?.durationMs ?? null)}</span></div><div><span>{run.receipt === null ? 'No receipt recorded' : `Receipt: ${run.receipt.terminal}, ${stamp(run.receipt.completedAt)} · SHA-256 ${run.receipt.receiptSha256}`}</span><span>Runtime: {run.receipt?.runtimeId ?? 'Unknown (not recorded)'} · {run.receipt?.runtimeProfile ?? 'Unknown (not recorded)'}</span><span>Raw cost: {unknownReceiptValue(run.receipt?.cost ?? null)}</span><span>Raw usage: {unknownReceiptValue(run.receipt?.usage ?? null)}</span><span>Latest cost: {costText(run.ledger.latestCost)}</span><span>{roiText(run.ledger.roi)}</span>{run.ledger.records.map((record) => <span key={record.commandId}>{record.kind === 'cost' && record.cost !== undefined ? `Cost record ${record.commandId}: ${costText(record.cost)}${record.correctsCommandId === null ? '' : ` · corrects ${record.correctsCommandId}`}${record.usageProvenance === undefined ? '' : ` · usage receipt ${record.usageProvenance.receiptSha256}`}` : record.valueEvidence === undefined ? `Invalid ledger record ${record.commandId}` : `Value evidence ${record.commandId}: baseline ${money(record.valueEvidence.baselineAmountMinor, record.valueEvidence.currency)} · outcome ${money(record.valueEvidence.outcomeAmountMinor, record.valueEvidence.currency)} · ${record.valueEvidence.method} · ${record.valueEvidence.observedAt} · ${record.valueEvidence.evidenceReference} · ${record.valueEvidence.formulaVersion}`}</span>)}<span>{run.artifacts.length === 0 ? 'No artifacts recorded' : `${run.artifacts.length} recorded artifacts`}</span>{run.failureCode === null ? null : <span>Failure code: {run.failureCode}</span>}</div><p>{run.packetGoal}</p>
       </article>)}</div>}
     </section>
     <section className="approvals-ledger" aria-labelledby="approvals-title"><header><p className="eyebrow">Persisted policy records</p><h2 id="approvals-title">Approvals</h2></header>
@@ -226,6 +247,7 @@ export function AccessView({csrfToken, data, policyVersion, evaluatorVersion, po
 
 export function HealthView({data}: {data: HealthData}) {
   return <div className="control-surface">
+    <HealthSection title="AI cost ledger" eyebrow="Latest persisted cost state by server-derived run type" empty="No AgentRuns are recorded in this scope." items={data.costLedger}>{(group) => <article className="table-row" key={`${group.runType}:${group.currency ?? 'none'}:${group.state}`}><strong>{group.runType}</strong><span>{group.currency ?? 'No currency'}</span><span className={`state ${group.state}`}>{group.state}</span><span>{group.count} {group.count === 1 ? 'run' : 'runs'}</span></article>}</HealthSection>
     <HealthSection title="Scheduled jobs" eyebrow="Persisted scheduler facts" empty="No scheduled jobs are recorded in this scope." items={data.jobs}>{(job) => <article className="table-row" key={job.id}><strong>{job.project} · {job.name}</strong><span className={`state ${job.status}`}>{job.status}</span><span className={`state ${age(job.heartbeatAt)}`}>Heartbeat: {age(job.heartbeatAt)} · {stamp(job.heartbeatAt)}</span><span className={`state ${age(job.lastSuccessAt)}`}>Last success: {age(job.lastSuccessAt)} · {stamp(job.lastSuccessAt)}</span><span>Next run: {stamp(job.nextRunAt)}</span></article>}</HealthSection>
     <HealthSection title="Integration operations" eyebrow="Persisted tracker facts" empty="No tracker snapshot operations are recorded in this scope." items={data.integrations}>{(integration) => <article className="table-row" key={integration.id}><strong>{integration.project}</strong><span>{integration.provider}</span><span>{integration.mode}</span><span className={`state ${age(integration.createdAt)}`}>{age(integration.createdAt)} · {stamp(integration.createdAt)}</span></article>}</HealthSection>
     <HealthSection title="Unresolved risks" eyebrow="Persisted risk signals" empty="No unresolved risk signals are recorded in this scope." items={data.risks}>{(risk) => <article className="table-row" key={risk.id}><strong>{risk.project}</strong><span className={`severity ${risk.severity}`}>{risk.severity}</span><span>{risk.summary}</span><span>{stamp(risk.updatedAt)}</span></article>}</HealthSection>

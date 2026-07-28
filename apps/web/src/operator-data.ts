@@ -10,6 +10,8 @@ import {
   approvalRequests,
   artifacts,
   auditEvents,
+  commandReceipts,
+  COST_LEDGER_COMMAND,
   createDatabase,
   dashboardSnapshots,
   healthcheckStaleAfterMs,
@@ -24,7 +26,14 @@ import {
   taskPackets,
   trackerBindings,
   trackerSnapshotOperations,
-  workItems
+  VALUE_LEDGER_COMMAND,
+  workItems,
+  ledgerRoi,
+  parseLedgerRecord,
+  type LedgerCost,
+  type LedgerRecord,
+  type LedgerRoi,
+  type ValueEvidence
 } from '@fai-control-plane/db';
 import {
   CURRENT_POLICY_VERSION,
@@ -440,10 +449,16 @@ export type RunsData = Readonly<{
     heartbeatAt: Date | null; failureCode: string | null;
     receipt: Readonly<{
       terminal: string; completedAt: Date; runtimeId: string | null; runtimeProfile: string | null;
-      durationMs: number | null;
-      cost: Readonly<{state: 'unknown'; reason: 'runtime_usage_not_available'}> | null;
-      usage: Readonly<{state: 'unknown'; reason: 'runtime_usage_not_available'}> | null;
+      durationMs: number | null; receiptSha256: string;
+      cost: Readonly<Record<string, unknown>> | null;
+      usage: Readonly<Record<string, unknown>> | null;
     }> | null;
+    ledger: Readonly<{
+      records: readonly LedgerRecord[];
+      latestCost: LedgerCost;
+      latestValueEvidence: ValueEvidence | null;
+      roi: LedgerRoi;
+    }>;
     artifacts: readonly Readonly<{kind: string; sizeBytes: number; redacted: boolean; createdAt: Date}>[];
   }>[];
   approvals: readonly Readonly<{
@@ -527,33 +542,53 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
   const packetActors = actorIds.length === 0 ? [] : await db.select({id: actors.id, name: actors.displayName})
     .from(actors).where(inArray(actors.id, actorIds));
   const runIds = runs.map(({id}) => id);
-  const [receipts, evidenceArtifacts] = runIds.length === 0 ? [[], []] : await Promise.all([
+  const [receipts, evidenceArtifacts, ledgerRows] = runIds.length === 0 ? [[], [], []] : await Promise.all([
     db.select({
       agentRunId: agentRunReceipts.agentRunId,
       terminal: agentRunReceipts.terminal,
       completedAt: agentRunReceipts.completedAt,
+      receiptSha256: agentRunReceipts.receiptSha256,
       metadata: agentRunReceipts.metadata
     })
       .from(agentRunReceipts).where(inArray(agentRunReceipts.agentRunId, runIds)),
     db.select({agentRunId: artifacts.agentRunId, kind: artifacts.kind, sizeBytes: artifacts.sizeBytes, redacted: artifacts.redacted, createdAt: artifacts.createdAt})
-      .from(artifacts).where(inArray(artifacts.agentRunId, runIds)).orderBy(desc(artifacts.createdAt), artifacts.id)
+      .from(artifacts).where(inArray(artifacts.agentRunId, runIds)).orderBy(desc(artifacts.createdAt), artifacts.id),
+    db.select({
+      agentRunId: commandReceipts.aggregateId,
+      result: commandReceipts.result
+    }).from(commandReceipts).where(and(
+      inArray(commandReceipts.aggregateId, runIds),
+      inArray(commandReceipts.commandType, [
+        COST_LEDGER_COMMAND,
+        VALUE_LEDGER_COMMAND
+      ])
+    )).orderBy(commandReceipts.completedAt, commandReceipts.id)
   ]);
-  const unavailable = (value: unknown): value is Readonly<{
-    state: 'unknown'; reason: 'runtime_usage_not_available';
-  }> => typeof value === 'object' && value !== null && !Array.isArray(value) &&
-    Object.keys(value).length === 2 &&
-    'state' in value && value.state === 'unknown' &&
-    'reason' in value && value.reason === 'runtime_usage_not_available';
-  const receiptByRun = new Map(receipts.map(({agentRunId, terminal, completedAt, metadata}) => [agentRunId, {
+  const objectValue = (value: unknown): Record<string, unknown> | null =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  const receiptByRun = new Map(receipts.map(({agentRunId, terminal, completedAt, receiptSha256, metadata}) => [agentRunId, {
     terminal,
     completedAt,
+    receiptSha256,
     runtimeId: typeof metadata.runtimeId === 'string' ? metadata.runtimeId : null,
     runtimeProfile: typeof metadata.runtimeProfile === 'string' ? metadata.runtimeProfile : null,
     durationMs: typeof metadata.durationMs === 'number' && Number.isSafeInteger(metadata.durationMs) && metadata.durationMs >= 0
       ? metadata.durationMs : null,
-    cost: unavailable(metadata.cost) ? metadata.cost : null,
-    usage: unavailable(metadata.usage) ? metadata.usage : null
+    cost: objectValue(metadata.cost),
+    usage: objectValue(metadata.usage)
   }]));
+  const ledgerByRun = new Map<string, LedgerRecord[]>();
+  for (const row of ledgerRows) {
+    if (row.agentRunId === null) continue;
+    const record = parseLedgerRecord(row.result);
+    if (record === null) continue;
+    ledgerByRun.set(row.agentRunId, [
+      ...(ledgerByRun.get(row.agentRunId) ?? []),
+      record
+    ]);
+  }
   const artifactsByRun = new Map<string, typeof evidenceArtifacts>();
   for (const artifact of evidenceArtifacts) artifactsByRun.set(artifact.agentRunId, [...(artifactsByRun.get(artifact.agentRunId) ?? []), artifact]);
   const actorNameById = new Map(packetActors.map((actor) => [actor.id, actor.name]));
@@ -579,7 +614,32 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
   return {
     runs: runs.flatMap((run) => {
       const project = projectById.get(run.projectId);
-      return project === undefined ? [] : [{...run, project: project.name, projectSlug: project.slug, receipt: receiptByRun.get(run.id) ?? null, artifacts: artifactsByRun.get(run.id) ?? []}];
+      if (project === undefined) return [];
+      const records = ledgerByRun.get(run.id) ?? [];
+      const latestCost = records.flatMap((record) =>
+        record.kind === 'cost' && record.cost !== undefined
+          ? [record.cost]
+          : []).at(-1) ?? {
+            state: 'unknown' as const,
+            reason: 'no_cost_record'
+          };
+      const latestValueEvidence = records.flatMap((record) =>
+        record.kind === 'value_evidence' && record.valueEvidence !== undefined
+          ? [record.valueEvidence]
+          : []).at(-1) ?? null;
+      return [{
+        ...run,
+        project: project.name,
+        projectSlug: project.slug,
+        receipt: receiptByRun.get(run.id) ?? null,
+        ledger: {
+          records,
+          latestCost,
+          latestValueEvidence,
+          roi: ledgerRoi(latestCost, latestValueEvidence)
+        },
+        artifacts: artifactsByRun.get(run.id) ?? []
+      }];
     }),
     approvals: approvals.flatMap((approval) => {
       const project = projectById.get(approval.projectId);
@@ -804,14 +864,20 @@ export type HealthData = Readonly<{
   integrations: readonly Readonly<{id: string; project: string; projectSlug: OperatorProjectSlug; provider: string; mode: string; createdAt: Date}>[];
   risks: readonly Readonly<{id: string; project: string; projectSlug: OperatorProjectSlug; severity: 'green' | 'yellow' | 'red'; summary: string; updatedAt: Date}>[];
   audit: readonly Readonly<{id: string; project: string; projectSlug: OperatorProjectSlug; actor: string | null; action: string; targetType: string; targetId: string | null; policyDecision: string | null; outcome: string | null; reasonCode: string | null; occurredAt: Date}>[];
+  costLedger: readonly Readonly<{
+    runType: string;
+    currency: string | null;
+    state: 'unknown' | 'pending' | 'calculated' | 'error';
+    count: number;
+  }>[];
 }>;
 
 export const loadHealthData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<HealthData>> => readDatabase(async (db) => {
   const configuredProjects = await scopedProjects(db, scope);
-  if (configuredProjects.length === 0) return {jobs: [], integrations: [], risks: [], audit: []};
+  if (configuredProjects.length === 0) return {jobs: [], integrations: [], risks: [], audit: [], costLedger: []};
   const projectIds = configuredProjects.map(({id}) => id);
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
-  const [jobs, integrations, risks, audit] = await Promise.all([
+  const [jobs, integrations, risks, audit, runCosts] = await Promise.all([
     db.select({id: scheduledJobs.id, projectId: scheduledJobs.projectId, name: scheduledJobs.name, status: scheduledJobs.status, heartbeatAt: scheduledJobs.heartbeatAt, lastSuccessAt: scheduledJobs.lastSuccessAt, nextRunAt: scheduledJobs.nextRunAt})
       .from(scheduledJobs).where(inArray(scheduledJobs.projectId, projectIds)).orderBy(scheduledJobs.name),
     db.select({id: trackerSnapshotOperations.id, projectId: trackerSnapshotOperations.projectId, provider: trackerSnapshotOperations.provider, mode: trackerSnapshotOperations.mode, createdAt: trackerSnapshotOperations.createdAt})
@@ -831,12 +897,73 @@ export const loadHealthData = (scope?: OperatorProjectSlug): Promise<OperatorLoa
       occurredAt: auditEvents.occurredAt
     }).from(auditEvents).leftJoin(actors, eq(auditEvents.actorId, actors.id))
       .where(inArray(auditEvents.projectId, projectIds))
-      .orderBy(desc(auditEvents.occurredAt), auditEvents.id).limit(100)
+      .orderBy(desc(auditEvents.occurredAt), auditEvents.id).limit(100),
+    db.select({
+      runId: agentRuns.id,
+      runType: taskPackets.runtimeProfile,
+      rawCost: agentRunReceipts.metadata,
+      result: commandReceipts.result
+    }).from(agentRuns)
+      .innerJoin(taskPackets, eq(taskPackets.id, agentRuns.taskPacketId))
+      .leftJoin(
+        agentRunReceipts,
+        eq(agentRunReceipts.agentRunId, agentRuns.id)
+      )
+      .leftJoin(commandReceipts, and(
+        eq(commandReceipts.aggregateId, agentRuns.id),
+        eq(commandReceipts.commandType, COST_LEDGER_COMMAND)
+      ))
+      .where(inArray(taskPackets.projectId, projectIds))
+      .orderBy(agentRuns.id, commandReceipts.completedAt, commandReceipts.id)
   ]);
   const scopeRow = <T extends Readonly<{projectId: string | null}>>(row: T) => {
     if (row.projectId === null) return [];
     const project = projectById.get(row.projectId);
     return project === undefined ? [] : [{...row, project: project.name, projectSlug: project.slug}];
   };
-  return {jobs: jobs.flatMap(scopeRow), integrations: integrations.flatMap(scopeRow), risks: risks.flatMap(scopeRow), audit: audit.flatMap(scopeRow)};
+  const latestCostByRun = new Map<string, {
+    runType: string;
+    cost: LedgerCost;
+  }>();
+  for (const row of runCosts) {
+    const rawCost = row.rawCost !== null &&
+      typeof row.rawCost.cost === 'object' &&
+      row.rawCost.cost !== null &&
+      !Array.isArray(row.rawCost.cost) &&
+      'state' in row.rawCost.cost &&
+      ['unknown', 'pending', 'calculated', 'error'].includes(
+        String(row.rawCost.cost.state)
+      )
+      ? row.rawCost.cost as LedgerCost
+      : {state: 'unknown' as const, reason: 'no_cost_record'};
+    const record = parseLedgerRecord(row.result);
+    latestCostByRun.set(row.runId, {
+      runType: row.runType,
+      cost: record?.kind === 'cost' && record.cost !== undefined
+        ? record.cost
+        : latestCostByRun.get(row.runId)?.cost ?? rawCost
+    });
+  }
+  const costGroups = new Map<string, HealthData['costLedger'][number]>();
+  for (const {runType, cost} of latestCostByRun.values()) {
+    const currency = cost.state === 'calculated' ? cost.currency : null;
+    const key = `${runType}\0${currency ?? ''}\0${cost.state}`;
+    const current = costGroups.get(key);
+    costGroups.set(key, {
+      runType,
+      currency,
+      state: cost.state,
+      count: (current?.count ?? 0) + 1
+    });
+  }
+  return {
+    jobs: jobs.flatMap(scopeRow),
+    integrations: integrations.flatMap(scopeRow),
+    risks: risks.flatMap(scopeRow),
+    audit: audit.flatMap(scopeRow),
+    costLedger: [...costGroups.values()].sort((left, right) =>
+      left.runType.localeCompare(right.runType) ||
+      (left.currency ?? '').localeCompare(right.currency ?? '') ||
+      left.state.localeCompare(right.state))
+  };
 });

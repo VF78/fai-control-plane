@@ -22,6 +22,7 @@ it('renders persisted audit actor, target and policy facts', () => {
     jobs: [],
     integrations: [],
     risks: [],
+    costLedger: [],
     audit: [{
       id: 'audit-1',
       project: 'ASCON',
