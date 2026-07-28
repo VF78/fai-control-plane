@@ -90,8 +90,11 @@ const projectStatusIdentityMatches = (
   if (observed === null) return true;
   const metadata = binding.metadata as Record<string, unknown>;
   const status = metadata.projectStatus;
-  return metadata.repositoryExternalId === snapshot.repository.externalId &&
-    status !== null && typeof status === 'object' && !Array.isArray(status) &&
+  if (metadata.repositoryExternalId !== snapshot.repository.externalId) return false;
+  // Bindings created before Projects access may be enriched once from the
+  // same validated repository issue. Existing Project identity stays immutable.
+  if (status === null) return true;
+  return typeof status === 'object' && !Array.isArray(status) &&
     (status as Record<string, unknown>).projectExternalId === observed.projectExternalId &&
     (status as Record<string, unknown>).projectItemExternalId === observed.projectItemExternalId &&
     (status as Record<string, unknown>).fieldExternalId === observed.fieldExternalId;
