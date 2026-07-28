@@ -58,6 +58,7 @@ export type GitHubRepositoryReadErrorCode =
   | 'github_rate_limited'
   | 'github_request_budget_exceeded'
   | 'github_response_invalid'
+  | 'github_project_item_content_redacted'
   | 'github_pagination_exceeded';
 
 export class GitHubRepositoryReadError extends Error {
@@ -591,7 +592,7 @@ const projectEvidencePage = (
   for (const item of array(items.nodes)) {
     const source = object(item);
     const content = source.content;
-    if (content === null) continue;
+    if (content === null) return fail('github_project_item_content_redacted');
     const entity = object(content);
     const typename = boundedString(entity.__typename, 64);
     if (typename !== 'Issue') return fail('github_response_invalid');
