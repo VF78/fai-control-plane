@@ -360,6 +360,30 @@ describe('GitHub repository read adapter', () => {
     ]);
   });
 
+  it('fails closed when GitHub redacts a Project item content identity', async () => {
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/repos/VF78/MSA') return jsonResponse(repositoryPayload());
+      if (url.pathname.endsWith('/issues')) return jsonResponse([issue(1)]);
+      if (url.pathname.endsWith('/pulls')) return jsonResponse([]);
+      throw new Error(`Unexpected route ${url.pathname}`);
+    }, () => projectItemsPayload('PVT_kwHOBIUvJs4Bbefq', [{
+      id: 'PVTI_MSA_REDACTED',
+      content: null,
+      fieldValues: {
+        nodes: [{
+          optionId: '1f121483',
+          field: {id: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc'}
+        }],
+        pageInfo: {hasNextPage: false}
+      }
+    }]));
+
+    await expect(readMsa(fetch)).rejects.toMatchObject({
+      code: 'github_project_item_content_redacted',
+      message: 'github_project_item_content_redacted'
+    });
+  });
+
   it.each([
     {
       name: 'repository ID',
