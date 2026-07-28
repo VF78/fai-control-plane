@@ -295,7 +295,7 @@ printing callback queries or share tokens:
 curl --fail --silent --show-error https://app.f-ai.studio/api/health
 curl --fail --silent --show-error https://app.f-ai.studio/api/ready
 sudo tail -n 100 /var/log/nginx/app.f-ai.studio.access.log \
-  | rg -n '/share/[^[]|/api/auth/github/callback\?'
+  | rg -n '/share/[^[]|/oauth/github/complete\?'
 ```
 
 The final redaction check must return no matches. Do not use real bearer URLs

@@ -14,7 +14,7 @@ export const OAUTH_TRANSIENT_COOKIE = 'fai_oauth_transient';
 export const OAUTH_ATTEMPT_TTL_MS = 10 * 60 * 1000;
 export const OPERATOR_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
-const CALLBACK_PATH = '/api/auth/github/callback';
+const CALLBACK_PATH = '/oauth/github/complete';
 const GITHUB_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
 const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token';
 const GITHUB_USER_URL = 'https://api.github.com/user';

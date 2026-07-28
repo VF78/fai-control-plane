@@ -4,11 +4,11 @@ import {
   OPERATOR_SESSION_COOKIE,
   OperatorAuthError,
   cookieOptions
-} from '../../../../../src/operator-auth';
+} from '../../../../src/operator-auth';
 import {
   getOperatorAuthRuntime,
   singleCookieFromRequest
-} from '../../../../../src/operator-auth-runtime';
+} from '../../../../src/operator-auth-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
