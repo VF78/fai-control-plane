@@ -219,10 +219,60 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-build --no-d
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-build --no-deps web
 ```
 
-Only after local health passes may the separately approved Nginx template be
-installed. Confirm its port still equals `WEB_BIND_PORT`, review `nginx -T`,
-then use `nginx -t` before any reload. Do not modify the existing
-`f-ai.studio` server block.
+Only after local health passes may the separately approved direct-origin TLS
+and Nginx change begin. Do not modify the existing `f-ai.studio` server block
+or stop Nginx for certificate issuance.
+
+Create a temporary HTTP-only ACME site so the existing Nginx process can keep
+serving every other host:
+
+```bash
+sudo install -d -m 0755 -o root -g root /var/www/letsencrypt
+sudo tee /etc/nginx/sites-available/app.f-ai.studio.conf >/dev/null <<'NGINX'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name app.f-ai.studio;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        default_type text/plain;
+    }
+
+    location / {
+        return 404;
+    }
+}
+NGINX
+sudo ln -s /etc/nginx/sites-available/app.f-ai.studio.conf \
+  /etc/nginx/sites-enabled/app.f-ai.studio.conf
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot certonly --webroot -w /var/www/letsencrypt \
+  --cert-name app.f-ai.studio -d app.f-ai.studio
+sudo test -s /etc/letsencrypt/live/app.f-ai.studio/fullchain.pem
+sudo test -s /etc/letsencrypt/live/app.f-ai.studio/privkey.pem
+```
+
+Then install the reviewed final template over the temporary site. Confirm its
+upstream port still equals `WEB_BIND_PORT`, inspect the diff and use
+`nginx -t` before reloading:
+
+```bash
+sudo cp -a /etc/nginx/sites-available/app.f-ai.studio.conf \
+  "/etc/nginx/sites-available/app.f-ai.studio.conf.before-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo install -m 0644 -o root -g root \
+  "$REPO/infra/production/nginx/app.f-ai.studio.conf" \
+  /etc/nginx/sites-available/app.f-ai.studio.conf
+sudo diff -u /etc/fai-control-plane/nginx/app.f-ai.studio.conf \
+  /etc/nginx/sites-available/app.f-ai.studio.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+The `diff` must be empty. A certificate failure leaves only the isolated
+HTTP-only `404` site in place; it is not permission to alter the marketing
+site certificate or server block.
 
 ## Health
 
