@@ -378,7 +378,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     expect(writes).toHaveLength(0);
   });
 
-  it('enriches a repository issue binding when Project status identity becomes available', async () => {
+  it('adopts the Project status when a repository binding gains its initial identity', async () => {
     const projectId = randomUUID();
     await testPool.query(
       `INSERT INTO projects (id, workspace_id, name, slug)
@@ -418,19 +418,23 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
 
     expect(projected).toMatchObject({
       status: 'applied',
+      updatedWorkItemStatuses: 1,
       unknownProjectStatusWorkItemExternalIds: []
     });
-    const [binding] = await db.select().from(trackerBindings).where(and(
-      eq(trackerBindings.projectId, projectId),
-      eq(trackerBindings.externalId, 'github:issue:9010')
-    ));
+    const [bindings, adoptedWorkItems] = await Promise.all([
+      db.select().from(trackerBindings).where(and(
+        eq(trackerBindings.projectId, projectId),
+        eq(trackerBindings.externalId, 'github:issue:9010')
+      )),
+      db.select().from(workItems).where(eq(workItems.projectId, projectId))
+    ]);
+    const [binding] = bindings;
     expect(binding).toMatchObject({metadata: {projectStatus}});
     const observations = await db.select().from(trackerStatusObservationInbox)
       .where(eq(trackerStatusObservationInbox.projectId, projectId));
-    expect(observations).toHaveLength(1);
-    expect(observations[0]).toMatchObject({mappedStatus: 'ready', state: 'pending'});
-    await db.delete(trackerStatusObservationInbox)
-      .where(eq(trackerStatusObservationInbox.projectId, projectId));
+    expect(adoptedWorkItems).toHaveLength(1);
+    expect(adoptedWorkItems[0]).toMatchObject({status: 'ready', version: 2});
+    expect(observations).toHaveLength(0);
   });
 
   it('projects a status observation, applies it through the canonical command, and acknowledges its echo', async () => {
