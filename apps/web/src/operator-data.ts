@@ -1,6 +1,9 @@
 import {createHash} from 'node:crypto';
 import {and, desc, eq, inArray, isNull} from 'drizzle-orm';
-import {CANONICAL_COMMAND_POLICY} from '@fai-control-plane/application';
+import {
+  CANONICAL_COMMAND_POLICY,
+  parseRunnerCompletionPayload
+} from '@fai-control-plane/application';
 import {
   accessRequests,
   actors,
@@ -447,6 +450,7 @@ export type RunsData = Readonly<{
     status: 'queued' | 'running' | 'waiting_approval' | 'done' | 'failed'; runtimeProfile: string;
     packetGoal: string; timeboxMinutes: number; startedAt: Date | null; completedAt: Date | null;
     heartbeatAt: Date | null; failureCode: string | null; version: number;
+    workItemVersion: number | null; canAcceptReceipt: boolean;
     receipt: Readonly<{
       terminal: string; completedAt: Date; runtimeId: string | null; runtimeProfile: string | null;
       durationMs: number | null; receiptSha256: string;
@@ -489,7 +493,10 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
   const [runs, approvals, packetRows, profiles, repositoryBindings] = await Promise.all([
     db.select({
-      id: agentRuns.id, projectId: taskPackets.projectId, workItem: workItems.title, agent: actors.displayName,
+      id: agentRuns.id, projectId: taskPackets.projectId, workItem: workItems.title,
+      workItemStatus: workItems.status, workItemVersion: workItems.version,
+      agent: actors.displayName, runAttempt: agentRuns.attempt,
+      confirmedPacketHash: agentRuns.confirmedPacketHash, packetContentHash: taskPackets.contentHash,
       status: agentRuns.status, runtimeProfile: taskPackets.runtimeProfile, packetGoal: taskPackets.goal,
       timeboxMinutes: taskPackets.timeboxMinutes, startedAt: agentRuns.startedAt, completedAt: agentRuns.completedAt,
       heartbeatAt: agentRuns.heartbeatAt, failureCode: agentRuns.failureCode, version: agentRuns.version
@@ -545,9 +552,12 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
   const [receipts, evidenceArtifacts, ledgerRows] = runIds.length === 0 ? [[], [], []] : await Promise.all([
     db.select({
       agentRunId: agentRunReceipts.agentRunId,
+      runnerId: agentRunReceipts.runnerId,
+      attempt: agentRunReceipts.attempt,
       terminal: agentRunReceipts.terminal,
       completedAt: agentRunReceipts.completedAt,
       receiptSha256: agentRunReceipts.receiptSha256,
+      receiptSizeBytes: agentRunReceipts.receiptSizeBytes,
       metadata: agentRunReceipts.metadata
     })
       .from(agentRunReceipts).where(inArray(agentRunReceipts.agentRunId, runIds)),
@@ -568,10 +578,17 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
     typeof value === 'object' && value !== null && !Array.isArray(value)
       ? value as Record<string, unknown>
       : null;
-  const receiptByRun = new Map(receipts.map(({agentRunId, terminal, completedAt, receiptSha256, metadata}) => [agentRunId, {
+  const receiptByRun = new Map(receipts.map(({
+    agentRunId, runnerId, attempt, terminal, completedAt, receiptSha256,
+    receiptSizeBytes, metadata
+  }) => [agentRunId, {
+    runnerId,
+    attempt,
     terminal,
     completedAt,
     receiptSha256,
+    receiptSizeBytes,
+    parsed: parseRunnerCompletionPayload(metadata),
     runtimeId: typeof metadata.runtimeId === 'string' ? metadata.runtimeId : null,
     runtimeProfile: typeof metadata.runtimeProfile === 'string' ? metadata.runtimeProfile : null,
     durationMs: typeof metadata.durationMs === 'number' && Number.isSafeInteger(metadata.durationMs) && metadata.durationMs >= 0
@@ -615,6 +632,24 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
     runs: runs.flatMap((run) => {
       const project = projectById.get(run.projectId);
       if (project === undefined) return [];
+      const persistedReceipt = receiptByRun.get(run.id);
+      const receiptIsValid = persistedReceipt !== undefined &&
+        run.status === 'done' &&
+        run.failureCode === null &&
+        run.completedAt !== null &&
+        run.runAttempt > 0 &&
+        run.confirmedPacketHash === run.packetContentHash &&
+        persistedReceipt.runnerId.length > 0 &&
+        persistedReceipt.attempt === run.runAttempt &&
+        persistedReceipt.terminal === 'done' &&
+        persistedReceipt.completedAt.getTime() === run.completedAt.getTime() &&
+        persistedReceipt.parsed !== null &&
+        persistedReceipt.parsed.runId === run.id &&
+        persistedReceipt.parsed.attempt === run.runAttempt &&
+        persistedReceipt.parsed.terminal === 'done' &&
+        persistedReceipt.parsed.finalStatus === 'succeeded' &&
+        persistedReceipt.parsed.receiptSha256 === persistedReceipt.receiptSha256 &&
+        persistedReceipt.parsed.receiptSizeBytes === persistedReceipt.receiptSizeBytes;
       const records = ledgerByRun.get(run.id) ?? [];
       const latestCost = records.flatMap((record) =>
         record.kind === 'cost' && record.cost !== undefined
@@ -631,7 +666,17 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
         ...run,
         project: project.name,
         projectSlug: project.slug,
-        receipt: receiptByRun.get(run.id) ?? null,
+        canAcceptReceipt: receiptIsValid && run.workItemStatus === 'in_dev',
+        receipt: persistedReceipt === undefined ? null : {
+          terminal: persistedReceipt.terminal,
+          completedAt: persistedReceipt.completedAt,
+          receiptSha256: persistedReceipt.receiptSha256,
+          runtimeId: persistedReceipt.runtimeId,
+          runtimeProfile: persistedReceipt.runtimeProfile,
+          durationMs: persistedReceipt.durationMs,
+          cost: persistedReceipt.cost,
+          usage: persistedReceipt.usage
+        },
         ledger: {
           records,
           latestCost,
