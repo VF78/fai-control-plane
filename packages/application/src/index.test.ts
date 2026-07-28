@@ -513,6 +513,68 @@ describe('canonical command service', () => {
       .resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
   });
 
+  it('cancels only a queued agent run before claim and replays the same command', async () => {
+    const run = {
+      id: id(),
+      taskPacketId: id(),
+      agentProfileId: id(),
+      confirmedPacketHash: 'a'.repeat(64),
+      baseCommit: 'a'.repeat(40),
+      status: 'queued' as const,
+      idempotencyKey: 'run',
+      version: 1
+    };
+    const uow = new FakeUnitOfWork();
+    uow.agentRuns.set(run.id, {aggregate: run, projectId});
+    const cancellation = command('agent_run.transition', {
+      agentRunId: run.id,
+      status: 'failed',
+      expectedVersion: 1,
+      failureCode: 'operator_cancelled_before_claim'
+    });
+
+    const completed = await serviceFor(uow).execute(cancellation);
+    const replayed = await serviceFor(uow).execute(cancellation);
+
+    expect(completed).toMatchObject({
+      status: 'completed',
+      receipt: {
+        result: {
+          ok: true,
+          value: {
+            status: 'failed',
+            failureCode: 'operator_cancelled_before_claim',
+            version: 2
+          }
+        }
+      }
+    });
+    expect(replayed.status).toBe('replayed');
+    expect(uow.agentRuns.get(run.id)?.aggregate).toMatchObject({
+      status: 'failed',
+      failureCode: 'operator_cancelled_before_claim',
+      version: 2
+    });
+    expect(uow.mutations).toHaveLength(1);
+
+    for (const status of ['running', 'done', 'failed'] as const) {
+      const protectedRun = {...run, id: id(), status};
+      const protectedUow = new FakeUnitOfWork();
+      protectedUow.agentRuns.set(protectedRun.id, {aggregate: protectedRun, projectId});
+      const result = await serviceFor(protectedUow).execute(command('agent_run.transition', {
+        agentRunId: protectedRun.id,
+        status: 'failed',
+        expectedVersion: 1,
+        failureCode: 'operator_cancelled_before_claim'
+      }));
+      expect(result).toMatchObject({
+        receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}
+      });
+      expect(protectedUow.agentRuns.get(protectedRun.id)?.aggregate.status).toBe(status);
+      expect(protectedUow.mutations).toHaveLength(0);
+    }
+  });
+
   it('does not create approvals for allowed actions and audits routine capability denial', async () => {
     const uow = new FakeUnitOfWork();
     const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);

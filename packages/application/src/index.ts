@@ -23,6 +23,7 @@ import {
   createTaskPacket,
   environments,
   isTrustedActorContext,
+  OPERATOR_CANCELLED_BEFORE_CLAIM,
   policySurfaces,
   setWorkItemBlocked,
   trackerCheckStatuses,
@@ -1300,8 +1301,13 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         sha256Pattern.test(payload.confirmedPacketHash) &&
         typeof payload.baseCommit === 'string' && gitCommitPattern.test(payload.baseCommit);
     case 'agent_run.transition':
-      return hasExactKeys(payload, ['agentRunId', 'status', 'expectedVersion']) && isUuid(payload.agentRunId) &&
-        isOneOf(agentRunStatuses, payload.status) && isVersion(payload.expectedVersion);
+      return (
+        hasExactKeys(payload, ['agentRunId', 'status', 'expectedVersion']) ||
+        hasExactKeys(payload, ['agentRunId', 'status', 'expectedVersion', 'failureCode'])
+      ) && isUuid(payload.agentRunId) &&
+        isOneOf(agentRunStatuses, payload.status) && isVersion(payload.expectedVersion) &&
+        (payload.failureCode === undefined ||
+          (payload.status === 'failed' && payload.failureCode === OPERATOR_CANCELLED_BEFORE_CLAIM));
     case 'approval.request':
       return hasExactKeys(payload, ['approvalId', 'action', 'target', 'binding']) && isUuid(payload.approvalId) &&
         isPolicyRequest(payload.action) && isApprovalTarget(payload.target) &&
@@ -1788,12 +1794,21 @@ export const createCanonicalCommandService = (
     if (view.aggregate.version !== command.payload.expectedVersion) {
       return completeNoMutation(transaction, token, claim, command, targetFor('agent_run', view.aggregate.id, command.payload.expectedVersion, view.aggregate.version), failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'));
     }
+    if (
+      command.payload.failureCode === OPERATOR_CANCELLED_BEFORE_CLAIM &&
+      view.aggregate.status !== 'queued'
+    ) {
+      return completeNoMutation(transaction, token, claim, command, target, failed('INVALID_TRANSITION', 'Only a queued agent run can be cancelled before claim.'));
+    }
     const updated = transitionAgentRun(view.aggregate, command.payload.status);
     if (!updated.ok) return completeNoMutation(transaction, token, claim, command, target, updated);
-    const resultTarget = targetFor('agent_run', updated.value.id, view.aggregate.version, updated.value.version);
-    const value = succeeded(compactAgentRun(updated.value));
+    const transitioned = command.payload.failureCode === undefined
+      ? updated.value
+      : {...updated.value, failureCode: command.payload.failureCode};
+    const resultTarget = targetFor('agent_run', transitioned.id, view.aggregate.version, transitioned.version);
+    const value = succeeded(compactAgentRun(transitioned));
     return completeMutation(transaction, token, claim, command, {
-      kind: 'non_approval', mutation: {aggregateType: 'agent_run', aggregateId: updated.value.id, expectedPersistedVersion: view.aggregate.version, aggregate: updated.value},
+      kind: 'non_approval', mutation: {aggregateType: 'agent_run', aggregateId: transitioned.id, expectedPersistedVersion: view.aggregate.version, aggregate: transitioned},
       audit: audit(claim, ids, clock, resultTarget, command.actor.actorId, command.type, 'write', value)
     }, resultTarget, value);
   }
@@ -1989,7 +2004,12 @@ const commandTarget = (command: CanonicalCommand): Target => {
 };
 
 const compactWorkItem = (item: WorkItem): CanonicalJson => ({id: item.id, status: item.status, version: item.version});
-const compactAgentRun = (run: AgentRun): CanonicalJson => ({id: run.id, status: run.status, version: run.version});
+const compactAgentRun = (run: AgentRun): CanonicalJson => ({
+  id: run.id,
+  status: run.status,
+  version: run.version,
+  ...(run.failureCode == null ? {} : {failureCode: run.failureCode})
+});
 const compactApproval = (approval: Approval): ApprovalReceipt => ({
   id: approval.id,
   status: approval.status,

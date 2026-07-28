@@ -608,6 +608,8 @@ export const createCodexAgentRuntime = (
         '--ephemeral',
         '--ignore-user-config',
         '--strict-config',
+        '-c',
+        'approval_policy="never"',
         '--json',
         '--output-schema',
         schemaPath,

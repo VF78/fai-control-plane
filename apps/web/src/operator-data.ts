@@ -437,7 +437,7 @@ export type RunsData = Readonly<{
     id: string; project: string; projectSlug: OperatorProjectSlug; workItem: string | null; agent: string | null;
     status: 'queued' | 'running' | 'waiting_approval' | 'done' | 'failed'; runtimeProfile: string;
     packetGoal: string; timeboxMinutes: number; startedAt: Date | null; completedAt: Date | null;
-    heartbeatAt: Date | null; failureCode: string | null;
+    heartbeatAt: Date | null; failureCode: string | null; version: number;
     receipt: Readonly<{
       terminal: string; completedAt: Date; runtimeId: string | null; runtimeProfile: string | null;
       durationMs: number | null;
@@ -477,7 +477,7 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       id: agentRuns.id, projectId: taskPackets.projectId, workItem: workItems.title, agent: actors.displayName,
       status: agentRuns.status, runtimeProfile: taskPackets.runtimeProfile, packetGoal: taskPackets.goal,
       timeboxMinutes: taskPackets.timeboxMinutes, startedAt: agentRuns.startedAt, completedAt: agentRuns.completedAt,
-      heartbeatAt: agentRuns.heartbeatAt, failureCode: agentRuns.failureCode
+      heartbeatAt: agentRuns.heartbeatAt, failureCode: agentRuns.failureCode, version: agentRuns.version
     }).from(agentRuns).innerJoin(taskPackets, eq(agentRuns.taskPacketId, taskPackets.id))
       .leftJoin(workItems, eq(taskPackets.workItemId, workItems.id)).leftJoin(agentProfiles, eq(agentRuns.agentProfileId, agentProfiles.id))
       .leftJoin(actors, eq(agentProfiles.actorId, actors.id)).where(inArray(taskPackets.projectId, projectIds)).orderBy(desc(agentRuns.updatedAt), agentRuns.id),
