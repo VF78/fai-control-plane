@@ -126,6 +126,30 @@ try {
     eq(actors.externalSubject, hermesActorSeed.externalSubject)
   ));
   if (hermesActor === undefined) throw new Error('Hermes actor seed failed');
+  const codexActorSeed = {
+    workspaceId: persistedWorkspace.id,
+    type: 'agent' as const,
+    role: 'agent_operator' as const,
+    displayName: 'Codex CLI',
+    authMode: 'agent' as const,
+    externalSubject: 'agent:codex-cli:v1',
+    capabilities: {'read:repository:development': true}
+  };
+  await db.insert(actors).values(codexActorSeed).onConflictDoUpdate({
+    target: [actors.workspaceId, actors.authMode, actors.externalSubject],
+    set: {
+      type: codexActorSeed.type,
+      role: codexActorSeed.role,
+      displayName: codexActorSeed.displayName,
+      capabilities: codexActorSeed.capabilities
+    }
+  });
+  const [codexActor] = await db.select({id: actors.id}).from(actors).where(and(
+    eq(actors.workspaceId, persistedWorkspace.id),
+    eq(actors.authMode, 'agent'),
+    eq(actors.externalSubject, codexActorSeed.externalSubject)
+  ));
+  if (codexActor === undefined) throw new Error('Codex actor seed failed');
   const hermesConfig = {
     runtimeId: 'hermes',
     runtimeProfile: 'read_safe',
@@ -159,9 +183,15 @@ try {
       forbiddenSurfaces: ['external_message', 'github_write', 'runner', 'production']
     }
   });
+  await db.update(agentProfiles).set({enabled: false}).where(and(
+    eq(agentProfiles.workspaceId, persistedWorkspace.id),
+    eq(agentProfiles.actorId, bootstrapActor.id),
+    eq(agentProfiles.runtimeId, 'codex-cli'),
+    eq(agentProfiles.runtimeProfile, 'write_scoped')
+  ));
   await db.insert(agentProfiles).values({
     workspaceId: persistedWorkspace.id,
-    actorId: bootstrapActor.id,
+    actorId: codexActor.id,
     runtimeId: 'codex-cli',
     runtimeProfile: 'write_scoped',
     allowedTools: ['git', 'read', 'test', 'build', 'issue_read'],
@@ -171,7 +201,8 @@ try {
     target: [agentProfiles.actorId, agentProfiles.runtimeId, agentProfiles.runtimeProfile],
     set: {
       allowedTools: ['git', 'read', 'test', 'build', 'issue_read'],
-      forbiddenSurfaces: ['production', 'deploy', 'merge', 'protected_secrets']
+      forbiddenSurfaces: ['production', 'deploy', 'merge', 'protected_secrets'],
+      enabled: true
     }
   });
 
