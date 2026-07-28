@@ -25,17 +25,17 @@ import {
 } from './github-webhook-runtime';
 
 describe('file webhook secrets provider', () => {
-  it('resolves only the exact approved ref and preserves file contents', async () => {
+  it('resolves only the exact approved ref and removes one trailing line ending', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'fai-webhook-secret-'));
     const path = join(directory, 'secret');
-    const value = 'exact secret with newline\n';
+    const value = 'exact secret';
     const reference: OpaqueSecretRef = {
       provider: 'file',
       reference: path,
       scope: ['github:webhook:verify']
     };
     try {
-      await writeFile(path, value, {mode: 0o600});
+      await writeFile(path, `${value}\n`, {mode: 0o600});
       const provider = createFileSecretsProvider(reference);
 
       await expect(

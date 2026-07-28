@@ -66,7 +66,12 @@ export const createFileSecretsProvider = (
     ) {
       throw new Error('Secret reference is not allowed.');
     }
-    const value = await readFile(allowedReference.reference, 'utf8');
+    const fileValue = await readFile(allowedReference.reference, 'utf8');
+    const value = fileValue.endsWith('\r\n')
+      ? fileValue.slice(0, -2)
+      : fileValue.endsWith('\n')
+        ? fileValue.slice(0, -1)
+        : fileValue;
     if (value.length === 0 || value.length > 65_536 || value.includes('\0')) {
       throw new Error('Webhook secret file is invalid.');
     }
