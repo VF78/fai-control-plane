@@ -5,6 +5,7 @@ export type WorkItemStatus = (typeof workItemStatuses)[number];
 
 export const agentRunStatuses = ['queued', 'running', 'waiting_approval', 'done', 'failed'] as const;
 export type AgentRunStatus = (typeof agentRunStatuses)[number];
+export const OPERATOR_CANCELLED_BEFORE_CLAIM = 'operator_cancelled_before_claim';
 
 export const approvalStatuses = ['pending', 'approved', 'rejected', 'expired'] as const;
 export type ApprovalStatus = (typeof approvalStatuses)[number];
@@ -87,6 +88,7 @@ export type AgentRun = Readonly<{
   confirmedPacketHash: string;
   baseCommit: string;
   status: AgentRunStatus;
+  failureCode?: string | null;
   idempotencyKey: string;
   version: number;
 }>;
@@ -691,7 +693,12 @@ export type QueueAgentRunCommand = CanonicalCommandEnvelope<
 >;
 export type TransitionAgentRunCommand = CanonicalCommandEnvelope<
   'agent_run.transition',
-  Readonly<{agentRunId: string; status: AgentRunStatus; expectedVersion: number}>
+  Readonly<{
+    agentRunId: string;
+    status: AgentRunStatus;
+    expectedVersion: number;
+    failureCode?: typeof OPERATOR_CANCELLED_BEFORE_CLAIM;
+  }>
 >;
 export type RequestApprovalCommand = CanonicalCommandEnvelope<
   'approval.request',

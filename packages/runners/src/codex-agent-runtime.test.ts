@@ -108,6 +108,8 @@ describe('Codex CLI agent runtime', () => {
       '--ephemeral',
       '--ignore-user-config',
       '--strict-config',
+      '-c',
+      'approval_policy="never"',
       '--json',
       '--output-schema',
       path.join(artifactPath, 'codex-agent-summary.schema.json'),

@@ -168,7 +168,7 @@ export async function requireOperatorSession(
   return {ok: true, session, runtime, sessionToken};
 }
 
-export async function readBoundedFormCsrfToken(request: Request): Promise<string | null> {
+export async function readBoundedForm(request: Request): Promise<URLSearchParams | null> {
   const contentType = request.headers.get('content-type') ?? '';
   const contentLength = request.headers.get('content-length');
   if (
@@ -192,7 +192,12 @@ export async function readBoundedFormCsrfToken(request: Request): Promise<string
   } finally {
     await reader.cancel().catch(() => undefined);
   }
-  const body = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+  return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+}
+
+export async function readBoundedFormCsrfToken(request: Request): Promise<string | null> {
+  const body = await readBoundedForm(request);
+  if (body === null) return null;
   const tokens = body.getAll('_csrf');
   return tokens.length === 1 && tokens[0]!.length <= 128 ? tokens[0]! : null;
 }

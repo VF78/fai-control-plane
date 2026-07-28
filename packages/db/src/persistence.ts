@@ -1,5 +1,8 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {computeApprovalActionHash} from '@fai-control-plane/domain';
+import {
+  computeApprovalActionHash,
+  OPERATOR_CANCELLED_BEFORE_CLAIM
+} from '@fai-control-plane/domain';
 import type {
   AccessRequest,
   AgentProfileConfiguration,
@@ -885,6 +888,12 @@ const persistAgentRun = async (
     .update(schema.agentRuns)
     .set({
       status: aggregate.status,
+      ...(aggregate.failureCode === OPERATOR_CANCELLED_BEFORE_CLAIM
+        ? {
+            failureCode: OPERATOR_CANCELLED_BEFORE_CLAIM,
+            completedAt: new Date()
+          }
+        : {}),
       version: sql`${schema.agentRuns.version} + 1`,
       updatedAt: new Date()
     })
@@ -1466,6 +1475,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               confirmedPacketHash: schema.agentRuns.confirmedPacketHash,
               baseCommit: schema.agentRuns.baseCommit,
               status: schema.agentRuns.status,
+              failureCode: schema.agentRuns.failureCode,
               idempotencyKey: schema.agentRuns.idempotencyKey,
               version: schema.agentRuns.version,
               projectId: schema.taskPackets.projectId
@@ -1484,6 +1494,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               confirmedPacketHash: row.confirmedPacketHash,
               baseCommit: row.baseCommit,
               status: row.status as AgentRun['status'],
+              failureCode: row.failureCode,
               idempotencyKey: row.idempotencyKey,
               version: row.version
             },
