@@ -8,6 +8,7 @@ import {
   commandReceipts,
   createDatabase,
   createPostgresQaIntakeTaskPacketConsumer,
+  createPostgresPmQaBotRunner,
   createPostgresUnitOfWork,
   projects,
   taskPackets,
@@ -122,8 +123,22 @@ describePostgres('QA intake task packet consumer', () => {
           limits: {workItems: 10, pullRequestsPerWorkItem: 3, checksPerPullRequest: 20},
           truncated: false,
           workItems: [
-            {workItemId, workItemVersion: 3, pullRequests: []},
-            {workItemId: otherWorkItemId, workItemVersion: 4, pullRequests: []}
+            {
+              workItemId,
+              workItemVersion: 3,
+              pullRequests: [{
+                externalId: '101',
+                checks: [{name: 'build', status: 'completed', conclusion: 'failure'}]
+              }]
+            },
+            {
+              workItemId: otherWorkItemId,
+              workItemVersion: 4,
+              pullRequests: [{
+                externalId: '102',
+                checks: [{name: 'build', status: 'completed', conclusion: 'success'}]
+              }]
+            }
           ]
         },
         occurredAt: observedAt
@@ -157,6 +172,12 @@ describePostgres('QA intake task packet consumer', () => {
     });
 
     const packets = await db.select().from(taskPackets);
+    const runner = createPostgresPmQaBotRunner(db, {now: () => observedAt});
+    await expect(runner.run(reviewEventId)).resolves.toMatchObject({status: 'completed'});
+    await expect(runner.run(reviewEventId)).resolves.toMatchObject({status: 'replayed'});
+    await expect(runner.run(noWorkEventId)).resolves.toEqual({
+      status: 'skipped', eventId: noWorkEventId
+    });
     expect(packets).toHaveLength(2);
     expect(packets).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -187,6 +208,26 @@ describePostgres('QA intake task packet consumer', () => {
     await expect(db.select().from(taskPackets).where(eq(
       taskPackets.createdFromEventId, noWorkEventId
     ))).resolves.toHaveLength(0);
-    await expect(db.select().from(canonicalEvents)).resolves.toHaveLength(2);
+    const events = await db.select().from(canonicalEvents);
+    expect(events).toHaveLength(4);
+    expect(events.filter((event) => event.eventType === 'pm_qa.precheck.completed.v1'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          aggregateId: workItemId,
+          payload: expect.objectContaining({
+            mode: 'deterministic_rules',
+            ruleVersion: 'pm_qa_precheck_v1',
+            nextAction: 'fix_failed_checks'
+          })
+        }),
+        expect.objectContaining({
+          aggregateId: otherWorkItemId,
+          payload: expect.objectContaining({
+            mode: 'deterministic_rules',
+            ruleVersion: 'pm_qa_precheck_v1',
+            nextAction: 'human_acceptance_review'
+          })
+        })
+      ]));
   });
 });

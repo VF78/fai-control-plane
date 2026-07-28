@@ -59,6 +59,10 @@ export {
   type QaIntakeTaskPacketCommandExecutor,
   type QaIntakeTaskPacketConsumerResult
 } from './qa-intake-task-packet';
+export {
+  createPostgresPmQaBotRunner,
+  type PmQaBotResult
+} from './pm-qa-bot';
 export {createPostgresRunnerClaimStore} from './runner-claim';
 export {createPostgresProjectShareStore} from './project-share';
 

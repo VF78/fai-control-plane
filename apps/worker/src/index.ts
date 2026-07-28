@@ -16,6 +16,7 @@ import {
   createPostgresTelegramStatusResponseOutbox,
   createPostgresPmReportCheckProducer,
   createPostgresQaIntakeProducer,
+  createPostgresPmQaBotRunner,
   createPostgresQaIntakeTaskPacketConsumer,
   createPostgresUnitOfWork,
   createPostgresRecoveryScanProducer,
@@ -159,6 +160,7 @@ const qaIntakeTaskPacketConsumer = createPostgresQaIntakeTaskPacketConsumer(
   db,
   createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)})
 );
+const pmQaBotRunner = createPostgresPmQaBotRunner(db);
 let telegramStatusResponder: Readonly<{prepare(eventId: string): Promise<'prepared' | 'skipped'>}> | undefined;
 let telegramStatusPublisher: Readonly<{publishAvailable(): Promise<'published' | 'failed' | 'idle'>}> | undefined;
 if (telegramStatusResponseEnabled) {
@@ -256,7 +258,14 @@ await boss.work(DAILY_PM_REPORT_QUEUE, async () => dailyPmReportProducer.run());
 await boss.work(PM_REPORT_CHECK_QUEUE, async () => pmReportCheckProducer.run());
 await boss.work(QA_INTAKE_QUEUE, async () => {
   const eventIds = await qaIntakeProducer.run();
-  return Promise.all(eventIds.map((eventId) => qaIntakeTaskPacketConsumer.consume(eventId)));
+  return Promise.all(eventIds.map(async (eventId) => {
+    const packetResult = await qaIntakeTaskPacketConsumer.consume(eventId);
+    if (packetResult.status !== 'created' && packetResult.status !== 'replayed') {
+      return {packetResult};
+    }
+    const botResult = await pmQaBotRunner.run(eventId);
+    return {packetResult, botResult};
+  }));
 });
 if (githubReconciliation !== undefined) {
   await boss.work(GITHUB_RECONCILIATION_QUEUE, async () => {
