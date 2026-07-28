@@ -378,6 +378,61 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     expect(writes).toHaveLength(0);
   });
 
+  it('enriches a repository issue binding when Project status identity becomes available', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Project identity bootstrap', $3)`,
+      [projectId, ids.workspace, `project-identity-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const initial = snapshot('github:sha256:identity-1', {
+      repository: {
+        externalId: 'github:repository:9010',
+        externalVersion: 'github:sha256:repository-identity-bootstrap',
+        owner: 'VF78',
+        name: 'ProjectIdentityBootstrap'
+      },
+      workItems: [issue('github:issue:9010')],
+      pullRequests: [],
+      checks: []
+    });
+    await projector.bootstrap({...operation(initial), projectId});
+
+    const projectStatus = {
+      projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
+      projectItemExternalId: 'PVTI_MSA_10',
+      fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
+      optionExternalId: '1f121483',
+      status: 'ready' as const
+    };
+    const projected = await projector.synchronize({
+      ...operation({
+        ...initial,
+        externalVersion: 'github:sha256:identity-2',
+        workItems: [{...issue('github:issue:9010'), projectStatus}]
+      }),
+      projectId,
+      expectedPreviousExternalVersion: 'github:sha256:identity-1'
+    });
+
+    expect(projected).toMatchObject({
+      status: 'applied',
+      unknownProjectStatusWorkItemExternalIds: []
+    });
+    const [binding] = await db.select().from(trackerBindings).where(and(
+      eq(trackerBindings.projectId, projectId),
+      eq(trackerBindings.externalId, 'github:issue:9010')
+    ));
+    expect(binding).toMatchObject({metadata: {projectStatus}});
+    const observations = await db.select().from(trackerStatusObservationInbox)
+      .where(eq(trackerStatusObservationInbox.projectId, projectId));
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({mappedStatus: 'ready', state: 'pending'});
+    await db.delete(trackerStatusObservationInbox)
+      .where(eq(trackerStatusObservationInbox.projectId, projectId));
+  });
+
   it('projects a status observation, applies it through the canonical command, and acknowledges its echo', async () => {
     const projectId = randomUUID();
     await testPool.query(
