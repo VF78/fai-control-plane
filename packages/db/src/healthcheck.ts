@@ -12,7 +12,7 @@ const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const healthcheckName = 'healthcheck';
 
 type Condition = Readonly<{
-  code: 'github_status_writeback_failed' | 'tracker_sync_missing_or_stale';
+  code: 'github_status_writeback_failed' | 'queue_work_failed' | 'tracker_sync_missing_or_stale';
   severity: 'yellow' | 'red';
   summary: string;
   details: Record<string, unknown>;
@@ -69,10 +69,15 @@ const reconcileSignal = async (
 
 export const createPostgresHealthcheckProducer = (
   db: Database,
-  options: Readonly<{now?: () => Date; staleAfterMs?: number}> = {}
+  options: Readonly<{
+    now?: () => Date;
+    staleAfterMs?: number;
+    queueFailures?: () => Promise<readonly Readonly<{queueName: string; failedCount: number}>[]>;
+  }> = {}
 ): Readonly<{run(): Promise<void>}> => {
   const now = options.now ?? (() => new Date());
   const staleAfterMs = options.staleAfterMs ?? healthcheckStaleAfterMs;
+  const queueFailures = options.queueFailures ?? (async () => []);
 
   return {
     async run(): Promise<void> {
@@ -84,11 +89,18 @@ export const createPostgresHealthcheckProducer = (
         .where(inArray(schema.projects.slug, configuredProjectSlugs))
         .groupBy(schema.projects.id)
         .orderBy(asc(schema.projects.id));
+      let failedQueuesPromise: Promise<
+        readonly Readonly<{queueName: string; failedCount: number}>[]
+      > | undefined;
       let firstFailure: unknown;
 
       for (const {id: projectId} of configuredProjects) {
         const runAt = now();
         try {
+          const failedQueues = await (failedQueuesPromise ??= queueFailures().then((queues) =>
+            queues.filter((queue) => queue.failedCount > 0)
+              .sort((left, right) => left.queueName.localeCompare(right.queueName))
+          ));
           await db.transaction(async (tx) => {
             await tx.select({id: schema.projects.id}).from(schema.projects)
               .where(eq(schema.projects.id, projectId)).for('update');
@@ -152,11 +164,24 @@ export const createPostgresHealthcheckProducer = (
                 failureCodes: failedWritebacks.map((event) => event.failureCode)
               }
             };
+            const queueCondition: Condition | null = failedQueues.length === 0 ? null : {
+              code: 'queue_work_failed',
+              severity: 'red',
+              summary: 'Worker queue has permanently failed work.',
+              details: {
+                ruleVersion: 'queue_failure_v1',
+                queues: failedQueues,
+                nextAction: 'inspect_failed_queue_jobs'
+              }
+            };
             await reconcileSignal(
               tx, projectId, 'tracker_sync_missing_or_stale', syncCondition, runAt
             );
             await reconcileSignal(
               tx, projectId, 'github_status_writeback_failed', writebackCondition, runAt
+            );
+            await reconcileSignal(
+              tx, projectId, 'queue_work_failed', queueCondition, runAt
             );
             await tx.update(schema.scheduledJobs).set({
               status: 'active',

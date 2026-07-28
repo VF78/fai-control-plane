@@ -34,6 +34,7 @@ describePostgres('PostgreSQL healthcheck producer', () => {
   let testPool: Pool;
   let db: ReturnType<typeof createDatabase>['db'];
   let current = new Date('2026-07-26T12:00:00.000Z');
+  let failedQueueCount = 2;
 
   beforeAll(async () => {
     const adminUrl = new URL(databaseUrl!);
@@ -95,7 +96,10 @@ describePostgres('PostgreSQL healthcheck producer', () => {
   });
 
   it('creates once, refreshes idempotently, and resolves when confirmed facts clear', async () => {
-    const producer = createPostgresHealthcheckProducer(db, {now: () => current});
+    const producer = createPostgresHealthcheckProducer(db, {
+      now: () => current,
+      queueFailures: async () => [{queueName: 'qa-intake', failedCount: failedQueueCount}]
+    });
     await producer.run();
     await producer.run();
 
@@ -105,6 +109,7 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     ));
     expect(active.map((signal) => signal.code).sort()).toEqual([
       'github_status_writeback_failed',
+      'queue_work_failed',
       'tracker_sync_missing_or_stale'
     ]);
     expect(await db.select().from(riskSignals).where(eq(
@@ -116,6 +121,7 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     ))).toHaveLength(1);
 
     current = new Date('2026-07-26T12:05:00.000Z');
+    failedQueueCount = 0;
     await db.update(outboxEvents).set({status: 'published', updatedAt: current})
       .where(eq(outboxEvents.id, ids.failedOutbox));
     await db.insert(trackerSnapshotOperations).values({
@@ -139,6 +145,6 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     ))).toHaveLength(0);
     expect(await db.select().from(riskSignals).where(eq(
       riskSignals.projectId, ids.project
-    ))).toHaveLength(2);
+    ))).toHaveLength(3);
   });
 });

@@ -151,7 +151,23 @@ const incomingEventProcessor = createPostgresIncomingEventProcessor(db);
 const incomingEventConsumer = createIncomingEventQueueConsumer({
   processor: incomingEventProcessor
 });
-const healthcheckProducer = createPostgresHealthcheckProducer(db);
+const healthcheckProducer = createPostgresHealthcheckProducer(db, {
+  queueFailures: async () => Promise.all([
+    INCOMING_EVENT_QUEUE,
+    HEALTHCHECK_QUEUE,
+    RECOVERY_SCAN_QUEUE,
+    DAILY_PM_REPORT_QUEUE,
+    PM_REPORT_CHECK_QUEUE,
+    QA_INTAKE_QUEUE,
+    ...(githubSyncEnabled ? [GITHUB_RECONCILIATION_QUEUE] : [])
+  ].map(async (queueName) => {
+    const [stats] = await boss.getQueueStats(queueName, {force: true});
+    return {
+      queueName,
+      failedCount: stats?.failedCount ?? 0
+    };
+  }))
+});
 const recoveryScanProducer = createPostgresRecoveryScanProducer(db, boss);
 const dailyPmReportProducer = createPostgresDailyPmReportProducer(db);
 const pmReportCheckProducer = createPostgresPmReportCheckProducer(db);
