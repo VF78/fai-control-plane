@@ -3,6 +3,8 @@ import {describe, expect, it, vi} from 'vitest';
 import {
   createActorContextIssuer,
   type OpaqueSecretRef,
+  type RepositoryObservationPort,
+  type TaskTrackerPort,
   type TrackerAdapter,
   type TrackerRepositorySnapshot,
   type TrackerRepositoryReadScopeAuthorizer,
@@ -198,6 +200,48 @@ describe('tracker repository snapshot orchestration', () => {
       snapshot
     }));
     expect(fake.synchronize).not.toHaveBeenCalled();
+  });
+
+  it('composes separate task-tracker and repository-observation ports', async () => {
+    const fake = fakes();
+    const readWorkItems = vi.fn<TaskTrackerPort['readWorkItems']>(async () => ({
+      externalVersion: 'jira-like:work-items:v1',
+      workItems: snapshot.workItems
+    }));
+    const readRepositoryObservation = vi.fn<RepositoryObservationPort['readRepositoryObservation']>(
+      async () => ({
+        repository: snapshot.repository,
+        externalVersion: 'git-host:repository:v1',
+        pullRequests: snapshot.pullRequests,
+        checks: snapshot.checks
+      })
+    );
+    const service = createTrackerRepositorySnapshotOrchestrationService({
+      taskTracker: {
+        provider: 'jira-like',
+        capabilities: {readWorkItems: true, writeWorkItems: false},
+        readWorkItems
+      },
+      repositoryObservation: {
+        provider: 'test-tracker',
+        capabilities: {readPullRequests: true, readChecks: true},
+        readRepositoryObservation
+      },
+      projector: fake.projector,
+      scopeAuthorizer: fake.scopeAuthorizer
+    });
+
+    await expect(service.orchestrate(input())).resolves.toEqual(applied);
+    expect(readWorkItems).toHaveBeenCalledTimes(1);
+    expect(readRepositoryObservation).toHaveBeenCalledTimes(1);
+    expect(fake.bootstrap).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'test-tracker',
+      snapshot: expect.objectContaining({
+        workItems: snapshot.workItems,
+        repository: snapshot.repository,
+        externalVersion: expect.stringMatching(/^composed:sha256:/)
+      })
+    }));
   });
 
   it('projects a synchronization snapshot exactly once with its expected version', async () => {

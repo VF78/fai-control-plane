@@ -63,7 +63,7 @@ export type LocalAgentRunReceipt = Readonly<{
   worktreeDisposition: 'removed_clean' | 'retained_dirty';
   cost: Readonly<{
     state: 'unknown';
-    reason: 'codex_cli_usage_not_available';
+    reason: 'runtime_usage_not_available';
   }>;
   nextAction: 'review_receipt' | 'review_worktree' | 'retry_explicitly';
   writeBack:
@@ -387,7 +387,7 @@ export const createLocalAgentRunOrchestrator = (
         worktreeDisposition,
         cost: {
           state: 'unknown',
-          reason: 'codex_cli_usage_not_available'
+          reason: 'runtime_usage_not_available'
         },
         nextAction: nextActionFor(runtimeResult, inspection.dirty, writeBack),
         writeBack

@@ -287,6 +287,7 @@ describePostgres(
         attempt: 1,
         repository: {owner: 'VF78', name: 'fai-control-plane'},
         baseCommit: 'a'.repeat(40),
+        runtimeId: 'coding-runner',
         runtimeProfile: 'codex-safe',
         timeboxMinutes: 15
       });
@@ -359,8 +360,8 @@ describePostgres(
         runtimeId: 'codex-cli',
         runtimeProfile: 'write_scoped' as const,
         durationMs: 60_000,
-        cost: {state: 'unknown' as const, reason: 'codex_cli_usage_not_available' as const},
-        usage: {state: 'unknown' as const, reason: 'codex_cli_usage_not_available' as const},
+        cost: {state: 'unknown' as const, reason: 'runtime_usage_not_available' as const},
+        usage: {state: 'unknown' as const, reason: 'runtime_usage_not_available' as const},
         summaryArtifact: {
           name: 'codex-summary.json',
           sha256: 'c'.repeat(64),

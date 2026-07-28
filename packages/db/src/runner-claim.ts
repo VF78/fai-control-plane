@@ -121,6 +121,7 @@ export const createPostgresRunnerClaimStore = (
           repositoryName:
             schema.projectTrackerRepositoryScopes.repositoryName,
           baseCommit: schema.agentRuns.baseCommit,
+          runtimeId: schema.agentProfiles.runtimeId,
           attempt: schema.agentRuns.attempt,
           runtimeProfile: schema.taskPackets.runtimeProfile,
           projectId: schema.taskPackets.projectId,
@@ -193,6 +194,7 @@ export const createPostgresRunnerClaimStore = (
           name: candidate.repositoryName
         },
         baseCommit: candidate.baseCommit,
+        runtimeId: candidate.runtimeId,
         runtimeProfile: candidate.runtimeProfile,
         timeboxMinutes: candidate.timeboxMinutes,
         promptFields: {

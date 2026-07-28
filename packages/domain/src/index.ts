@@ -113,6 +113,7 @@ export type RunnerClaimRecord = Readonly<{
   packetHash: string;
   repository: RunnerRepositoryAuthorization;
   baseCommit: string;
+  runtimeId: string;
   runtimeProfile: string;
   timeboxMinutes: number;
   promptFields: Readonly<{
@@ -1262,6 +1263,16 @@ export type TrackerRepositorySnapshot = Readonly<{
   pullRequests: readonly TrackerPullRequestSnapshot[];
   checks: readonly TrackerCheckSnapshot[];
 }>;
+export type TaskTrackerObservation = Readonly<{
+  externalVersion: string;
+  workItems: readonly TrackerWorkItemSnapshot[];
+}>;
+export type RepositoryObservation = Readonly<{
+  repository: TrackerRepositorySnapshot['repository'];
+  externalVersion: string;
+  pullRequests: readonly TrackerPullRequestSnapshot[];
+  checks: readonly TrackerCheckSnapshot[];
+}>;
 export type TrackerRepositorySnapshotValidationInput = Readonly<{
   snapshot: unknown;
   repository: TrackerRepositoryRef;
@@ -1652,6 +1663,21 @@ export type TrackerRepositoryReadInput = Readonly<{
   repository: TrackerRepositoryRef;
   credentialRef: OpaqueSecretRef;
 }>;
+export type TaskTrackerPort = Readonly<{
+  provider: string;
+  capabilities: Pick<TrackerCapabilities, 'readWorkItems' | 'writeWorkItems'>;
+  readWorkItems(input: TrackerRepositoryReadInput): Promise<TaskTrackerObservation>;
+  transitionWorkItem?: (
+    input: TrackerWorkItemTransitionInput
+  ) => Promise<TrackerWorkItemTransitionResult>;
+}>;
+export type RepositoryObservationPort = Readonly<{
+  provider: string;
+  capabilities: Pick<TrackerCapabilities, 'readPullRequests' | 'readChecks'>;
+  readRepositoryObservation(
+    input: TrackerRepositoryReadInput
+  ): Promise<RepositoryObservation>;
+}>;
 export type TrackerRepositoryReadScopeAuthorizationInput = Readonly<{
   workspaceId: string;
   projectId: string;
@@ -1713,12 +1739,6 @@ export type ChatAdapter = Readonly<{
   sendNotification(input: Readonly<{
     destinationRef: string; template: string; variables: Readonly<Record<string, string>>; idempotencyKey: string;
   }>): Promise<Readonly<{externalMessageId: string}>>;
-}>;
-export type AgentRuntime = Readonly<{
-  runtimeId: string;
-  run(input: Readonly<{
-    packetId: string; packetHash: string; profile: string; timeboxMinutes: number;
-  }>): Promise<Readonly<{exitCode: number; summaryRef: string}>>;
 }>;
 export type SecretsProvider = Readonly<{
   resolve(reference: OpaqueSecretRef, purpose: string): Promise<Readonly<{value: string; expiresAt?: Date}>>;

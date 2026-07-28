@@ -1,7 +1,9 @@
 import {createHash, createSign} from 'node:crypto';
 import type {
   OpaqueSecretRef,
+  RepositoryObservationPort,
   SecretsProvider,
+  TaskTrackerPort,
   TrackerAdapter,
   TrackerCheckConclusion,
   TrackerCheckStatus,
@@ -711,7 +713,8 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
   appSecretsProvider: SecretsProvider;
   appPrivateKeyRef: OpaqueSecretRef;
   projectsSecretsProvider: SecretsProvider;
-}>): TrackerAdapter => ({
+}>): TrackerAdapter & TaskTrackerPort & RepositoryObservationPort => {
+  const compatibilityAdapter: TrackerAdapter = ({
   provider: 'github',
   capabilities: {
     readWorkItems: true,
@@ -852,4 +855,35 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
       externalVersion: stableVersion(snapshotContent)
     };
   }
-});
+  });
+  const pendingSnapshots = new WeakMap<object, Promise<TrackerRepositorySnapshot>>();
+  const readCompatibilitySnapshot = (
+    input: Parameters<NonNullable<TrackerAdapter['readRepositorySnapshot']>>[0]
+  ): Promise<TrackerRepositorySnapshot> => {
+    const cached = pendingSnapshots.get(input);
+    if (cached !== undefined) return cached;
+    const pending = compatibilityAdapter.readRepositorySnapshot!(input);
+    pendingSnapshots.set(input, pending);
+    void pending.then(
+      () => pendingSnapshots.delete(input),
+      () => pendingSnapshots.delete(input)
+    );
+    return pending;
+  };
+  return {
+    ...compatibilityAdapter,
+    async readWorkItems(input) {
+      const snapshot = await readCompatibilitySnapshot(input);
+      return {externalVersion: snapshot.externalVersion, workItems: snapshot.workItems};
+    },
+    async readRepositoryObservation(input) {
+      const snapshot = await readCompatibilitySnapshot(input);
+      return {
+        repository: snapshot.repository,
+        externalVersion: snapshot.externalVersion,
+        pullRequests: snapshot.pullRequests,
+        checks: snapshot.checks
+      };
+    }
+  };
+};

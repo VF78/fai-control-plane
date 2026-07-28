@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import path from 'node:path';
-import type {SecretsProvider} from './index';
+import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
 import type {
   RepositoryHostPublicationReceipt,
   RepositoryHostPublisher,
@@ -33,7 +33,7 @@ export type GitHubRepositoryHostPublisherOptions = Readonly<{
   owner: string;
   repository: string;
   repositoryRoot: string;
-  credentialRef: string;
+  credentialRef: OpaqueSecretRef;
   secrets: SecretsProvider;
   environment: Readonly<Record<string, string>>;
   process?: RepositoryHostProcessExecutor;
@@ -152,8 +152,10 @@ export const createGitHubRepositoryHostPublisher = (
     !path.isAbsolute(options.repositoryRoot) ||
     path.normalize(options.repositoryRoot) !== options.repositoryRoot ||
     options.repositoryRoot === path.parse(options.repositoryRoot).root ||
-    options.credentialRef.length === 0 ||
-    options.credentialRef.includes('\0')
+    options.credentialRef.provider.length === 0 ||
+    options.credentialRef.reference.length === 0 ||
+    options.credentialRef.reference.includes('\0') ||
+    options.credentialRef.scope.length === 0
   ) {
     throw new Error('github_repository_host_invalid_configuration');
   }

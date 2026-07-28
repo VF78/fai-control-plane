@@ -441,8 +441,8 @@ export type RunsData = Readonly<{
     receipt: Readonly<{
       terminal: string; completedAt: Date; runtimeId: string | null; runtimeProfile: string | null;
       durationMs: number | null;
-      cost: Readonly<{state: 'unknown'; reason: 'codex_cli_usage_not_available'}> | null;
-      usage: Readonly<{state: 'unknown'; reason: 'codex_cli_usage_not_available'}> | null;
+      cost: Readonly<{state: 'unknown'; reason: 'runtime_usage_not_available'}> | null;
+      usage: Readonly<{state: 'unknown'; reason: 'runtime_usage_not_available'}> | null;
     }> | null;
     artifacts: readonly Readonly<{kind: string; sizeBytes: number; redacted: boolean; createdAt: Date}>[];
   }>[];
@@ -539,11 +539,11 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       .from(artifacts).where(inArray(artifacts.agentRunId, runIds)).orderBy(desc(artifacts.createdAt), artifacts.id)
   ]);
   const unavailable = (value: unknown): value is Readonly<{
-    state: 'unknown'; reason: 'codex_cli_usage_not_available';
+    state: 'unknown'; reason: 'runtime_usage_not_available';
   }> => typeof value === 'object' && value !== null && !Array.isArray(value) &&
     Object.keys(value).length === 2 &&
     'state' in value && value.state === 'unknown' &&
-    'reason' in value && value.reason === 'codex_cli_usage_not_available';
+    'reason' in value && value.reason === 'runtime_usage_not_available';
   const receiptByRun = new Map(receipts.map(({agentRunId, terminal, completedAt, metadata}) => [agentRunId, {
     terminal,
     completedAt,

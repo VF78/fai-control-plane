@@ -73,7 +73,7 @@ const duration = (value: number | null): string => value === null
   ? 'Unknown (not recorded)'
   : `${(value / 1_000).toLocaleString('en-US', {maximumFractionDigits: 1})} seconds`;
 const unknownReceiptValue = (
-  value: Readonly<{state: 'unknown'; reason: 'codex_cli_usage_not_available'}> | null
+  value: Readonly<{state: 'unknown'; reason: 'runtime_usage_not_available'}> | null
 ): string => value === null ? 'Unknown (not recorded)' : `Unknown (${value.reason})`;
 const age = (value: Date | null): 'fresh' | 'stale' | 'unknown' => {
   if (value === null) return 'unknown';

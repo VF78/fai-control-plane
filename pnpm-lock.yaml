@@ -160,7 +160,11 @@ importers:
         specifier: 1.43.0
         version: 1.43.0
 
-  packages/runners: {}
+  packages/runners:
+    dependencies:
+      '@fai-control-plane/domain':
+        specifier: workspace:*
+        version: link:../domain
 
 packages:
 

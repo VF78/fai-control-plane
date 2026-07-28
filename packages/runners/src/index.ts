@@ -73,22 +73,6 @@ export interface AgentRuntime {
   run(input: AgentRuntimeInput): Promise<AgentRuntimeResult>;
 }
 
-export interface SecretsProvider {
-  resolve(reference: string, purpose: string): Promise<{
-    value: string;
-    expiresAt?: Date;
-  }>;
-}
-
-export interface ArtifactStore {
-  put(input: {
-    runId: string;
-    name: string;
-    contentType: string;
-    body: Uint8Array;
-  }): Promise<{storageKey: string; sha256: string; sizeBytes: number}>;
-}
-
 export {
   CodexRuntimeInputError,
   createCodexAgentRuntime,

@@ -66,6 +66,8 @@ import {
   type RunnerRepositoryAuthorization,
   type TaskPacket,
   type OpaqueSecretRef,
+  type RepositoryObservationPort,
+  type TaskTrackerPort,
   type TrackerAdapter,
   type TrackerCheckStatus,
   type TrackerRepositoryRef,
@@ -137,6 +139,7 @@ export type RunnerClaimEnvelope = Readonly<{
   packetHash: string;
   repository: RunnerRepositoryAuthorization;
   baseCommit: string;
+  runtimeId: string;
   runtimeProfile: string;
   timeboxMinutes: number;
   prompt: string;
@@ -177,11 +180,11 @@ export type RunnerCompletionPayload = Readonly<{
   durationMs: number;
   cost: Readonly<{
     state: 'unknown';
-    reason: 'codex_cli_usage_not_available';
+    reason: 'runtime_usage_not_available';
   }>;
   usage: Readonly<{
     state: 'unknown';
-    reason: 'codex_cli_usage_not_available';
+    reason: 'runtime_usage_not_available';
   }>;
   summaryArtifact?: Readonly<{
     name: string;
@@ -293,7 +296,7 @@ export const parseRunnerCompletionPayload = (
   const riskCount = value.riskCount;
   const unavailable = (candidate: unknown): candidate is RunnerCompletionPayload['cost'] =>
     isRecord(candidate) && exactKeys(candidate, ['state', 'reason']) &&
-    candidate.state === 'unknown' && candidate.reason === 'codex_cli_usage_not_available';
+    candidate.state === 'unknown' && candidate.reason === 'runtime_usage_not_available';
   if (
     !runnerRunIdPattern.test(value.runId as string) ||
     typeof attempt !== 'number' || !Number.isSafeInteger(attempt) || attempt <= 0 || attempt > 10_000 ||
@@ -423,6 +426,8 @@ export const createRunnerClaimService = (
             !runnerPacketHashPattern.test(record.packetHash) ||
             !runnerBaseCommitPattern.test(record.baseCommit) ||
             !Number.isSafeInteger(record.attempt) || record.attempt < 1 ||
+            !runnerRuntimeIdPattern.test(record.runtimeId) ||
+            !authorization.runtimeIds.includes(record.runtimeId) ||
             record.runtimeProfile.length < 1 ||
             record.runtimeProfile.length > 128
           ) {
@@ -435,6 +440,7 @@ export const createRunnerClaimService = (
             packetHash: record.packetHash,
             repository: record.repository,
             baseCommit: record.baseCommit,
+            runtimeId: record.runtimeId,
             runtimeProfile: record.runtimeProfile,
             timeboxMinutes: record.timeboxMinutes,
             prompt: runnerPrompt(record),
@@ -541,8 +547,19 @@ export interface TrackerRepositorySnapshotOrchestrationService {
   orchestrate(input: unknown): Promise<TrackerRepositorySnapshotOrchestrationResult>;
 }
 
-export type CreateTrackerRepositorySnapshotOrchestrationServiceInput = Readonly<{
-  adapter: TrackerAdapter;
+type TrackerRepositoryObservationPorts =
+  | Readonly<{
+      taskTracker: TaskTrackerPort;
+      repositoryObservation: RepositoryObservationPort;
+      adapter?: never;
+    }>
+  | Readonly<{
+      adapter: TrackerAdapter;
+      taskTracker?: never;
+      repositoryObservation?: never;
+    }>;
+
+export type CreateTrackerRepositorySnapshotOrchestrationServiceInput = TrackerRepositoryObservationPorts & Readonly<{
   projector: TrackerSnapshotProjector;
   scopeAuthorizer: TrackerRepositoryReadScopeAuthorizer;
 }>;
@@ -790,31 +807,62 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
     }
     if (scopeAuthorization.status !== 'authorized') return deniedTrackerSnapshotResult('POLICY_DENIED');
 
-    let reader: NonNullable<TrackerAdapter['readRepositorySnapshot']>;
+    const compatibilityAdapter = dependencies.adapter;
+    const taskTracker = dependencies.taskTracker;
+    const repositoryObservation = dependencies.repositoryObservation;
+    if (
+      compatibilityAdapter === undefined &&
+      (taskTracker === undefined || repositoryObservation === undefined)
+    ) {
+      return failedTrackerSnapshotResult('adapter_capability_unavailable');
+    }
+    const repositoryProvider = compatibilityAdapter?.provider ?? repositoryObservation!.provider;
     try {
       if (
-        dependencies.adapter.provider !== request.expectedProvider ||
-        !dependencies.adapter.capabilities.readWorkItems ||
-        !dependencies.adapter.capabilities.readPullRequests ||
-        !dependencies.adapter.capabilities.readChecks
+        repositoryProvider !== request.expectedProvider ||
+        !(compatibilityAdapter?.capabilities.readWorkItems ?? taskTracker!.capabilities.readWorkItems) ||
+        !(compatibilityAdapter?.capabilities.readPullRequests ?? repositoryObservation!.capabilities.readPullRequests) ||
+        !(compatibilityAdapter?.capabilities.readChecks ?? repositoryObservation!.capabilities.readChecks)
       ) {
-        return dependencies.adapter.provider !== request.expectedProvider
+        return repositoryProvider !== request.expectedProvider
           ? failedTrackerSnapshotResult('adapter_provider_mismatch')
           : failedTrackerSnapshotResult('adapter_capability_unavailable');
       }
-      const candidate = dependencies.adapter.readRepositorySnapshot;
-      if (typeof candidate !== 'function') return failedTrackerSnapshotResult('adapter_capability_unavailable');
-      reader = candidate;
     } catch {
       return failedTrackerSnapshotResult('adapter_capability_unavailable');
     }
 
     let readSnapshot;
     try {
-      readSnapshot = await reader({
+      const readInput = {
         repository: request.repository,
         credentialRef: request.credentialRef
-      });
+      };
+      if (compatibilityAdapter !== undefined) {
+        const reader = compatibilityAdapter.readRepositorySnapshot;
+        if (typeof reader !== 'function') {
+          return failedTrackerSnapshotResult('adapter_capability_unavailable');
+        }
+        readSnapshot = await reader(readInput);
+      } else {
+        const [taskObservation, repositorySnapshotObservation] = await Promise.all([
+          taskTracker!.readWorkItems(readInput),
+          repositoryObservation!.readRepositoryObservation(readInput)
+        ]);
+        const externalVersion = taskObservation.externalVersion === repositorySnapshotObservation.externalVersion
+          ? repositorySnapshotObservation.externalVersion
+          : `composed:sha256:${createHash('sha256').update(canonicalJson({
+              taskTrackerProvider: taskTracker!.provider,
+              taskTrackerVersion: taskObservation.externalVersion,
+              repositoryProvider: repositoryObservation!.provider,
+              repositoryVersion: repositorySnapshotObservation.externalVersion
+            })).digest('hex')}`;
+        readSnapshot = {
+          ...repositorySnapshotObservation,
+          externalVersion,
+          workItems: taskObservation.workItems
+        };
+      }
     } catch {
       return failedTrackerSnapshotResult('repository_read_failed');
     }
@@ -833,7 +881,7 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
             projectId: request.projectId,
             actorId: request.actor.actorId,
             correlationId: request.correlationId,
-            provider: request.expectedProvider,
+            provider: repositoryProvider,
             snapshot
           })
         : await dependencies.projector.synchronize({
@@ -842,7 +890,7 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
             projectId: request.projectId,
             actorId: request.actor.actorId,
             correlationId: request.correlationId,
-            provider: request.expectedProvider,
+            provider: repositoryProvider,
             snapshot,
             expectedPreviousExternalVersion: request.expectedPreviousExternalVersion
           });

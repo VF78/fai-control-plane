@@ -52,7 +52,7 @@ describe('workstation runner', () => {
           sizeBytes: summaryBody.byteLength
         },
         worktreeDisposition: 'retained_dirty',
-        cost: {state: 'unknown', reason: 'codex_cli_usage_not_available'},
+        cost: {state: 'unknown', reason: 'runtime_usage_not_available'},
         nextAction: 'review_worktree',
         writeBack: {
           state: 'not_attempted',
@@ -78,6 +78,7 @@ describe('workstation runner', () => {
           packetHash: 'a'.repeat(64),
           repository: {owner: 'VF78', name: 'fai-control-plane'},
           baseCommit: 'b'.repeat(40),
+          runtimeId: 'codex-cli',
           runtimeProfile: 'write_scoped',
           timeboxMinutes: 15,
           prompt: 'approved task',
@@ -92,7 +93,7 @@ describe('workstation runner', () => {
       baseUrl: 'https://control-plane.test',
       bearerToken: token,
       repository: {owner: 'VF78', name: 'fai-control-plane'},
-      orchestrator,
+      runtimes: new Map([['codex-cli', orchestrator]]),
       fetch: fetcher
     })).resolves.toMatchObject({status: 'completed'});
 
@@ -116,8 +117,8 @@ describe('workstation runner', () => {
       runtimeId: 'codex-cli',
       runtimeProfile: 'write_scoped',
       durationMs: 60_000,
-      cost: {state: 'unknown', reason: 'codex_cli_usage_not_available'},
-      usage: {state: 'unknown', reason: 'codex_cli_usage_not_available'},
+      cost: {state: 'unknown', reason: 'runtime_usage_not_available'},
+      usage: {state: 'unknown', reason: 'runtime_usage_not_available'},
       summaryArtifact: {
         name: summaryName,
         sha256: createHash('sha256').update(summaryBody).digest('hex'),

@@ -170,7 +170,7 @@ describe('local AgentRun orchestrator', () => {
       nextAction: 'review_worktree',
       cost: {
         state: 'unknown',
-        reason: 'codex_cli_usage_not_available'
+        reason: 'runtime_usage_not_available'
       }
     });
     expect(manager.cleanup).toHaveBeenCalledTimes(1);

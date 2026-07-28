@@ -30,7 +30,11 @@ describe('GitHub repository-host publisher', () => {
       owner: 'VF78',
       repository: 'fai-control-plane',
       repositoryRoot: '/trusted/repository',
-      credentialRef: 'secret:repository-host-publisher',
+      credentialRef: {
+        provider: 'file',
+        reference: '/trusted/secrets/repository-host-publisher',
+        scope: ['repository_host_publish_draft_change']
+      },
       secrets: {
         resolve: vi.fn(async () => ({value: token}))
       },

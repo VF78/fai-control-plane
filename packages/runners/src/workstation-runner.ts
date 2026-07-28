@@ -1,5 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
+import type {OpaqueSecretRef} from '@fai-control-plane/domain';
 import {
   createCodexAgentRuntime,
   readCodexStructuredSummary,
@@ -35,6 +36,7 @@ type RunnerClaimEnvelope = Readonly<{
   packetHash: string;
   repository: Repository;
   baseCommit: string;
+  runtimeId: string;
   runtimeProfile: RuntimeProfile;
   timeboxMinutes: number;
   prompt: string;
@@ -48,7 +50,7 @@ export type WorkstationRunnerClientOptions = Readonly<{
   baseUrl: string;
   bearerToken: string;
   repository: Repository;
-  orchestrator: LocalAgentRunOrchestrator;
+  runtimes: ReadonlyMap<string, LocalAgentRunOrchestrator>;
   fetch?: FetchLike;
   heartbeatIntervalMs?: number;
 }>;
@@ -201,10 +203,14 @@ const repositoryPublicationFromEnvironment = (
     'LOCAL_WORKSTATION_REPOSITORY_PUBLISH_BASE_REF'
   );
   if (!safeReference(baseRef)) fail('invalid_repository_publish_base_ref');
-  const credentialRef = absolutePath(requireValue(
+  const credentialRef: OpaqueSecretRef = {
+    provider: 'file',
+    reference: absolutePath(requireValue(
     environment,
     'LOCAL_WORKSTATION_REPOSITORY_PUBLISH_TOKEN_FILE'
-  ), 'repository_publish_token_file');
+    ), 'repository_publish_token_file'),
+    scope: ['repository_host_publish_draft_change']
+  };
   const requiredCheckNames = publicationRequiredChecks(requireValue(
     environment,
     'LOCAL_WORKSTATION_REPOSITORY_PUBLISH_REQUIRED_CHECKS'
@@ -224,12 +230,15 @@ const repositoryPublicationFromEnvironment = (
       secrets: {
         async resolve(reference, purpose) {
           if (
-            reference !== credentialRef ||
+            reference.provider !== credentialRef.provider ||
+            reference.reference !== credentialRef.reference ||
+            reference.scope.length !== credentialRef.scope.length ||
+            reference.scope.some((scope, index) => scope !== credentialRef.scope[index]) ||
             purpose !== 'repository_host_publish_draft_change'
           ) {
             throw new Error('workstation_runner_invalid_secret_reference');
           }
-          const value = (await readFile(reference, 'utf8')).replace(/\r?\n$/, '');
+          const value = (await readFile(reference.reference, 'utf8')).replace(/\r?\n$/, '');
           return {value};
         }
       },
@@ -238,7 +247,11 @@ const repositoryPublicationFromEnvironment = (
   };
 };
 
-const parseClaim = (value: unknown, repository: Repository): RunnerClaimEnvelope => {
+const parseClaim = (
+  value: unknown,
+  repository: Repository,
+  runtimes: ReadonlyMap<string, LocalAgentRunOrchestrator>
+): RunnerClaimEnvelope => {
   if (!isRecord(value)) fail('invalid_claim');
   const candidate = value as Record<string, unknown>;
   const runId = candidate.runId;
@@ -247,6 +260,7 @@ const parseClaim = (value: unknown, repository: Repository): RunnerClaimEnvelope
   const packetHash = candidate.packetHash;
   const claimedRepository = candidate.repository;
   const baseCommit = candidate.baseCommit;
+  const runtimeId = candidate.runtimeId;
   const runtimeProfile = candidate.runtimeProfile;
   const timeboxMinutes = candidate.timeboxMinutes;
   const prompt = candidate.prompt;
@@ -262,6 +276,7 @@ const parseClaim = (value: unknown, repository: Repository): RunnerClaimEnvelope
     claimedRepository.owner !== repository.owner ||
     claimedRepository.name !== repository.name ||
     typeof baseCommit !== 'string' || !COMMIT_PATTERN.test(baseCommit) ||
+    typeof runtimeId !== 'string' || !runtimes.has(runtimeId) ||
     (runtimeProfile !== 'read_safe' && runtimeProfile !== 'write_scoped') ||
     typeof timeboxMinutes !== 'number' ||
     !Number.isInteger(timeboxMinutes) ||
@@ -280,6 +295,7 @@ const parseClaim = (value: unknown, repository: Repository): RunnerClaimEnvelope
     packetHash: packetHash as string,
     repository,
     baseCommit: baseCommit as string,
+    runtimeId: runtimeId as string,
     runtimeProfile: runtimeProfile as RuntimeProfile,
     timeboxMinutes: timeboxMinutes as number,
     prompt: prompt as string,
@@ -404,7 +420,8 @@ export const runWorkstationRunnerOnce = async (
   const claimResponse = await postJson(fetcher, baseUrl, '/api/runner/claim', options.bearerToken);
   if (claimResponse.status === 204) return {status: 'idle'};
   if (claimResponse.status !== 200) fail(`claim_${claimResponse.status}`);
-  const claim = parseClaim(await claimResponse.json(), repository);
+  const claim = parseClaim(await claimResponse.json(), repository, options.runtimes);
+  const orchestrator = options.runtimes.get(claim.runtimeId) ?? fail('unsupported_runtime');
   const controller = new AbortController();
   let heartbeatFailure: Error | undefined;
   let heartbeatPromise: Promise<void> | undefined;
@@ -439,7 +456,7 @@ export const runWorkstationRunnerOnce = async (
   timer.unref();
   let result: LocalAgentRunResult;
   try {
-    result = await options.orchestrator.run({
+    result = await orchestrator.run({
       runId: claim.runId,
       packetId: claim.packetId,
       packetHash: claim.packetHash,
@@ -506,16 +523,16 @@ export const runWorkstationRunnerFromEnvironment = async (
     repositoryRoot,
     runtimeEnvironment
   );
-  const orchestrator = createLocalAgentRunOrchestrator({
+  const runtimes = new Map<string, LocalAgentRunOrchestrator>([['codex-cli', createLocalAgentRunOrchestrator({
     artifactRoot,
     worktrees: createWorktreeManager({repositoryRoot, worktreeRoot}),
     runtime: createCodexAgentRuntime({codexHome, environment: runtimeEnvironment}),
     ...(publication === undefined ? {} : {publication})
-  });
+  })]]);
   return runWorkstationRunnerOnce({
     baseUrl: requireValue(environment, 'LOCAL_WORKSTATION_RUNNER_BASE_URL'),
     bearerToken: token,
     repository,
-    orchestrator
+    runtimes
   });
 };
