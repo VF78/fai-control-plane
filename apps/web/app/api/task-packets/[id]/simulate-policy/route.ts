@@ -1,0 +1,11 @@
+import {simulatePolicyCommand} from '../../../../../src/policy-simulation-commands';
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+export async function POST(
+  request: Request,
+  {params}: {params: Promise<{id: string}>}
+): Promise<Response> {
+  return simulatePolicyCommand(request, (await params).id);
+}

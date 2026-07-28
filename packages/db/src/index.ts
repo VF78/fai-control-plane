@@ -65,6 +65,10 @@ export {
 } from './pm-qa-bot';
 export {createPostgresRunnerClaimStore} from './runner-claim';
 export {createPostgresProjectShareStore} from './project-share';
+export {
+  createPostgresPolicySimulationStore,
+  type PolicySimulationStoreResult
+} from './policy-simulation';
 
 export function createDatabase(connectionString: string) {
   const pool = new Pool({connectionString});

@@ -570,6 +570,53 @@ export const policyMatrix = buildPolicyMatrix();
 export const policyDecisionFor = (actorType: ActorType, request: PolicyRequest): PolicyDecision =>
   policyMatrix[actorType][request.actionCategory][request.surface][request.environment];
 
+export const POLICY_SIMULATION_EVALUATOR_VERSION = 'policy-simulation.v1' as const;
+
+export type PolicySimulationTrustedContext = Readonly<{
+  operatorActorId: string;
+  operatorCapabilities: readonly string[];
+  runnerQueueEnabled: boolean;
+  hermesRunnerEnabled: boolean;
+  packet: Readonly<{
+    packetId: string;
+    contentHash: string;
+    approverActorId: string;
+    runtimeProfile: string;
+    workItemVersion: number;
+    currentWorkItemVersion: number | null;
+    workItemDeleted: boolean;
+    agentProfileSnapshotId: string | null;
+    agentProfileSnapshotVersion: number | null;
+    agentProfileSnapshotHash: string | null;
+    hasAgentRun: boolean;
+    repositoryBaseCommit: string | null;
+  }> | null;
+  profile: Readonly<{
+    profileId: string;
+    runtimeId: string;
+    runtimeProfile: string;
+    enabled: boolean;
+    version: number;
+    configHash: string;
+    actorType: ActorType;
+    actorAuthMode: 'user' | 'agent' | 'system';
+    actorDisabled: boolean;
+  }> | null;
+}>;
+
+export type PolicySimulationResult = Readonly<{
+  evaluatorVersion: typeof POLICY_SIMULATION_EVALUATOR_VERSION;
+  policyVersion: typeof CURRENT_POLICY_VERSION;
+  policyHash: string;
+  inputHash: string;
+  contextHash: string;
+  simulationHash: string;
+  decision: PolicyDecision;
+  decisiveRules: readonly string[];
+  missingContext: readonly string[];
+  simulatedAt: string;
+}>;
+
 export const effectiveCapabilities = (
   context: TrustedActorContext
 ): CommandResult<readonly Capability[]> => {
@@ -1025,6 +1072,108 @@ export const canonicalJson = (value: CanonicalJson): string => {
     }).join(',')}}`;
   }
   return JSON.stringify(value);
+};
+
+const canonicalSha256 = (value: CanonicalJson): string =>
+  createHash('sha256').update(canonicalJson(value)).digest('hex');
+
+export const currentPolicyHash = (): string => canonicalSha256({
+  policyVersion: CURRENT_POLICY_VERSION,
+  matrix: policyMatrix
+} as unknown as CanonicalJson);
+
+export const simulateAgentRunQueuePolicy = (input: Readonly<{
+  taskPacketId: string;
+  profileId: string;
+  context: PolicySimulationTrustedContext;
+  simulatedAt: Date;
+}>): PolicySimulationResult => {
+  const policyRequest = {
+    actionCategory: 'write',
+    surface: 'control_plane',
+    environment: 'development'
+  } as const;
+  const matrixDecision = policyDecisionFor('human', policyRequest);
+  const missingContext: string[] = [];
+  const {packet, profile} = input.context;
+  const requiredCapability = 'write:control_plane:development';
+  if (!input.context.operatorCapabilities.includes(requiredCapability)) {
+    missingContext.push('missing.operator_capability');
+  }
+
+  if (packet === null) {
+    missingContext.push('missing.task_packet');
+  } else {
+    if (packet.packetId !== input.taskPacketId) missingContext.push('stale.task_packet_identity');
+    if (packet.currentWorkItemVersion === null) missingContext.push('missing.work_item');
+    else if (packet.currentWorkItemVersion !== packet.workItemVersion) {
+      missingContext.push('stale.work_item_version');
+    }
+    if (packet.workItemDeleted) missingContext.push('stale.work_item_deleted');
+    if (packet.hasAgentRun) missingContext.push('stale.task_packet_already_executed');
+    if (packet.repositoryBaseCommit === null) missingContext.push('missing.repository_base_commit');
+    if (packet.approverActorId !== input.context.operatorActorId) {
+      missingContext.push('stale.operator_approval_binding');
+    }
+  }
+
+  if (profile === null) {
+    missingContext.push('missing.agent_profile');
+  } else {
+    if (profile.profileId !== input.profileId) missingContext.push('stale.agent_profile_identity');
+    if (!profile.enabled) missingContext.push('stale.agent_profile_disabled');
+    if (profile.actorType !== 'agent' || profile.actorAuthMode !== 'agent') {
+      missingContext.push('stale.agent_actor_identity');
+    }
+    if (profile.actorDisabled) missingContext.push('stale.agent_actor_disabled');
+  }
+
+  if (packet !== null && profile !== null) {
+    if (packet.runtimeProfile !== profile.runtimeProfile) {
+      missingContext.push('stale.runtime_profile');
+    }
+    if (packet.agentProfileSnapshotId !== null && (
+      packet.agentProfileSnapshotId !== profile.profileId ||
+      packet.agentProfileSnapshotVersion !== profile.version ||
+      packet.agentProfileSnapshotHash !== profile.configHash
+    )) {
+      missingContext.push('stale.agent_profile_snapshot');
+    }
+    if (profile.runtimeId === 'hermes') {
+      if (packet.agentProfileSnapshotId === null) missingContext.push('missing.hermes_profile_snapshot');
+      if (!input.context.hermesRunnerEnabled) missingContext.push('missing.hermes_runner');
+    }
+  }
+  if (!input.context.runnerQueueEnabled) missingContext.push('missing.runner_queue');
+
+  const policyHash = currentPolicyHash();
+  const inputHash = canonicalSha256({
+    taskPacketId: input.taskPacketId,
+    profileId: input.profileId
+  });
+  const contextHash = canonicalSha256(input.context as unknown as CanonicalJson);
+  const decision = missingContext.length === 0 ? matrixDecision : 'deny';
+  const decisiveRules = [
+    `matrix.human.${policyRequest.actionCategory}.${policyRequest.surface}.${policyRequest.environment}.${matrixDecision}`,
+    ...(missingContext.length === 0
+      ? ['context.complete']
+      : missingContext.map((reason) => `context.fail_closed.${reason}`))
+  ];
+  const stableResult = {
+    evaluatorVersion: POLICY_SIMULATION_EVALUATOR_VERSION,
+    policyVersion: CURRENT_POLICY_VERSION,
+    policyHash,
+    inputHash,
+    contextHash,
+    decision,
+    decisiveRules,
+    missingContext
+  } as const;
+  return {
+    ...stableResult,
+    simulationHash: canonicalSha256(stableResult as unknown as CanonicalJson),
+    simulatedAt: input.simulatedAt.toISOString()
+  };
 };
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
@@ -1779,7 +1928,7 @@ export type CommandReceipt = Readonly<{
   correlationId: string;
   idempotencyKey: string;
   requestHash: string;
-  commandType: CanonicalCommand['type'];
+  commandType: CanonicalCommand['type'] | 'policy.simulate';
   aggregateType?: string;
   aggregateId?: string;
   expectedVersion?: number;
@@ -1793,7 +1942,7 @@ export type CommandReceiptClaim = Readonly<{
   correlationId: string;
   idempotencyKey: string;
   requestHash: string;
-  commandType: CanonicalCommand['type'];
+  commandType: CanonicalCommand['type'] | 'policy.simulate';
   createdAt: string;
 }>;
 declare const receiptClaimTokenBrand: unique symbol;

@@ -138,7 +138,12 @@ export function RunsView({data, csrfToken, operatorActorId}: {
         <p className="packet-goal">{packet.goal}</p>
         <dl className="packet-facts"><div><dt>Content hash</dt><dd><code>{packet.contentHash}</code></dd></div><div><dt>Timebox</dt><dd>{packet.timeboxMinutes} minutes</dd></div><div><dt>Runtime</dt><dd>{packet.runtimeProfile}</dd></div><div><dt>Profile config</dt><dd>{packet.agentProfileSnapshotVersion === null ? 'Not profile-bound' : `v${packet.agentProfileSnapshotVersion} · ${packet.agentProfileSnapshotHash}`}</dd></div><div><dt>Auth mode</dt><dd>{packet.authMode}</dd></div><div><dt>Reviewer</dt><dd>{packet.reviewer}</dd></div><div><dt>Approver</dt><dd>{packet.approver}</dd></div></dl>
         <div className="packet-sections"><section><h3>Acceptance</h3><ul>{packet.acceptanceCriteria.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>In scope</h3><ul>{packet.inScope.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Out of scope</h3><ul>{packet.outOfScope.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Links</h3><ul>{packet.relevantLinks.length === 0 ? <li>No recorded links</li> : packet.relevantLinks.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Relevant files</h3><ul>{packet.relevantFiles.length === 0 ? <li>No recorded files</li> : packet.relevantFiles.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Allowed tools</h3><ul>{packet.allowedTools.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Forbidden surfaces</h3><ul>{packet.forbiddenSurfaces.map((value) => <li key={value}>{value}</li>)}</ul></section><section><h3>Data policy</h3><pre>{JSON.stringify(packet.dataPolicy, null, 2)}</pre></section><section><h3>Expected output</h3><pre>{JSON.stringify(packet.expectedOutputSchema, null, 2)}</pre></section></div>
-        {operatorActorId !== packet.approverActorId ? <p className="packet-state">Only the recorded packet approver can confirm this packet.</p> : <TaskPacketConfirmationControls packet={packet} csrfToken={csrfToken} enabled={operatorActorId !== null} />}
+        <TaskPacketConfirmationControls
+          packet={packet}
+          csrfToken={csrfToken}
+          enabled={operatorActorId !== null}
+          canQueue={operatorActorId === packet.approverActorId}
+        />
       </article>)}</div>}
     </section>
     <section className="runs-ledger" aria-labelledby="runs-title"><header><p className="eyebrow">Persisted execution</p><h2 id="runs-title">Runs</h2></header>
@@ -155,10 +160,12 @@ export function RunsView({data, csrfToken, operatorActorId}: {
   </div>;
 }
 
-export function AccessView({csrfToken, data, policyVersion}: {
+export function AccessView({csrfToken, data, policyVersion, evaluatorVersion, policyHash}: {
   csrfToken: string | null;
   data: AccessData;
   policyVersion: number;
+  evaluatorVersion: string;
+  policyHash: string;
 }) {
   return <div className="control-surface">
     <section className="agent-profile" aria-labelledby="hermes-title">
@@ -207,7 +214,13 @@ export function AccessView({csrfToken, data, policyVersion}: {
     <section aria-labelledby="actors-title"><header><p className="eyebrow">Persisted identities</p><h2 id="actors-title">Actors</h2></header>{data.actors.length === 0 ? <p className="muted">No actors are recorded in the configured workspace.</p> : <div className="table-list">{data.actors.map((actor) => <article className="table-row" key={actor.id}><strong>{actor.displayName}</strong><span>{actor.type} · {label(actor.role)}</span><span>{actor.disabledAt === null ? 'Enabled' : `Disabled: ${stamp(actor.disabledAt)}`}</span><span>{Object.keys(actor.capabilities).filter((key) => actor.capabilities[key]).length} recorded capabilities</span></article>)}</div>}</section>
     <section aria-labelledby="requests-title"><header><p className="eyebrow">Persisted access requests</p><h2 id="requests-title">Requests</h2></header>{data.requests.length === 0 ? <p className="muted">No access requests are recorded.</p> : <div className="table-list">{data.requests.map((request) => <article className="table-row" key={request.id}><strong>{request.requester}</strong><span>{label(request.targetSurface)}</span><span>{request.requestedScope.length === 0 ? 'No recorded scope' : request.requestedScope.join(', ')}</span><span className={`state ${request.status}`}>{request.status}</span><span>Expires: {stamp(request.expiresAt)}</span></article>)}</div>}</section>
     <section aria-labelledby="secrets-title"><header><p className="eyebrow">Persisted metadata</p><h2 id="secrets-title">Secret refs</h2></header>{data.secretRefs.length === 0 ? <p className="muted">No secret references are recorded.</p> : <div className="table-list">{data.secretRefs.map((secretRef) => <article className="table-row" key={secretRef.id}><strong>{secretRef.provider}</strong><span>{secretRef.scope.length === 0 ? 'No recorded scope' : secretRef.scope.join(', ')}</span><span>Rotated: {stamp(secretRef.lastRotatedAt)}</span></article>)}</div>}</section>
-    <section aria-labelledby="policy-title"><header><p className="eyebrow">Read-only code policy</p><h2 id="policy-title">Current policy matrix v{policyVersion}</h2></header><div className="table-list">{data.policy.map((row) => <article className="table-row policy-row" key={row.actorType}><strong>{row.actorType}</strong><span>Allow {row.allow}</span><span>Ask {row.ask}</span><span>Deny {row.deny}</span></article>)}</div></section>
+    <section aria-labelledby="policy-title"><header><p className="eyebrow">Read-only code policy</p><h2 id="policy-title">Current policy matrix v{policyVersion}</h2></header>
+      <dl className="profile-facts">
+        <div><dt>Simulation evaluator</dt><dd>{evaluatorVersion}</dd></div>
+        <div><dt>Policy hash</dt><dd><code>{policyHash}</code></dd></div>
+      </dl>
+      <div className="table-list">{data.policy.map((row) => <article className="table-row policy-row" key={row.actorType}><strong>{row.actorType}</strong><span>Allow {row.allow}</span><span>Ask {row.ask}</span><span>Deny {row.deny}</span></article>)}</div>
+    </section>
   </div>;
 }
 

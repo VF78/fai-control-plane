@@ -460,7 +460,7 @@ export type RunsData = Readonly<{
     approver: string; approverActorId: string; authMode: string; runtimeProfile: string;
     agentProfileSnapshotVersion: number | null; agentProfileSnapshotHash: string | null;
     contentHash: string; profiles: readonly Readonly<{
-      id: string; name: string; runtimeId: string; policyPreview: AgentRunQueuePolicyPreview;
+      id: string; name: string; runtimeId: string; policyPreview: AgentRunQueuePolicyPreview | null;
     }>[];
     runnable: boolean; nonRunnableReason: string | null;
   }> [];
@@ -591,7 +591,7 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       const eligibleProfiles = (profilesByWorkspaceRuntime.get(profileKey(project.workspaceId, packet.runtimeProfile)) ?? [])
         .filter((profile) =>
           (packet.agentProfileSnapshotId === null && profile.runtimeId !== 'hermes') ||
-          (process.env.HERMES_RUNNER_ENABLED === 'true' && profile.id === packet.agentProfileSnapshotId));
+          profile.id === packet.agentProfileSnapshotId);
       const repositoryBinding = repositoryBindingByProject.get(packet.projectId);
       const baseCommit = baseCommitFrom(repositoryBinding);
       const nonRunnableReason = !runnerQueueEnabled
@@ -605,12 +605,11 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
             ? 'No enabled agent profile matches the packet runtime profile.'
             : 'Hermes runner is disabled or its frozen profile no longer matches.'
           : null);
-      const packetProfiles = !runnerQueueEnabled || baseCommit === null
-        ? [] : eligibleProfiles.map(({id, name, runtimeId}) => ({
+      const packetProfiles = eligibleProfiles.map(({id, name, runtimeId}) => ({
         id,
         name,
         runtimeId,
-        policyPreview: buildAgentRunQueuePolicyPreview({
+        policyPreview: !runnerQueueEnabled || baseCommit === null ? null : buildAgentRunQueuePolicyPreview({
           packetId: packet.id,
           contentHash: packet.contentHash,
           agentProfileId: id,
@@ -619,7 +618,8 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
         })
       }));
       const effectiveNonRunnableReason = nonRunnableReason ?? (
-        packetProfiles.length > 0 && packetProfiles.every(({policyPreview}) => !policyPreview.runnable)
+        packetProfiles.length > 0 &&
+          packetProfiles.every(({policyPreview}) => policyPreview !== null && !policyPreview.runnable)
           ? 'Canonical policy stops every enabled profile for this queue action.'
           : null
       );
