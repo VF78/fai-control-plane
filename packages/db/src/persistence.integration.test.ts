@@ -677,6 +677,7 @@ describePostgres(
           confirmedPacketHash: 'a'.repeat(64),
           baseCommit: 'a'.repeat(40),
           status: 'queued',
+          failureCode: null,
           idempotencyKey: expect.any(String),
           version: 1
         },
