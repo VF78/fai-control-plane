@@ -356,6 +356,11 @@ describePostgres(
         receiptSha256: 'b'.repeat(64),
         receiptSizeBytes: 512,
         finalStatus: 'succeeded' as const,
+        runtimeId: 'codex-cli',
+        runtimeProfile: 'write_scoped' as const,
+        durationMs: 60_000,
+        cost: {state: 'unknown' as const, reason: 'codex_cli_usage_not_available' as const},
+        usage: {state: 'unknown' as const, reason: 'codex_cli_usage_not_available' as const},
         summaryArtifact: {
           name: 'codex-summary.json',
           sha256: 'c'.repeat(64),
