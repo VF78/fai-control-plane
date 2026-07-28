@@ -22,7 +22,7 @@ const projectSlugs = ['msa', 'ascon'] as const;
 const maximumObservationsPerSnapshot = 10;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const appSecretScope = Object.freeze(['github:app:installation-token:mint']);
-const projectSecretScope = Object.freeze(['project']);
+const projectSecretScope = Object.freeze(['read:project']);
 
 type ProjectSlug = typeof projectSlugs[number];
 type Database = Parameters<typeof createPostgresTrackerRepositoryReadScopeAuthorizer>[0];

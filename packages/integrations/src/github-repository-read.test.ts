@@ -59,7 +59,7 @@ const pullRequest = (id: number, overrides: Record<string, unknown> = {}) => ({
 const credentialRef: OpaqueSecretRef = {
   provider: 'test-secrets',
   reference: 'github/projects/read',
-  scope: ['project']
+  scope: ['read:project']
 };
 
 const secretsProvider = (value = 'caller-secret'): SecretsProvider => ({
@@ -288,7 +288,7 @@ describe('GitHub repository read adapter', () => {
 
     await expect(read({
       repository: {owner: 'VF78', repository: 'MSA'},
-      credentialRef: {...credentialRef, scope: ['project', 'repo']}
+      credentialRef: {...credentialRef, scope: ['project']}
     })).rejects.toMatchObject({code: 'github_credential_invalid'});
     expect(fetch).not.toHaveBeenCalled();
     expect(projectResolve).not.toHaveBeenCalled();

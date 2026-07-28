@@ -179,10 +179,10 @@ try {
     workspaceId: persistedWorkspace.id,
     provider: 'file',
     reference: credentialReference,
-    scope: ['project']
+    scope: ['read:project']
   }).onConflictDoUpdate({
     target: [secretRefs.workspaceId, secretRefs.provider, secretRefs.reference],
-    set: {scope: ['project']}
+    set: {scope: ['read:project']}
   }).returning();
   if (!persistedCredential) throw new Error('credential reference seed failed');
 

@@ -124,7 +124,7 @@ try {
       projectsSecretsProvider: createFileSecretsProvider({
         provider: 'file',
         reference: projectsTokenFile,
-        scope: ['project']
+        scope: ['read:project']
       }, 'github_project_snapshot_read_oauth_token')
     }),
     scopeAuthorizer: createPostgresTrackerRepositoryReadScopeAuthorizer(db),
