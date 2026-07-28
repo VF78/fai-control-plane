@@ -25,8 +25,10 @@ export async function GET(request: Request): Promise<Response> {
     if (runtimeState === null) {
       response = failedResponse(404);
     } else {
+      const callbackUrl = new URL(runtimeState.config.callbackUrl);
+      callbackUrl.search = new URL(request.url).search;
       const authenticated = await runtimeState.service.completeLogin(
-        request.url,
+        callbackUrl.toString(),
         singleCookieFromRequest(request, OAUTH_TRANSIENT_COOKIE)
       );
       response = NextResponse.redirect(new URL('/', runtimeState.config.publicBaseUrl), {status: 303});
