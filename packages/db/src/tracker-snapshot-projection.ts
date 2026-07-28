@@ -42,6 +42,7 @@ const issueMetadata = (
   number: item.number,
   url: item.url,
   htmlUrl: item.htmlUrl,
+  ...(item.requirements === undefined ? {} : {requirements: item.requirements}),
   state: item.state,
   labels: item.labels,
   assignees: item.assignees,

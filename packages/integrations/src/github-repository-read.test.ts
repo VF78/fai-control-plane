@@ -32,6 +32,7 @@ const issue = (id: number, overrides: Record<string, unknown> = {}) => ({
   url: `https://api.github.com/repos/VF78/MSA/issues/${id}`,
   html_url: `https://github.com/VF78/MSA/issues/${id}`,
   title: `Issue ${id}`,
+  body: null,
   state: 'open',
   labels: [{id: id + 1_000, name: 'bug', color: 'd73a4a'}],
   assignees: [{id: id + 2_000, login: 'maintainer'}],
@@ -397,7 +398,7 @@ describe('GitHub repository read adapter', () => {
           return jsonResponse(Array.from({length: 100}, (_, index) => issue(index + 1)));
         }
         return jsonResponse([
-          issue(101),
+          issue(101, {body: '  First requirement\r\n\r\nTokens и стоимость\r\n\r\nSecond requirement  '}),
           issue(102, {pull_request: {url: 'https://api.github.test/pulls/102'}})
         ]);
       }
@@ -413,12 +414,30 @@ describe('GitHub repository read adapter', () => {
       externalId: 'github:issue:101',
       url: 'https://api.github.com/repos/VF78/MSA/issues/101',
       htmlUrl: 'https://github.com/VF78/MSA/issues/101',
-      title: 'Issue 101'
+      title: 'Issue 101',
+      requirements: 'First requirement\n\nTokens и стоимость\n\nSecond requirement'
     });
-    expect(snapshot.workItems[0]).not.toHaveProperty('body');
+    expect(snapshot.workItems.at(-1)).not.toHaveProperty('body');
     expect(snapshot.workItems[0]?.externalVersion).toMatch(/^github:sha256:[0-9a-f]{64}$/);
     expect(snapshot.externalVersion).toMatch(/^github:sha256:[0-9a-f]{64}$/);
     expect(JSON.stringify(snapshot)).not.toContain('caller-secret');
+  });
+
+  it('keeps a credential-shaped issue body out of the repository snapshot', async () => {
+    const credentialMarker = `ghp_${'x'.repeat(24)}`;
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/repos/VF78/MSA') return jsonResponse(repositoryPayload());
+      if (url.pathname.endsWith('/issues')) {
+        return jsonResponse([issue(1, {body: `Use token: ${credentialMarker}`})]);
+      }
+      if (url.pathname.endsWith('/pulls')) return jsonResponse([]);
+      throw new Error(`Unexpected route ${url.pathname}`);
+    });
+
+    const snapshot = await readMsa(fetch);
+
+    expect(snapshot.workItems[0]?.requirements).toBeNull();
+    expect(JSON.stringify(snapshot)).not.toContain(credentialMarker);
   });
 
   it('rejects a snapshot that exceeds the fixed pagination bound', async () => {

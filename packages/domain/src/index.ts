@@ -896,6 +896,7 @@ const isCanonicalJson = (value: unknown): value is CanonicalJson => {
   return isPlainObject(value) && Object.values(value).every(isCanonicalJson);
 };
 const hasSecretValue = (value: unknown, inSecretRef = false): boolean => {
+  if (typeof value === 'string') return containsHighConfidenceSecretContent(value);
   if (Array.isArray(value)) return value.some((item) => hasSecretValue(item, inSecretRef));
   if (!isPlainObject(value)) return false;
   return Object.entries(value).some(([key, nested]) => {
@@ -915,6 +916,9 @@ const isOpaqueSecretRef = (value: unknown): value is OpaqueSecretRef =>
 const profileConfigHashPattern = /^[0-9a-f]{64}$/;
 const secretValuePattern =
   /-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:^|[\s"'=])(github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|bearer\s+\S+|(?:password|token|api[_ -]?key|credential)\s*[:=]\s*\S+)/i;
+
+export const containsHighConfidenceSecretContent = (value: string): boolean =>
+  secretValuePattern.test(value);
 
 export const DEFAULT_HERMES_INSTRUCTIONS =
   'Act only from canonical Task Packets. Return a structured result with status, evidence, artifacts, and next action.';
@@ -959,7 +963,7 @@ export const updateHermesAgentProfile = (
     profile.runtimeProfile !== 'read_safe' ||
     instructions.length < 1 ||
     instructions.length > 2_000 ||
-    secretValuePattern.test(instructions) ||
+    containsHighConfidenceSecretContent(instructions) ||
     !isHermesSettings(input.settings) ||
     typeof input.enabled !== 'boolean'
   ) {
@@ -991,7 +995,7 @@ const isAgentProfileSnapshot = (value: unknown): value is AgentProfileSnapshot =
   typeof value.instructions === 'string' &&
   value.instructions.trim().length > 0 &&
   value.instructions.length <= 2_000 &&
-  !secretValuePattern.test(value.instructions) &&
+  !containsHighConfidenceSecretContent(value.instructions) &&
   isHermesSettings(value.settings) &&
   hashAgentProfileConfiguration({
     runtimeId: value.runtimeId,
@@ -1184,6 +1188,7 @@ export type TrackerWorkItemSnapshot = Readonly<{
   htmlUrl: string;
   number: number;
   title: string;
+  requirements?: string | null;
   state: 'open' | 'closed';
   labels: readonly TrackerLabel[];
   assignees: readonly TrackerIdentity[];
@@ -1307,6 +1312,17 @@ const trackerSnapshotString = (value: unknown, maximumLength: number): string | 
     ? value
     : null;
 
+const trackerSnapshotRequirements = (value: unknown): string | null | undefined => {
+  if (value === null) return null;
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.includes('\0') ||
+    Buffer.byteLength(value, 'utf8') > 32 * 1_024
+  ) return undefined;
+  return value;
+};
+
 const trackerSnapshotUrl = (value: unknown, nullable = false): string | null => {
   if (nullable && value === null) return null;
   if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) return null;
@@ -1386,9 +1402,11 @@ const trackerSnapshotAssignees = (value: unknown): readonly TrackerIdentity[] | 
 };
 
 const trackerSnapshotWorkItem = (value: unknown): TrackerWorkItemSnapshot | null => {
+  const hasRequirements = isPlainObject(value) && Object.hasOwn(value, 'requirements');
   const record = trackerSnapshotObject(value, [
     'externalId', 'externalVersion', 'url', 'htmlUrl', 'number', 'title', 'state',
-    'labels', 'assignees', 'milestone', 'projectStatus'
+    'labels', 'assignees', 'milestone', 'projectStatus',
+    ...(hasRequirements ? ['requirements'] : [])
   ]);
   if (record === null || (record.state !== 'open' && record.state !== 'closed')) return null;
   const externalId = trackerSnapshotIdentifier(record.externalId, 512);
@@ -1401,14 +1419,19 @@ const trackerSnapshotWorkItem = (value: unknown): TrackerWorkItemSnapshot | null
   const assignees = trackerSnapshotAssignees(record.assignees);
   const milestone = trackerSnapshotMilestone(record.milestone);
   const projectStatus = trackerSnapshotProjectStatus(record.projectStatus);
+  const requirements = hasRequirements
+    ? trackerSnapshotRequirements(record.requirements)
+    : undefined;
   return externalId === null || externalVersion === null || url === null || htmlUrl === null ||
     number === null || title === null || labels === null || assignees === null ||
+    (hasRequirements && requirements === undefined) ||
     (record.milestone !== null && milestone === null) ||
     (record.projectStatus !== null && projectStatus === null)
     ? null
     : {
         externalId, externalVersion, url, htmlUrl, number, title, state: record.state,
-        labels, assignees, milestone, projectStatus
+        labels, assignees, milestone, projectStatus,
+        ...(hasRequirements ? {requirements: requirements as string | null} : {})
       };
 };
 

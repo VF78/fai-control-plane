@@ -14,7 +14,10 @@ import type {
   TrackerRepositorySnapshot,
   TrackerWorkItemSnapshot
 } from '@fai-control-plane/domain';
-import {trackerCheckStatuses} from '@fai-control-plane/domain';
+import {
+  containsHighConfidenceSecretContent,
+  trackerCheckStatuses
+} from '@fai-control-plane/domain';
 import {
   githubCheckRunConclusions,
   githubRepositoryScopeDefinitions,
@@ -26,6 +29,7 @@ const maximumPages = 10;
 const maximumProjectItemPages = 2;
 const maximumSnapshotRequests = 37;
 const maximumOpenPullRequestCheckFanout = 16;
+const maximumIssueRequirementsBytes = 32 * 1_024;
 const projectCredentialPurpose = 'github_project_snapshot_read_oauth_token';
 const appPrivateKeyPurpose = 'github_app_installation_token_mint';
 const githubProjectsOAuthScope = Object.freeze(['read:project']);
@@ -101,6 +105,17 @@ const nullableBoundedString = (
 ): string | null => {
   if (value === null) return null;
   return boundedString(value, maximumLength);
+};
+
+const issueRequirements = (value: unknown): string | null => {
+  if (value === null) return null;
+  if (typeof value !== 'string') return fail('github_response_invalid');
+  if (value.includes('\0')) return null;
+  const normalized = value.replace(/\r\n?/g, '\n').trim();
+  if (normalized.length === 0) return null;
+  if (Buffer.byteLength(normalized, 'utf8') > maximumIssueRequirementsBytes) return null;
+  if (containsHighConfidenceSecretContent(normalized)) return null;
+  return normalized;
 };
 
 const parseHttpsUrl = (value: unknown): Readonly<{serialized: string; parsed: URL}> => {
@@ -282,6 +297,7 @@ const workItem = (
     ),
     number,
     title: boundedString(source.title, 1_024),
+    requirements: issueRequirements(source.body),
     state: state(source.state),
     labels,
     assignees,

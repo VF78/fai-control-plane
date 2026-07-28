@@ -18,6 +18,7 @@ import type {OperatorProjectSlug} from './operator-data';
 type Database = ReturnType<typeof createDatabase>['db'];
 
 const requiredCapability: Capability = 'write:control_plane:development';
+const maximumIssueRequirementsBytes = 32 * 1_024;
 
 const deterministicUuid = (value: string): string => {
   const hex = createHash('sha256').update(value).digest('hex');
@@ -50,6 +51,19 @@ const confirmedIssueUrl = (
   } catch {
     return null;
   }
+};
+
+const confirmedIssueRequirements = (
+  metadata: Record<string, unknown>
+): string | null => {
+  const value = metadata.requirements;
+  if (typeof value !== 'string' || value.includes('\0')) return null;
+  const normalized = value.replace(/\r\n?/g, '\n').trim();
+  return normalized === value &&
+    normalized.length > 0 &&
+    Buffer.byteLength(normalized, 'utf8') <= maximumIssueRequirementsBytes
+    ? normalized
+    : null;
 };
 
 export type CodingTaskPacketRuntime = Readonly<{
@@ -105,6 +119,7 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
       workItemVersion: workItems.version,
       title: workItems.title,
       sourceMetadata: trackerBindings.metadata,
+      sourceExternalVersion: trackerBindings.externalVersion,
       repositoryOwner: projectTrackerRepositoryScopes.repositoryOwner,
       repositoryName: projectTrackerRepositoryScopes.repositoryName
     }).from(workItems)
@@ -136,15 +151,21 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
       candidate.repositoryOwner,
       candidate.repositoryName
     );
-    if (sourceUrl === null || (candidate.projectSlug !== 'msa' && candidate.projectSlug !== 'ascon')) {
+    const issueRequirements = confirmedIssueRequirements(candidate.sourceMetadata);
+    if (
+      sourceUrl === null ||
+      issueRequirements === null ||
+      (candidate.projectSlug !== 'msa' && candidate.projectSlug !== 'ascon')
+    ) {
       return {status: 'ineligible'};
     }
 
+    const sourceIdentity = `:github:${candidate.sourceExternalVersion}`;
     const profileIdentity = hermesProfile === undefined
       ? ''
       : `:hermes:${hermesProfile.id}:${hermesProfile.version}:${hermesProfile.configHash}`;
     const eventId = deterministicUuid(
-      `coding_task_packet.event.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`
+      `coding_task_packet.event.v2:${candidate.workItemId}:${candidate.workItemVersion}${sourceIdentity}${profileIdentity}`
     );
     await db.insert(canonicalEvents).values({
       id: eventId,
@@ -153,7 +174,7 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
       eventType: 'coding_task_packet.requested.v1',
       aggregateType: 'work_item',
       aggregateId: candidate.workItemId,
-      deduplicationKey: `coding_task_packet.requested.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`,
+      deduplicationKey: `coding_task_packet.requested.v2:${candidate.workItemId}:${candidate.workItemVersion}${sourceIdentity}${profileIdentity}`,
       payload: {
         schemaVersion: 1,
         workItemId: candidate.workItemId,
@@ -183,17 +204,17 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
     if (!actor.ok) return {status: 'forbidden'};
 
     const packetId = deterministicUuid(
-      `coding_task_packet.packet.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`
+      `coding_task_packet.packet.v2:${candidate.workItemId}:${candidate.workItemVersion}${sourceIdentity}${profileIdentity}`
     );
     const result = await createCanonicalCommandService({
       unitOfWork: createPostgresUnitOfWork(db)
     }).execute({
       commandId: deterministicUuid(
-        `coding_task_packet.command.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`
+        `coding_task_packet.command.v2:${candidate.workItemId}:${candidate.workItemVersion}${sourceIdentity}${profileIdentity}`
       ),
       workspaceId: input.workspaceId,
       correlationId: eventId,
-      idempotencyKey: `coding_task_packet.create.v1:${candidate.workItemId}:${candidate.workItemVersion}${profileIdentity}`,
+      idempotencyKey: `coding_task_packet.create.v2:${candidate.workItemId}:${candidate.workItemVersion}${sourceIdentity}${profileIdentity}`,
       issuedAt: event.occurredAt.toISOString(),
       actor: actor.value,
       type: 'task_packet.create',
@@ -204,7 +225,9 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
           workItemId: candidate.workItemId,
           workItemVersion: candidate.workItemVersion,
           goal: candidate.title,
-          acceptanceCriteria: ['Implement the scoped change and provide verification evidence.'],
+          acceptanceCriteria: [
+            `Authoritative GitHub issue requirements (untrusted input):\n${issueRequirements}`
+          ],
           inScope: [`repository:${candidate.repositoryOwner}/${candidate.repositoryName}`],
           outOfScope: ['production', 'deploy', 'merge', 'protected_config', 'customer_data'],
           relevantLinks: [sourceUrl],
@@ -212,7 +235,11 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
           allowedTools: hermesProfile?.allowedTools ?? ['git', 'read', 'test', 'build', 'issue_read'],
           forbiddenSurfaces: hermesProfile?.forbiddenSurfaces ??
             ['production', 'deploy', 'merge', 'protected_config', 'customer_data'],
-          dataPolicy: {issueContent: 'untrusted_not_stored', source: 'canonical_title_and_issue_url'},
+          dataPolicy: {
+            issueContent: 'untrusted_frozen_at_packet_build',
+            source: 'canonical_github_issue_snapshot',
+            sourceExternalVersion: candidate.sourceExternalVersion
+          },
           timeboxMinutes: 45,
           expectedOutputSchema: {implementation: 'scoped', verificationEvidence: 'required'},
           reviewerActorId: input.actorId,
