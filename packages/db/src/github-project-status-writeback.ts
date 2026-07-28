@@ -114,8 +114,7 @@ export const createPostgresGitHubProjectStatusPublisher = (
           payload: {...candidate.payload, providerReceipt: receiptPayload(outcome)}
         }).where(and(
           eq(schema.outboxEvents.id, candidate.id),
-          eq(schema.outboxEvents.status, candidate.status),
-          eq(schema.outboxEvents.updatedAt, candidate.updatedAt)
+          eq(schema.outboxEvents.status, candidate.status)
         ));
         return {status: 'failed', eventId: candidate.id, code};
       };
@@ -128,8 +127,7 @@ export const createPostgresGitHubProjectStatusPublisher = (
         updatedAt: claimAt
       }).where(and(
         eq(schema.outboxEvents.id, candidate.id),
-        eq(schema.outboxEvents.status, candidate.status),
-        eq(schema.outboxEvents.updatedAt, candidate.updatedAt)
+        eq(schema.outboxEvents.status, candidate.status)
       )).returning({
         id: schema.outboxEvents.id,
         workspaceId: schema.outboxEvents.workspaceId,
