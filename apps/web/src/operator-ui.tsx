@@ -152,10 +152,19 @@ export function ProjectView({data, csrfToken}: {data: ProjectData; csrfToken: st
   </div>;
 }
 
-export function RunsView({data, csrfToken, operatorActorId}: {
+const receiptHandoffMessages = {
+  accepted: 'Receipt accepted. The WorkItem moved to QA.',
+  stale: 'Receipt not accepted because the run, receipt, or WorkItem is stale or invalid.',
+  forbidden: 'Receipt not accepted because the operator is not authorized.',
+  not_found: 'Receipt not accepted because the bound run is no longer available.',
+  unavailable: 'Receipt review is temporarily unavailable.'
+} as const;
+
+export function RunsView({data, csrfToken, operatorActorId, handoffResult = null}: {
   data: RunsData;
   csrfToken: string | null;
   operatorActorId: string | null;
+  handoffResult?: 'accepted' | 'stale' | 'forbidden' | 'not_found' | 'unavailable' | null;
 }) {
   return <div className="control-surface">
     <section className="packet-ledger" aria-labelledby="packets-title"><header><p className="eyebrow">Immutable task packets</p><h2 id="packets-title">Packet preview and confirmation</h2></header>
@@ -173,12 +182,20 @@ export function RunsView({data, csrfToken, operatorActorId}: {
       </article>)}</div>}
     </section>
     <section className="runs-ledger" aria-labelledby="runs-title"><header><p className="eyebrow">Persisted execution</p><h2 id="runs-title">Runs</h2></header>
+      {handoffResult === null ? null : <p aria-live="polite" className="muted" role="status">{receiptHandoffMessages[handoffResult]}</p>}
       {data.runs.length === 0 ? <p className="muted">No persisted runs in this scope.</p> : <div className="run-list">{data.runs.map((run) => <article className="run-row" id={`run-${run.id}`} key={run.id}>
         {run.status !== 'queued' || csrfToken === null ? null :
           <form action={`/api/agent-runs/${run.id}/cancel`} method="post">
             <input name="_csrf" type="hidden" value={csrfToken} />
             <input name="expectedVersion" type="hidden" value={run.version} />
             <button type="submit">Cancel queued run</button>
+          </form>}
+        {!run.canAcceptReceipt || csrfToken === null || run.receipt === null || run.workItemVersion === null ? null :
+          <form action={`/api/agent-runs/${run.id}/accept-receipt?project=${run.projectSlug}`} method="post">
+            <input name="_csrf" type="hidden" value={csrfToken} />
+            <input name="expectedWorkItemVersion" type="hidden" value={run.workItemVersion} />
+            <input name="expectedReceiptSha256" type="hidden" value={run.receipt.receiptSha256} />
+            <button type="submit">Accept receipt and move to QA</button>
           </form>}
         <div><strong>{run.workItem ?? 'No recorded WorkItem title'}</strong><span>{run.project} · {run.runtimeProfile} · {run.timeboxMinutes} min packet</span></div><span className={`state ${run.status}`}>{label(run.status)}</span>
         <div><span>Started: {stamp(run.startedAt)}</span><span>Completed: {stamp(run.completedAt)}</span><span>Heartbeat: {stamp(run.heartbeatAt)}</span><span>Duration: {duration(run.receipt?.durationMs ?? null)}</span></div><div><span>{run.receipt === null ? 'No receipt recorded' : `Receipt: ${run.receipt.terminal}, ${stamp(run.receipt.completedAt)} · SHA-256 ${run.receipt.receiptSha256}`}</span><span>Runtime: {run.receipt?.runtimeId ?? 'Unknown (not recorded)'} · {run.receipt?.runtimeProfile ?? 'Unknown (not recorded)'}</span><span>Raw cost: {unknownReceiptValue(run.receipt?.cost ?? null)}</span><span>Raw usage: {unknownReceiptValue(run.receipt?.usage ?? null)}</span><span>Latest cost: {costText(run.ledger.latestCost)}</span><span>{roiText(run.ledger.roi)}</span>{run.ledger.records.map((record) => <span key={record.commandId}>{record.kind === 'cost' && record.cost !== undefined ? `Cost record ${record.commandId}: ${costText(record.cost)}${record.correctsCommandId === null ? '' : ` · corrects ${record.correctsCommandId}`}${record.usageProvenance === undefined ? '' : ` · usage receipt ${record.usageProvenance.receiptSha256}`}` : record.valueEvidence === undefined ? `Invalid ledger record ${record.commandId}` : `Value evidence ${record.commandId}: baseline ${money(record.valueEvidence.baselineAmountMinor, record.valueEvidence.currency)} · outcome ${money(record.valueEvidence.outcomeAmountMinor, record.valueEvidence.currency)} · ${record.valueEvidence.method} · ${record.valueEvidence.observedAt} · ${record.valueEvidence.evidenceReference} · ${record.valueEvidence.formulaVersion}`}</span>)}<span>{run.artifacts.length === 0 ? 'No artifacts recorded' : `${run.artifacts.length} recorded artifacts`}</span>{run.failureCode === null ? null : <span>Failure code: {run.failureCode}</span>}</div><p>{run.packetGoal}</p>
