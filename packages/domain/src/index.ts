@@ -846,6 +846,8 @@ const packetArrayFields = [
   'acceptanceCriteria', 'inScope', 'outOfScope', 'relevantLinks', 'relevantFiles',
   'allowedTools', 'forbiddenSurfaces'
 ] as const satisfies readonly (keyof TaskPacketContent)[];
+const maximumTaskPacketBytes = 64 * 1024;
+const maximumTaskPacketTimeboxMinutes = 120;
 const taskPacketContentKeys = new Set<keyof TaskPacketContent>([
   ...packetStringFields,
   ...packetArrayFields,
@@ -1091,7 +1093,7 @@ const cloneSecretRef = (value: OpaqueSecretRef | null): OpaqueSecretRef | null =
   value === null ? null : {provider: value.provider, reference: value.reference, scope: [...value.scope]};
 
 export const createTaskPacket = (packetId: string, content: TaskPacketContent): CommandResult<TaskPacket> => {
-  if (!hasNonEmptyString(packetId) || !isPlainObject(content)) {
+  if (!hasNonEmptyString(packetId) || packetId.length > 128 || !isPlainObject(content)) {
     return failed('INVALID_TASK_PACKET', 'Task packet ID and content are required.');
   }
   if (hasCyclicOrUnreadableInput(content)) {
@@ -1117,7 +1119,7 @@ export const createTaskPacket = (packetId: string, content: TaskPacketContent): 
   }
   if (!packetPositiveIntegerFields.every((field) =>
     Number.isSafeInteger(content[field]) && content[field] > 0
-  ) ||
+  ) || content.timeboxMinutes > maximumTaskPacketTimeboxMinutes ||
     !isOneOf(['user', 'agent', 'system'] as const, content.authMode) ||
     !(content.secretsRef === null || isOpaqueSecretRef(content.secretsRef)) ||
     !(
@@ -1126,6 +1128,10 @@ export const createTaskPacket = (packetId: string, content: TaskPacketContent): 
       isAgentProfileSnapshot(content.agentProfileSnapshot)
     )) {
     return failed('INVALID_TASK_PACKET', 'Task packet timebox, auth mode, or secret reference is invalid.');
+  }
+  const serialized = canonicalJson(content as unknown as CanonicalJson);
+  if (Buffer.byteLength(serialized, 'utf8') > maximumTaskPacketBytes) {
+    return failed('INVALID_TASK_PACKET', 'Task packet content exceeds the maximum size.');
   }
   const immutableContent = deepFreeze({
     ...content,
@@ -1152,7 +1158,6 @@ export const createTaskPacket = (packetId: string, content: TaskPacketContent): 
               }
         })
   }) as TaskPacketContent;
-  const serialized = canonicalJson(immutableContent);
   const contentHash = createHash('sha256').update(serialized).digest('hex');
   return succeeded(deepFreeze({packetId, content: immutableContent, canonicalJson: serialized, contentHash}));
 };

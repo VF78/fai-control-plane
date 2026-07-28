@@ -390,6 +390,8 @@ describe('task packets', () => {
     ['required array', 'packet-1', {...packetContent(), allowedTools: ['']}, 'INVALID_TASK_PACKET'],
     ['invalid JSON', 'packet-1', {...packetContent(), dataPolicy: new Date()} as unknown as TaskPacketContent, 'INVALID_TASK_PACKET'],
     ['timebox', 'packet-1', {...packetContent(), timeboxMinutes: 0}, 'INVALID_TASK_PACKET'],
+    ['bounded timebox', 'packet-1', {...packetContent(), timeboxMinutes: 121}, 'INVALID_TASK_PACKET'],
+    ['bounded content', 'packet-1', {...packetContent(), goal: 'x'.repeat(64 * 1024)}, 'INVALID_TASK_PACKET'],
     ['auth mode', 'packet-1', {...packetContent(), authMode: 'unknown'} as unknown as TaskPacketContent, 'INVALID_TASK_PACKET'],
     ['opaque ref', 'packet-1', {...packetContent(), secretsRef: {provider: '', reference: 'x', scope: []}}, 'INVALID_TASK_PACKET'],
     ['unknown field', 'packet-1', {...packetContent(), retryHint: 'safe'} as TaskPacketContent, 'INVALID_TASK_PACKET'],
