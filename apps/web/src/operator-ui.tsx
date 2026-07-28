@@ -131,8 +131,12 @@ export function ProjectView({data, csrfToken}: {data: ProjectData; csrfToken: st
       {data.project.description === null ? null : <p className="project-description">{data.project.description}</p>}
     </section>
     <section className="work-ledger" aria-labelledby="work-title"><header><p className="eyebrow">Canonical work</p><h2 id="work-title">WorkItems by status</h2></header>
-      {workItemStatuses.map((status) => { const items = data.workItems.filter((item) => item.status === status); return <section className="status-group" key={status}><h3>{label(status)} <span>{items.length}</span></h3>
-        {items.length === 0 ? <p className="status-empty">No recorded WorkItems.</p> : <div className="work-list">{items.map((item) => <article className="work-row" key={item.id}>
+      {workItemStatuses.map((status) => {
+        const items = data.workItems.filter((item) => item.status === status);
+        const visibleItems = status === 'backlog' || status === 'done' ? items.slice(0, 8) : items;
+        const hiddenCount = items.length - visibleItems.length;
+        return <section className="status-group" key={status}><h3>{label(status)} <span>{items.length}</span></h3>
+        {items.length === 0 ? <p className="status-empty">No recorded WorkItems.</p> : <><div className="work-list">{visibleItems.map((item) => <article className="work-row" key={item.id}>
           <div><strong>{item.title}</strong>{item.summary === null ? null : <span>{item.summary}</span>}</div><span>{item.owner ?? 'No recorded owner'}</span><span className={item.blocked ? 'blocked yes' : 'blocked'}>{item.blocked ? 'Blocked' : 'Not blocked'}</span><time dateTime={item.updatedAt.toISOString()}>{stamp(item.updatedAt)}</time>
           <div className="work-actions">
             {item.handoff === null ? null : <Link className={`state ${item.handoff.state}`} href={item.handoff.href}>{item.handoff.label}</Link>}
@@ -142,7 +146,8 @@ export function ProjectView({data, csrfToken}: {data: ProjectData; csrfToken: st
             <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><button type="submit">Build Codex packet</button></form>
             {data.hermesAgentProfileId === null ? null : <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><input name="agentProfileId" type="hidden" value={data.hermesAgentProfileId} /><button type="submit">Build Hermes packet</button></form>}
           </div>}
-        </article>)}</div>}</section>; })}
+        </article>)}</div>{hiddenCount === 0 ? null : <p className="muted">Showing 8 most recently updated of {items.length}.</p>}</>}</section>;
+      })}
     </section>
   </div>;
 }

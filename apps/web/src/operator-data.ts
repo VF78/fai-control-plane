@@ -881,7 +881,7 @@ export const loadHealthData = (scope?: OperatorProjectSlug): Promise<OperatorLoa
     db.select({id: scheduledJobs.id, projectId: scheduledJobs.projectId, name: scheduledJobs.name, status: scheduledJobs.status, heartbeatAt: scheduledJobs.heartbeatAt, lastSuccessAt: scheduledJobs.lastSuccessAt, nextRunAt: scheduledJobs.nextRunAt})
       .from(scheduledJobs).where(inArray(scheduledJobs.projectId, projectIds)).orderBy(scheduledJobs.name),
     db.select({id: trackerSnapshotOperations.id, projectId: trackerSnapshotOperations.projectId, provider: trackerSnapshotOperations.provider, mode: trackerSnapshotOperations.mode, createdAt: trackerSnapshotOperations.createdAt})
-      .from(trackerSnapshotOperations).where(inArray(trackerSnapshotOperations.projectId, projectIds)).orderBy(desc(trackerSnapshotOperations.createdAt), trackerSnapshotOperations.id),
+      .from(trackerSnapshotOperations).where(inArray(trackerSnapshotOperations.projectId, projectIds)).orderBy(desc(trackerSnapshotOperations.createdAt), trackerSnapshotOperations.id).limit(20),
     db.select({id: riskSignals.id, projectId: riskSignals.projectId, severity: riskSignals.severity, summary: riskSignals.summary, updatedAt: riskSignals.updatedAt})
       .from(riskSignals).where(and(inArray(riskSignals.projectId, projectIds), isNull(riskSignals.resolvedAt))).orderBy(desc(riskSignals.updatedAt), riskSignals.id),
     db.select({
@@ -897,7 +897,7 @@ export const loadHealthData = (scope?: OperatorProjectSlug): Promise<OperatorLoa
       occurredAt: auditEvents.occurredAt
     }).from(auditEvents).leftJoin(actors, eq(auditEvents.actorId, actors.id))
       .where(inArray(auditEvents.projectId, projectIds))
-      .orderBy(desc(auditEvents.occurredAt), auditEvents.id).limit(100),
+      .orderBy(desc(auditEvents.occurredAt), auditEvents.id).limit(20),
     db.select({
       runId: agentRuns.id,
       runType: taskPackets.runtimeProfile,
