@@ -371,7 +371,12 @@ export type RunsData = Readonly<{
     status: 'queued' | 'running' | 'waiting_approval' | 'done' | 'failed'; runtimeProfile: string;
     packetGoal: string; timeboxMinutes: number; startedAt: Date | null; completedAt: Date | null;
     heartbeatAt: Date | null; failureCode: string | null;
-    receipt: Readonly<{terminal: string; completedAt: Date}> | null;
+    receipt: Readonly<{
+      terminal: string; completedAt: Date; runtimeId: string | null; runtimeProfile: string | null;
+      durationMs: number | null;
+      cost: Readonly<{state: 'unknown'; reason: 'codex_cli_usage_not_available'}> | null;
+      usage: Readonly<{state: 'unknown'; reason: 'codex_cli_usage_not_available'}> | null;
+    }> | null;
     artifacts: readonly Readonly<{kind: string; sizeBytes: number; redacted: boolean; createdAt: Date}>[];
   }>[];
   approvals: readonly Readonly<{
@@ -456,12 +461,32 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
     .from(actors).where(inArray(actors.id, actorIds));
   const runIds = runs.map(({id}) => id);
   const [receipts, evidenceArtifacts] = runIds.length === 0 ? [[], []] : await Promise.all([
-    db.select({agentRunId: agentRunReceipts.agentRunId, terminal: agentRunReceipts.terminal, completedAt: agentRunReceipts.completedAt})
+    db.select({
+      agentRunId: agentRunReceipts.agentRunId,
+      terminal: agentRunReceipts.terminal,
+      completedAt: agentRunReceipts.completedAt,
+      metadata: agentRunReceipts.metadata
+    })
       .from(agentRunReceipts).where(inArray(agentRunReceipts.agentRunId, runIds)),
     db.select({agentRunId: artifacts.agentRunId, kind: artifacts.kind, sizeBytes: artifacts.sizeBytes, redacted: artifacts.redacted, createdAt: artifacts.createdAt})
       .from(artifacts).where(inArray(artifacts.agentRunId, runIds)).orderBy(desc(artifacts.createdAt), artifacts.id)
   ]);
-  const receiptByRun = new Map(receipts.map((receipt) => [receipt.agentRunId, receipt]));
+  const unavailable = (value: unknown): value is Readonly<{
+    state: 'unknown'; reason: 'codex_cli_usage_not_available';
+  }> => typeof value === 'object' && value !== null && !Array.isArray(value) &&
+    Object.keys(value).length === 2 &&
+    'state' in value && value.state === 'unknown' &&
+    'reason' in value && value.reason === 'codex_cli_usage_not_available';
+  const receiptByRun = new Map(receipts.map(({agentRunId, terminal, completedAt, metadata}) => [agentRunId, {
+    terminal,
+    completedAt,
+    runtimeId: typeof metadata.runtimeId === 'string' ? metadata.runtimeId : null,
+    runtimeProfile: typeof metadata.runtimeProfile === 'string' ? metadata.runtimeProfile : null,
+    durationMs: typeof metadata.durationMs === 'number' && Number.isSafeInteger(metadata.durationMs) && metadata.durationMs >= 0
+      ? metadata.durationMs : null,
+    cost: unavailable(metadata.cost) ? metadata.cost : null,
+    usage: unavailable(metadata.usage) ? metadata.usage : null
+  }]));
   const artifactsByRun = new Map<string, typeof evidenceArtifacts>();
   for (const artifact of evidenceArtifacts) artifactsByRun.set(artifact.agentRunId, [...(artifactsByRun.get(artifact.agentRunId) ?? []), artifact]);
   const actorNameById = new Map(packetActors.map((actor) => [actor.id, actor.name]));

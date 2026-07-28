@@ -69,6 +69,12 @@ export function State({title, children}: Readonly<{title: string; children: Reac
 }
 
 const stamp = (value: Date | null): string => value === null ? 'No recorded time' : `${value.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+const duration = (value: number | null): string => value === null
+  ? 'Unknown (not recorded)'
+  : `${(value / 1_000).toLocaleString('en-US', {maximumFractionDigits: 1})} seconds`;
+const unknownReceiptValue = (
+  value: Readonly<{state: 'unknown'; reason: 'codex_cli_usage_not_available'}> | null
+): string => value === null ? 'Unknown (not recorded)' : `Unknown (${value.reason})`;
 const age = (value: Date | null): 'fresh' | 'stale' | 'unknown' => {
   if (value === null) return 'unknown';
   return Date.now() - value.getTime() > 24 * 60 * 60 * 1000 ? 'stale' : 'fresh';
@@ -135,7 +141,7 @@ export function RunsView({data, csrfToken, operatorActorId}: {
     <section className="runs-ledger" aria-labelledby="runs-title"><header><p className="eyebrow">Persisted execution</p><h2 id="runs-title">Runs</h2></header>
       {data.runs.length === 0 ? <p className="muted">No persisted runs in this scope.</p> : <div className="run-list">{data.runs.map((run) => <article className="run-row" key={run.id}>
         <div><strong>{run.workItem ?? 'No recorded WorkItem title'}</strong><span>{run.project} · {run.runtimeProfile} · {run.timeboxMinutes} min packet</span></div><span className={`state ${run.status}`}>{label(run.status)}</span>
-        <div><span>Started: {stamp(run.startedAt)}</span><span>Completed: {stamp(run.completedAt)}</span><span>Heartbeat: {stamp(run.heartbeatAt)}</span></div><div><span>{run.receipt === null ? 'No receipt recorded' : `Receipt: ${run.receipt.terminal}, ${stamp(run.receipt.completedAt)}`}</span><span>{run.artifacts.length === 0 ? 'No artifacts recorded' : `${run.artifacts.length} recorded artifacts`}</span>{run.failureCode === null ? null : <span>Failure code: {run.failureCode}</span>}</div><p>{run.packetGoal}</p>
+        <div><span>Started: {stamp(run.startedAt)}</span><span>Completed: {stamp(run.completedAt)}</span><span>Heartbeat: {stamp(run.heartbeatAt)}</span><span>Duration: {duration(run.receipt?.durationMs ?? null)}</span></div><div><span>{run.receipt === null ? 'No receipt recorded' : `Receipt: ${run.receipt.terminal}, ${stamp(run.receipt.completedAt)}`}</span><span>Runtime: {run.receipt?.runtimeId ?? 'Unknown (not recorded)'} · {run.receipt?.runtimeProfile ?? 'Unknown (not recorded)'}</span><span>Cost: {unknownReceiptValue(run.receipt?.cost ?? null)}</span><span>Usage: {unknownReceiptValue(run.receipt?.usage ?? null)}</span><span>ROI: Not configured</span><span>{run.artifacts.length === 0 ? 'No artifacts recorded' : `${run.artifacts.length} recorded artifacts`}</span>{run.failureCode === null ? null : <span>Failure code: {run.failureCode}</span>}</div><p>{run.packetGoal}</p>
       </article>)}</div>}
     </section>
     <section className="approvals-ledger" aria-labelledby="approvals-title"><header><p className="eyebrow">Persisted policy records</p><h2 id="approvals-title">Approvals</h2></header>

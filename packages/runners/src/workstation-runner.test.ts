@@ -110,6 +110,11 @@ describe('workstation runner', () => {
       receiptSha256: 'e'.repeat(64),
       receiptSizeBytes: 512,
       finalStatus: 'succeeded',
+      runtimeId: 'codex-cli',
+      runtimeProfile: 'write_scoped',
+      durationMs: 60_000,
+      cost: {state: 'unknown', reason: 'codex_cli_usage_not_available'},
+      usage: {state: 'unknown', reason: 'codex_cli_usage_not_available'},
       summaryArtifact: {
         name: summaryName,
         sha256: createHash('sha256').update(summaryBody).digest('hex'),

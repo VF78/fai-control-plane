@@ -172,6 +172,17 @@ export type RunnerCompletionPayload = Readonly<{
   receiptSha256: string;
   receiptSizeBytes: number;
   finalStatus: 'succeeded' | 'process_failed' | 'timed_out' | 'cancelled';
+  runtimeId: string;
+  runtimeProfile: 'read_safe' | 'write_scoped';
+  durationMs: number;
+  cost: Readonly<{
+    state: 'unknown';
+    reason: 'codex_cli_usage_not_available';
+  }>;
+  usage: Readonly<{
+    state: 'unknown';
+    reason: 'codex_cli_usage_not_available';
+  }>;
   summaryArtifact?: Readonly<{
     name: string;
     sha256: string;
@@ -215,8 +226,10 @@ const runnerBaseCommitPattern = /^[0-9a-f]{40}$/;
 const runnerRunIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const runnerSafeReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$/;
 const runnerSafeNamePattern = /^[A-Za-z0-9][A-Za-z0-9 .,_:()/-]{0,127}$/;
+const runnerRuntimeIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_RUNNER_RECEIPT_BYTES = 1_024 * 1_024;
 const MAX_RUNNER_RISK_COUNT = 100;
+const MAX_RUNNER_DURATION_MS = 24 * 60 * 60 * 1_000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -263,18 +276,24 @@ export const parseRunnerCompletionPayload = (
 ): RunnerCompletionPayload | null => {
   const keys = [
     'runId', 'attempt', 'terminal', 'receiptSha256', 'receiptSizeBytes',
-    'finalStatus', 'changedFiles', 'checks', 'riskCount', 'nextAction',
+    'finalStatus', 'runtimeId', 'runtimeProfile', 'durationMs', 'cost', 'usage',
+    'changedFiles', 'checks', 'riskCount', 'nextAction',
     'summaryArtifact', 'branch', 'worktreeRef', 'artifactRef'
   ];
   if (!isRecord(value) || Object.keys(value).some((key) => !keys.includes(key))) return null;
   const required = [
     'runId', 'attempt', 'terminal', 'receiptSha256', 'receiptSizeBytes',
-    'finalStatus', 'changedFiles', 'checks', 'riskCount', 'nextAction'
+    'finalStatus', 'runtimeId', 'runtimeProfile', 'durationMs', 'cost', 'usage',
+    'changedFiles', 'checks', 'riskCount', 'nextAction'
   ];
   if (required.some((key) => !(key in value))) return null;
   const attempt = value.attempt;
   const receiptSizeBytes = value.receiptSizeBytes;
+  const durationMs = value.durationMs;
   const riskCount = value.riskCount;
+  const unavailable = (candidate: unknown): candidate is RunnerCompletionPayload['cost'] =>
+    isRecord(candidate) && exactKeys(candidate, ['state', 'reason']) &&
+    candidate.state === 'unknown' && candidate.reason === 'codex_cli_usage_not_available';
   if (
     !runnerRunIdPattern.test(value.runId as string) ||
     typeof attempt !== 'number' || !Number.isSafeInteger(attempt) || attempt <= 0 || attempt > 10_000 ||
@@ -282,6 +301,11 @@ export const parseRunnerCompletionPayload = (
     !runnerPacketHashPattern.test(value.receiptSha256 as string) ||
     typeof receiptSizeBytes !== 'number' || !Number.isSafeInteger(receiptSizeBytes) ||
     receiptSizeBytes <= 0 || receiptSizeBytes > MAX_RUNNER_RECEIPT_BYTES ||
+    typeof value.runtimeId !== 'string' || !runnerRuntimeIdPattern.test(value.runtimeId) ||
+    (value.runtimeProfile !== 'read_safe' && value.runtimeProfile !== 'write_scoped') ||
+    typeof durationMs !== 'number' || !Number.isSafeInteger(durationMs) ||
+    durationMs < 0 || durationMs > MAX_RUNNER_DURATION_MS ||
+    !unavailable(value.cost) || !unavailable(value.usage) ||
     typeof riskCount !== 'number' || !Number.isSafeInteger(riskCount) ||
     riskCount < 0 || riskCount > MAX_RUNNER_RISK_COUNT ||
     !['succeeded', 'process_failed', 'timed_out', 'cancelled'].includes(value.finalStatus as string) ||
@@ -335,6 +359,11 @@ export const parseRunnerCompletionPayload = (
     receiptSha256: value.receiptSha256 as string,
     receiptSizeBytes,
     finalStatus: value.finalStatus as RunnerCompletionPayload['finalStatus'],
+    runtimeId: value.runtimeId,
+    runtimeProfile: value.runtimeProfile,
+    durationMs,
+    cost: value.cost,
+    usage: value.usage,
     ...(summaryArtifact === undefined ? {} : {summaryArtifact}),
     changedFiles,
     checks,

@@ -287,20 +287,28 @@ const completionFor = async (
 ): Promise<Record<string, unknown>> => {
   const summary = await completionSummary(result);
   return {
-  runId: claim.runId,
-  attempt: claim.attempt,
-  terminal: result.receipt.finalStatus === 'succeeded' ? 'done' : 'failed',
-  receiptSha256: result.receiptSha256,
-  receiptSizeBytes: result.receiptSizeBytes,
-  finalStatus: result.receipt.finalStatus,
-  ...(result.receipt.summaryArtifact === undefined
-    ? {}
-    : {summaryArtifact: result.receipt.summaryArtifact}),
-  changedFiles: summary.changedFiles,
-  checks: summary.checks,
-  riskCount: summary.riskCount,
-  nextAction: result.receipt.nextAction,
-  branch: result.receipt.branch
+    runId: claim.runId,
+    attempt: claim.attempt,
+    terminal: result.receipt.finalStatus === 'succeeded' ? 'done' : 'failed',
+    receiptSha256: result.receiptSha256,
+    receiptSizeBytes: result.receiptSizeBytes,
+    finalStatus: result.receipt.finalStatus,
+    runtimeId: result.receipt.runtimeId,
+    runtimeProfile: result.receipt.profile,
+    durationMs: result.receipt.durationMs,
+    cost: result.receipt.cost,
+    usage: {
+      state: 'unknown',
+      reason: result.receipt.cost.reason
+    },
+    ...(result.receipt.summaryArtifact === undefined
+      ? {}
+      : {summaryArtifact: result.receipt.summaryArtifact}),
+    changedFiles: summary.changedFiles,
+    checks: summary.checks,
+    riskCount: summary.riskCount,
+    nextAction: result.receipt.nextAction,
+    branch: result.receipt.branch
   };
 };
 
