@@ -364,7 +364,7 @@ export const createPostgresTrackerSnapshotProjector = (
       );
       let createdWorkItems = 0;
       let updatedWorkItems = 0;
-      const updatedWorkItemStatuses = 0;
+      let updatedWorkItemStatuses = 0;
       const unknownWorkItemExternalIds: string[] = [];
       const unknownProjectStatusWorkItemExternalIds: string[] = [];
 
@@ -413,6 +413,11 @@ export const createPostgresTrackerSnapshotProjector = (
         }
         const {binding, workItem} = bound;
         const observedProjectStatus = item.projectStatus;
+        const bindingMetadata = binding.metadata as Record<string, unknown>;
+        const adoptsInitialProjectStatus =
+          bindingMetadata.projectStatus === null &&
+          observedProjectStatus !== null &&
+          observedProjectStatus.status !== null;
         if (!projectStatusIdentityMatches(binding, input.snapshot, observedProjectStatus)) {
           unknownProjectStatusWorkItemExternalIds.push(item.externalId);
           continue;
@@ -458,6 +463,24 @@ export const createPostgresTrackerSnapshotProjector = (
         }
         if (item.projectStatus !== null && item.projectStatus.status === null) {
           unknownProjectStatusWorkItemExternalIds.push(item.externalId);
+          continue;
+        }
+        if (adoptsInitialProjectStatus && mappedProjectStatus !== null) {
+          if (mappedProjectStatus !== workItem.status) {
+            const [updatedWorkItem] = await tx.update(schema.workItems).set({
+              status: mappedProjectStatus,
+              version: sql`${schema.workItems.version} + 1`,
+              updatedAt: new Date()
+            }).where(and(
+              eq(schema.workItems.id, workItemId),
+              eq(schema.workItems.projectId, input.projectId),
+              eq(schema.workItems.version, workItem.version)
+            )).returning({id: schema.workItems.id});
+            if (updatedWorkItem === undefined) {
+              throw new Error('tracker_snapshot_work_item_version_conflict');
+            }
+            updatedWorkItemStatuses += 1;
+          }
           continue;
         }
         if (mappedProjectStatus !== null) {
