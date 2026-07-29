@@ -1,6 +1,11 @@
-import {and, asc, desc, eq, inArray, sql} from 'drizzle-orm';
+import {and, asc, desc, eq, inArray, isNull, lt, ne, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
-import {reconcileRiskSignal, type RiskSignalCondition} from './risk-signal';
+import {
+  reconcileRiskSignal,
+  reconcileRiskSignalSet,
+  type RiskSignalCondition,
+  type RiskSignalSetMember
+} from './risk-signal';
 import * as schema from './schema';
 
 type Database = NodePgDatabase<typeof schema>;
@@ -8,9 +13,16 @@ type Database = NodePgDatabase<typeof schema>;
 export const HEALTHCHECK_QUEUE = 'healthcheck';
 export const healthcheckCron = '*/5 * * * *';
 export const healthcheckStaleAfterMs = 15 * 60 * 1_000;
+export const activeWorkItemStaleAfterMs = 7 * 24 * 60 * 60 * 1_000;
+export const pendingApprovalStaleAfterMs = 24 * 60 * 60 * 1_000;
 
 const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const healthcheckName = 'healthcheck';
+const activeWorkItemStatuses = new Set(['in_dev', 'qa', 'acceptance']);
+const deadlineOverdueRuleId = 'delivery_deadline_overdue';
+const staleWorkItemRuleId = 'active_work_item_stale';
+const staleApprovalRuleId = 'pending_approval_stale';
+const blockedUnownedRuleId = 'blocked_work_item_unowned';
 
 type Condition = RiskSignalCondition & Readonly<{
   code: 'github_status_writeback_failed' | 'queue_work_failed' | 'tracker_sync_missing_or_stale';
@@ -75,26 +87,71 @@ export const createPostgresHealthcheckProducer = (
               }
             });
 
-            const [latestSnapshot, failedWritebacks] = await Promise.all([
-              tx.select({
-                id: schema.trackerSnapshotOperations.id,
-                createdAt: schema.trackerSnapshotOperations.createdAt
-              })
-                .from(schema.trackerSnapshotOperations).where(and(
-                  eq(schema.trackerSnapshotOperations.projectId, projectId),
-                  eq(schema.trackerSnapshotOperations.provider, 'github'),
-                  sql`${schema.trackerSnapshotOperations.result}->>'status' = 'applied'`
-                )).orderBy(desc(schema.trackerSnapshotOperations.createdAt)).limit(1),
-              tx.select({
-                id: schema.outboxEvents.id,
-                failureCode: schema.outboxEvents.failureCode
-              }).from(schema.outboxEvents).where(and(
-                eq(schema.outboxEvents.projectId, projectId),
-                eq(schema.outboxEvents.destination, 'github'),
-                eq(schema.outboxEvents.eventType, 'github.project_status.write.v1'),
-                eq(schema.outboxEvents.status, 'failed')
-              )).orderBy(asc(schema.outboxEvents.id))
-            ]);
+            const latestSnapshot = await tx.select({
+              id: schema.trackerSnapshotOperations.id,
+              createdAt: schema.trackerSnapshotOperations.createdAt
+            }).from(schema.trackerSnapshotOperations).where(and(
+              eq(schema.trackerSnapshotOperations.projectId, projectId),
+              eq(schema.trackerSnapshotOperations.provider, 'github'),
+              sql`${schema.trackerSnapshotOperations.result}->>'status' = 'applied'`
+            )).orderBy(desc(schema.trackerSnapshotOperations.createdAt)).limit(1);
+            const failedWritebacks = await tx.select({
+              id: schema.outboxEvents.id,
+              failureCode: schema.outboxEvents.failureCode
+            }).from(schema.outboxEvents).where(and(
+              eq(schema.outboxEvents.projectId, projectId),
+              eq(schema.outboxEvents.destination, 'github'),
+              eq(schema.outboxEvents.eventType, 'github.project_status.write.v1'),
+              eq(schema.outboxEvents.status, 'failed')
+            )).orderBy(asc(schema.outboxEvents.id));
+            const overdueMilestones = await tx.select({
+              id: schema.milestones.id,
+              targetAt: schema.milestones.targetAt
+            }).from(schema.milestones).where(and(
+              eq(schema.milestones.projectId, projectId),
+              isNull(schema.milestones.closedAt),
+              lt(schema.milestones.targetAt, runAt)
+            )).orderBy(asc(schema.milestones.id));
+            const overdueDeliveryJourneys = await tx.select({
+              workItemId: schema.deliveryJourneys.workItemId,
+              deadlineAt: schema.deliveryJourneys.deadlineAt,
+              status: schema.workItems.status,
+              ownerActorId: schema.workItems.ownerActorId
+            }).from(schema.deliveryJourneys)
+              .innerJoin(
+                schema.workItems,
+                eq(schema.workItems.id, schema.deliveryJourneys.workItemId)
+              )
+              .where(and(
+                eq(schema.workItems.projectId, projectId),
+                isNull(schema.workItems.deletedAt),
+                ne(schema.workItems.status, 'done'),
+                lt(schema.deliveryJourneys.deadlineAt, runAt)
+              )).orderBy(asc(schema.deliveryJourneys.workItemId));
+            const openWorkItems = await tx.select({
+              id: schema.workItems.id,
+              status: schema.workItems.status,
+              blocked: schema.workItems.blocked,
+              ownerActorId: schema.workItems.ownerActorId,
+              updatedAt: schema.workItems.updatedAt
+            }).from(schema.workItems).where(and(
+              eq(schema.workItems.projectId, projectId),
+              isNull(schema.workItems.deletedAt),
+              ne(schema.workItems.status, 'done')
+            )).orderBy(asc(schema.workItems.id));
+            const staleApprovals = await tx.select({
+              id: schema.approvalRequests.id,
+              workItemId: schema.approvalRequests.workItemId,
+              agentRunId: schema.approvalRequests.agentRunId,
+              createdAt: schema.approvalRequests.createdAt
+            }).from(schema.approvalRequests).where(and(
+              eq(schema.approvalRequests.projectId, projectId),
+              eq(schema.approvalRequests.status, 'pending'),
+              lt(
+                schema.approvalRequests.createdAt,
+                new Date(runAt.getTime() - pendingApprovalStaleAfterMs)
+              )
+            )).orderBy(asc(schema.approvalRequests.id));
             const staleBefore = new Date(runAt.getTime() - staleAfterMs);
             const latest = latestSnapshot[0];
             const syncCondition: Condition | null = latest === undefined || latest.createdAt < staleBefore
@@ -167,6 +224,151 @@ export const createPostgresHealthcheckProducer = (
               deduplicationKey: 'queue_work_failed',
               observedAt: runAt,
               condition: queueCondition
+            });
+            const overdueDeadlineMembers: RiskSignalSetMember[] = [
+              ...overdueMilestones.map((milestone) => ({
+                deduplicationKey: `${deadlineOverdueRuleId}:milestone:${milestone.id}`,
+                condition: {
+                  code: deadlineOverdueRuleId,
+                  ruleId: deadlineOverdueRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'fact' as const,
+                  severity: 'red' as const,
+                  summary: 'Milestone deadline is overdue.',
+                  details: {
+                    entityType: 'milestone',
+                    entityId: milestone.id,
+                    deadlineAt: milestone.targetAt!.toISOString()
+                  },
+                  evidenceReferences: [{type: 'milestone', id: milestone.id}],
+                  impact: 'The project has passed an open delivery commitment.',
+                  nextAction: 'replan_or_close_overdue_deadline'
+                }
+              })),
+              ...overdueDeliveryJourneys.map((journey) => ({
+                workItemId: journey.workItemId,
+                deduplicationKey:
+                  `${deadlineOverdueRuleId}:delivery_journey:${journey.workItemId}`,
+                condition: {
+                  code: deadlineOverdueRuleId,
+                  ruleId: deadlineOverdueRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'fact' as const,
+                  severity: 'red' as const,
+                  summary: 'Delivery deadline is overdue.',
+                  details: {
+                    entityType: 'delivery_journey',
+                    entityId: journey.workItemId,
+                    deadlineAt: journey.deadlineAt!.toISOString(),
+                    workItemStatus: journey.status
+                  },
+                  evidenceReferences: [{
+                    type: 'delivery_journey',
+                    id: journey.workItemId
+                  }],
+                  impact: 'Active delivery work has passed its canonical deadline.',
+                  ownerActorId: journey.ownerActorId,
+                  nextAction: 'replan_or_close_overdue_deadline'
+                }
+              }))
+            ];
+            const staleWorkItemMembers: RiskSignalSetMember[] = openWorkItems
+              .filter((item) =>
+                activeWorkItemStatuses.has(item.status) &&
+                runAt.getTime() - item.updatedAt.getTime() > activeWorkItemStaleAfterMs
+              )
+              .map((item) => ({
+                workItemId: item.id,
+                deduplicationKey: `${staleWorkItemRuleId}:work_item:${item.id}`,
+                condition: {
+                  code: staleWorkItemRuleId,
+                  ruleId: staleWorkItemRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'inference',
+                  severity: 'yellow',
+                  summary: 'Active work item is stale.',
+                  details: {
+                    workItemId: item.id,
+                    workItemStatus: item.status,
+                    lastUpdatedAt: item.updatedAt.toISOString(),
+                    staleAfterHours: activeWorkItemStaleAfterMs / 3_600_000
+                  },
+                  evidenceReferences: [{type: 'work_item', id: item.id}],
+                  impact: 'Active delivery work may no longer reflect current progress.',
+                  ownerActorId: item.ownerActorId,
+                  nextAction: 'review_stale_work_item'
+                }
+              }));
+            const staleApprovalMembers: RiskSignalSetMember[] = staleApprovals.map(
+              (approval) => ({
+                workItemId: approval.workItemId,
+                agentRunId: approval.agentRunId,
+                deduplicationKey: `${staleApprovalRuleId}:approval:${approval.id}`,
+                condition: {
+                  code: staleApprovalRuleId,
+                  ruleId: staleApprovalRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'fact',
+                  severity: 'yellow',
+                  summary: 'Pending approval is older than 24 hours.',
+                  details: {
+                    approvalRequestId: approval.id,
+                    requestedAt: approval.createdAt.toISOString(),
+                    staleAfterHours: pendingApprovalStaleAfterMs / 3_600_000
+                  },
+                  evidenceReferences: [{
+                    type: 'approval_request',
+                    id: approval.id
+                  }],
+                  impact: 'Governed delivery work is waiting on an overdue decision.',
+                  nextAction: 'decide_or_cancel_pending_approval'
+                }
+              })
+            );
+            const blockedUnownedMembers: RiskSignalSetMember[] = openWorkItems
+              .filter((item) => item.blocked && item.ownerActorId === null)
+              .map((item) => ({
+                workItemId: item.id,
+                deduplicationKey: `${blockedUnownedRuleId}:work_item:${item.id}`,
+                condition: {
+                  code: blockedUnownedRuleId,
+                  ruleId: blockedUnownedRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'fact',
+                  severity: 'red',
+                  summary: 'Blocked work item has no owner.',
+                  details: {
+                    workItemId: item.id,
+                    workItemStatus: item.status
+                  },
+                  evidenceReferences: [{type: 'work_item', id: item.id}],
+                  impact: 'A delivery blocker has no accountable owner.',
+                  nextAction: 'assign_owner_to_blocked_work_item'
+                }
+              }));
+            await reconcileRiskSignalSet(tx, {
+              projectId,
+              ruleId: deadlineOverdueRuleId,
+              observedAt: runAt,
+              members: overdueDeadlineMembers
+            });
+            await reconcileRiskSignalSet(tx, {
+              projectId,
+              ruleId: staleWorkItemRuleId,
+              observedAt: runAt,
+              members: staleWorkItemMembers
+            });
+            await reconcileRiskSignalSet(tx, {
+              projectId,
+              ruleId: staleApprovalRuleId,
+              observedAt: runAt,
+              members: staleApprovalMembers
+            });
+            await reconcileRiskSignalSet(tx, {
+              projectId,
+              ruleId: blockedUnownedRuleId,
+              observedAt: runAt,
+              members: blockedUnownedMembers
             });
             await tx.update(schema.scheduledJobs).set({
               status: 'active',
