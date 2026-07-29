@@ -127,6 +127,8 @@ const validateInput = (input: TrackerSnapshotProjectionInput): void => {
     input.actorId,
     input.correlationId,
     input.provider,
+    input.providers?.taskTracker ?? input.provider,
+    input.providers?.repositoryObservation ?? input.provider,
     input.snapshot.repository.externalId,
     input.snapshot.externalVersion
   ];
@@ -162,6 +164,8 @@ export const createPostgresTrackerSnapshotProjector = (
   ): Promise<TrackerSnapshotProjectionResult> => {
     validateInput(input);
     const requestHash = trackerSnapshotProjectionRequestHash(input);
+    const taskTrackerProvider = input.providers?.taskTracker ?? input.provider;
+    const repositoryProvider = input.providers?.repositoryObservation ?? input.provider;
 
     try {
       return await db.transaction(async (tx) => {
@@ -236,7 +240,7 @@ export const createPostgresTrackerSnapshotProjector = (
           'tracker-snapshot-repository',
           input.workspaceId,
           input.projectId,
-          input.provider
+          repositoryProvider
         ].join(':')
       );
 
@@ -245,7 +249,7 @@ export const createPostgresTrackerSnapshotProjector = (
         .from(schema.trackerBindings)
         .where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, repositoryProvider),
           eq(schema.trackerBindings.surface, 'repository'),
           eq(schema.trackerBindings.entityType, 'project'),
           eq(schema.trackerBindings.entityId, input.projectId)
@@ -291,7 +295,7 @@ export const createPostgresTrackerSnapshotProjector = (
           id: input.operationId,
           workspaceId: input.workspaceId,
           projectId: input.projectId,
-          provider: input.provider,
+          provider: repositoryProvider,
           repositoryExternalId: input.snapshot.repository.externalId,
           mode: input.mode,
           requestHash,
@@ -344,7 +348,7 @@ export const createPostgresTrackerSnapshotProjector = (
         .from(schema.trackerBindings)
         .where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, taskTrackerProvider),
           eq(schema.trackerBindings.surface, 'issue'),
           eq(schema.trackerBindings.entityType, 'work_item')
         ));
@@ -363,7 +367,7 @@ export const createPostgresTrackerSnapshotProjector = (
         )
         .where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, taskTrackerProvider),
           eq(schema.trackerBindings.surface, 'issue'),
           eq(schema.trackerBindings.entityType, 'work_item')
         ))
@@ -408,7 +412,7 @@ export const createPostgresTrackerSnapshotProjector = (
           });
           await tx.insert(schema.trackerBindings).values({
             projectId: input.projectId,
-            provider: input.provider,
+            provider: taskTrackerProvider,
             surface: 'issue',
             externalId: item.externalId,
             entityType: 'work_item',
@@ -475,7 +479,7 @@ export const createPostgresTrackerSnapshotProjector = (
           updatedAt: new Date()
         }).where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, taskTrackerProvider),
           eq(schema.trackerBindings.surface, 'issue'),
           eq(schema.trackerBindings.externalId, item.externalId),
           eq(schema.trackerBindings.entityId, workItemId)
@@ -529,7 +533,7 @@ export const createPostgresTrackerSnapshotProjector = (
             workItemId,
             actorId: input.actorId,
             correlationId: input.correlationId,
-            provider: input.provider,
+            provider: taskTrackerProvider,
             mappedStatus: mappedProjectStatus,
             expectedCanonicalVersion: workItem.version,
             bindingInboundVersion: item.externalVersion,
@@ -559,7 +563,7 @@ export const createPostgresTrackerSnapshotProjector = (
         }).where(and(
           eq(schema.trackerBindings.id, binding.id),
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider)
+          eq(schema.trackerBindings.provider, taskTrackerProvider)
         ));
       }
 
@@ -568,7 +572,7 @@ export const createPostgresTrackerSnapshotProjector = (
         .from(schema.trackerBindings)
         .where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, repositoryProvider),
           eq(schema.trackerBindings.surface, 'pull_request'),
           eq(schema.trackerBindings.entityType, 'pr_link')
         ));
@@ -590,7 +594,7 @@ export const createPostgresTrackerSnapshotProjector = (
         )
         .where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, repositoryProvider),
           eq(schema.trackerBindings.surface, 'pull_request'),
           eq(schema.trackerBindings.entityType, 'pr_link')
         ))
@@ -632,7 +636,7 @@ export const createPostgresTrackerSnapshotProjector = (
           await tx.insert(schema.prLinks).values({
             id: prLinkId,
             workItemId: mappedWorkItemId,
-            provider: input.provider,
+            provider: repositoryProvider,
             repositoryRef:
               `${input.snapshot.repository.owner}/${input.snapshot.repository.name}`,
             externalId: pullRequest.externalId,
@@ -646,7 +650,7 @@ export const createPostgresTrackerSnapshotProjector = (
           });
           await tx.insert(schema.trackerBindings).values({
             projectId: input.projectId,
-            provider: input.provider,
+            provider: repositoryProvider,
             surface: 'pull_request',
             externalId: pullRequest.externalId,
             entityType: 'pr_link',
@@ -698,7 +702,7 @@ export const createPostgresTrackerSnapshotProjector = (
           updatedAt: new Date()
         }).where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, repositoryProvider),
           eq(schema.trackerBindings.surface, 'pull_request'),
           eq(schema.trackerBindings.externalId, pullRequest.externalId),
           eq(schema.trackerBindings.entityId, prLinkId)
@@ -727,11 +731,11 @@ export const createPostgresTrackerSnapshotProjector = (
         await tx.update(schema.trackerBindings).set(missing).where(and(
           eq(schema.trackerBindings.id, binding.id),
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider)
+          eq(schema.trackerBindings.provider, repositoryProvider)
         ));
         await tx.update(schema.prLinks).set(missing).where(and(
           eq(schema.prLinks.id, binding.entityId),
-          eq(schema.prLinks.provider, input.provider),
+          eq(schema.prLinks.provider, repositoryProvider),
           eq(schema.prLinks.externalId, binding.externalId)
         ));
       }
@@ -741,7 +745,7 @@ export const createPostgresTrackerSnapshotProjector = (
         .from(schema.trackerBindings)
         .where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, repositoryProvider),
           eq(schema.trackerBindings.surface, 'check'),
           eq(schema.trackerBindings.entityType, 'build_check')
         ));
@@ -767,7 +771,7 @@ export const createPostgresTrackerSnapshotProjector = (
         )
         .where(and(
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider),
+          eq(schema.trackerBindings.provider, repositoryProvider),
           eq(schema.trackerBindings.surface, 'check'),
           eq(schema.trackerBindings.entityType, 'build_check')
         ))
@@ -802,7 +806,7 @@ export const createPostgresTrackerSnapshotProjector = (
           await tx.insert(schema.buildChecks).values({
             id: checkId,
             prLinkId,
-            provider: input.provider,
+            provider: repositoryProvider,
             externalId: check.externalId,
             externalVersion: check.externalVersion,
             name: check.name,
@@ -813,7 +817,7 @@ export const createPostgresTrackerSnapshotProjector = (
           });
           await tx.insert(schema.trackerBindings).values({
             projectId: input.projectId,
-            provider: input.provider,
+            provider: repositoryProvider,
             surface: 'check',
             externalId: check.externalId,
             entityType: 'build_check',
@@ -857,7 +861,7 @@ export const createPostgresTrackerSnapshotProjector = (
             updatedAt: new Date()
           }).where(and(
             eq(schema.trackerBindings.projectId, input.projectId),
-            eq(schema.trackerBindings.provider, input.provider),
+            eq(schema.trackerBindings.provider, repositoryProvider),
             eq(schema.trackerBindings.surface, 'check'),
             eq(schema.trackerBindings.externalId, check.externalId),
             eq(schema.trackerBindings.entityId, checkId)
@@ -885,11 +889,11 @@ export const createPostgresTrackerSnapshotProjector = (
         await tx.update(schema.trackerBindings).set(stale).where(and(
           eq(schema.trackerBindings.id, binding.id),
           eq(schema.trackerBindings.projectId, input.projectId),
-          eq(schema.trackerBindings.provider, input.provider)
+          eq(schema.trackerBindings.provider, repositoryProvider)
         ));
         await tx.update(schema.buildChecks).set(stale).where(and(
           eq(schema.buildChecks.id, binding.entityId),
-          eq(schema.buildChecks.provider, input.provider),
+          eq(schema.buildChecks.provider, repositoryProvider),
           eq(schema.buildChecks.externalId, binding.externalId)
         ));
       }
@@ -897,7 +901,7 @@ export const createPostgresTrackerSnapshotProjector = (
       if (repositoryBinding === undefined) {
         await tx.insert(schema.trackerBindings).values({
           projectId: input.projectId,
-          provider: input.provider,
+          provider: repositoryProvider,
           surface: 'repository',
           externalId: input.snapshot.repository.externalId,
           entityType: 'project',

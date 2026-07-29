@@ -179,6 +179,27 @@ describe('GitHub repository read adapter', () => {
     expect(github.transitionWorkItem).toBeUndefined();
   });
 
+  it('shares one in-flight snapshot between its capability-specific read ports', async () => {
+    const paths: string[] = [];
+    const fetch = vi.fn(routeFetch((url) => {
+      paths.push(url.pathname);
+      if (url.pathname === '/repos/VF78/MSA') return jsonResponse(repositoryPayload());
+      if (url.pathname.endsWith('/issues')) return jsonResponse([]);
+      if (url.pathname.endsWith('/pulls')) return jsonResponse([]);
+      throw new Error(`Unexpected route ${url.pathname}`);
+    }));
+    const github = adapter(fetch);
+    const taskTrackerRead = github.readWorkItems({
+      repository: {owner: 'VF78', repository: 'MSA'}, credentialRef: {...credentialRef}
+    });
+    const repositoryObservationRead = github.readRepositoryObservation({
+      repository: {owner: 'VF78', repository: 'MSA'}, credentialRef: {...credentialRef}
+    });
+
+    await expect(Promise.all([taskTrackerRead, repositoryObservationRead])).resolves.toHaveLength(2);
+    expect(paths.filter((path) => path === '/repos/VF78/MSA')).toHaveLength(1);
+  });
+
   it.each([
     {owner: 'vf78', repository: 'MSA'},
     {owner: 'VF78', repository: 'msa'},

@@ -406,6 +406,80 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     })).resolves.toBeNull();
   });
 
+  it('persists and reads distinct task-tracker and repository provider provenance', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Composed sources', $3)`,
+      [projectId, ids.workspace, `composed-${randomUUID()}`]
+    );
+    const repository = {
+      externalId: 'forge-like:repository:1',
+      externalVersion: 'forge-like:repository:v1',
+      owner: 'Forge',
+      name: 'Evidence'
+    };
+    const task = {
+      ...issue('linear-like:issue:1'),
+      externalVersion: 'linear-like:issue:v1',
+      projectStatus: {
+        projectExternalId: 'linear-like:project:1',
+        projectItemExternalId: 'linear-like:project-item:1',
+        fieldExternalId: 'linear-like:status-field:1',
+        optionExternalId: 'linear-like:status-ready',
+        status: 'ready' as const
+      }
+    };
+    const initial = snapshot('composed:sha256:1', {
+      repository,
+      workItems: [task],
+      pullRequests: [{
+        ...pullRequest('forge-like:pull-request:1', [task.externalId]),
+        externalVersion: 'forge-like:pull-request:v1'
+      }],
+      checks: [{
+        ...check('forge-like:check:1', 'forge-like:pull-request:1'),
+        externalVersion: 'forge-like:check:v1'
+      }]
+    });
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const sourceProviders = {taskTracker: 'linear-like', repositoryObservation: 'forge-like'};
+    await expect(projector.bootstrap({
+      ...operation(initial), projectId, provider: 'forge-like', providers: sourceProviders
+    })).resolves.toMatchObject({status: 'applied'});
+    await expect(projector.synchronize({
+      ...operation({
+        ...initial,
+        externalVersion: 'composed:sha256:2',
+        workItems: [{...task, externalVersion: 'linear-like:issue:v2'}]
+      }),
+      projectId,
+      provider: 'forge-like',
+      providers: sourceProviders,
+      expectedPreviousExternalVersion: initial.externalVersion
+    })).resolves.toMatchObject({status: 'applied'});
+
+    const reader = createPostgresProjectTaskProjectionReader(db);
+    const projection = await reader.read({workspaceId: ids.workspace, projectId});
+    expect(projection?.tasks[0]).toMatchObject({
+      sourceBindings: [expect.objectContaining({providerRef: 'linear-like', surface: 'issue'})],
+      pullRequests: [expect.objectContaining({
+        providerRef: 'forge-like',
+        checks: [expect.objectContaining({providerRef: 'forge-like'})]
+      })]
+    });
+    const statusObservations = await db.select().from(trackerStatusObservationInbox).where(and(
+      eq(trackerStatusObservationInbox.projectId, projectId),
+      eq(trackerStatusObservationInbox.provider, 'linear-like')
+    ));
+    expect(statusObservations).toHaveLength(1);
+    expect(await db.select().from(trackerBindings).where(and(
+      eq(trackerBindings.projectId, projectId),
+      eq(trackerBindings.surface, 'repository'),
+      eq(trackerBindings.provider, 'forge-like')
+    ))).toHaveLength(1);
+  });
+
   it('projects scoped canonical tasks with provider evidence and explicit absence states', async () => {
     const projectId = randomUUID();
     await testPool.query(
