@@ -699,7 +699,9 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
           profile.id === packet.agentProfileSnapshotId);
       const repositoryBinding = repositoryBindingByProject.get(packet.projectId);
       const baseCommit = baseCommitFrom(repositoryBinding);
-      const nonRunnableReason = !runnerQueueEnabled
+      const nonRunnableReason = packet.frozenWorkItemVersion !== packet.currentWorkItemVersion
+        ? 'The WorkItem changed after this packet was frozen. Build a new packet.'
+        : !runnerQueueEnabled
         ? 'Agent runner is disabled.'
         : baseCommit === null
         ? (repositoryBinding === undefined
