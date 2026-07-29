@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {and, desc, eq, inArray, isNull} from 'drizzle-orm';
+import {and, desc, eq, inArray, isNull, or} from 'drizzle-orm';
 import {
   CANONICAL_COMMAND_POLICY,
   parseRunnerCompletionPayload
@@ -312,7 +312,10 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
     }).from(riskSignals)
       .leftJoin(workItems, and(eq(riskSignals.workItemId, workItems.id), eq(riskSignals.projectId, workItems.projectId)))
       .leftJoin(deliveryJourneys, eq(riskSignals.workItemId, deliveryJourneys.workItemId))
-      .leftJoin(actors, eq(riskSignals.ownerActorId, actors.id))
+      .leftJoin(actors, or(
+        eq(riskSignals.ownerActorId, actors.id),
+        and(isNull(riskSignals.ownerActorId), eq(workItems.ownerActorId, actors.id))
+      ))
       .where(and(inArray(riskSignals.projectId, projectIds), isNull(riskSignals.resolvedAt)))
       .orderBy(desc(riskSignals.updatedAt), riskSignals.id),
     db.select({
