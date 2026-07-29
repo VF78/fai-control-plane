@@ -3,6 +3,12 @@ import {Pool} from 'pg';
 import * as schema from './schema';
 
 export * from './schema';
+export {
+  reconcileRiskSignal,
+  type RiskSignalCondition,
+  type RiskSignalEvidenceReference,
+  type RiskSignalReconciliation
+} from './risk-signal';
 export {createPostgresUnitOfWork} from './persistence';
 export {
   createPostgresDeliveryProtocolStore

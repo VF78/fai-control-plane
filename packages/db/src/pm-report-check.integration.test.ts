@@ -84,10 +84,15 @@ describePostgres('PostgreSQL PM report check producer', () => {
       [ids.ascon]
     );
     await testPool.query(
-      `INSERT INTO risk_signals (project_id, code, severity, summary, details) VALUES
-       ($1, 'daily_pm_report_missing', 'yellow', 'Old primary', '{}'),
-       ($1, 'daily_pm_report_missing', 'yellow', 'Old duplicate', '{}')`,
-      [ids.ascon]
+      `INSERT INTO risk_signals (
+         project_id, code, rule_id, rule_version, signal_class, severity, summary,
+         details, evidence_references, impact, next_action, observed_at, deduplication_key
+       ) VALUES (
+         $1, 'daily_pm_report_missing', 'daily_pm_report_missing', '1', 'inference',
+         'yellow', 'Old primary', '{}', '[]', 'Old impact', 'generate_daily_pm_report',
+         $2, 'daily_pm_report_missing'
+       )`,
+      [ids.ascon, now]
     );
   });
 
@@ -118,7 +123,16 @@ describePostgres('PostgreSQL PM report check producer', () => {
         reportDate: '2026-07-26',
         reportExists: false,
         observedAt: '2026-07-26T09:10:00.000Z'
-      }
+      },
+      ruleId: 'daily_pm_report_missing',
+      ruleVersion: '1',
+      signalClass: 'inference',
+      evidenceReferences: [],
+      impact: 'Operators lack the expected daily delivery summary.',
+      ownerActorId: null,
+      nextAction: 'generate_daily_pm_report',
+      observedAt: now,
+      deduplicationKey: 'daily_pm_report_missing'
     })]);
     expect(await db.select().from(riskSignals).where(and(
       eq(riskSignals.projectId, ids.ascon),
@@ -135,7 +149,7 @@ describePostgres('PostgreSQL PM report check producer', () => {
     expect(await db.select().from(riskSignals).where(and(
       eq(riskSignals.projectId, ids.ascon),
       eq(riskSignals.code, 'daily_pm_report_missing')
-    ))).toHaveLength(2);
+    ))).toHaveLength(1);
 
     const failedAt = new Date('2026-07-27T09:10:00.000Z');
     await testPool.query(`

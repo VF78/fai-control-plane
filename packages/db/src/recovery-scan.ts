@@ -3,6 +3,7 @@ import {and, asc, eq, inArray, lte, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {fromDrizzle} from 'pg-boss';
 import {INCOMING_EVENT_QUEUE, type PgBossTransactionalSender} from './incoming-event-inbox';
+import {reconcileRiskSignal} from './risk-signal';
 import * as schema from './schema';
 
 type Database = NodePgDatabase<typeof schema>;
@@ -15,60 +16,6 @@ const recoveryScanName = 'recovery_scan';
 const maximumIncomingEventAttempts = 5;
 const recoveryExhaustedCode = 'incoming_event_recovery_exhausted';
 const runnerLeaseExpiredCode = 'runner_lease_expired';
-
-type Condition = Readonly<{
-  severity: 'red';
-  summary: string;
-  details: Record<string, unknown>;
-}>;
-
-const reconcileSignal = async (
-  tx: Parameters<Database['transaction']>[0] extends (tx: infer Transaction) => unknown
-    ? Transaction
-    : never,
-  projectId: string,
-  condition: Condition | null,
-  now: Date
-): Promise<void> => {
-  const signals = await tx.select().from(schema.riskSignals).where(and(
-    eq(schema.riskSignals.projectId, projectId),
-    eq(schema.riskSignals.code, recoveryExhaustedCode)
-  )).orderBy(asc(schema.riskSignals.createdAt), asc(schema.riskSignals.id)).for('update');
-  const active = signals.filter((signal) => signal.resolvedAt === null);
-
-  if (condition === null) {
-    if (active.length > 0) {
-      await tx.update(schema.riskSignals).set({resolvedAt: now, updatedAt: now})
-        .where(inArray(schema.riskSignals.id, active.map((signal) => signal.id)));
-    }
-    return;
-  }
-
-  const [primary, ...duplicates] = active;
-  if (primary === undefined) {
-    await tx.insert(schema.riskSignals).values({
-      projectId,
-      code: recoveryExhaustedCode,
-      severity: condition.severity,
-      summary: condition.summary,
-      details: condition.details,
-      createdAt: now,
-      updatedAt: now
-    });
-    return;
-  }
-  await tx.update(schema.riskSignals).set({
-    severity: condition.severity,
-    summary: condition.summary,
-    details: condition.details,
-    resolvedAt: null,
-    updatedAt: now
-  }).where(eq(schema.riskSignals.id, primary.id));
-  if (duplicates.length > 0) {
-    await tx.update(schema.riskSignals).set({resolvedAt: now, updatedAt: now})
-      .where(inArray(schema.riskSignals.id, duplicates.map((signal) => signal.id)));
-  }
-};
 
 export const createPostgresRecoveryScanProducer = (
   db: Database,
@@ -228,11 +175,26 @@ export const createPostgresRecoveryScanProducer = (
                 eq(schema.incomingEvents.status, 'failed'),
                 eq(schema.incomingEvents.failureCode, recoveryExhaustedCode)
               )).orderBy(asc(schema.incomingEvents.id));
-            await reconcileSignal(tx, projectId, exhausted.length === 0 ? null : {
-              severity: 'red',
-              summary: 'Incoming event recovery retries are exhausted.',
-              details: {incomingEventIds: exhausted.map((event) => event.id)}
-            }, runAt);
+            await reconcileRiskSignal(tx, {
+              projectId,
+              deduplicationKey: recoveryExhaustedCode,
+              observedAt: runAt,
+              condition: exhausted.length === 0 ? null : {
+                code: recoveryExhaustedCode,
+                ruleId: recoveryExhaustedCode,
+                ruleVersion: '1',
+                signalClass: 'fact',
+                severity: 'red',
+                summary: 'Incoming event recovery retries are exhausted.',
+                details: {incomingEventIds: exhausted.map((event) => event.id)},
+                evidenceReferences: exhausted.map((event) => ({
+                  type: 'incoming_event',
+                  id: event.id
+                })),
+                impact: 'Inbound provider events are not reaching canonical processing.',
+                nextAction: 'inspect_failed_incoming_events'
+              }
+            });
             await tx.update(schema.scheduledJobs).set({
               status: 'active',
               lastSuccessAt: runAt,

@@ -112,6 +112,18 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       'queue_work_failed',
       'tracker_sync_missing_or_stale'
     ]);
+    expect(active.find((signal) => signal.code === 'github_status_writeback_failed'))
+      .toEqual(expect.objectContaining({
+        ruleId: 'github_status_writeback_failed',
+        ruleVersion: '1',
+        signalClass: 'fact',
+        evidenceReferences: [{type: 'outbox_event', id: ids.failedOutbox}],
+        impact: 'Canonical delivery status was not published to the tracker.',
+        ownerActorId: null,
+        nextAction: 'inspect_failed_status_writeback',
+        observedAt: current,
+        deduplicationKey: 'github_status_writeback_failed'
+      }));
     expect(await db.select().from(riskSignals).where(eq(
       riskSignals.projectId, ids.otherProject
     ))).toHaveLength(0);

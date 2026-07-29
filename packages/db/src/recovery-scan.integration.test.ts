@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {and, eq} from 'drizzle-orm';
+import {and, eq, isNull} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
@@ -13,6 +13,7 @@ import {
   createPostgresRecoveryScanProducer,
   incomingEvents,
   projectTrackerRepositoryScopes,
+  riskSignals,
   scheduledJobs,
   secretRefs,
   taskPackets,
@@ -31,6 +32,7 @@ const ids = {
   project: randomUUID(),
   secret: randomUUID(),
   expired: randomUUID(),
+  exhausted: randomUUID(),
   telegramExpired: randomUUID(),
   active: randomUUID(),
   actor: randomUUID(),
@@ -161,11 +163,14 @@ describePostgres('PostgreSQL recovery scan producer', () => {
          sanitized_payload, status, attempt_count, processing_token, processing_lease_expires_at
        ) VALUES
          ($1, $2, 'github', 'expired', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', NULL, NULL, NULL, repeat('a', 64), '{}', 'processing', 1, gen_random_uuid(), $3),
-         ($4, $2, 'telegram', 'telegram-expired', 'chat_command', '{"outcome":"verified","method":"shared-token"}', NULL, NULL, NULL, 'tgid:v1:' || repeat('a', 64), 'tgid:v1:' || repeat('b', 64), 'tgid:v1:' || repeat('c', 64), repeat('b', 64), '{}', 'processing', 1, gen_random_uuid(), $5),
-         ($6, $2, 'github', 'active', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', NULL, NULL, NULL, repeat('c', 64), '{}', 'processing', 1, gen_random_uuid(), $7)`,
+         ($4, $2, 'github', 'exhausted', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', NULL, NULL, NULL, repeat('d', 64), '{}', 'processing', 5, gen_random_uuid(), $5),
+         ($6, $2, 'telegram', 'telegram-expired', 'chat_command', '{"outcome":"verified","method":"shared-token"}', NULL, NULL, NULL, 'tgid:v1:' || repeat('a', 64), 'tgid:v1:' || repeat('b', 64), 'tgid:v1:' || repeat('c', 64), repeat('b', 64), '{}', 'processing', 1, gen_random_uuid(), $7),
+         ($8, $2, 'github', 'active', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', NULL, NULL, NULL, repeat('c', 64), '{}', 'processing', 1, gen_random_uuid(), $9)`,
       [
         ids.expired,
         ids.project,
+        new Date(now.getTime() - 1_000),
+        ids.exhausted,
         new Date(now.getTime() - 1_000),
         ids.telegramExpired,
         new Date(now.getTime() - 1_000),
@@ -223,6 +228,21 @@ describePostgres('PostgreSQL recovery scan producer', () => {
         processingToken: null,
         processingLeaseExpiresAt: null
       })]);
+    expect(await db.select().from(riskSignals).where(and(
+      eq(riskSignals.projectId, ids.project),
+      isNull(riskSignals.resolvedAt)
+    ))).toEqual([expect.objectContaining({
+      code: 'incoming_event_recovery_exhausted',
+      ruleId: 'incoming_event_recovery_exhausted',
+      ruleVersion: '1',
+      signalClass: 'fact',
+      evidenceReferences: [{type: 'incoming_event', id: ids.exhausted}],
+      impact: 'Inbound provider events are not reaching canonical processing.',
+      ownerActorId: null,
+      nextAction: 'inspect_failed_incoming_events',
+      observedAt: now,
+      deduplicationKey: 'incoming_event_recovery_exhausted'
+    })]);
     expect(await db.select().from(scheduledJobs).where(and(
       eq(scheduledJobs.projectId, ids.project),
       eq(scheduledJobs.name, 'recovery_scan')
@@ -281,5 +301,9 @@ describePostgres('PostgreSQL recovery scan producer', () => {
       resultVersion: 4,
       correlationId: `runner.lease_expired:${ids.run}:attempt:1`
     }]);
+    expect(await db.select().from(riskSignals).where(and(
+      eq(riskSignals.projectId, ids.project),
+      isNull(riskSignals.resolvedAt)
+    ))).toHaveLength(1);
   });
 });
