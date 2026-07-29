@@ -17,6 +17,7 @@ import * as schema from './schema';
 type Database = NodePgDatabase<typeof schema>;
 type AppliedResult = Extract<TrackerSnapshotProjectionResult, {status: 'applied'}>;
 type ConflictResult = Extract<TrackerSnapshotProjectionResult, {status: 'conflict'}>;
+type EvidenceState = typeof schema.trackerBindings.$inferInsert.evidenceState;
 
 const canonical = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -80,6 +81,24 @@ const repositoryMetadata = (
   name: snapshot.repository.name,
   defaultBranch: snapshot.repository.defaultBranch,
   headSha: snapshot.repository.headSha
+});
+
+const observedEvidence = (
+  previousExternalVersion: string | null | undefined,
+  externalVersion: string,
+  observedAt: Date,
+  override?: Readonly<{state: EvidenceState; conflictReason?: string}>
+) => ({
+  observedAt,
+  confirmedAt: override?.state === 'confirmed' ||
+    (override === undefined && previousExternalVersion === externalVersion)
+    ? observedAt
+    : null,
+  evidenceState: override?.state ??
+    (previousExternalVersion === externalVersion ? 'confirmed' : 'observed'),
+  conflictReason: override?.state === 'conflict'
+    ? override.conflictReason ?? 'provider_fact_conflict'
+    : null
 });
 
 const projectStatusIdentityMatches = (
@@ -367,6 +386,9 @@ export const createPostgresTrackerSnapshotProjector = (
       let updatedWorkItemStatuses = 0;
       const unknownWorkItemExternalIds: string[] = [];
       const unknownProjectStatusWorkItemExternalIds: string[] = [];
+      const observedWorkItemExternalIds = new Set(
+        input.snapshot.workItems.map(({externalId}) => externalId)
+      );
 
       for (const item of input.snapshot.workItems) {
         let workItemId = workItemIds.get(item.externalId);
@@ -392,6 +414,7 @@ export const createPostgresTrackerSnapshotProjector = (
             entityType: 'work_item',
             entityId: workItemId,
             externalVersion: item.externalVersion,
+            ...observedEvidence(null, item.externalVersion, new Date()),
             lastInboundVersion: item.externalVersion,
             metadata: issueMetadata(input.snapshot, item)
           });
@@ -431,8 +454,21 @@ export const createPostgresTrackerSnapshotProjector = (
           mappedProjectStatus !== null &&
           mappedProjectStatus !== workItem.status;
         providerStatusMismatch ||= outboundRace;
+        const evidence = observedEvidence(
+          binding.externalVersion,
+          item.externalVersion,
+          new Date(),
+          outboundRace
+            ? {state: 'conflict', conflictReason: 'outbound_race'}
+            : confirmsOutboundMutation
+              ? {state: 'confirmed'}
+              : binding.lastOutboundMutationId !== null
+                ? {state: 'pending_confirmation'}
+                : undefined
+        );
         const [updatedBinding] = await tx.update(schema.trackerBindings).set({
           externalVersion: item.externalVersion,
+          ...evidence,
           lastInboundVersion: item.externalVersion,
           ...(confirmsOutboundMutation ? {lastOutboundMutationId: null} : {}),
           metadata: issueMetadata(input.snapshot, item),
@@ -509,6 +545,24 @@ export const createPostgresTrackerSnapshotProjector = (
         }
       }
 
+      for (const binding of canonicalIssueBindings.map(({binding}) => binding)) {
+        const metadata = binding.metadata as Record<string, unknown>;
+        if (
+          observedWorkItemExternalIds.has(binding.externalId) ||
+          metadata.repositoryExternalId !== input.snapshot.repository.externalId
+        ) continue;
+        await tx.update(schema.trackerBindings).set({
+          evidenceState: 'missing',
+          conflictReason: null,
+          confirmedAt: null,
+          updatedAt: new Date()
+        }).where(and(
+          eq(schema.trackerBindings.id, binding.id),
+          eq(schema.trackerBindings.projectId, input.projectId),
+          eq(schema.trackerBindings.provider, input.provider)
+        ));
+      }
+
       const pullRequestBindings = await tx
         .select()
         .from(schema.trackerBindings)
@@ -520,8 +574,7 @@ export const createPostgresTrackerSnapshotProjector = (
         ));
       const canonicalPullRequestBindings = await tx
         .select({
-          externalId: schema.trackerBindings.externalId,
-          entityId: schema.trackerBindings.entityId
+          binding: schema.trackerBindings
         })
         .from(schema.trackerBindings)
         .innerJoin(
@@ -547,13 +600,16 @@ export const createPostgresTrackerSnapshotProjector = (
       );
       const canonicalPullRequestIds = new Map(
         canonicalPullRequestBindings.map(
-          (binding) => [binding.externalId, binding.entityId]
+          ({binding}) => [binding.externalId, binding.entityId]
         )
       );
       const mappedPullRequestIds = new Map<string, string>();
       const unmappablePullRequestExternalIds: string[] = [];
       const ambiguousPullRequestExternalIds: string[] = [];
       let projectedPullRequests = 0;
+      const observedPullRequestExternalIds = new Set(
+        input.snapshot.pullRequests.map(({externalId}) => externalId)
+      );
 
       for (const pullRequest of input.snapshot.pullRequests) {
         if (pullRequest.linkedWorkItemExternalIds.length > 1) {
@@ -580,11 +636,13 @@ export const createPostgresTrackerSnapshotProjector = (
             repositoryRef:
               `${input.snapshot.repository.owner}/${input.snapshot.repository.name}`,
             externalId: pullRequest.externalId,
+            externalVersion: pullRequest.externalVersion,
             url: pullRequest.url,
             headRef: pullRequest.headRef,
             baseRef: pullRequest.baseRef,
             state: pullRequest.state,
-            draft: pullRequest.draft
+            draft: pullRequest.draft,
+            ...observedEvidence(null, pullRequest.externalVersion, new Date())
           });
           await tx.insert(schema.trackerBindings).values({
             projectId: input.projectId,
@@ -594,6 +652,7 @@ export const createPostgresTrackerSnapshotProjector = (
             entityType: 'pr_link',
             entityId: prLinkId,
             externalVersion: pullRequest.externalVersion,
+            ...observedEvidence(null, pullRequest.externalVersion, new Date()),
             lastInboundVersion: pullRequest.externalVersion,
             metadata: pullRequestMetadata(input.snapshot, pullRequest)
           });
@@ -603,15 +662,26 @@ export const createPostgresTrackerSnapshotProjector = (
           unmappablePullRequestExternalIds.push(pullRequest.externalId);
           continue;
         }
+        const previousBinding = pullRequestBindings.find(
+          ({externalId, entityId}) =>
+            externalId === pullRequest.externalId && entityId === prLinkId
+        );
+        const evidence = observedEvidence(
+          previousBinding?.externalVersion,
+          pullRequest.externalVersion,
+          new Date()
+        );
         const [updatedPullRequest] = await tx.update(schema.prLinks).set({
           workItemId: mappedWorkItemId,
           repositoryRef:
             `${input.snapshot.repository.owner}/${input.snapshot.repository.name}`,
+          externalVersion: pullRequest.externalVersion,
           url: pullRequest.url,
           headRef: pullRequest.headRef,
           baseRef: pullRequest.baseRef,
           state: pullRequest.state,
           draft: pullRequest.draft,
+          ...evidence,
           updatedAt: new Date()
         }).where(eq(schema.prLinks.id, prLinkId))
           .returning({id: schema.prLinks.id});
@@ -622,6 +692,7 @@ export const createPostgresTrackerSnapshotProjector = (
         }
         const [updatedBinding] = await tx.update(schema.trackerBindings).set({
           externalVersion: pullRequest.externalVersion,
+          ...evidence,
           lastInboundVersion: pullRequest.externalVersion,
           metadata: pullRequestMetadata(input.snapshot, pullRequest),
           updatedAt: new Date()
@@ -641,6 +712,30 @@ export const createPostgresTrackerSnapshotProjector = (
         projectedPullRequests += 1;
       }
 
+      for (const {binding} of canonicalPullRequestBindings) {
+        const metadata = binding.metadata as Record<string, unknown>;
+        if (
+          observedPullRequestExternalIds.has(binding.externalId) ||
+          metadata.repositoryExternalId !== input.snapshot.repository.externalId
+        ) continue;
+        const missing = {
+          evidenceState: 'missing' as const,
+          conflictReason: null,
+          confirmedAt: null,
+          updatedAt: new Date()
+        };
+        await tx.update(schema.trackerBindings).set(missing).where(and(
+          eq(schema.trackerBindings.id, binding.id),
+          eq(schema.trackerBindings.projectId, input.projectId),
+          eq(schema.trackerBindings.provider, input.provider)
+        ));
+        await tx.update(schema.prLinks).set(missing).where(and(
+          eq(schema.prLinks.id, binding.entityId),
+          eq(schema.prLinks.provider, input.provider),
+          eq(schema.prLinks.externalId, binding.externalId)
+        ));
+      }
+
       const checkBindings = await tx
         .select()
         .from(schema.trackerBindings)
@@ -652,8 +747,7 @@ export const createPostgresTrackerSnapshotProjector = (
         ));
       const canonicalCheckBindings = await tx
         .select({
-          externalId: schema.trackerBindings.externalId,
-          entityId: schema.trackerBindings.entityId
+          binding: schema.trackerBindings
         })
         .from(schema.trackerBindings)
         .innerJoin(
@@ -683,11 +777,14 @@ export const createPostgresTrackerSnapshotProjector = (
       );
       const checkIds = new Map(
         canonicalCheckBindings.map(
-          (binding) => [binding.externalId, binding.entityId]
+          ({binding}) => [binding.externalId, binding.entityId]
         )
       );
       const unknownCheckExternalIds: string[] = [];
       let projectedChecks = 0;
+      const observedCheckExternalIds = new Set(
+        input.snapshot.checks.map(({externalId}) => externalId)
+      );
 
       for (const check of input.snapshot.checks) {
         const prLinkId = mappedPullRequestIds.get(check.pullRequestExternalId);
@@ -707,10 +804,12 @@ export const createPostgresTrackerSnapshotProjector = (
             prLinkId,
             provider: input.provider,
             externalId: check.externalId,
+            externalVersion: check.externalVersion,
             name: check.name,
             status: check.status,
             conclusion: check.conclusion,
-            detailsUrl: check.detailsUrl
+            detailsUrl: check.detailsUrl,
+            ...observedEvidence(null, check.externalVersion, new Date())
           });
           await tx.insert(schema.trackerBindings).values({
             projectId: input.projectId,
@@ -720,17 +819,29 @@ export const createPostgresTrackerSnapshotProjector = (
             entityType: 'build_check',
             entityId: checkId,
             externalVersion: check.externalVersion,
+            ...observedEvidence(null, check.externalVersion, new Date()),
             lastInboundVersion: check.externalVersion,
             metadata: checkMetadata(input.snapshot, check)
           });
           checkIds.set(check.externalId, checkId);
         } else {
+          const previousBinding = checkBindings.find(
+            ({externalId, entityId}) =>
+              externalId === check.externalId && entityId === checkId
+          );
+          const evidence = observedEvidence(
+            previousBinding?.externalVersion,
+            check.externalVersion,
+            new Date()
+          );
           const [updatedCheck] = await tx.update(schema.buildChecks).set({
             prLinkId,
+            externalVersion: check.externalVersion,
             name: check.name,
             status: check.status,
             conclusion: check.conclusion,
             detailsUrl: check.detailsUrl,
+            ...evidence,
             updatedAt: new Date()
           }).where(eq(schema.buildChecks.id, checkId))
             .returning({id: schema.buildChecks.id});
@@ -740,6 +851,7 @@ export const createPostgresTrackerSnapshotProjector = (
           }
           const [updatedBinding] = await tx.update(schema.trackerBindings).set({
             externalVersion: check.externalVersion,
+            ...evidence,
             lastInboundVersion: check.externalVersion,
             metadata: checkMetadata(input.snapshot, check),
             updatedAt: new Date()
@@ -758,6 +870,30 @@ export const createPostgresTrackerSnapshotProjector = (
         projectedChecks += 1;
       }
 
+      for (const {binding} of canonicalCheckBindings) {
+        const metadata = binding.metadata as Record<string, unknown>;
+        if (
+          observedCheckExternalIds.has(binding.externalId) ||
+          metadata.repositoryExternalId !== input.snapshot.repository.externalId
+        ) continue;
+        const stale = {
+          evidenceState: 'stale' as const,
+          conflictReason: null,
+          confirmedAt: null,
+          updatedAt: new Date()
+        };
+        await tx.update(schema.trackerBindings).set(stale).where(and(
+          eq(schema.trackerBindings.id, binding.id),
+          eq(schema.trackerBindings.projectId, input.projectId),
+          eq(schema.trackerBindings.provider, input.provider)
+        ));
+        await tx.update(schema.buildChecks).set(stale).where(and(
+          eq(schema.buildChecks.id, binding.entityId),
+          eq(schema.buildChecks.provider, input.provider),
+          eq(schema.buildChecks.externalId, binding.externalId)
+        ));
+      }
+
       if (repositoryBinding === undefined) {
         await tx.insert(schema.trackerBindings).values({
           projectId: input.projectId,
@@ -767,12 +903,22 @@ export const createPostgresTrackerSnapshotProjector = (
           entityType: 'project',
           entityId: input.projectId,
           externalVersion: input.snapshot.repository.externalVersion,
+          ...observedEvidence(
+            null,
+            input.snapshot.repository.externalVersion,
+            new Date()
+          ),
           lastInboundVersion: input.snapshot.externalVersion,
           metadata: repositoryMetadata(input.snapshot)
         });
       } else {
         await tx.update(schema.trackerBindings).set({
           externalVersion: input.snapshot.repository.externalVersion,
+          ...observedEvidence(
+            repositoryBinding.externalVersion,
+            input.snapshot.repository.externalVersion,
+            new Date()
+          ),
           lastInboundVersion: input.snapshot.externalVersion,
           metadata: repositoryMetadata(input.snapshot),
           updatedAt: new Date()

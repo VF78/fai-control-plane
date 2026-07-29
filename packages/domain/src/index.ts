@@ -1518,6 +1518,153 @@ export type TrackerRepositorySnapshot = Readonly<{
   pullRequests: readonly TrackerPullRequestSnapshot[];
   checks: readonly TrackerCheckSnapshot[];
 }>;
+export const providerEvidenceStates = Object.freeze([
+  'observed',
+  'pending_confirmation',
+  'confirmed',
+  'stale',
+  'conflict',
+  'missing'
+] as const);
+export type ProviderEvidenceState = (typeof providerEvidenceStates)[number];
+export type ProviderEvidence = Readonly<{
+  providerRef: string;
+  externalRef: string;
+  externalVersion: string | null;
+  observedAt: string;
+  confirmedAt: string | null;
+  state: ProviderEvidenceState;
+  conflictReason: string | null;
+}>;
+export type TrackerEvidenceProjectionInput = Readonly<{
+  workspaceId: string;
+  projectId: string;
+  providerRef: string;
+  repositoryExternalRef: string;
+}>;
+export type TrackerEvidenceProjection = Readonly<{
+  bindings: readonly Readonly<{
+    bindingId: string;
+    surface: string;
+    entityType: string;
+    entityId: string;
+    evidence: ProviderEvidence;
+  }>[];
+  pullRequests: readonly Readonly<{
+    pullRequestLinkId: string;
+    workItemId: string;
+    evidence: ProviderEvidence;
+  }>[];
+  buildChecks: readonly Readonly<{
+    buildCheckId: string;
+    pullRequestLinkId: string;
+    evidence: ProviderEvidence;
+  }>[];
+}>;
+export type TrackerEvidenceProjectionReader = Readonly<{
+  read(input: TrackerEvidenceProjectionInput): Promise<TrackerEvidenceProjection | null>;
+}>;
+
+/** A canonical field whose absence must not be mistaken for a provider fact. */
+export type ProjectionAvailability<T> =
+  | Readonly<{availability: 'known'; value: T}>
+  | Readonly<{availability: 'unknown'}>
+  | Readonly<{availability: 'not_configured'}>;
+
+export type ProjectTaskProjectionInput = Readonly<{
+  workspaceId: string;
+  projectId: string;
+}>;
+
+export type ProjectTaskProjection = Readonly<{
+  project: Readonly<{
+    id: string;
+    name: string;
+    slug: string;
+    version: number;
+    status: ProjectionAvailability<never>;
+    blocked: ProjectionAvailability<never>;
+    deployments: readonly CanonicalDeploymentProjection[];
+  }>;
+  tasks: readonly ProjectTaskProjectionTask[];
+}>;
+
+export type CanonicalDeploymentProjection = Readonly<{
+  id: string;
+  workItemId: string | null;
+  environment: string;
+  revision: string;
+  status: string;
+  externalRef: string | null;
+  approvedBy: ProjectionAvailability<Readonly<{
+    id: string;
+    displayName: string;
+    type: ActorType;
+    role: string;
+  }>>;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** No deployment provider observation is persisted until a later bounded integration adds one. */
+  externalEvidence: ProjectionAvailability<never>;
+}>;
+
+export type ProjectTaskProjectionTask = Readonly<{
+  id: string;
+  title: string;
+  summary: string | null;
+  status: WorkItemStatus;
+  blocked: boolean;
+  version: number;
+  owner: ProjectionAvailability<Readonly<{
+    id: string;
+    displayName: string;
+    type: ActorType;
+    role: string;
+  }>>;
+  milestone: ProjectionAvailability<Readonly<{
+    id: string;
+    title: string;
+    closedAt: string | null;
+    targetAt: ProjectionAvailability<string>;
+  }>>;
+  /** Deadline is intentionally unavailable until #27 defines and persists it. */
+  deadline: ProjectionAvailability<never>;
+  sourceBindings: ReadonlyArray<Readonly<{
+    bindingId: string;
+    providerRef: string;
+    surface: string;
+    externalRef: string;
+    deepLink: string | null;
+    evidence: ProviderEvidence;
+  }>>;
+  pullRequests: ReadonlyArray<Readonly<{
+    id: string;
+    providerRef: string;
+    repositoryRef: string;
+    externalRef: string;
+    url: string | null;
+    headRef: string;
+    baseRef: string;
+    state: string;
+    draft: boolean;
+    evidence: ProviderEvidence;
+    checks: ReadonlyArray<Readonly<{
+      id: string;
+      providerRef: string;
+      externalRef: string;
+      name: string;
+      status: string;
+      conclusion: string | null;
+      detailsUrl: string | null;
+      evidence: ProviderEvidence;
+    }>>;
+  }>>;
+  deployments: readonly CanonicalDeploymentProjection[];
+}>;
+
+export type ProjectTaskProjectionReader = Readonly<{
+  read(input: ProjectTaskProjectionInput): Promise<ProjectTaskProjection | null>;
+}>;
 export type TaskTrackerObservation = Readonly<{
   externalVersion: string;
   workItems: readonly TrackerWorkItemSnapshot[];

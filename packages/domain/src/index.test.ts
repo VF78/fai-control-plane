@@ -11,6 +11,7 @@ import {
   isTrustedActorContext,
   policyDecisionFor,
   policySurfaces,
+  providerEvidenceStates,
   setWorkItemBlocked,
   transitionAccessRequest,
   transitionAgentRun,
@@ -67,6 +68,19 @@ const packetContent = (): TaskPacketContent => ({
   secretsRef: {provider: 'vault', reference: 'kv/fai/github', scope: ['repository:read']},
   createdFromEventId: 'event-1',
   createdByActorId: 'user-1'
+});
+
+describe('provider evidence lifecycle', () => {
+  it('is provider-neutral and bounded to explicit observable states', () => {
+    expect(providerEvidenceStates).toEqual([
+      'observed',
+      'pending_confirmation',
+      'confirmed',
+      'stale',
+      'conflict',
+      'missing'
+    ]);
+  });
 });
 
 const agentRun = (status: AgentRunStatus): AgentRun => ({
