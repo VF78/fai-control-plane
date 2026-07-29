@@ -627,6 +627,9 @@ export const runbooks = pgTable(
       .$type<Record<string, unknown>>()
       .notNull(),
     active: boolean('active').default(true).notNull(),
+    protocolState: text('protocol_state').$type<'draft' | 'published' | 'retired'>(),
+    revision: integer('revision'),
+    contentHash: text('content_hash'),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
@@ -635,6 +638,19 @@ export const runbooks = pgTable(
       table.projectId,
       table.name,
       table.version
+    ),
+    uniqueIndex('runbooks_one_active_delivery_protocol_per_project')
+      .on(table.projectId)
+      .where(sql`${table.protocolState} = 'published' AND ${table.active}`),
+    check(
+      'runbooks_delivery_protocol_metadata_complete',
+      sql`(${table.protocolState} IS NULL AND ${table.revision} IS NULL AND ${table.contentHash} IS NULL) OR
+          (${table.protocolState} IN ('draft', 'published', 'retired') AND
+           ${table.revision} > 0 AND ${table.contentHash} ~ '^[0-9a-f]{64}$')`
+    ),
+    check(
+      'runbooks_delivery_protocol_active_state',
+      sql`${table.protocolState} IS NULL OR ${table.protocolState} = 'published' OR NOT ${table.active}`
     )
   ]
 );

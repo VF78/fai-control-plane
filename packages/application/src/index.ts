@@ -1,5 +1,18 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export {
+  createDeliveryProtocolService,
+  type ActivateDeliveryProtocolCommand,
+  type DeliveryProtocolExecution,
+  type DeliveryProtocolMutationCommand,
+  type DeliveryProtocolReceipt,
+  type DeliveryProtocolService,
+  type DeliveryProtocolStore,
+  type DraftDeliveryProtocolCommand,
+  type PublishDeliveryProtocolCommand,
+  type RetireDeliveryProtocolCommand,
+  type SimulateDeliveryProtocolCommand
+} from './delivery-protocol.ts';
+export {
   createInstructionVersionService,
   type InstructionVersionCommand,
   type InstructionVersionExecution,
