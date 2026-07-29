@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   uuid
 } from 'drizzle-orm/pg-core';
+import type {AnyPgColumn} from 'drizzle-orm/pg-core';
 
 const id = () => uuid('id').defaultRandom().primaryKey();
 const createdAt = () =>
@@ -525,6 +526,91 @@ export const runtimeRegistrations = pgTable(
         and ${table.runtimeKey} !~ '[[:cntrl:]]'`
     ),
     check('runtime_registrations_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const workspaceInstructionVersions = pgTable(
+  'workspace_instruction_versions',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    version: integer('version').notNull(),
+    instructions: text('instructions').notNull(),
+    settings: jsonb('settings')
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    contentHash: text('content_hash').notNull(),
+    authoredByActorId: uuid('authored_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    approvedByActorId: uuid('approved_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    rollbackOfVersionId: uuid('rollback_of_version_id').references(
+      (): AnyPgColumn => workspaceInstructionVersions.id,
+      {onDelete: 'restrict'}
+    ),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('workspace_instruction_versions_sequence_unique').on(
+      table.workspaceId,
+      table.version
+    ),
+    check('workspace_instruction_versions_version_positive', sql`${table.version} > 0`),
+    check(
+      'workspace_instruction_versions_content_hash_sha256',
+      sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+export const agentProfileInstructionVersions = pgTable(
+  'agent_profile_instruction_versions',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    agentProfileId: uuid('agent_profile_id')
+      .notNull()
+      .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    version: integer('version').notNull(),
+    instructions: text('instructions').notNull(),
+    settings: jsonb('settings')
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    contentHash: text('content_hash').notNull(),
+    authoredByActorId: uuid('authored_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    approvedByActorId: uuid('approved_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    rollbackOfVersionId: uuid('rollback_of_version_id').references(
+      (): AnyPgColumn => agentProfileInstructionVersions.id,
+      {onDelete: 'restrict'}
+    ),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('agent_profile_instruction_versions_sequence_unique').on(
+      table.agentProfileId,
+      table.version
+    ),
+    index('agent_profile_instruction_versions_workspace_profile_idx').on(
+      table.workspaceId,
+      table.agentProfileId
+    ),
+    check('agent_profile_instruction_versions_version_positive', sql`${table.version} > 0`),
+    check(
+      'agent_profile_instruction_versions_content_hash_sha256',
+      sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`
+    )
   ]
 );
 

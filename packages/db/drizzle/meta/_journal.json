@@ -169,6 +169,13 @@
       "when": 1785351356376,
       "tag": "0023_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785352865856,
+      "tag": "0024_instruction_versioning",
+      "breakpoints": true
     }
   ]
 }

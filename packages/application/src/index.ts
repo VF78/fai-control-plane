@@ -1,5 +1,16 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export {
+  createInstructionVersionService,
+  type InstructionVersionCommand,
+  type InstructionVersionExecution,
+  type InstructionVersionPreview,
+  type InstructionVersionReceipt,
+  type InstructionVersionService,
+  type InstructionVersionStore,
+  type PublishInstructionVersionCommand,
+  type RollbackInstructionVersionCommand
+} from './instruction-versioning.ts';
+export {
   createProjectShareService,
   type CreateProjectShareGrantInput,
   type CreateProjectShareInput,
