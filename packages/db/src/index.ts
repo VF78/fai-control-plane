@@ -5,9 +5,11 @@ import * as schema from './schema';
 export * from './schema';
 export {
   reconcileRiskSignal,
+  reconcileRiskSignalSet,
   type RiskSignalCondition,
   type RiskSignalEvidenceReference,
-  type RiskSignalReconciliation
+  type RiskSignalReconciliation,
+  type RiskSignalSetMember
 } from './risk-signal';
 export {createPostgresUnitOfWork} from './persistence';
 export {
@@ -29,10 +31,12 @@ export {
   type TrackerStatusObservationProcessorResult
 } from './tracker-status-observation-processor';
 export {
+  activeWorkItemStaleAfterMs,
   createPostgresHealthcheckProducer,
   HEALTHCHECK_QUEUE,
   healthcheckCron,
-  healthcheckStaleAfterMs
+  healthcheckStaleAfterMs,
+  pendingApprovalStaleAfterMs
 } from './healthcheck';
 export {
   createPostgresTrackerRepositoryReadScopeAuthorizer

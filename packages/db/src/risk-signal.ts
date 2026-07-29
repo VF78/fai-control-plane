@@ -1,4 +1,4 @@
-import {and, eq, isNull} from 'drizzle-orm';
+import {and, eq, isNull, notInArray} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -34,6 +34,12 @@ export type RiskSignalReconciliation = Readonly<{
   observedAt: Date;
   condition: RiskSignalCondition | null;
 }>;
+
+export type RiskSignalSetMember = Readonly<
+  Omit<RiskSignalReconciliation, 'projectId' | 'observedAt' | 'condition'> & {
+    condition: RiskSignalCondition;
+  }
+>;
 
 export const reconcileRiskSignal = async (
   tx: Transaction,
@@ -103,4 +109,48 @@ export const reconcileRiskSignal = async (
       updatedAt: observedAt
     }
   });
+};
+
+export const reconcileRiskSignalSet = async (
+  tx: Transaction,
+  input: Readonly<{
+    projectId: string;
+    ruleId: string;
+    observedAt: Date;
+    members: readonly RiskSignalSetMember[];
+  }>
+): Promise<void> => {
+  const deduplicationKeys = new Set<string>();
+  for (const member of input.members) {
+    if (member.condition.ruleId !== input.ruleId) {
+      throw new Error('Risk signal set member rule does not match the reconciled rule.');
+    }
+    if (deduplicationKeys.has(member.deduplicationKey)) {
+      throw new Error('Risk signal set contains a duplicate deduplication key.');
+    }
+    deduplicationKeys.add(member.deduplicationKey);
+    await reconcileRiskSignal(tx, {
+      ...member,
+      projectId: input.projectId,
+      observedAt: input.observedAt
+    });
+  }
+
+  const activeForRule = and(
+    eq(schema.riskSignals.projectId, input.projectId),
+    eq(schema.riskSignals.ruleId, input.ruleId),
+    isNull(schema.riskSignals.resolvedAt)
+  );
+  await tx.update(schema.riskSignals).set({
+    resolvedAt: input.observedAt,
+    updatedAt: input.observedAt
+  }).where(input.members.length === 0
+    ? activeForRule
+    : and(
+        activeForRule,
+        notInArray(
+          schema.riskSignals.deduplicationKey,
+          input.members.map((member) => member.deduplicationKey)
+        )
+      ));
 };
