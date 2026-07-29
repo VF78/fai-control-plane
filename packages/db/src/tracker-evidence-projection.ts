@@ -9,7 +9,7 @@ import * as schema from './schema';
 
 type Database = NodePgDatabase<typeof schema>;
 
-const evidence = (row: Readonly<{
+export const providerEvidenceFromPersistedFact = (row: Readonly<{
   provider: string;
   externalId: string;
   externalVersion: string | null;
@@ -113,12 +113,12 @@ export const createPostgresTrackerEvidenceProjectionReader = (
         surface: binding.surface,
         entityType: binding.entityType,
         entityId: binding.entityId,
-        evidence: evidence(binding)
+        evidence: providerEvidenceFromPersistedFact(binding)
       })),
       pullRequests: scopedPullRequests.map(({pullRequest}) => ({
         pullRequestLinkId: pullRequest.id,
         workItemId: pullRequest.workItemId,
-        evidence: evidence(pullRequest)
+        evidence: providerEvidenceFromPersistedFact(pullRequest)
       })),
       buildChecks: checkRows.filter(({check, binding}) =>
         scopedBindingIds.has(binding.id) &&
@@ -127,7 +127,7 @@ export const createPostgresTrackerEvidenceProjectionReader = (
       ).map(({check}) => ({
         buildCheckId: check.id,
         pullRequestLinkId: check.prLinkId,
-        evidence: evidence(check)
+        evidence: providerEvidenceFromPersistedFact(check)
       }))
     };
   }

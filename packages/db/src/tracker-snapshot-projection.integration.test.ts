@@ -10,6 +10,7 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {createCanonicalCommandService} from '../../application/src/index.ts';
 import {
   createDatabase,
+  createPostgresProjectTaskProjectionReader,
   createPostgresTrackerEvidenceProjectionReader,
   createPostgresTrackerStatusObservationProcessor,
   createPostgresTrackerSnapshotProjector,
@@ -19,6 +20,8 @@ import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
   auditEvents,
   buildChecks,
+  deployments,
+  milestones,
   outboxEvents,
   prLinks,
   trackerBindings,
@@ -383,6 +386,114 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       providerRef: 'test-evidence',
       repositoryExternalRef: repository.externalId
     })).resolves.toBeNull();
+  });
+
+  it('projects scoped canonical tasks with provider evidence and explicit absence states', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Task evidence', $3)`,
+      [projectId, ids.workspace, `task-evidence-${randomUUID()}`]
+    );
+    const repository = {
+      externalId: 'custom:repository:task-evidence',
+      externalVersion: 'custom:repository:task-evidence:1',
+      owner: 'Custom',
+      name: 'TaskEvidence'
+    };
+    const observed = snapshot('custom:snapshot:task-evidence:1', {
+      repository,
+      workItems: [issue('custom:issue:5001')],
+      pullRequests: [pullRequest('custom:pull_request:5010', ['custom:issue:5001'])],
+      checks: [check('custom:check:5100', 'custom:pull_request:5010')]
+    });
+    const result = await createPostgresTrackerSnapshotProjector(db).bootstrap({
+      ...operation(observed), projectId, provider: 'custom-provider'
+    });
+    expect(result.status).toBe('applied');
+    const [task] = await db.select().from(workItems).where(eq(workItems.projectId, projectId));
+    expect(task).toBeDefined();
+    const milestoneId = randomUUID();
+    await db.insert(milestones).values({
+      id: milestoneId,
+      projectId,
+      title: 'Canonical milestone',
+      targetAt: new Date('2026-08-01T00:00:00.000Z')
+    });
+    await db.update(workItems).set({
+      status: 'qa', blocked: true, ownerActorId: ids.owner, version: 9, milestoneId
+    }).where(eq(workItems.id, task!.id));
+    await db.update(trackerBindings).set({
+      metadata: {
+        repositoryExternalId: repository.externalId,
+        htmlUrl: 'javascript:untrusted-provider-link'
+      }
+    }).where(and(
+      eq(trackerBindings.projectId, projectId),
+      eq(trackerBindings.entityType, 'work_item')
+    ));
+    await db.update(prLinks).set({url: 'file:///untrusted-provider-link'})
+      .where(eq(prLinks.workItemId, task!.id));
+    await db.update(buildChecks).set({detailsUrl: 'https://user:secret@example.test/check'})
+      .where(eq(buildChecks.provider, 'custom-provider'));
+    await db.insert(deployments).values({
+      id: randomUUID(),
+      projectId,
+      workItemId: task!.id,
+      environment: 'staging',
+      revision: 'abc123',
+      status: 'succeeded',
+      externalRef: 'provider-managed-reference',
+      approvedByActorId: ids.owner
+    });
+
+    const reader = createPostgresProjectTaskProjectionReader(db);
+    const projection = await reader.read({workspaceId: ids.workspace, projectId});
+    expect(projection).not.toBeNull();
+    expect(await reader.read({workspaceId: ids.workspace, projectId})).toEqual(projection);
+    expect(projection?.project).toMatchObject({
+      id: projectId,
+      version: 1,
+      status: {availability: 'not_configured'},
+      blocked: {availability: 'not_configured'}
+    });
+    expect(projection?.tasks).toHaveLength(1);
+    expect(projection?.tasks[0]).toMatchObject({
+      id: task!.id,
+      status: 'qa',
+      blocked: true,
+      version: 9,
+      owner: {availability: 'known', value: {id: ids.owner, displayName: 'Owner'}},
+      milestone: {
+        availability: 'known',
+        value: {
+          id: milestoneId,
+          targetAt: {availability: 'known', value: '2026-08-01T00:00:00.000Z'}
+        }
+      },
+      deadline: {availability: 'not_configured'},
+      sourceBindings: [{
+        providerRef: 'custom-provider',
+        deepLink: null,
+        evidence: {state: 'observed'}
+      }],
+      pullRequests: [{
+        providerRef: 'custom-provider',
+        url: null,
+        evidence: {state: 'observed'},
+        checks: [{
+          providerRef: 'custom-provider',
+          detailsUrl: null,
+          evidence: {state: 'observed'}
+        }]
+      }],
+      deployments: [{
+        environment: 'staging',
+        externalEvidence: {availability: 'not_configured'},
+        approvedBy: {availability: 'known', value: {id: ids.owner, displayName: 'Owner'}}
+      }]
+    });
+    await expect(reader.read({workspaceId: randomUUID(), projectId})).resolves.toBeNull();
   });
 
   it('keeps a newer canonical GitHub status and outbound marker when a stale provider status arrives', async () => {

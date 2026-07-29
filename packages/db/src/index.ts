@@ -12,6 +12,9 @@ export {
   createPostgresTrackerEvidenceProjectionReader
 } from './tracker-evidence-projection';
 export {
+  createPostgresProjectTaskProjectionReader
+} from './project-task-projection';
+export {
   createPostgresTrackerStatusObservationProcessor,
   type TrackerStatusObservationProcessorResult
 } from './tracker-status-observation-processor';
