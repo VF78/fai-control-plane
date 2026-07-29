@@ -6,10 +6,15 @@ import {PrototypeShell, type PrototypeData} from './prototype-ui';
 it('keeps the web-first workspace IA and honest unavailable state', () => {
   const markup = renderToStaticMarkup(createElement(PrototypeShell, {
     route: {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
-    data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null}
+    data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: []}
   }));
 
   expect(markup).toContain('href="/prototype/dashboard"');
+  expect(markup).toContain('aria-label="Dashboard"');
+  expect(markup).toContain('aria-label="Projects"');
+  expect(markup).toContain('aria-label="Tasks"');
+  expect(markup).toContain('aria-label="Chats"');
+  expect(markup).toContain('aria-label="Agents"');
   expect(markup).toContain('Control plane data is unavailable');
   expect(markup).not.toContain('Provider ID');
 });

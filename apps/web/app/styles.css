@@ -241,9 +241,9 @@ code { color: #4f5a4f; }
 }
 
 /* Phase A replacement: a web-first, GitHub-informed operator workspace. */
-.fcp-prototype { --fcp-bg: #fff; --fcp-canvas: #f6f8fa; --fcp-ink: #1f2328; --fcp-muted: #59636e; --fcp-rule: #d0d7de; --fcp-soft: #f6f8fa; --fcp-blue: #0969da; --fcp-red: #cf222e; --fcp-amber: #9a6700; --fcp-green: #1a7f37; background: var(--fcp-bg); color: var(--fcp-ink); min-height: 100vh; }
+.fcp-prototype { --fcp-bg: #fff; --fcp-canvas: #f6f8fa; --fcp-ink: #1f2328; --fcp-muted: #59636e; --fcp-rule: #d0d7de; --fcp-soft: #f6f8fa; --fcp-blue: #0969da; --fcp-red: #cf222e; --fcp-amber: #9a6700; --fcp-green: #1a7f37; background: var(--fcp-bg); color: var(--fcp-ink); min-height: 100vh; overflow-x: clip; width: 100%; }
 .fcp-prototype * { box-sizing: border-box; }
-.fcp-global { align-items: center; background: #24292f; color: #fff; display: flex; gap: 16px; height: 64px; padding: 0 max(16px, calc((100vw - 1440px) / 2)); }
+.fcp-global { align-items: center; background: #24292f; color: #fff; display: flex; gap: 16px; height: 64px; padding: 0 max(16px, calc((100vw - 1440px) / 2)); width: 100vw; }
 .fcp-brand { color: #fff; font-size: 18px; font-weight: 760; letter-spacing: -.03em; padding: 10px 4px; text-decoration: none; white-space: nowrap; }.fcp-brand:hover { color: #fff; text-decoration: none; }.fcp-brand span { color: #b6c2cf; font-weight: 580; margin-left: 4px; }
 .fcp-global-nav { align-items: stretch; display: flex; gap: 4px; height: 100%; }.fcp-global-nav a { align-items: center; border-radius: 6px; color: #c9d1d9; display: inline-flex; font-size: 13px; font-weight: 600; gap: 7px; min-height: var(--fcp-target, 44px); padding: 0 10px; text-decoration: none; }.fcp-global-nav a:hover, .fcp-global-nav a[aria-current='page'] { background: rgba(255,255,255,.12); color: #fff; text-decoration: none; }
 .fcp-main { margin: 0 auto; max-width: 1280px; min-width: 0; padding: 24px; }.fcp-page-title, .fcp-project-title { align-items: end; display: flex; gap: 20px; justify-content: space-between; margin-bottom: 18px; }.fcp-page-title h1, .fcp-project-title h1 { color: var(--fcp-ink); font-size: 28px; font-weight: 700; letter-spacing: -.025em; line-height: 1.2; margin: 0; }.fcp-page-title p, .fcp-project-title span { color: var(--fcp-muted); font-size: 13px; margin: 5px 0 0; }
@@ -273,3 +273,6 @@ code { color: #4f5a4f; }
 .fcp-brand { align-items: center; display: inline-flex; min-height: var(--fcp-target, 44px); min-width: var(--fcp-target, 44px); }
 .fcp-tabs a { min-height: var(--fcp-target, 44px); min-width: var(--fcp-target, 44px); }
 .fcp-loading { display: grid; gap: 16px; margin: 48px auto; max-width: 1280px; padding: 24px; }.fcp-loading > div { background: #f6f8fa; border-radius: 6px; height: 18px; max-width: 100%; }.fcp-loading > div:nth-child(1) { height: 30px; width: 220px; }.fcp-loading > div:nth-child(2) { height: 74px; }.fcp-loading > div:nth-child(3), .fcp-loading > div:nth-child(4) { height: 58px; }
+.fcp-scope { border: 0; border-radius: 0; gap: 12px; }.fcp-scope > span { color: var(--fcp-muted); font-size: 12px; white-space: nowrap; }
+@media (min-width: 900px) and (max-width: 1099px) { .fcp-prototype, .fcp-main { max-width: none; width: 100%; }.fcp-detail-layout { grid-template-columns: minmax(0, 1fr) 250px; } }
+@media (max-width: 899px) { .fcp-detail-layout { display: block; } }

@@ -13,6 +13,8 @@ mobile bottom navigation.
 ```text
 /prototype/dashboard
 /prototype/projects
+/prototype/tasks?project=all|msa|ascon
+/prototype/chats?project=all|msa|ascon
 /prototype/projects/:projectId/overview
 /prototype/projects/:projectId/tasks
 /prototype/projects/:projectId/tasks/:taskId
@@ -25,13 +27,15 @@ mobile bottom navigation.
 /prototype/agents/:agentId
 ```
 
-Top level is **Dashboard · Projects · Agents**. Within one project, the
+Top level is **Dashboard · Projects · Tasks · Chats · Agents**. Within one project, the
 contextual tabs are **Overview · Tasks · Protocol · Runs · Chats · Access**.
 This retains the five product areas: Portfolio (Dashboard/Projects), Delivery
 (Overview/Protocol/Tasks/Runs), Conversations (Chats), People & Access
-(Access), and Agents & Systems (Agents). Project, environment and time are one
-scope; project is fixed in project URLs, while environment/time query values
-are restorable. Invalid IDs fail closed.
+(Access), and Agents & Systems (Agents). Global Tasks and Chats accept
+`project=all|msa|ascon`; an absent project filter normalizes to `all`, while an
+explicit invalid filter fails closed. Their selected project is visible in the
+scope row. Project is fixed in project URLs, while environment/time query
+values are restorable. Invalid IDs fail closed.
 
 ## Interaction model
 
