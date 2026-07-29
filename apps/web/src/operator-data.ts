@@ -339,7 +339,7 @@ export type ProjectData = Readonly<{
         responsibility: string; nextStage: string | null;
         actor: Readonly<{displayName: string; type: 'human' | 'agent'}> | null;
       }> | null;
-      evidence: readonly Readonly<{requirement: string; reference: string}>[];
+      evidence: readonly Readonly<{stageKey: string; requirement: string; reference: string}>[];
       requiredEvidence: readonly string[];
     }> | null;
     canBuildPacket: boolean;
@@ -424,6 +424,7 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       role: projectMemberships.role
     }).from(projectMemberships).innerJoin(actors, eq(actors.id, projectMemberships.actorId))
       .where(and(eq(projectMemberships.projectId, project.id), eq(projectMemberships.active, true), isNull(actors.disabledAt)))
+      .orderBy(actors.id)
   ]);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
@@ -464,12 +465,19 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
   const protocolByJourney = new Map(protocols.map((item) => [`${item.id}:${item.version}`, item]));
   const memberById = new Map(members.flatMap((member) => member.type === 'human' || member.type === 'agent'
     ? [[member.actorId, {displayName: member.displayName, type: member.type}] as const] : []));
-  const memberByRole = new Map(members.flatMap((member) => member.type === 'human' || member.type === 'agent'
-    ? [[member.role, {displayName: member.displayName, type: member.type}] as const] : []));
-  const evidenceByJourney = new Map<string, Readonly<{requirement: string; reference: string}>[]>();
+  const memberByRole = new Map<string, Readonly<{displayName: string; type: 'human' | 'agent'}>>();
+  for (const member of members) {
+    if ((member.type === 'human' || member.type === 'agent') && !memberByRole.has(member.role)) {
+      memberByRole.set(member.role, {displayName: member.displayName, type: member.type});
+    }
+  }
+  const evidenceByJourney = new Map<string, Readonly<{stageKey: string; requirement: string; reference: string}>[]>();
   for (const evidence of journeyEvidence) {
-    const key = `${evidence.workItemId}:${evidence.stageKey}`;
-    evidenceByJourney.set(key, [...(evidenceByJourney.get(key) ?? []), {requirement: evidence.requirement, reference: evidence.reference}]);
+    evidenceByJourney.set(evidence.workItemId, [...(evidenceByJourney.get(evidence.workItemId) ?? []), {
+      stageKey: evidence.stageKey,
+      requirement: evidence.requirement,
+      reference: evidence.reference
+    }]);
   }
   const journeyByItem = new Map(journeys.map((journey) => {
     const boundProtocol = protocolByJourney.get(`${journey.protocolId}:${journey.protocolVersion}`) ?? null;
@@ -486,7 +494,7 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
         responsibility: stage.responsibility.kind === 'project_role' ? stage.responsibility.role : stage.responsibility.actorType,
         nextStage, actor
       },
-      evidence: evidenceByJourney.get(`${journey.workItemId}:${journey.stageKey}`) ?? [],
+      evidence: evidenceByJourney.get(journey.workItemId) ?? [],
       requiredEvidence: stage?.requiredEvidence ?? []
     }] as const;
   }));
