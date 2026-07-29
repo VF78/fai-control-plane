@@ -91,9 +91,14 @@ export const createPostgresProjectTaskProjectionReader = (
       isNull(schema.workItems.deletedAt)
     ));
     const taskIds = taskRows.map(({id}) => id);
-    const [actorRows, milestoneRows, bindingRows, prRows, checkRows, deploymentRows] = await Promise.all([
+    const [actorRows, milestoneRows, journeyRows, bindingRows, prRows, checkRows, deploymentRows] = await Promise.all([
       db.select().from(schema.actors).where(eq(schema.actors.workspaceId, input.workspaceId)),
       db.select().from(schema.milestones).where(eq(schema.milestones.projectId, project.id)),
+      taskIds.length === 0
+        ? Promise.resolve([])
+        : db.select().from(schema.deliveryJourneys).where(
+            inArray(schema.deliveryJourneys.workItemId, taskIds)
+          ),
       taskIds.length === 0
         ? Promise.resolve([])
         : db.select().from(schema.trackerBindings).where(and(
@@ -115,6 +120,7 @@ export const createPostgresProjectTaskProjectionReader = (
 
     const actors = new Map(actorRows.map((actor) => [actor.id, actor]));
     const milestones = new Map(milestoneRows.map((milestone) => [milestone.id, milestone]));
+    const journeys = new Map(journeyRows.map((journey) => [journey.workItemId, journey]));
     const bindingsByTask = new Map<string, typeof bindingRows>();
     for (const binding of bindingRows) {
       const bindings = bindingsByTask.get(binding.entityId) ?? [];
@@ -169,7 +175,10 @@ export const createPostgresProjectTaskProjectionReader = (
                   ? unknown()
                   : known(milestone.targetAt.toISOString())
               }),
-          deadline: notConfigured(),
+          deadline: journeys.get(task.id)?.deadlineAt === undefined ||
+            journeys.get(task.id)?.deadlineAt === null
+            ? notConfigured()
+            : known(journeys.get(task.id)!.deadlineAt!.toISOString()),
           sourceBindings: (bindingsByTask.get(task.id) ?? []).slice()
             .sort((left, right) => byText(left, right, (item) => `${item.provider}\u0000${item.surface}\u0000${item.externalId}`))
             .map((binding) => ({

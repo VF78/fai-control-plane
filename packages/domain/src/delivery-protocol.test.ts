@@ -12,6 +12,9 @@ describe('delivery protocol', () => {
     expect(definition.stages.map((stage) => stage.key)).toEqual([
       'intake', 'development', 'qa', 'staging', 'production'
     ]);
+    expect(definition.stages.map((stage) => stage.taskStatus)).toEqual([
+      'ready', 'in_dev', 'qa', 'acceptance', 'done'
+    ]);
     expect(validateDeliveryProtocolDefinition(definition)).toMatchObject({ok: true});
   });
 
@@ -25,6 +28,12 @@ describe('delivery protocol', () => {
       ...definition,
       stages: definition.stages.map((stage, index) =>
         index === 0 ? {...stage, allowedNextStageKey: 'intake'} : stage
+      )
+    })).toMatchObject({ok: false});
+    expect(validateDeliveryProtocolDefinition({
+      ...definition,
+      stages: definition.stages.map((stage, index) =>
+        index === 0 ? {...stage, taskStatus: 'provider_custom'} : stage
       )
     })).toMatchObject({ok: false});
     expect(validateDeliveryProtocolDefinition({
@@ -80,6 +89,7 @@ describe('delivery protocol', () => {
         key: 'development',
         name: 'Development',
         enabled: true,
+        taskStatus: 'in_dev',
         responsibility: {kind: 'actor', actorId, actorType: 'agent', agentProfileId: profileId},
         executionMode: 'autonomous',
         entryCriteria: ['Ready'],

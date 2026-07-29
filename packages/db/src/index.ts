@@ -7,6 +7,7 @@ export {createPostgresUnitOfWork} from './persistence';
 export {
   createPostgresDeliveryProtocolStore
 } from './delivery-protocol';
+export {createPostgresDeliveryJourneyStore} from './delivery-journey';
 export {
   createPostgresGitHubProjectStatusPublisher,
 } from './github-project-status-writeback';

@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 export * from './instruction-versioning.ts';
 export * from './delivery-protocol.ts';
+export * from './delivery-journey.ts';
 import type {
   ActorExternalIdentity,
   ProjectMembership,
@@ -1628,8 +1629,7 @@ export type ProjectTaskProjectionTask = Readonly<{
     closedAt: string | null;
     targetAt: ProjectionAvailability<string>;
   }>>;
-  /** Deadline is intentionally unavailable until #27 defines and persists it. */
-  deadline: ProjectionAvailability<never>;
+  deadline: ProjectionAvailability<string>;
   sourceBindings: ReadonlyArray<Readonly<{
     bindingId: string;
     providerRef: string;
