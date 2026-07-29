@@ -1,14 +1,21 @@
 # f(AI) Control Plane
 
-Local development foundation for a TypeScript control plane that coordinates
-tracked work, approvals, isolated execution, and client-safe result sharing.
+Production-oriented TypeScript control plane for coordinating software-delivery
+work, protocols, people, conversations, agents, approvals and execution
+evidence over replaceable provider integrations.
 
-> This repository and its Compose stack are for local development only. They do
-> not define or authorize a production deployment.
+PostgreSQL is canonical. GitHub + GitHub Projects, Telegram and Codex/Hermes are
+the first connected surfaces, not domain dependencies. The authoritative
+product scope and current delivery plan are maintained in
+[issue #1](https://github.com/VF78/fai-control-plane/issues/1) and its linked
+Project items.
 
-A separate, non-authorizing production topology proposal for
-`app.f-ai.studio` is documented in
-[the production deployment preparation](docs/ops/APP_F_AI_STUDIO_DEPLOYMENT_PREPARATION.md).
+The internal alpha is deployed separately at `app.f-ai.studio`. Repository
+documentation does not authorize production changes. Read
+[the production handoff](docs/ops/PRODUCTION_HANDOFF.md) before release
+planning; the original
+[activation preparation](docs/ops/APP_F_AI_STUDIO_DEPLOYMENT_PREPARATION.md)
+is retained as historical evidence, not a script to rerun.
 
 ## Architecture
 
@@ -50,13 +57,15 @@ Browser -> Next.js BFF -> domain -> PostgreSQL
                                                +-> isolated runner -> artifacts
 ```
 
-GitHub is an inbound reconciliation `TrackerAdapter`, not a second
-control-plane database. Webhooks and polling results enter a durable inbox and
-mapped observations transition canonical PostgreSQL state; the WorkItem UI is
-display-only. The GitHub writer remains deferred and disabled in this week-one
-local foundation. The field-level authority matrix in
+GitHub supplies separate task-tracker and repository-observation adapters; it
+is not a second control-plane database. Webhooks and polling results enter a
+durable inbox and mapped observations transition canonical PostgreSQL state. A
+separately gated Status writer projects approved canonical transitions back to
+GitHub Projects with optimistic versions, read-after-write confirmation and
+echo suppression. All other fields remain read-only until their authority and
+adapter capability are explicitly defined. The field-level authority matrix in
 [ADR 0002](docs/adr/0002-postgresql-authority-and-tracker-sync.md) prevents
-ambiguous last-writer-wins behavior when an explicit writer is later approved.
+ambiguous last-writer-wins behavior.
 
 ## Local Bootstrap
 
@@ -112,10 +121,12 @@ node apps/web/.next/standalone/apps/web/server.js
 node apps/worker/dist/index.js
 ```
 
-GitHub inbound reconciliation and runner execution are disabled by default.
-The WorkItem UI remains display-only, and the GitHub writer is deferred and
-disabled; enabling any integration requires explicit local configuration and
-must not put secret values in PostgreSQL.
+GitHub inbound reconciliation, Status write-back and runner execution are
+disabled by default. Enable them independently with
+`GITHUB_SYNC_ENABLED`, `GITHUB_INGRESS_ENABLED`,
+`GITHUB_STATUS_WRITEBACK_ENABLED` and the runner-specific gates only after
+providing the required external secret references. No secret value belongs in
+PostgreSQL.
 
 ### Workstation Runner
 
@@ -282,19 +293,20 @@ docker compose down --volumes
 
 ## Non-goals
 
-- Production deployment, production infrastructure, or a production security
-  posture
+- Production changes without an explicit reviewed release approval
 - Microservice decomposition before module boundaries justify it
 - Treating GitHub as the control-plane database or queue
 - Running arbitrary code inside the web or worker process
 - Storing credentials, tokens, private keys, or raw secret values in PostgreSQL
 - Public, writable, or non-revocable client links
 - A generic CI/CD platform, source-code host, or artifact registry
+- A generic workflow canvas, IAM/BI suite, chat replacement, marketplace,
+  billing platform, or multi-tenant SaaS in the current MVP
 
 ## Decisions
 
 - [ADR 0001: Modular monolith with a worker](docs/adr/0001-modular-monolith-and-worker.md)
-- [ADR 0002: PostgreSQL authority and inbound tracker reconciliation](docs/adr/0002-postgresql-authority-and-tracker-sync.md)
+- [ADR 0002: PostgreSQL authority and gated tracker reconciliation](docs/adr/0002-postgresql-authority-and-tracker-sync.md)
 - [ADR 0003: Authentication and secret handling](docs/adr/0003-authentication-and-secrets.md)
 - [ADR 0004: Runner isolation and artifacts](docs/adr/0004-runner-isolation-and-artifacts.md)
 - [ADR 0005: Telemetry, retention, and public sharing](docs/adr/0005-telemetry-retention-and-public-sharing.md)
