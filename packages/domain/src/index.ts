@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 export * from './instruction-versioning.ts';
+export * from './delivery-protocol.ts';
 import type {
   ActorExternalIdentity,
   ProjectMembership,

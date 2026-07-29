@@ -5,6 +5,9 @@ import * as schema from './schema';
 export * from './schema';
 export {createPostgresUnitOfWork} from './persistence';
 export {
+  createPostgresDeliveryProtocolStore
+} from './delivery-protocol';
+export {
   createPostgresGitHubProjectStatusPublisher,
 } from './github-project-status-writeback';
 export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
