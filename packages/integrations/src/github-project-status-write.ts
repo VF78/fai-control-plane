@@ -1,6 +1,6 @@
 import type {
   SecretsProvider,
-  TrackerAdapter,
+  TaskTrackerTransitionPort,
   TrackerWorkItemTransitionInput,
   TrackerWorkItemTransitionResult
 } from '@fai-control-plane/domain';
@@ -164,9 +164,14 @@ const observedOption = (
 export const createGitHubProjectStatusWriteAdapter = (input: Readonly<{
   secretsProvider: SecretsProvider;
   fetch?: GitHubFetch;
-}>): Pick<TrackerAdapter, 'transitionWorkItem'> => {
+}>): TaskTrackerTransitionPort => {
   const fetch = input.fetch ?? ((url, init) => globalThis.fetch(url, init));
   return {
+    provider: 'github',
+    capabilities: {
+      readWorkItems: false,
+      writeWorkItems: true
+    },
     async transitionWorkItem(command): Promise<TrackerWorkItemTransitionResult> {
       const target = optionFor(command);
       if (

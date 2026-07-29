@@ -1,6 +1,6 @@
 import type {
   OpaqueSecretRef,
-  TrackerAdapter,
+  TaskTrackerTransitionPort,
   TrackerWorkItemTransitionInput
 } from '@fai-control-plane/domain';
 import {workItemStatuses} from '@fai-control-plane/domain';
@@ -87,7 +87,7 @@ const receiptPayload = (outcome: string): Record<string, string> => ({outcome});
 
 export const createPostgresGitHubProjectStatusPublisher = (
   db: Database,
-  adapter: Pick<TrackerAdapter, 'transitionWorkItem'>,
+  taskTracker: TaskTrackerTransitionPort,
   credentialRef: OpaqueSecretRef,
   now: () => Date = () => new Date()
 ): Readonly<{publishAvailable(): Promise<GitHubProjectStatusPublisherResult>}> => ({
@@ -195,9 +195,13 @@ export const createPostgresGitHubProjectStatusPublisher = (
         bound.binding.externalVersion !== parsed.expectedBindingVersion ||
         bound.binding.lastOutboundMutationId !== parsed.mutationId
       ) return fail('github_project_status_stale', 'stale');
-      const transitionWorkItem = adapter.transitionWorkItem;
-      if (transitionWorkItem === undefined) {
-        return fail('github_project_status_identity_denied', 'identity_denied');
+      const transitionWorkItem = taskTracker.transitionWorkItem;
+      if (
+        taskTracker.provider !== 'github' ||
+        taskTracker.capabilities.writeWorkItems !== true ||
+        typeof transitionWorkItem !== 'function'
+      ) {
+        return fail('github_project_status_capability_unavailable', 'identity_denied');
       }
       let result: Awaited<ReturnType<typeof transitionWorkItem>>;
       try {

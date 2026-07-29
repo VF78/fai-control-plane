@@ -73,6 +73,18 @@ describe('GitHub Project status write adapter', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('declares the provider-neutral task-tracker write capability', () => {
+    const adapter = createGitHubProjectStatusWriteAdapter({
+      secretsProvider: {resolve: vi.fn<SecretsProvider['resolve']>()}
+    });
+
+    expect(adapter).toMatchObject({
+      provider: 'github',
+      capabilities: {readWorkItems: false, writeWorkItems: true}
+    });
+    expect(adapter.transitionWorkItem).toEqual(expect.any(Function));
+  });
+
   it('writes an allowlisted Project status with the configured OAuth bearer and confirms it', async () => {
     const resolve = vi.fn<SecretsProvider['resolve']>(async () => ({value: 'oauth-access-token'}));
     const fetch = vi.fn<GitHubFetch>()
@@ -95,5 +107,18 @@ describe('GitHub Project status write adapter', () => {
     for (const [, init] of fetch.mock.calls) {
       expect(init.headers.authorization).toBe('Bearer oauth-access-token');
     }
+  });
+
+  it('does not return a confirmed receipt when read-after-write observes another option', async () => {
+    const resolve = vi.fn<SecretsProvider['resolve']>(async () => ({value: 'oauth-access-token'}));
+    const fetch = vi.fn<GitHubFetch>()
+      .mockResolvedValueOnce(jsonResponse(projectItem('1f121483')))
+      .mockResolvedValueOnce(jsonResponse({data: {updateProjectV2ItemFieldValue: {
+        clientMutationId: command().mutationId, projectV2Item: {id: 'PVTI_MSA_1'}
+      }}}))
+      .mockResolvedValueOnce(jsonResponse(projectItem('1f121483')));
+
+    await expect(createGitHubProjectStatusWriteAdapter({secretsProvider: {resolve}, fetch})
+      .transitionWorkItem!(command())).resolves.toEqual({status: 'stale'});
   });
 });
