@@ -10,7 +10,10 @@ import {
   type TrackerRepositoryReadScopeAuthorizer,
   type TrackerSnapshotProjector
 } from '@fai-control-plane/domain';
-import {createTrackerRepositorySnapshotOrchestrationService} from './index';
+import {
+  createTrackerRepositorySnapshotReconciliationService,
+  createTrackerRepositorySnapshotOrchestrationService
+} from './index';
 
 const id = (): string => randomUUID();
 const credentialRef: OpaqueSecretRef = {
@@ -87,6 +90,16 @@ const input = (overrides: Record<string, unknown> = {}) => ({
   ...overrides
 });
 
+const reconciliationInput = (overrides: Record<string, unknown> = {}) => {
+  const request = input({
+    mode: 'synchronize',
+    expectedPreviousExternalVersion: 'provider:snapshot:v0',
+    ...overrides
+  });
+  const {operationId: _operationId, correlationId: _correlationId, mode: _mode, ...result} = request;
+  return result;
+};
+
 const fakes = () => {
   const calls: string[] = [];
   const reader = vi.fn(async () => {
@@ -118,6 +131,56 @@ const fakes = () => {
 };
 
 describe('tracker repository snapshot orchestration', () => {
+  it('reconciles a provider-neutral contract double with a fenced checkpoint', async () => {
+    const orchestrate = vi.fn(async () => applied);
+    const service = createTrackerRepositorySnapshotReconciliationService({
+      snapshots: {orchestrate},
+      idGenerator: {
+        next: vi.fn().mockReturnValueOnce('operation-1').mockReturnValueOnce('correlation-1')
+      }
+    });
+
+    await expect(service.reconcile(reconciliationInput())).resolves.toEqual({
+      status: 'completed', result: applied
+    });
+    expect(orchestrate).toHaveBeenCalledWith(expect.objectContaining({
+      expectedProvider: 'test-tracker',
+      expectedPreviousExternalVersion: 'provider:snapshot:v0',
+      operationId: 'operation-1',
+      correlationId: 'correlation-1',
+      mode: 'synchronize'
+    }));
+  });
+
+  it('makes provider read outages retryable but preserves explicit conflicts', async () => {
+    const snapshots = {orchestrate: vi.fn()};
+    const service = createTrackerRepositorySnapshotReconciliationService({
+      snapshots,
+      idGenerator: {next: id}
+    });
+    snapshots.orchestrate.mockResolvedValueOnce({
+      status: 'failed', code: 'repository_read_failed'
+    });
+    await expect(service.reconcile(reconciliationInput())).resolves.toEqual({
+      status: 'retryable', code: 'repository_read_failed'
+    });
+    snapshots.orchestrate.mockResolvedValueOnce({
+      status: 'conflict', code: 'stale_snapshot', currentExternalVersion: 'provider:snapshot:v1'
+    });
+    await expect(service.reconcile(reconciliationInput())).resolves.toEqual({
+      status: 'conflict', code: 'stale_snapshot', currentExternalVersion: 'provider:snapshot:v1'
+    });
+    snapshots.orchestrate.mockResolvedValueOnce({
+      status: 'replayed',
+      result: {
+        status: 'conflict', code: 'stale_snapshot', currentExternalVersion: 'provider:snapshot:v1'
+      }
+    });
+    await expect(service.reconcile(reconciliationInput())).resolves.toEqual({
+      status: 'conflict', code: 'stale_snapshot', currentExternalVersion: 'provider:snapshot:v1'
+    });
+  });
+
   it('denies an unauthorized actor before reading', async () => {
     const fake = fakes();
     const service = createTrackerRepositorySnapshotOrchestrationService(fake);

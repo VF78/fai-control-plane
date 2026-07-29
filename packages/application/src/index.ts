@@ -566,6 +566,56 @@ export interface TrackerRepositorySnapshotOrchestrationService {
   orchestrate(input: unknown): Promise<TrackerRepositorySnapshotOrchestrationResult>;
 }
 
+/** A scheduled, read-only provider refresh fenced by the last accepted snapshot version. */
+export type TrackerRepositorySnapshotReconciliationInput = Readonly<{
+  actor: TrustedActorContext;
+  workspaceId: string;
+  projectId: string;
+  expectedProvider: string;
+  repository: TrackerRepositoryRef;
+  credentialRef: OpaqueSecretRef;
+  expectedPreviousExternalVersion: string;
+}>;
+
+export type TrackerRepositorySnapshotReconciliationResult =
+  | Readonly<{
+      status: 'completed';
+      result:
+        | Extract<TrackerSnapshotProjectionResult, {status: 'applied'}>
+        | (Extract<TrackerSnapshotProjectionResult, {status: 'replayed'}> & Readonly<{
+            result: Extract<TrackerSnapshotProjectionResult, {status: 'applied'}>;
+          }>);
+    }>
+  | Readonly<{
+      status: 'retryable';
+      code: 'repository_scope_authorization_failed' | 'repository_read_failed';
+    }>
+  | Readonly<{
+      status: 'denied';
+      code: Extract<TrackerRepositorySnapshotOrchestrationResult, {status: 'denied'}>['code'];
+    }>
+  | Readonly<{
+      status: 'conflict';
+      code: Extract<TrackerSnapshotProjectionResult, {status: 'conflict'}>['code'];
+      currentExternalVersion?: string;
+    }>
+  | Readonly<{
+      status: 'failed';
+      code: Exclude<
+        Extract<TrackerRepositorySnapshotOrchestrationResult, {status: 'failed'}>['code'],
+        'repository_scope_authorization_failed' | 'repository_read_failed'
+      >;
+    }>;
+
+export interface TrackerRepositorySnapshotReconciliationService {
+  reconcile(input: unknown): Promise<TrackerRepositorySnapshotReconciliationResult>;
+}
+
+export type CreateTrackerRepositorySnapshotReconciliationServiceInput = Readonly<{
+  snapshots: TrackerRepositorySnapshotOrchestrationService;
+  idGenerator?: IdGenerator;
+}>;
+
 type TrackerRepositoryObservationPorts =
   | Readonly<{
       taskTracker: TaskTrackerPort;
@@ -783,6 +833,37 @@ const validateTrackerRepositorySnapshotOrchestrationInput = (
   };
 };
 
+const validateTrackerRepositorySnapshotReconciliationInput = (
+  value: unknown
+): TrackerRepositorySnapshotReconciliationInput | null => {
+  const record = dataObjectWithAllowedKeys(value, [
+    'actor', 'workspaceId', 'projectId', 'expectedProvider', 'repository', 'credentialRef',
+    'expectedPreviousExternalVersion'
+  ]);
+  if (record === null) return null;
+  const workspaceId = boundedSnapshotIdentifier(record.workspaceId, 128);
+  const projectId = boundedSnapshotIdentifier(record.projectId, 128);
+  const expectedProvider = boundedSnapshotIdentifier(record.expectedProvider, 64);
+  const repository = snapshotRepositoryRef(record.repository);
+  const credentialRef = snapshotCredentialRef(record.credentialRef);
+  const expectedPreviousExternalVersion = boundedSnapshotIdentifier(
+    record.expectedPreviousExternalVersion,
+    512
+  );
+  return workspaceId === null || projectId === null || expectedProvider === null ||
+    repository === null || credentialRef === null || expectedPreviousExternalVersion === null
+    ? null
+    : {
+        actor: record.actor as TrustedActorContext,
+        workspaceId,
+        projectId,
+        expectedProvider,
+        repository,
+        credentialRef,
+        expectedPreviousExternalVersion
+      };
+};
+
 const trackerRepositoryReadPolicy: PolicyRequest = {
   actionCategory: 'read', surface: 'repository', environment: 'development'
 };
@@ -925,6 +1006,56 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
     }
   }
 });
+
+/**
+ * Runs a fenced refresh after an untrusted webhook gap or a temporary provider outage.
+ * It never substitutes a current version after a conflict: the next scheduled attempt
+ * must read a new checkpoint from the canonical repository binding.
+ */
+export const createTrackerRepositorySnapshotReconciliationService = (
+  dependencies: CreateTrackerRepositorySnapshotReconciliationServiceInput
+): TrackerRepositorySnapshotReconciliationService => {
+  const idGenerator = dependencies.idGenerator ?? defaultIds;
+  return {
+    async reconcile(input: unknown): Promise<TrackerRepositorySnapshotReconciliationResult> {
+      const request = validateTrackerRepositorySnapshotReconciliationInput(input);
+      if (request === null) return {status: 'failed', code: 'invalid_input'};
+      const result = await dependencies.snapshots.orchestrate({
+        ...request,
+        operationId: idGenerator.next(),
+        correlationId: idGenerator.next(),
+        mode: 'synchronize'
+      });
+      if (result.status === 'applied') {
+        return {status: 'completed', result};
+      }
+      if (result.status === 'replayed') {
+        const replayedResult = result.result;
+        return replayedResult.status === 'applied'
+          ? {status: 'completed', result: {status: 'replayed', result: replayedResult}}
+          : replayedResult;
+      }
+      if (result.status === 'denied') return result;
+      if (result.status === 'conflict') return result;
+      if (
+        result.code === 'repository_scope_authorization_failed' ||
+        result.code === 'repository_read_failed'
+      ) {
+        return {status: 'retryable', code: result.code};
+      }
+      if (
+        result.code === 'invalid_input' ||
+        result.code === 'adapter_capability_unavailable' ||
+        result.code === 'adapter_provider_mismatch' ||
+        result.code === 'invalid_repository_snapshot' ||
+        result.code === 'snapshot_projection_failed'
+      ) {
+        return {status: 'failed', code: result.code};
+      }
+      return {status: 'failed', code: 'snapshot_projection_failed'};
+    }
+  };
+};
 
 const exactObject = (
   value: unknown,
