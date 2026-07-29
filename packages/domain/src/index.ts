@@ -2094,6 +2094,11 @@ export type TaskTrackerPort = Readonly<{
     input: TrackerWorkItemTransitionInput
   ) => Promise<TrackerWorkItemTransitionResult>;
 }>;
+/** Narrow outbound status-write surface derived from the task-tracker boundary. */
+export type TaskTrackerTransitionPort = Pick<
+  TaskTrackerPort,
+  'provider' | 'capabilities' | 'transitionWorkItem'
+>;
 export type RepositoryObservationPort = Readonly<{
   provider: string;
   capabilities: Pick<TrackerCapabilities, 'readPullRequests' | 'readChecks'>;
