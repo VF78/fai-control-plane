@@ -1,8 +1,8 @@
 import {readFile} from 'node:fs/promises';
 import {isAbsolute} from 'node:path';
-import {randomUUID} from 'node:crypto';
 import {
   createCanonicalCommandService,
+  createTrackerRepositorySnapshotReconciliationService,
   createTrackerRepositorySnapshotOrchestrationService
 } from '@fai-control-plane/application';
 import {
@@ -99,16 +99,19 @@ const fail = (failure: ReconciliationFailure): never => {
   throw new GitHubReconciliationError(failure);
 };
 
-const snapshotSucceeded = (status: string): status is 'applied' | 'replayed' =>
-  status === 'applied' || status === 'replayed';
-
-const failureForSnapshot = (
+const failureForReconciliation = (
   project: ProjectSlug,
   result: Readonly<{status: string; code?: string}>
 ): ReconciliationFailure => ({
   code: result.code ?? 'GITHUB_RECONCILIATION_SNAPSHOT_UNAVAILABLE',
   project,
-  status: result.status === 'denied' ? 'denied' : result.status === 'conflict' ? 'conflict' : 'failed'
+  status: result.status === 'denied'
+    ? 'denied'
+    : result.status === 'conflict'
+      ? 'conflict'
+      : result.status === 'retryable'
+        ? 'retryable'
+        : 'failed'
 });
 
 export type GitHubReconciliationRuntime = Readonly<{
@@ -140,21 +143,25 @@ export const createGitHubReconciliationRuntime = (
   const projectsTokenRef: OpaqueSecretRef = {
     provider: 'file', reference: projectsTokenFile, scope: projectSecretScope
   };
-  const service = createTrackerRepositorySnapshotOrchestrationService({
-    adapter: createGitHubRepositoryReadAdapter({
-      fetch: (input, init) => fetch(input, init),
-      appSecretsProvider: createFileSecretsProvider(
-        appPrivateKeyRef,
-        'github_app_installation_token_mint'
-      ),
+  const github = createGitHubRepositoryReadAdapter({
+    fetch: (input, init) => fetch(input, init),
+    appSecretsProvider: createFileSecretsProvider(
       appPrivateKeyRef,
-      projectsSecretsProvider: createFileSecretsProvider(
-        projectsTokenRef,
-        'github_project_snapshot_read_oauth_token'
-      )
-    }),
-    scopeAuthorizer: createPostgresTrackerRepositoryReadScopeAuthorizer(db),
-    projector: createPostgresTrackerSnapshotProjector(db)
+      'github_app_installation_token_mint'
+    ),
+    appPrivateKeyRef,
+    projectsSecretsProvider: createFileSecretsProvider(
+      projectsTokenRef,
+      'github_project_snapshot_read_oauth_token'
+    )
+  });
+  const service = createTrackerRepositorySnapshotReconciliationService({
+    snapshots: createTrackerRepositorySnapshotOrchestrationService({
+      taskTracker: github,
+      repositoryObservation: github,
+      scopeAuthorizer: createPostgresTrackerRepositoryReadScopeAuthorizer(db),
+      projector: createPostgresTrackerSnapshotProjector(db)
+    })
   });
 
   return {
@@ -272,12 +279,10 @@ export const createGitHubReconciliationRuntime = (
 
       for (const scope of scopes.sort((left, right) => left.projectSlug.localeCompare(right.projectSlug))) {
         const project = scope.projectSlug as ProjectSlug;
-        const result = await service.orchestrate({
+        const result = await service.reconcile({
           actor: trustedActor.value,
           workspaceId: workspace.id,
           projectId: scope.projectId,
-          operationId: randomUUID(),
-          correlationId: randomUUID(),
           expectedProvider: 'github',
           repository: {owner: scope.owner, repository: scope.repository},
           credentialRef: {
@@ -285,14 +290,13 @@ export const createGitHubReconciliationRuntime = (
             reference: scope.credentialReference,
             scope: scope.credentialScope
           },
-          mode: 'synchronize',
           expectedPreviousExternalVersion: scope.lastInboundVersion ?? ''
         });
-        if (!snapshotSucceeded(result.status)) return fail(failureForSnapshot(project, result));
+        if (result.status !== 'completed') return fail(failureForReconciliation(project, result));
         console.info('github reconciliation', {
           code: 'GITHUB_RECONCILIATION_SNAPSHOT_COMPLETED',
           project,
-          status: result.status
+          status: result.result.status
         });
         await reconcileStatusObservations(project);
       }

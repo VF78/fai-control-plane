@@ -336,7 +336,13 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     });
     expect(initialProjection?.buildChecks[0]?.evidence.state).toBe('observed');
 
-    const absent = {...initial, externalVersion: 'test:snapshot:evidence:2', pullRequests: [], checks: []};
+    const absent = {
+      ...initial,
+      externalVersion: 'test:snapshot:evidence:2',
+      workItems: [],
+      pullRequests: [],
+      checks: []
+    };
     await projector.synchronize({
       ...operation(absent),
       projectId,
@@ -350,6 +356,12 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       providerRef: 'test-evidence',
       repositoryExternalRef: repository.externalId
     });
+    expect(missingProjection?.bindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        surface: 'issue',
+        evidence: expect.objectContaining({state: 'missing'})
+      })
+    ]));
     expect(missingProjection?.pullRequests).toHaveLength(1);
     expect(missingProjection?.pullRequests[0]?.evidence.state).toBe('missing');
     expect(missingProjection?.buildChecks).toHaveLength(1);
@@ -374,6 +386,12 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     });
     expect(confirmedProjection?.pullRequests[0]?.evidence.confirmedAt).not.toBeNull();
     expect(confirmedProjection?.buildChecks[0]?.evidence.state).toBe('confirmed');
+    expect(confirmedProjection?.bindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        surface: 'issue',
+        evidence: expect.objectContaining({state: 'confirmed'})
+      })
+    ]));
     await expect(reader.read({
       workspaceId: ids.workspace,
       projectId,
