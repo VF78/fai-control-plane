@@ -14,6 +14,8 @@ import {
   artifacts,
   auditEvents,
   commandReceipts,
+  deliveryJourneys,
+  deliveryJourneyEvidence,
   COST_LEDGER_COMMAND,
   createDatabase,
   dashboardSnapshots,
@@ -23,6 +25,8 @@ import {
   projectShareWorkItems,
   projectTrackerRepositoryScopes,
   projects,
+  projectMemberships,
+  runbooks,
   riskSignals,
   scheduledJobs,
   secretRefs,
@@ -47,6 +51,8 @@ import {
   policyDecisionFor,
   policyMatrix,
   policySurfaces,
+  validateDeliveryProtocolDefinition,
+  type DeliveryProtocol,
   type CanonicalJson,
   type PolicyDecision
 } from '@fai-control-plane/domain';
@@ -320,9 +326,22 @@ export type ProjectData = Readonly<{
   hermesAgentProfileId: string | null;
   snapshot: Readonly<{health: 'green' | 'yellow' | 'red'; capturedAt: Date}> | null;
   synchronizedAt: Date | null;
+  protocol?: DeliveryProtocol | null;
   workItems: readonly Readonly<{
     id: string; title: string; summary: string | null; status: (typeof workItemStatuses)[number];
     blocked: boolean; owner: string | null; updatedAt: Date; externalUrl: string | null;
+    version?: number;
+    journey?: Readonly<{
+      protocolId: string; protocolVersion: number; stageKey: string; version: number;
+      deadlineAt: Date | null;
+      stage: Readonly<{
+        name: string; taskStatus: (typeof workItemStatuses)[number]; executionMode: string;
+        responsibility: string; nextStage: string | null;
+        actor: Readonly<{displayName: string; type: 'human' | 'agent'}> | null;
+      }> | null;
+      evidence: readonly Readonly<{stageKey: string; requirement: string; reference: string}>[];
+      requiredEvidence: readonly string[];
+    }> | null;
     canBuildPacket: boolean;
     handoff: Readonly<{
       label: string;
@@ -337,13 +356,13 @@ export type ProjectData = Readonly<{
 export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
   const [project] = await scopedProjects(db, slug);
   if (project === undefined) return null;
-  const [snapshots, operations, items, bindings, repositoryScopes, hermesProfiles, packetFacts, runFacts, approvalFacts] = await Promise.all([
+  const [snapshots, operations, items, bindings, repositoryScopes, hermesProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members] = await Promise.all([
     db.select({health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(eq(dashboardSnapshots.projectId, project.id)).orderBy(desc(dashboardSnapshots.capturedAt)).limit(1),
     db.select({createdAt: trackerSnapshotOperations.createdAt})
       .from(trackerSnapshotOperations).where(eq(trackerSnapshotOperations.projectId, project.id)).orderBy(desc(trackerSnapshotOperations.createdAt)).limit(1),
     db.select({
-      id: workItems.id, title: workItems.title, summary: workItems.summary, status: workItems.status,
+      id: workItems.id, title: workItems.title, summary: workItems.summary, status: workItems.status, version: workItems.version,
       blocked: workItems.blocked, owner: actors.displayName, updatedAt: workItems.updatedAt
     }).from(workItems).leftJoin(actors, eq(workItems.ownerActorId, actors.id))
       .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt))).orderBy(desc(workItems.updatedAt), workItems.id),
@@ -380,7 +399,32 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       agentRunId: approvalRequests.agentRunId, status: approvalRequests.status,
       updatedAt: approvalRequests.updatedAt
     }).from(approvalRequests).where(eq(approvalRequests.projectId, project.id))
-      .orderBy(desc(approvalRequests.updatedAt), approvalRequests.id)
+      .orderBy(desc(approvalRequests.updatedAt), approvalRequests.id),
+    db.select({
+      id: runbooks.id, projectId: runbooks.projectId, name: runbooks.name,
+      version: runbooks.version, revision: runbooks.revision, state: runbooks.protocolState,
+      active: runbooks.active, definition: runbooks.definition, contentHash: runbooks.contentHash
+    }).from(runbooks).where(and(
+      eq(runbooks.projectId, project.id),
+      inArray(runbooks.protocolState, ['draft', 'published', 'retired'])
+    )).orderBy(desc(runbooks.active), desc(runbooks.updatedAt), desc(runbooks.version)),
+    db.select({
+      workItemId: deliveryJourneys.workItemId, protocolId: deliveryJourneys.protocolId,
+      protocolVersion: deliveryJourneys.protocolVersion, stageKey: deliveryJourneys.stageKey,
+      version: deliveryJourneys.version, deadlineAt: deliveryJourneys.deadlineAt
+    }).from(deliveryJourneys).innerJoin(workItems, eq(workItems.id, deliveryJourneys.workItemId))
+      .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt))),
+    db.select({
+      workItemId: deliveryJourneyEvidence.workItemId, stageKey: deliveryJourneyEvidence.stageKey,
+      requirement: deliveryJourneyEvidence.requirement, reference: deliveryJourneyEvidence.evidenceReference
+    }).from(deliveryJourneyEvidence).innerJoin(workItems, eq(workItems.id, deliveryJourneyEvidence.workItemId))
+      .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt))),
+    db.select({
+      actorId: actors.id, displayName: actors.displayName, type: actors.type,
+      role: projectMemberships.role
+    }).from(projectMemberships).innerJoin(actors, eq(actors.id, projectMemberships.actorId))
+      .where(and(eq(projectMemberships.projectId, project.id), eq(projectMemberships.active, true), isNull(actors.disabledAt)))
+      .orderBy(actors.id)
   ]);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
@@ -408,6 +452,52 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
     binding.provider === 'github' && binding.surface === 'issue' && confirmedGitHubIssueUrl(binding.metadata, repository) !== null
       ? [binding.entityId]
       : []));
+  const protocols = protocolRows.flatMap((row): DeliveryProtocol[] => {
+    if (row.state === null || row.revision === null || row.contentHash === null) return [];
+    const definition = validateDeliveryProtocolDefinition(row.definition);
+    return definition.ok ? [{
+      id: row.id, projectId: row.projectId, name: row.name, version: row.version,
+      revision: row.revision, state: row.state, active: row.active,
+      definition: definition.value, contentHash: row.contentHash
+    }] : [];
+  });
+  const protocol = protocols[0] ?? null;
+  const protocolByJourney = new Map(protocols.map((item) => [`${item.id}:${item.version}`, item]));
+  const memberById = new Map(members.flatMap((member) => member.type === 'human' || member.type === 'agent'
+    ? [[member.actorId, {displayName: member.displayName, type: member.type}] as const] : []));
+  const memberByRole = new Map<string, Readonly<{displayName: string; type: 'human' | 'agent'}>>();
+  for (const member of members) {
+    if ((member.type === 'human' || member.type === 'agent') && !memberByRole.has(member.role)) {
+      memberByRole.set(member.role, {displayName: member.displayName, type: member.type});
+    }
+  }
+  const evidenceByJourney = new Map<string, Readonly<{stageKey: string; requirement: string; reference: string}>[]>();
+  for (const evidence of journeyEvidence) {
+    evidenceByJourney.set(evidence.workItemId, [...(evidenceByJourney.get(evidence.workItemId) ?? []), {
+      stageKey: evidence.stageKey,
+      requirement: evidence.requirement,
+      reference: evidence.reference
+    }]);
+  }
+  const journeyByItem = new Map(journeys.map((journey) => {
+    const boundProtocol = protocolByJourney.get(`${journey.protocolId}:${journey.protocolVersion}`) ?? null;
+    const stage = boundProtocol?.definition.stages.find((item) => item.key === journey.stageKey) ?? null;
+    const actor = stage === null ? null : stage.responsibility.kind === 'project_role'
+      ? memberByRole.get(stage.responsibility.role) ?? null
+      : memberById.get(stage.responsibility.actorId) ?? null;
+    const nextStage = stage?.allowedNextStageKey === null || stage === null ? null
+      : boundProtocol?.definition.stages.find((item) => item.key === stage.allowedNextStageKey)?.name ?? null;
+    return [journey.workItemId, {
+      ...journey,
+      stage: stage === null ? null : {
+        name: stage.name, taskStatus: stage.taskStatus, executionMode: stage.executionMode,
+        responsibility: stage.responsibility.kind === 'project_role' ? stage.responsibility.role : stage.responsibility.actorType,
+        nextStage, actor
+      },
+      evidence: evidenceByJourney.get(journey.workItemId) ?? [],
+      requiredEvidence: stage?.requiredEvidence ?? []
+    }] as const;
+  }));
   return {
     project,
     hermesAgentProfileId: process.env.HERMES_RUNNER_ENABLED === 'true' && hermesProfiles.length === 1
@@ -415,6 +505,7 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       : null,
     snapshot: snapshots[0] ?? null,
     synchronizedAt: operations[0]?.createdAt ?? null,
+    protocol,
     workItems: items.flatMap((item) => {
       if (!workItemStatuses.includes(item.status)) return [];
       const approval = pendingApprovalByItem.get(item.id);
@@ -446,6 +537,8 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
               : null;
       return [{
         ...item,
+        version: item.version,
+        journey: journeyByItem.get(item.id) ?? null,
         externalUrl: externalUrlByItem.get(item.id) ?? null,
         canBuildPacket: (item.status === 'ready' || item.status === 'in_dev') && packetEligibleItems.has(item.id),
         handoff

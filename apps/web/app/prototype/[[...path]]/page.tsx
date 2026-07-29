@@ -56,5 +56,5 @@ export default async function PrototypePage({params, searchParams}: {
     route.screen === 'agents' || route.screen === 'agent' ? loadHealthData() : Promise.resolve(null),
     route.screen === 'global_tasks' ? Promise.all(operatorProjectSlugs.map((slug) => loadProjectData(slug))).then((loads) => loads.flatMap((load) => load.state === 'ready' && load.data !== null ? [load.data] : [])) : Promise.resolve([])
   ]);
-  return <PrototypeShell route={route} data={{portfolio, access, project: projectData, runs, health, projectIndex}} />;
+  return <PrototypeShell route={route} data={{portfolio, access, project: projectData, runs, health, projectIndex, csrfToken: auth.session?.csrfToken ?? null}} />;
 }
