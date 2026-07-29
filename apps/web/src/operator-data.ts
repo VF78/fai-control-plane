@@ -323,7 +323,7 @@ export type ProjectData = Readonly<{
     canBuildPacket: boolean;
     handoff: Readonly<{
       label: string;
-      state: 'pending' | 'queued' | 'running' | 'waiting_approval' | 'failed';
+      state: 'pending' | 'queued' | 'running' | 'waiting_approval' | 'done' | 'failed';
       href: string;
     }> | null;
   }>[];
@@ -415,6 +415,7 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       const approval = pendingApprovalByItem.get(item.id);
       const activeRun = activeRunByItem.get(item.id);
       const latestRun = latestRunByItem.get(item.id);
+      const completedRun = latestRun?.status === 'done' ? latestRun : undefined;
       const failedRun = latestRun?.status === 'failed' ? latestRun : undefined;
       const packet = unconfirmedPacketByItem.get(item.id);
       const handoff = approval !== undefined
@@ -429,6 +430,9 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
                 : activeRun.status === 'running' ? 'running' as const : 'queued' as const,
               href: `/runs?project=${slug}#run-${activeRun.id}`
             }
+          : completedRun !== undefined &&
+              (item.status === 'qa' || item.status === 'acceptance' || item.status === 'done')
+            ? {label: 'Run completed', state: 'done' as const, href: `/runs?project=${slug}#run-${completedRun.id}`}
           : failedRun !== undefined && (packet === undefined || failedRun.updatedAt >= packet.createdAt)
             ? {label: 'Run failed', state: 'failed' as const, href: `/runs?project=${slug}#run-${failedRun.id}`}
             : packet !== undefined
