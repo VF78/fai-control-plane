@@ -14,6 +14,7 @@ import {
   artifacts,
   auditEvents,
   commandReceipts,
+  deliveryJourneys,
   COST_LEDGER_COMMAND,
   createDatabase,
   dashboardSnapshots,
@@ -23,6 +24,7 @@ import {
   projectShareWorkItems,
   projectTrackerRepositoryScopes,
   projects,
+  runbooks,
   riskSignals,
   scheduledJobs,
   secretRefs,
@@ -47,6 +49,8 @@ import {
   policyDecisionFor,
   policyMatrix,
   policySurfaces,
+  validateDeliveryProtocolDefinition,
+  type DeliveryProtocol,
   type CanonicalJson,
   type PolicyDecision
 } from '@fai-control-plane/domain';
@@ -320,9 +324,15 @@ export type ProjectData = Readonly<{
   hermesAgentProfileId: string | null;
   snapshot: Readonly<{health: 'green' | 'yellow' | 'red'; capturedAt: Date}> | null;
   synchronizedAt: Date | null;
+  protocol?: DeliveryProtocol | null;
   workItems: readonly Readonly<{
     id: string; title: string; summary: string | null; status: (typeof workItemStatuses)[number];
     blocked: boolean; owner: string | null; updatedAt: Date; externalUrl: string | null;
+    version?: number;
+    journey?: Readonly<{
+      protocolId: string; protocolVersion: number; stageKey: string; version: number;
+      deadlineAt: Date | null;
+    }> | null;
     canBuildPacket: boolean;
     handoff: Readonly<{
       label: string;
@@ -337,13 +347,13 @@ export type ProjectData = Readonly<{
 export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
   const [project] = await scopedProjects(db, slug);
   if (project === undefined) return null;
-  const [snapshots, operations, items, bindings, repositoryScopes, hermesProfiles, packetFacts, runFacts, approvalFacts] = await Promise.all([
+  const [snapshots, operations, items, bindings, repositoryScopes, hermesProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys] = await Promise.all([
     db.select({health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(eq(dashboardSnapshots.projectId, project.id)).orderBy(desc(dashboardSnapshots.capturedAt)).limit(1),
     db.select({createdAt: trackerSnapshotOperations.createdAt})
       .from(trackerSnapshotOperations).where(eq(trackerSnapshotOperations.projectId, project.id)).orderBy(desc(trackerSnapshotOperations.createdAt)).limit(1),
     db.select({
-      id: workItems.id, title: workItems.title, summary: workItems.summary, status: workItems.status,
+      id: workItems.id, title: workItems.title, summary: workItems.summary, status: workItems.status, version: workItems.version,
       blocked: workItems.blocked, owner: actors.displayName, updatedAt: workItems.updatedAt
     }).from(workItems).leftJoin(actors, eq(workItems.ownerActorId, actors.id))
       .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt))).orderBy(desc(workItems.updatedAt), workItems.id),
@@ -380,7 +390,21 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       agentRunId: approvalRequests.agentRunId, status: approvalRequests.status,
       updatedAt: approvalRequests.updatedAt
     }).from(approvalRequests).where(eq(approvalRequests.projectId, project.id))
-      .orderBy(desc(approvalRequests.updatedAt), approvalRequests.id)
+      .orderBy(desc(approvalRequests.updatedAt), approvalRequests.id),
+    db.select({
+      id: runbooks.id, projectId: runbooks.projectId, name: runbooks.name,
+      version: runbooks.version, revision: runbooks.revision, state: runbooks.protocolState,
+      active: runbooks.active, definition: runbooks.definition, contentHash: runbooks.contentHash
+    }).from(runbooks).where(and(
+      eq(runbooks.projectId, project.id),
+      inArray(runbooks.protocolState, ['draft', 'published', 'retired'])
+    )).orderBy(desc(runbooks.active), desc(runbooks.updatedAt), desc(runbooks.version)),
+    db.select({
+      workItemId: deliveryJourneys.workItemId, protocolId: deliveryJourneys.protocolId,
+      protocolVersion: deliveryJourneys.protocolVersion, stageKey: deliveryJourneys.stageKey,
+      version: deliveryJourneys.version, deadlineAt: deliveryJourneys.deadlineAt
+    }).from(deliveryJourneys).innerJoin(workItems, eq(workItems.id, deliveryJourneys.workItemId))
+      .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt)))
   ]);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
@@ -408,6 +432,16 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
     binding.provider === 'github' && binding.surface === 'issue' && confirmedGitHubIssueUrl(binding.metadata, repository) !== null
       ? [binding.entityId]
       : []));
+  const protocol = protocolRows.flatMap((row): DeliveryProtocol[] => {
+    if (row.state === null || row.revision === null || row.contentHash === null) return [];
+    const definition = validateDeliveryProtocolDefinition(row.definition);
+    return definition.ok ? [{
+      id: row.id, projectId: row.projectId, name: row.name, version: row.version,
+      revision: row.revision, state: row.state, active: row.active,
+      definition: definition.value, contentHash: row.contentHash
+    }] : [];
+  })[0] ?? null;
+  const journeyByItem = new Map(journeys.map((journey) => [journey.workItemId, journey]));
   return {
     project,
     hermesAgentProfileId: process.env.HERMES_RUNNER_ENABLED === 'true' && hermesProfiles.length === 1
@@ -415,6 +449,7 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       : null,
     snapshot: snapshots[0] ?? null,
     synchronizedAt: operations[0]?.createdAt ?? null,
+    protocol,
     workItems: items.flatMap((item) => {
       if (!workItemStatuses.includes(item.status)) return [];
       const approval = pendingApprovalByItem.get(item.id);
@@ -446,6 +481,8 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
               : null;
       return [{
         ...item,
+        version: item.version,
+        journey: journeyByItem.get(item.id) ?? null,
         externalUrl: externalUrlByItem.get(item.id) ?? null,
         canBuildPacket: (item.status === 'ready' || item.status === 'in_dev') && packetEligibleItems.has(item.id),
         handoff
