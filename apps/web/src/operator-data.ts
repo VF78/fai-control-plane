@@ -275,6 +275,7 @@ export const derivePortfolioProjectMetrics = (input: Readonly<{
     }
     if (transition.toStatus !== 'done') return [];
     const startedAt = enteredDevelopmentAt.get(transition.workItemId);
+    enteredDevelopmentAt.delete(transition.workItemId);
     return startedAt === undefined || startedAt >= transition.createdAt ? [] : [(transition.createdAt.getTime() - startedAt.getTime()) / 3_600_000];
   });
   const hasTrendHistory = recent >= minimumTrendSamples && previous >= minimumTrendSamples;
@@ -282,7 +283,7 @@ export const derivePortfolioProjectMetrics = (input: Readonly<{
   return {
     stages,
     activeWip: activeItems.length,
-    blockedWork: projectItems.filter((item) => item.blocked).length,
+    blockedWork: projectItems.filter((item) => item.blocked && item.status !== 'done').length,
     staleActiveWork: activeItems.filter((item) => input.asOf.getTime() - item.updatedAt.getTime() > staleActiveWorkAfterMs).length,
     pendingApprovals: {count: pendingApprovals.length, oldestAt: pendingApprovals.reduce<Date | null>((oldest, approval) =>
       oldest === null || approval.createdAt < oldest ? approval.createdAt : oldest, null)},

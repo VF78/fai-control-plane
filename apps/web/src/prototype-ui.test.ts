@@ -11,14 +11,15 @@ it('derives portfolio facts from persisted work, approval, milestone, and transi
     items: [
       {id: 'one', projectId: 'msa', status: 'in_dev', blocked: false, updatedAt: new Date('2026-07-20T12:00:00.000Z')},
       {id: 'two', projectId: 'msa', status: 'qa', blocked: true, updatedAt: new Date('2026-07-30T11:00:00.000Z')},
-      {id: 'three', projectId: 'msa', status: 'done', blocked: false, updatedAt: asOf}
+      {id: 'three', projectId: 'msa', status: 'done', blocked: true, updatedAt: asOf}
     ],
     approvals: [{projectId: 'msa', createdAt: new Date('2026-07-28T12:00:00.000Z')}],
     milestones: [{projectId: 'msa', targetAt: new Date('2026-07-29T12:00:00.000Z'), closedAt: null}],
     deadlines: [],
     transitions: [
       {workItemId: 'one', projectId: 'msa', toStatus: 'in_dev', createdAt: new Date('2026-05-21T12:00:00.000Z')},
-      {workItemId: 'one', projectId: 'msa', toStatus: 'done', createdAt: new Date('2026-06-01T12:00:00.000Z')}
+      {workItemId: 'one', projectId: 'msa', toStatus: 'done', createdAt: new Date('2026-06-01T12:00:00.000Z')},
+      {workItemId: 'one', projectId: 'msa', toStatus: 'done', createdAt: new Date('2026-06-02T12:00:00.000Z')}
     ]
   });
 
@@ -30,6 +31,7 @@ it('derives portfolio facts from persisted work, approval, milestone, and transi
   expect(metrics.milestoneOutlook).toEqual({state: 'dated', due: 0, overdue: 1});
   expect(metrics.throughputTrend.state).toBe('not_enough_history');
   expect(metrics.cycleTime.state).toBe('not_enough_history');
+  expect(metrics.cycleTime.samples).toBe(1);
 });
 
 it('renders compact per-project portfolio metrics and explicit history limits', () => {
