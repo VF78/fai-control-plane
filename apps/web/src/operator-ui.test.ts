@@ -73,6 +73,8 @@ it('links a WorkItem handoff state to the exact persisted approval', () => {
         handoff: {
           label: 'Approval pending',
           state: 'pending',
+          kind: 'approval',
+          targetId: 'approval-1',
           href: '/runs?project=ascon#approval-approval-1'
         }
       }]
@@ -88,6 +90,8 @@ it('links a WorkItem handoff state to the exact persisted approval', () => {
         id: 'approval-1',
         project: 'ASCON',
         projectSlug: 'ascon',
+        workItemId: 'work-1',
+        agentRunId: null,
         actionCategory: 'deploy',
         surface: 'runner',
         environment: 'production',
