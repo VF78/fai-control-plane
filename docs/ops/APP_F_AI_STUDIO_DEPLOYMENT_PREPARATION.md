@@ -1,5 +1,10 @@
 # `app.f-ai.studio` deployment preparation
 
+> **Historical activation plan.** The internal alpha has since been activated.
+> Do not rerun this document as a current deployment procedure. Start with
+> [the production handoff](PRODUCTION_HANDOFF.md), verify actual host state, and
+> obtain explicit approval for the exact release action.
+
 > **Preparation, not authorization.** This topology must not be activated,
 > deployed, installed into Nginx, or accompanied by VPS, DNS, TLS, firewall, or
 > protected-service changes without Vladimir's separate approval of the exact

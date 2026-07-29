@@ -1,6 +1,6 @@
-# ADR 0002: PostgreSQL Authority and Inbound Tracker Reconciliation
+# ADR 0002: PostgreSQL Authority and Gated Tracker Reconciliation
 
-- Status: Accepted
+- Status: Accepted, amended 2026-07-28
 - Date: 2026-07-25
 - Issue: #2
 
@@ -25,35 +25,37 @@ pass policy, domain transition validation, CAS, audit, and command receipt
 handling before it can change a WorkItem. No outbound GitHub write is required
 for that inbound transition.
 
-GitHub is accessed through a provider-neutral `TrackerAdapter`. Domain code
-does not call GitHub SDKs or APIs directly. Week one provides inbound
-reconciliation into canonical PostgreSQL state through a durable inbox; the
-WorkItem UI is display-only:
+GitHub is accessed through provider-neutral task-tracker and repository
+observation ports. Domain code does not call GitHub SDKs or APIs directly.
+Inbound reconciliation enters canonical PostgreSQL state through a durable
+inbox:
 
 - The inbox stores webhook and poll observations before processing. A provider
   delivery ID or stable event fingerprint enforces idempotency.
-- The outbox and GitHub writer are deferred and disabled. A future writer must
-  be explicitly approved, use the same transaction boundary, and record
-  bounded retry results.
+- An approved Status-only writer uses a separately gated credential, an outbox
+  mutation marker, expected canonical/provider versions, read-after-write
+  confirmation and echo suppression.
+- Other fields remain read-only until a field-authority decision and provider
+  capability are implemented.
 
 Inbox processing serializes updates per tracker object, compares provider
 version metadata, and records conflicts instead of silently overwriting data.
-Reconciliation polling repairs missed webhooks. A future outbox delivery must
-carry an idempotency key and suppress echoes caused by the control plane's own
+Reconciliation polling repairs missed webhooks. Every outbox delivery carries
+an idempotency key and suppresses echoes caused by the control plane's own
 writes.
 
 ### Authority Matrix
 
 | Data | Authority | Synchronization rule |
 | --- | --- | --- |
-| Workflow phase, run state, approvals, policy decisions | PostgreSQL | Mapped GitHub Project Status observations can transition canonical state only through policy/domain/CAS/audit/receipt command handling; the WorkItem UI is display-only and the outbound writer is deferred |
+| Workflow phase, run state, approvals, policy decisions | PostgreSQL | Mapped GitHub Project Status observations can transition canonical state only through policy/domain/CAS/audit/receipt command handling; approved canonical Status transitions may write back through the separately gated adapter |
 | Run requests, results, artifact metadata, share grants | PostgreSQL | Never reconstructed from GitHub |
 | Queue state, inbox/outbox state, cursors, delivery attempts | PostgreSQL | Internal only |
 | Secret references and credential metadata | PostgreSQL | Values remain outside the database and are never synchronized |
 | Repository, issue, and pull request provider IDs | GitHub for identity; PostgreSQL for the durable mirror | Inbound creates or refreshes the mirror; IDs are immutable after binding |
-| Issue or pull request title, body, assignees, milestone, open/closed state | GitHub | Accepted inbound into the PostgreSQL mirror; no control-plane write occurs in week one |
+| Issue or pull request title, body, assignees, milestone, open/closed state | GitHub | Accepted inbound into the PostgreSQL mirror; no control-plane write until each field receives an explicit authority/capability decision |
 | Non-namespaced labels | GitHub | Accepted inbound and retained for display; no outbound preservation is active |
-| `fai:*` labels and control-plane status comments | PostgreSQL desired state | Writer is deferred and disabled; inbound values do not change canonical state |
+| `fai:*` labels and control-plane status comments | PostgreSQL desired state | Not implemented; inbound values do not change canonical state |
 
 An authority classification is required before adding a synchronized field.
 There is no generic merge and no timestamp-only last-writer-wins policy.
@@ -67,10 +69,10 @@ tracker bindings. Steady-state synchronization requires the repository
 binding's prior snapshot version, updates only existing WorkItem bindings and
 provider-owned mirror fields, and records each mapped GitHub Project Status as
 an immutable observation with its expected canonical version. A processor turns
-only pending observations into canonical commands. The deferred outbound writer
-must handle echoes without an inbound command, and persist outbound races or
-failed CAS/domain transitions as conflicts when it is explicitly approved. The
-reconciler never infers or silently creates a
+only pending observations into canonical commands. The Status writer handles
+echoes without creating a second inbound command and persists outbound races or
+failed CAS/domain transitions as conflicts. The reconciler never infers or
+silently creates a
 canonical WorkItem. Bootstrap may set an initial status only while creating a
 new WorkItem; steady-state synchronization never writes `work_items.status`
 directly. Each
@@ -81,8 +83,8 @@ bodies and credential material are not persisted.
 
 ## Failure Semantics
 
-- A database commit does not write GitHub in week one; the deferred writer has
-  no delivery path until explicitly approved.
+- A database commit does not imply confirmed GitHub state; the gated writer
+  reports pending, confirmed, stale, retryable or failed delivery explicitly.
 - A webhook is acknowledged only after durable inbox storage.
 - Poison events and exhausted deliveries move to a reviewable dead-letter
   state; they are not discarded.
@@ -94,7 +96,8 @@ bodies and credential material are not persisted.
 
 - Control-plane behavior remains available and auditable during GitHub outages.
 - Users may keep editing GitHub-owned fields without creating two authorities.
-- Inbound reconciliation is eventually consistent and the WorkItem UI is
-  display-only; no GitHub write effect is pending in week one.
+- Inbound reconciliation and gated Status write-back are eventually
+  consistent; the UI must distinguish canonical, pending confirmation,
+  externally confirmed, stale and conflicting state.
 - Additional tracker providers can implement the same port without leaking
   provider-specific concepts into the domain.
