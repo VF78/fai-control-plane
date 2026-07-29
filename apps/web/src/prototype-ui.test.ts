@@ -1,7 +1,53 @@
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {expect, it} from 'vitest';
+import {derivePortfolioProjectMetrics} from './operator-data';
 import {PrototypeShell, type PrototypeData} from './prototype-ui';
+
+it('derives portfolio facts from persisted work, approval, milestone, and transition records', () => {
+  const asOf = new Date('2026-07-30T12:00:00.000Z');
+  const metrics = derivePortfolioProjectMetrics({
+    projectId: 'msa', asOf, integrationFreshness: new Date('2026-07-30T11:45:00.000Z'),
+    items: [
+      {id: 'one', projectId: 'msa', status: 'in_dev', blocked: false, updatedAt: new Date('2026-07-20T12:00:00.000Z')},
+      {id: 'two', projectId: 'msa', status: 'qa', blocked: true, updatedAt: new Date('2026-07-30T11:00:00.000Z')},
+      {id: 'three', projectId: 'msa', status: 'done', blocked: true, updatedAt: asOf}
+    ],
+    approvals: [{projectId: 'msa', createdAt: new Date('2026-07-28T12:00:00.000Z')}],
+    milestones: [{projectId: 'msa', targetAt: new Date('2026-07-29T12:00:00.000Z'), closedAt: null}],
+    deadlines: [],
+    transitions: [
+      {workItemId: 'one', projectId: 'msa', toStatus: 'in_dev', createdAt: new Date('2026-05-21T12:00:00.000Z')},
+      {workItemId: 'one', projectId: 'msa', toStatus: 'done', createdAt: new Date('2026-06-01T12:00:00.000Z')},
+      {workItemId: 'one', projectId: 'msa', toStatus: 'done', createdAt: new Date('2026-06-02T12:00:00.000Z')}
+    ]
+  });
+
+  expect(metrics.stages).toMatchObject({in_dev: 1, qa: 1, done: 1});
+  expect(metrics.activeWip).toBe(2);
+  expect(metrics.blockedWork).toBe(1);
+  expect(metrics.staleActiveWork).toBe(1);
+  expect(metrics.pendingApprovals).toEqual({count: 1, oldestAt: new Date('2026-07-28T12:00:00.000Z')});
+  expect(metrics.milestoneOutlook).toEqual({state: 'dated', due: 0, overdue: 1});
+  expect(metrics.throughputTrend.state).toBe('not_enough_history');
+  expect(metrics.cycleTime.state).toBe('not_enough_history');
+  expect(metrics.cycleTime.samples).toBe(1);
+});
+
+it('renders compact per-project portfolio metrics and explicit history limits', () => {
+  const data = {
+    access: {state: 'unconfigured'}, health: null, project: null, runs: null, projectIndex: [],
+    portfolio: {state: 'ready', data: {attention: [], projects: [{id: 'msa', name: 'MSA', slug: 'msa', health: 'yellow', snapshotAt: null, synchronizedAt: new Date('2026-07-30T11:45:00.000Z'), unresolvedRiskCount: 0, metrics: {stages: {backlog: 1, ready: 1, in_dev: 2, qa: 1, acceptance: 0, done: 3}, activeWip: 3, blockedWork: 1, staleActiveWork: 1, pendingApprovals: {count: 2, oldestAt: new Date('2026-07-29T11:45:00.000Z')}, integrationFreshness: new Date('2026-07-30T11:45:00.000Z'), milestoneOutlook: {state: 'unknown', due: 0, overdue: 0}, throughputTrend: {state: 'not_enough_history', recent: 1, previous: 0}, cycleTime: {state: 'not_enough_history', averageHours: null, samples: 1}}}]}}
+  } as unknown as PrototypeData;
+  const markup = renderToStaticMarkup(createElement(PrototypeShell, {route: {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
+
+  expect(markup).toContain('Portfolio');
+  expect(markup).toContain('Active WIP');
+  expect(markup).toContain('Stale active');
+  expect(markup).toContain('Deadline outlook');
+  expect(markup).toContain('Not enough history');
+  expect(markup).not.toContain('ROI');
+});
 
 it('keeps the web-first workspace IA and honest unavailable state', () => {
   const markup = renderToStaticMarkup(createElement(PrototypeShell, {

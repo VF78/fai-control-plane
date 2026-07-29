@@ -104,6 +104,26 @@ function AttentionRow({signal, route, projects}: {signal: PortfolioData['attenti
   const body = <><Status value={signal.severity}/><div><strong>{signal.object}</strong><small>{signal.project} · {signal.reason}</small></div><span>{signal.owner ?? 'Owner unknown'}</span><time>{date(signal.freshness)}</time>{href === null ? <span className="fcp-muted">Project unresolved</span> : <ChevronRight aria-hidden="true" size={16}/>}</>;
   return href === null ? <div className="fcp-row fcp-attention" key={signal.id}>{body}</div> : <Link className="fcp-row fcp-attention" href={href} key={signal.id}>{body}</Link>;
 }
+function age(value: Date | null, asOf = new Date()): string {
+  if (value === null) return 'Not observed';
+  const hours = Math.max(0, Math.floor((asOf.getTime() - value.getTime()) / 3_600_000));
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+function PortfolioMetrics({project, route}: {project: PortfolioData['projects'][number]; route: PrototypeRoute}) {
+  const metrics = project.metrics;
+  const outlook = metrics.milestoneOutlook.state === 'unknown'
+    ? 'Unknown — no dated fact'
+    : metrics.milestoneOutlook.overdue > 0
+      ? `${metrics.milestoneOutlook.overdue} overdue · ${metrics.milestoneOutlook.due} upcoming`
+      : `${metrics.milestoneOutlook.due} upcoming`;
+  const throughput = metrics.throughputTrend.state === 'ready'
+    ? `${metrics.throughputTrend.recent} vs ${metrics.throughputTrend.previous} completed`
+    : 'Not enough history';
+  const cycle = metrics.cycleTime.state === 'ready'
+    ? `${metrics.cycleTime.averageHours! < 24 ? `${metrics.cycleTime.averageHours}h` : `${Math.round(metrics.cycleTime.averageHours! / 24)}d`} average`
+    : 'Not enough history';
+  return <article className="fcp-portfolio-metrics"><header><div><FolderKanban aria-hidden="true" size={17}/><Link href={projectUrl(project.slug, 'overview', route.scope)}>{project.name}</Link></div><Status value={project.health}/></header><div className="fcp-metric-core"><div><span>Active WIP</span><strong>{metrics.activeWip}</strong></div><div className={metrics.blockedWork > 0 ? 'danger' : ''}><span>Blocked</span><strong>{metrics.blockedWork}</strong></div><div className={metrics.staleActiveWork > 0 ? 'warning' : ''}><span>Stale active</span><strong>{metrics.staleActiveWork}</strong></div><div><span>Pending approval</span><strong>{metrics.pendingApprovals.count}</strong><small>{metrics.pendingApprovals.count === 0 ? 'None pending' : `Oldest ${age(metrics.pendingApprovals.oldestAt)}`}</small></div></div><ol className="fcp-portfolio-stages" aria-label={`${project.name} work items by delivery stage`}>{Object.entries(metrics.stages).map(([stage, count]) => <li key={stage}><span>{stage === 'in_dev' ? 'In dev' : stage === 'qa' ? 'QA' : stage === 'done' ? 'Done' : statusLabel(stage)}</span><strong>{count}</strong></li>)}</ol><dl className="fcp-portfolio-facts"><div><dt>Integration</dt><dd>{metrics.integrationFreshness === null ? 'Not observed' : `Observed ${compactDate(metrics.integrationFreshness)}`}</dd></div><div><dt>Deadline outlook</dt><dd>{outlook}</dd></div><div><dt>Throughput</dt><dd>{throughput}</dd></div><div><dt>Cycle time</dt><dd>{cycle}</dd></div></dl></article>;
+}
 function Dashboard({route, data}: {route: PrototypeRoute; data: PrototypeData}) {
   const portfolio = ready(data.portfolio);
   const allRuns = ready(data.runs);
@@ -113,7 +133,7 @@ function Dashboard({route, data}: {route: PrototypeRoute; data: PrototypeData}) 
   return <><div className="fcp-page-title"><div><h1>Dashboard</h1><p>Delivery attention across configured projects.</p></div><Scope route={route}/></div><Summary items={[
     {label: 'Projects', value: portfolio.projects.length}, {label: 'Attention', value: portfolio.attention.length, tone: portfolio.attention.length > 0 ? 'danger' : ''},
     ...(active === undefined ? [] : [{label: 'Active runs', value: active}]), ...(failed === undefined ? [] : [{label: 'Failed runs', value: failed, tone: failed > 0 ? 'danger' : ''}])
-  ]}/><section className="fcp-section"><div className="fcp-section-head"><h2>Attention</h2><span>Persisted signals only</span></div>{portfolio.attention.length === 0 ? <p className="fcp-empty-line">No recorded alerts.</p> : <div className="fcp-list">{portfolio.attention.map((signal) => <AttentionRow signal={signal} route={route} projects={portfolio.projects} key={signal.id}/>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Projects</h2><Link href={screenUrl({kind: 'projects'}, route.scope)}>View all</Link></div><div className="fcp-list">{portfolio.projects.map((project) => <Link className="fcp-row fcp-project-row" href={projectUrl(project.slug, 'overview', route.scope)} key={project.id}><FolderKanban aria-hidden="true" size={18}/><div><strong>{project.name}</strong><small>{project.unresolvedRiskCount === 0 ? 'No recorded risks' : `${project.unresolvedRiskCount} recorded risks`}</small></div><Status value={project.health}/><span>{project.synchronizedAt === null ? 'Source not observed' : `Observed ${date(project.synchronizedAt)}`}</span><ChevronRight aria-hidden="true" size={16}/></Link>)}</div></section></>;
+  ]}/><section className="fcp-section"><div className="fcp-section-head"><h2>Portfolio</h2><span>Observed facts</span></div><div className="fcp-portfolio-grid">{portfolio.projects.map((project) => <PortfolioMetrics project={project} route={route} key={project.id}/>)}</div></section><section className="fcp-section"><div className="fcp-section-head"><h2>Attention</h2><span>Persisted signals only</span></div>{portfolio.attention.length === 0 ? <p className="fcp-empty-line">No recorded alerts.</p> : <div className="fcp-list">{portfolio.attention.map((signal) => <AttentionRow signal={signal} route={route} projects={portfolio.projects} key={signal.id}/>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Projects</h2><Link href={screenUrl({kind: 'projects'}, route.scope)}>View all</Link></div><div className="fcp-list">{portfolio.projects.map((project) => <Link className="fcp-row fcp-project-row" href={projectUrl(project.slug, 'overview', route.scope)} key={project.id}><FolderKanban aria-hidden="true" size={18}/><div><strong>{project.name}</strong><small>{project.unresolvedRiskCount === 0 ? 'No recorded risks' : `${project.unresolvedRiskCount} recorded risks`}</small></div><Status value={project.health}/><span>{project.synchronizedAt === null ? 'Source not observed' : `Observed ${date(project.synchronizedAt)}`}</span><ChevronRight aria-hidden="true" size={16}/></Link>)}</div></section></>;
 }
 function Projects({route, data}: {route: PrototypeRoute; data: PrototypeData}) {
   const portfolio = ready(data.portfolio);

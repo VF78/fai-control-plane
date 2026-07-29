@@ -20,6 +20,7 @@ import {
   createDatabase,
   dashboardSnapshots,
   healthcheckStaleAfterMs,
+  milestones,
   outboxEvents,
   projectShareGrants,
   projectShareWorkItems,
@@ -33,6 +34,7 @@ import {
   taskPackets,
   trackerBindings,
   trackerSnapshotOperations,
+  statusTransitions,
   VALUE_LEDGER_COMMAND,
   workItems,
   ledgerRoi,
@@ -208,15 +210,95 @@ export type PortfolioData = Readonly<{
     snapshotAt: Date | null;
     synchronizedAt: Date | null;
     unresolvedRiskCount: number;
+    metrics: PortfolioProjectMetrics;
   }>[];
   attention: readonly AttentionQueueItem[];
 }>;
+
+const portfolioStages = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
+type PortfolioStage = (typeof portfolioStages)[number];
+const activePortfolioStages = new Set<PortfolioStage>(['in_dev', 'qa', 'acceptance']);
+const staleActiveWorkAfterMs = 7 * 24 * 60 * 60 * 1_000;
+const trendWindowMs = 28 * 24 * 60 * 60 * 1_000;
+const minimumTrendSamples = 3;
+
+export type PortfolioProjectMetrics = Readonly<{
+  stages: Readonly<Record<PortfolioStage, number>>;
+  activeWip: number;
+  blockedWork: number;
+  staleActiveWork: number;
+  pendingApprovals: Readonly<{count: number; oldestAt: Date | null}>;
+  integrationFreshness: Date | null;
+  milestoneOutlook: Readonly<{state: 'unknown' | 'dated'; due: number; overdue: number}>;
+  throughputTrend: Readonly<{state: 'not_enough_history' | 'ready'; recent: number; previous: number}>;
+  cycleTime: Readonly<{state: 'not_enough_history' | 'ready'; averageHours: number | null; samples: number}>;
+}>;
+
+type PortfolioMetricItem = Readonly<{id: string; projectId: string; status: PortfolioStage; blocked: boolean; updatedAt: Date}>;
+type PortfolioMetricApproval = Readonly<{projectId: string; createdAt: Date}>;
+type PortfolioMetricMilestone = Readonly<{projectId: string; targetAt: Date | null; closedAt: Date | null}>;
+type PortfolioMetricDeadline = Readonly<{projectId: string; deadlineAt: Date | null; status: PortfolioStage}>;
+type PortfolioMetricTransition = Readonly<{workItemId: string; projectId: string; toStatus: PortfolioStage; createdAt: Date}>;
+
+export const derivePortfolioProjectMetrics = (input: Readonly<{
+  projectId: string;
+  items: readonly PortfolioMetricItem[];
+  approvals: readonly PortfolioMetricApproval[];
+  milestones: readonly PortfolioMetricMilestone[];
+  deadlines: readonly PortfolioMetricDeadline[];
+  transitions: readonly PortfolioMetricTransition[];
+  integrationFreshness: Date | null;
+  asOf: Date;
+}>): PortfolioProjectMetrics => {
+  const projectItems = input.items.filter((item) => item.projectId === input.projectId);
+  const stages = Object.fromEntries(portfolioStages.map((stage) => [stage, 0])) as Record<PortfolioStage, number>;
+  for (const item of projectItems) stages[item.status] += 1;
+  const activeItems = projectItems.filter((item) => activePortfolioStages.has(item.status));
+  const pendingApprovals = input.approvals.filter((approval) => approval.projectId === input.projectId);
+  const openDatedMilestones = input.milestones.filter((milestone) =>
+    milestone.projectId === input.projectId && milestone.closedAt === null && milestone.targetAt !== null);
+  const openDatedDeadlines = input.deadlines.filter((deadline) =>
+    deadline.projectId === input.projectId && deadline.status !== 'done' && deadline.deadlineAt !== null);
+  const outlookDates = [...openDatedMilestones.map((milestone) => milestone.targetAt!), ...openDatedDeadlines.map((deadline) => deadline.deadlineAt!)];
+  const projectTransitions = input.transitions.filter((transition) => transition.projectId === input.projectId)
+    .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+  const recentStart = input.asOf.getTime() - trendWindowMs;
+  const previousStart = recentStart - trendWindowMs;
+  const recent = projectTransitions.filter((transition) => transition.toStatus === 'done' && transition.createdAt.getTime() >= recentStart).length;
+  const previous = projectTransitions.filter((transition) =>
+    transition.toStatus === 'done' && transition.createdAt.getTime() >= previousStart && transition.createdAt.getTime() < recentStart).length;
+  const enteredDevelopmentAt = new Map<string, Date>();
+  const cycleHours = projectTransitions.flatMap((transition) => {
+    if (transition.toStatus === 'in_dev') {
+      enteredDevelopmentAt.set(transition.workItemId, transition.createdAt);
+      return [];
+    }
+    if (transition.toStatus !== 'done') return [];
+    const startedAt = enteredDevelopmentAt.get(transition.workItemId);
+    enteredDevelopmentAt.delete(transition.workItemId);
+    return startedAt === undefined || startedAt >= transition.createdAt ? [] : [(transition.createdAt.getTime() - startedAt.getTime()) / 3_600_000];
+  });
+  const hasTrendHistory = recent >= minimumTrendSamples && previous >= minimumTrendSamples;
+  const hasCycleHistory = cycleHours.length >= minimumTrendSamples;
+  return {
+    stages,
+    activeWip: activeItems.length,
+    blockedWork: projectItems.filter((item) => item.blocked && item.status !== 'done').length,
+    staleActiveWork: activeItems.filter((item) => input.asOf.getTime() - item.updatedAt.getTime() > staleActiveWorkAfterMs).length,
+    pendingApprovals: {count: pendingApprovals.length, oldestAt: pendingApprovals.reduce<Date | null>((oldest, approval) =>
+      oldest === null || approval.createdAt < oldest ? approval.createdAt : oldest, null)},
+    integrationFreshness: input.integrationFreshness,
+    milestoneOutlook: {state: outlookDates.length === 0 ? 'unknown' : 'dated', due: outlookDates.filter((date) => date.getTime() >= input.asOf.getTime()).length, overdue: outlookDates.filter((date) => date.getTime() < input.asOf.getTime()).length},
+    throughputTrend: {state: hasTrendHistory ? 'ready' : 'not_enough_history', recent, previous},
+    cycleTime: {state: hasCycleHistory ? 'ready' : 'not_enough_history', averageHours: hasCycleHistory ? Math.round(cycleHours.reduce((total, value) => total + value, 0) / cycleHours.length) : null, samples: cycleHours.length}
+  };
+};
 
 export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => readDatabase(async (db) => {
   const configuredProjects = await scopedProjects(db);
   if (configuredProjects.length === 0) return {projects: [], attention: []};
   const projectIds = configuredProjects.map(({id}) => id);
-  const [snapshots, operations, signals, failedOutbox, unhealthyJobs, items, bindings] = await Promise.all([
+  const [snapshots, operations, signals, failedOutbox, unhealthyJobs, items, bindings, metricItems, pendingApprovals, projectMilestones, projectDeadlines, transitions] = await Promise.all([
     db.select({projectId: dashboardSnapshots.projectId, health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(inArray(dashboardSnapshots.projectId, projectIds)).orderBy(desc(dashboardSnapshots.capturedAt)),
     db.select({projectId: trackerSnapshotOperations.projectId, createdAt: trackerSnapshotOperations.createdAt})
@@ -243,7 +325,19 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
     db.select({id: workItems.id, projectId: workItems.projectId, title: workItems.title})
       .from(workItems).where(and(inArray(workItems.projectId, projectIds), isNull(workItems.deletedAt))),
     db.select({entityId: trackerBindings.entityId, metadata: trackerBindings.metadata})
-      .from(trackerBindings).where(and(inArray(trackerBindings.projectId, projectIds), eq(trackerBindings.entityType, 'work_item')))
+      .from(trackerBindings).where(and(inArray(trackerBindings.projectId, projectIds), eq(trackerBindings.entityType, 'work_item'))),
+    db.select({id: workItems.id, projectId: workItems.projectId, status: workItems.status, blocked: workItems.blocked, updatedAt: workItems.updatedAt})
+      .from(workItems).where(and(inArray(workItems.projectId, projectIds), isNull(workItems.deletedAt))),
+    db.select({projectId: approvalRequests.projectId, createdAt: approvalRequests.createdAt})
+      .from(approvalRequests).where(and(inArray(approvalRequests.projectId, projectIds), eq(approvalRequests.status, 'pending'))),
+    db.select({projectId: milestones.projectId, targetAt: milestones.targetAt, closedAt: milestones.closedAt})
+      .from(milestones).where(inArray(milestones.projectId, projectIds)),
+    db.select({projectId: workItems.projectId, deadlineAt: deliveryJourneys.deadlineAt, status: workItems.status})
+      .from(deliveryJourneys).innerJoin(workItems, eq(deliveryJourneys.workItemId, workItems.id))
+      .where(and(inArray(workItems.projectId, projectIds), isNull(workItems.deletedAt))),
+    db.select({workItemId: statusTransitions.workItemId, projectId: workItems.projectId, toStatus: statusTransitions.toStatus, createdAt: statusTransitions.createdAt})
+      .from(statusTransitions).innerJoin(workItems, eq(statusTransitions.workItemId, workItems.id))
+      .where(and(inArray(workItems.projectId, projectIds), isNull(workItems.deletedAt)))
   ]);
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
   const itemById = new Map(items.map((item) => [item.id, item]));
@@ -314,7 +408,11 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         id: project.id, name: project.name, slug: project.slug, health,
         snapshotAt: snapshotsByProject.get(project.id)?.capturedAt ?? null,
         synchronizedAt,
-        unresolvedRiskCount: projectSignals.length
+        unresolvedRiskCount: projectSignals.length,
+        metrics: derivePortfolioProjectMetrics({
+          projectId: project.id, items: metricItems, approvals: pendingApprovals,
+          milestones: projectMilestones, deadlines: projectDeadlines, transitions, integrationFreshness: synchronizedAt, asOf: new Date(now)
+        })
       };
     }),
     attention
