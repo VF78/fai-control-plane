@@ -3,7 +3,7 @@ import {defaultDeliveryProtocolDefinition, validateDeliveryProtocolDefinition, t
 import {requireOperatorSession} from './operator-auth-runtime';
 import {getDeliveryRuntime} from './delivery-runtime';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const noStore = {'Cache-Control': 'no-store'};
 const invalid = (status: string, code = 400) => Response.json({status}, {status: code, headers: noStore});
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -19,17 +19,27 @@ const protocolDefinition = (value: unknown): DeliveryProtocolDefinition | null =
   const parsed = validateDeliveryProtocolDefinition(value); return parsed.ok ? parsed.value : null;
 };
 const receipt = (value: {receipt: {commandId: string; commandType: string}}) => ({receipt: {commandId: value.receipt.commandId, commandType: value.receipt.commandType}});
+export type DeliveryCommandDependencies = Readonly<{
+  requireSession: typeof requireOperatorSession;
+  getRuntime: typeof getDeliveryRuntime;
+  nextId(): string;
+}>;
+const dependencies: DeliveryCommandDependencies = {
+  requireSession: requireOperatorSession,
+  getRuntime: getDeliveryRuntime,
+  nextId: randomUUID
+};
 
-export async function deliveryProtocolCommand(request: Request): Promise<Response> {
-  const body = await boundedJson(request); const authorization = await requireOperatorSession(request, {csrfToken: csrf(body)});
+export async function deliveryProtocolCommand(request: Request, overrides: DeliveryCommandDependencies = dependencies): Promise<Response> {
+  const body = await boundedJson(request); const authorization = await overrides.requireSession(request, {csrfToken: csrf(body)});
   if (!authorization.ok) return authorization.response;
   if (!isRecord(body) || typeof body.action !== 'string' || typeof body.projectId !== 'string' || !UUID.test(body.projectId)) return invalid('invalid_request');
-  const runtime = await getDeliveryRuntime(); const actor = await runtime.actor(authorization.runtime.config.workspaceId, authorization.session.actorId);
+  const runtime = await overrides.getRuntime(); const actor = await runtime.actor(authorization.runtime.config.workspaceId, authorization.session.actorId);
   if (!actor.ok) return invalid('forbidden', 403);
-  const base = {commandId: randomUUID(), workspaceId: authorization.runtime.config.workspaceId, correlationId: randomUUID(), idempotencyKey: '', issuedAt: new Date().toISOString(), actor: actor.value};
+  const base = {commandId: overrides.nextId(), workspaceId: authorization.runtime.config.workspaceId, correlationId: overrides.nextId(), idempotencyKey: '', issuedAt: new Date().toISOString(), actor: actor.value};
   try {
     if (body.action === 'create_default' && exact(body, ['_csrf', 'action', 'projectId'])) {
-      const result = await runtime.protocol.execute({...base, idempotencyKey: `delivery_protocol.draft.v1:${body.projectId}`, type: 'delivery_protocol.draft', payload: {protocolId: randomUUID(), projectId: body.projectId, name: 'Default delivery protocol', expectedRevision: null, definition: defaultDeliveryProtocolDefinition()}});
+      const result = await runtime.protocol.execute({...base, idempotencyKey: `delivery_protocol.draft.v1:${body.projectId}`, type: 'delivery_protocol.draft', payload: {protocolId: overrides.nextId(), projectId: body.projectId, name: 'Default delivery protocol', expectedRevision: null, definition: defaultDeliveryProtocolDefinition()}});
       return 'receipt' in result ? Response.json(receipt(result), {headers: noStore}) : invalid(result.error.message, 409);
     }
     if ((body.action === 'draft' || body.action === 'simulate') && exact(body, ['_csrf', 'action', 'projectId', 'protocolId', 'expectedRevision', 'definition']) && typeof body.protocolId === 'string' && UUID.test(body.protocolId) && Number.isInteger(body.expectedRevision) && (body.expectedRevision as number) > 0) {
@@ -59,13 +69,13 @@ export async function deliveryProtocolCommand(request: Request): Promise<Respons
   } catch { return invalid('unavailable', 503); }
 }
 
-export async function deliveryJourneyCommand(request: Request, workItemId: string): Promise<Response> {
-  const body = await boundedJson(request); const authorization = await requireOperatorSession(request, {csrfToken: csrf(body)});
+export async function deliveryJourneyCommand(request: Request, workItemId: string, overrides: DeliveryCommandDependencies = dependencies): Promise<Response> {
+  const body = await boundedJson(request); const authorization = await overrides.requireSession(request, {csrfToken: csrf(body)});
   if (!authorization.ok) return authorization.response;
   if (!UUID.test(workItemId) || !isRecord(body) || typeof body.action !== 'string') return invalid('invalid_request');
-  const runtime = await getDeliveryRuntime(); const actor = await runtime.actor(authorization.runtime.config.workspaceId, authorization.session.actorId);
+  const runtime = await overrides.getRuntime(); const actor = await runtime.actor(authorization.runtime.config.workspaceId, authorization.session.actorId);
   if (!actor.ok) return invalid('forbidden', 403);
-  const base = {commandId: randomUUID(), workspaceId: authorization.runtime.config.workspaceId, correlationId: randomUUID(), idempotencyKey: '', issuedAt: new Date().toISOString(), actor: actor.value};
+  const base = {commandId: overrides.nextId(), workspaceId: authorization.runtime.config.workspaceId, correlationId: overrides.nextId(), idempotencyKey: '', issuedAt: new Date().toISOString(), actor: actor.value};
   try {
     if (body.action === 'start' && exact(body, ['_csrf', 'action', 'protocolId', 'expectedWorkItemVersion', 'deadlineAt']) && typeof body.protocolId === 'string' && UUID.test(body.protocolId) && Number.isInteger(body.expectedWorkItemVersion) && (body.expectedWorkItemVersion as number) > 0 && (body.deadlineAt === null || typeof body.deadlineAt === 'string')) {
       const expectedWorkItemVersion = body.expectedWorkItemVersion as number;
