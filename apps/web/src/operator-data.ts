@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {and, desc, eq, inArray, isNull} from 'drizzle-orm';
+import {and, desc, eq, inArray, isNull, or} from 'drizzle-orm';
 import {
   CANONICAL_COMMAND_POLICY,
   parseRunnerCompletionPayload
@@ -305,11 +305,17 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       .from(trackerSnapshotOperations).where(inArray(trackerSnapshotOperations.projectId, projectIds)).orderBy(desc(trackerSnapshotOperations.createdAt)),
     db.select({
       id: riskSignals.id, projectId: riskSignals.projectId, workItemId: riskSignals.workItemId,
-      code: riskSignals.code, severity: riskSignals.severity, summary: riskSignals.summary,
-      updatedAt: riskSignals.updatedAt, workItemTitle: workItems.title, owner: actors.displayName
+      severity: riskSignals.severity, signalClass: riskSignals.signalClass, summary: riskSignals.summary,
+      impact: riskSignals.impact, nextAction: riskSignals.nextAction, observedAt: riskSignals.observedAt,
+      evidenceReferences: riskSignals.evidenceReferences, workItemTitle: workItems.title,
+      stage: deliveryJourneys.stageKey, owner: actors.displayName
     }).from(riskSignals)
       .leftJoin(workItems, and(eq(riskSignals.workItemId, workItems.id), eq(riskSignals.projectId, workItems.projectId)))
-      .leftJoin(actors, eq(workItems.ownerActorId, actors.id))
+      .leftJoin(deliveryJourneys, eq(riskSignals.workItemId, deliveryJourneys.workItemId))
+      .leftJoin(actors, or(
+        eq(riskSignals.ownerActorId, actors.id),
+        and(isNull(riskSignals.ownerActorId), eq(workItems.ownerActorId, actors.id))
+      ))
       .where(and(inArray(riskSignals.projectId, projectIds), isNull(riskSignals.resolvedAt)))
       .orderBy(desc(riskSignals.updatedAt), riskSignals.id),
     db.select({
@@ -351,8 +357,10 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         id: `risk:${signal.id}`, projectId: signal.projectId, severity: signal.severity, project: project.name,
         workItemId: signal.workItemId,
         object: signal.workItemTitle ?? 'Project risk signal', reason: signal.summary,
-        impact: signal.workItemId === null ? 'Unresolved project risk' : 'Unresolved linked work item risk',
-        freshness: signal.updatedAt, owner: signal.owner, evidence: `Risk signal: ${signal.code}`,
+        stage: signal.stage, signalClass: signal.signalClass, impact: signal.impact,
+        freshness: signal.observedAt, owner: signal.owner, evidenceReferences: signal.evidenceReferences,
+        nextAction: signal.nextAction, sourceUrl: url,
+        evidence: signal.evidenceReferences.length === 0 ? 'No evidence references recorded' : signal.evidenceReferences.map((reference) => `${reference.type}: ${reference.id}`).join(' · '),
         action: {label: url === null ? 'No external record' : 'Open source', href: url}
       }];
     }),
@@ -367,9 +375,9 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         id: `outbox:${event.id}`, projectId: event.projectId, severity: 'red', project: project.name,
         workItemId,
         object: item?.title ?? 'GitHub project status write', reason: event.failureCode ?? 'GitHub status write failed',
-        impact: 'Canonical status is not confirmed in GitHub', freshness: event.updatedAt, owner: null,
-        evidence: `Outbox failed after ${event.attemptCount} attempts`,
-        action: {label: url === null ? 'No external record' : 'Open source', href: url}
+        stage: null, signalClass: null, impact: null, freshness: event.updatedAt, owner: null,
+        evidenceReferences: [], nextAction: null, sourceUrl: url,
+        evidence: `Outbox failed after ${event.attemptCount} attempts`, action: {label: url === null ? 'No external record' : 'Open source', href: url}
       }];
     }),
     ...unhealthyJobs.flatMap((job): AttentionQueueItem[] => {
@@ -379,9 +387,9 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       return [{
         id: `job:${job.id}`, projectId: job.projectId, severity: 'red', project: project.name, object: job.name,
         workItemId: null,
-        reason: 'Scheduled job is unhealthy', impact: 'Scheduled recovery is not in a healthy state',
-        freshness: job.heartbeatAt ?? job.updatedAt, owner: null, evidence: 'Scheduled job status',
-        action: {label: 'No external record', href: null}
+        reason: 'Scheduled job is unhealthy', stage: null, signalClass: null, impact: null,
+        freshness: job.heartbeatAt ?? job.updatedAt, owner: null, evidenceReferences: [], nextAction: null,
+        sourceUrl: null, evidence: 'Scheduled job status', action: {label: 'No external record', href: null}
       }];
     })
   ]);

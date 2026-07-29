@@ -101,8 +101,11 @@ function AttentionRow({signal, route, projects}: {signal: PortfolioData['attenti
   const href = project === undefined ? null : signal.workItemId === null
     ? projectUrl(project.slug, 'overview', route.scope)
     : taskUrl(project.slug, signal.workItemId, route.scope);
-  const body = <><Status value={signal.severity}/><div><strong>{signal.object}</strong><small>{signal.project} · {signal.reason}</small></div><span>{signal.owner ?? 'Owner unknown'}</span><time>{date(signal.freshness)}</time>{href === null ? <span className="fcp-muted">Project unresolved</span> : <ChevronRight aria-hidden="true" size={16}/>}</>;
-  return href === null ? <div className="fcp-row fcp-attention" key={signal.id}>{body}</div> : <Link className="fcp-row fcp-attention" href={href} key={signal.id}>{body}</Link>;
+  const stage = signal.stage === null ? 'Unknown' : signal.stage.replaceAll('_', ' ');
+  const provenance = signal.signalClass === null ? 'Unavailable' : signal.signalClass === 'fact' ? 'Fact' : 'Inference';
+  const target = signal.workItemId === null ? 'Open project' : 'Open task';
+  const nextAction = signal.nextAction === null ? 'Unavailable' : signal.nextAction.replaceAll('_', ' ');
+  return <article className="fcp-attention" key={signal.id}><header><Status value={signal.severity}/><div><strong>{signal.object}</strong><small>{signal.project} · {signal.reason}</small></div>{href === null ? <span className="fcp-muted">Target unavailable</span> : <Link className="fcp-attention-open" href={href} aria-label={`${target}: ${signal.object}`}>{target}<ChevronRight aria-hidden="true" size={16}/></Link>}</header><dl className="fcp-attention-facts"><div><dt>Delivery stage</dt><dd>{stage}</dd></div><div><dt>Owner</dt><dd>{signal.owner ?? 'Unknown'}</dd></div><div><dt>Observed</dt><dd>{date(signal.freshness)}</dd></div><div><dt>Class</dt><dd>{provenance}</dd></div></dl><div className="fcp-attention-next"><span>Next action</span><strong>{nextAction}</strong></div><details className="fcp-attention-details"><summary><FileCheck2 aria-hidden="true" size={15}/>Evidence &amp; impact</summary><div><p><strong>Impact</strong><span>{signal.impact ?? 'Unavailable'}</span></p><p><strong>Evidence</strong><span>{signal.evidenceReferences.length === 0 ? 'Unavailable' : signal.evidenceReferences.map((reference) => `${reference.type}: ${reference.id}`).join(' · ')}</span></p>{signal.sourceUrl === null ? null : <a href={signal.sourceUrl} target="_blank" rel="noreferrer">Open provider source</a>}</div></details></article>;
 }
 function age(value: Date | null, asOf = new Date()): string {
   if (value === null) return 'Not observed';

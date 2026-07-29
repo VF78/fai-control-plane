@@ -7,10 +7,20 @@ export type AttentionQueueItem = Readonly<{
   project: string;
   object: string;
   reason: string;
-  impact: string;
+  /** Persisted delivery stage when the signal is linked to a journey. */
+  stage: string | null;
+  /** Risk signal provenance; legacy operational sources do not record it. */
+  signalClass: 'fact' | 'inference' | null;
+  impact: string | null;
   freshness: Date;
   owner: string | null;
+  evidenceReferences: readonly Readonly<{type: string; id: string}>[];
+  nextAction: string | null;
+  /** A provider source is supplemental; operator navigation is always internal. */
+  sourceUrl: string | null;
+  /** Compatibility summary for the legacy operator surface. */
   evidence: string;
+  /** Compatibility-only provider action for the legacy operator surface. */
   action: Readonly<{label: string; href: string | null}>;
 }>;
 

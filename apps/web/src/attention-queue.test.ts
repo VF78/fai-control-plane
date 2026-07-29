@@ -13,9 +13,14 @@ const item = (
   project: 'MSA',
   object: 'Work item',
   reason: 'Reason',
-  impact: 'Impact',
+  stage: null,
+  signalClass: null,
+  impact: null,
   freshness: new Date(freshness),
   owner: null,
+  evidenceReferences: [],
+  nextAction: null,
+  sourceUrl: null,
   evidence: 'Evidence',
   action: {label: 'Review', href: null}
 });

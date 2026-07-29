@@ -49,6 +49,24 @@ it('renders compact per-project portfolio metrics and explicit history limits', 
   expect(markup).not.toContain('ROI');
 });
 
+it('keeps attention facts explicit and routes its primary action to the affected task', () => {
+  const data = {
+    access: {state: 'unconfigured'}, health: null, project: null, runs: null, projectIndex: [],
+    portfolio: {state: 'ready', data: {projects: [{id: 'msa', name: 'MSA', slug: 'msa', health: 'yellow', snapshotAt: null, synchronizedAt: null, unresolvedRiskCount: 1, metrics: {stages: {backlog: 0, ready: 0, in_dev: 1, qa: 0, acceptance: 0, done: 0}, activeWip: 1, blockedWork: 0, staleActiveWork: 0, pendingApprovals: {count: 0, oldestAt: null}, integrationFreshness: null, milestoneOutlook: {state: 'unknown', due: 0, overdue: 0}, throughputTrend: {state: 'not_enough_history', recent: 0, previous: 0}, cycleTime: {state: 'not_enough_history', averageHours: null, samples: 0}}}], attention: [{id: 'risk:1', projectId: 'msa', workItemId: 'task-1', severity: 'red', project: 'MSA', object: 'Deployment task', reason: 'Failed verification', stage: 'qa', signalClass: 'fact', impact: 'Release is blocked', freshness: new Date('2026-07-30T10:00:00.000Z'), owner: 'Canonical owner', evidenceReferences: [{type: 'run', id: 'run-1'}], nextAction: 'Review failed verification', sourceUrl: 'https://github.com/VF78/fai-control-plane/issues/1', evidence: 'run: run-1', action: {label: 'Open source', href: 'https://github.com/VF78/fai-control-plane/issues/1'}}, {id: 'job:1', projectId: 'msa', workItemId: null, severity: 'red', project: 'MSA', object: 'Recovery scan', reason: 'Scheduled job is unhealthy', stage: null, signalClass: null, impact: null, freshness: new Date('2026-07-30T09:00:00.000Z'), owner: null, evidenceReferences: [], nextAction: null, sourceUrl: null, evidence: 'Scheduled job status', action: {label: 'No external record', href: null}}]}}
+  } as unknown as PrototypeData;
+  const markup = renderToStaticMarkup(createElement(PrototypeShell, {route: {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
+
+  expect(markup).toContain('href="/prototype/projects/msa/tasks/task-1"');
+  expect(markup).toContain('Open task: Deployment task');
+  expect(markup).toContain('Delivery stage</dt><dd>qa');
+  expect(markup).toContain('Class</dt><dd>Fact');
+  expect(markup).toContain('Release is blocked');
+  expect(markup).toContain('run: run-1');
+  expect(markup).toContain('Open provider source');
+  expect(markup).toContain('Unknown</dd>');
+  expect(markup).toContain('Unavailable');
+});
+
 it('keeps the web-first workspace IA and honest unavailable state', () => {
   const markup = renderToStaticMarkup(createElement(PrototypeShell, {
     route: {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
