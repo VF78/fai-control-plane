@@ -1,4 +1,14 @@
 import {createHash} from 'node:crypto';
+import type {
+  ActorExternalIdentity,
+  ProjectMembership,
+  ProjectMembershipRole,
+  ResourceAccessGrant,
+  AccessLevel,
+  AccessResourceType
+} from './access.ts';
+
+export * from './access.ts';
 
 export const workItemStatuses = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
 export type WorkItemStatus = (typeof workItemStatuses)[number];
@@ -727,6 +737,51 @@ export type DecideAccessRequestCommand = CanonicalCommandEnvelope<
   'access_request.decide',
   Readonly<{requestId: string; status: Exclude<AccessRequestStatus, 'pending'>; expectedVersion: number}>
 >;
+export type SetProjectMembershipCommand = CanonicalCommandEnvelope<
+  'project_membership.set',
+  Readonly<{
+    membershipId: string;
+    projectId: string;
+    subjectActorId: string;
+    role: ProjectMembershipRole;
+    active: boolean;
+    expectedVersion: number | null;
+  }>
+>;
+export type BindActorExternalIdentityCommand = CanonicalCommandEnvelope<
+  'actor_external_identity.bind',
+  Readonly<{
+    identityId: string;
+    subjectActorId: string;
+    provider: string;
+    externalSubject: string;
+    active: boolean;
+    expectedVersion: number | null;
+  }>
+>;
+export type SetResourceAccessGrantCommand = CanonicalCommandEnvelope<
+  'resource_access_grant.set',
+  Readonly<{
+    grantId: string;
+    projectId: string;
+    subjectActorId: string;
+    resourceType: AccessResourceType;
+    resourceId: string;
+    desiredLevel: AccessLevel;
+    expectedVersion: number | null;
+  }>
+>;
+export type ObserveResourceAccessGrantCommand = CanonicalCommandEnvelope<
+  'resource_access_grant.observe',
+  Readonly<{
+    grantId: string;
+    provider: string;
+    externalResourceRef: string;
+    confirmedLevel: AccessLevel;
+    observedAt: string;
+    expectedVersion: number;
+  }>
+>;
 export type CanonicalCommand =
   | TransitionWorkItemCommand
   | SetBlockedCommand
@@ -737,7 +792,11 @@ export type CanonicalCommand =
   | RequestApprovalCommand
   | DecideApprovalCommand
   | RequestAccessCommand
-  | DecideAccessRequestCommand;
+  | DecideAccessRequestCommand
+  | SetProjectMembershipCommand
+  | BindActorExternalIdentityCommand
+  | SetResourceAccessGrantCommand
+  | ObserveResourceAccessGrantCommand;
 
 export type CanonicalJson =
   | null
@@ -2008,6 +2067,24 @@ export type AccessRequestMutation = Readonly<{
   expectedPersistedVersion: number | null;
   aggregate: AccessRequest;
 }>;
+export type ProjectMembershipMutation = Readonly<{
+  aggregateType: 'project_membership';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: ProjectMembership;
+}>;
+export type ActorExternalIdentityMutation = Readonly<{
+  aggregateType: 'actor_external_identity';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: ActorExternalIdentity;
+}>;
+export type ResourceAccessGrantMutation = Readonly<{
+  aggregateType: 'resource_access_grant';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: ResourceAccessGrant;
+}>;
 export type CanonicalMutation =
   | WorkItemUpdateMutation
   | AgentProfileUpdateMutation
@@ -2015,7 +2092,10 @@ export type CanonicalMutation =
   | AgentRunMutation
   | ApprovalInsertMutation
   | ApprovalUpdateMutation
-  | AccessRequestMutation;
+  | AccessRequestMutation
+  | ProjectMembershipMutation
+  | ActorExternalIdentityMutation
+  | ResourceAccessGrantMutation;
 export type PersistedCanonicalMutation = Readonly<{
   cas: PersistedVersionCas;
   audit: AuditAppendToken;
@@ -2109,6 +2189,26 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     accessRequestId: string
   ): Promise<AccessRequest | null>;
+  loadProjectMembership(
+    claimToken: ReceiptClaimToken,
+    membershipId: string
+  ): Promise<ProjectMembership | null>;
+  loadActorExternalIdentity(
+    claimToken: ReceiptClaimToken,
+    identityId: string
+  ): Promise<ActorExternalIdentity | null>;
+  loadResourceAccessGrant(
+    claimToken: ReceiptClaimToken,
+    grantId: string
+  ): Promise<ResourceAccessGrant | null>;
+  loadAccessCommandAuthority(
+    claimToken: ReceiptClaimToken,
+    actorId: string,
+    projectId?: string
+  ): Promise<Readonly<{
+    workspaceAdmin: boolean;
+    projectRole: ProjectMembershipRole | null;
+  }> | null>;
   /** Atomically compare-and-swaps the aggregate and appends its audit event. */
   persistAuditedMutation(input: Readonly<{
     claimToken: ReceiptClaimToken;

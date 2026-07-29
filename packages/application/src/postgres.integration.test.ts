@@ -10,12 +10,15 @@ import {
 } from '@fai-control-plane/domain';
 import {
   agentRuns,
+  actorExternalIdentities,
   approvalRequests,
   auditEvents,
   commandReceipts,
   createDatabase,
   createPostgresUnitOfWork,
   outboxEvents,
+  projectMemberships,
+  resourceAccessGrants,
   statusTransitions,
   taskPackets,
   trackerBindings,
@@ -703,6 +706,121 @@ describePostgres(
         status: 'key_reused',
         error: {code: 'IDEMPOTENCY_KEY_REUSED'}
       });
+    });
+
+    it('persists scoped access commands with CAS, audit, and separate observation', async () => {
+      const membershipId = randomUUID();
+      const identityId = randomUUID();
+      const grantId = randomUUID();
+      const resourceId = randomUUID();
+      const membership = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'project_membership.set',
+        {
+          membershipId,
+          projectId: fixture.projectId,
+          subjectActorId: fixture.actorId,
+          role: 'workspace_owner',
+          active: true,
+          expectedVersion: null
+        }
+      ));
+      expect(membership).toMatchObject({
+        receipt: {result: {ok: true, value: {version: 1}}}
+      });
+
+      await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'actor_external_identity.bind',
+        {
+          identityId,
+          subjectActorId: fixture.actorId,
+          provider: 'github',
+          externalSubject: 'github:user:123',
+          active: true,
+          expectedVersion: null
+        }
+      ));
+      await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'resource_access_grant.set',
+        {
+          grantId,
+          projectId: fixture.projectId,
+          subjectActorId: fixture.actorId,
+          resourceType: 'repository',
+          resourceId,
+          desiredLevel: 'write',
+          expectedVersion: null
+        }
+      ));
+      const observed = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'resource_access_grant.observe',
+        {
+          grantId,
+          provider: 'github',
+          externalResourceRef: 'github:repository:456',
+          confirmedLevel: 'read',
+          observedAt: '2026-07-29T10:00:00.000Z',
+          expectedVersion: 1
+        }
+      ));
+      expect(observed).toMatchObject({
+        receipt: {result: {ok: true, value: {version: 2}}}
+      });
+      expect(await testDb.select().from(projectMemberships)
+        .where(eq(projectMemberships.id, membershipId)))
+        .toMatchObject([{role: 'workspace_owner', version: 1}]);
+      expect(await testDb.select().from(actorExternalIdentities)
+        .where(eq(actorExternalIdentities.id, identityId)))
+        .toMatchObject([{provider: 'github', externalSubject: 'github:user:123'}]);
+      expect(await testDb.select().from(resourceAccessGrants)
+        .where(eq(resourceAccessGrants.id, grantId)))
+        .toMatchObject([{
+          resourceId,
+          desiredLevel: 'write',
+          observedProvider: 'github',
+          observedLevel: 'read',
+          version: 2
+        }]);
+
+      const stale = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'resource_access_grant.set',
+        {
+          grantId,
+          projectId: fixture.projectId,
+          subjectActorId: fixture.actorId,
+          resourceType: 'repository',
+          resourceId,
+          desiredLevel: 'admin',
+          expectedVersion: 1
+        }
+      ));
+      expect(receiptErrorCode(stale)).toBe('VERSION_CONFLICT');
+
+      const crossWorkspace = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'project_membership.set',
+        {
+          membershipId: randomUUID(),
+          projectId: fixture.otherProjectId,
+          subjectActorId: fixture.actorId,
+          role: 'project_owner',
+          active: true,
+          expectedVersion: null
+        }
+      ));
+      expect(receiptErrorCode(crossWorkspace)).toBe('NOT_FOUND');
+      expect(await testDb.select().from(auditEvents)
+        .where(eq(auditEvents.targetId, grantId))).toHaveLength(3);
     });
   }
 );

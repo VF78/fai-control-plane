@@ -5,6 +5,9 @@ import * as schema from './schema';
 const requiredTables = [
   schema.workspaces,
   schema.projects,
+  schema.projectMemberships,
+  schema.actorExternalIdentities,
+  schema.resourceAccessGrants,
   schema.milestones,
   schema.workItems,
   schema.statusTransitions,
@@ -36,6 +39,9 @@ describe('canonical schema foundation', () => {
     expect(requiredTables.map(getTableName)).toEqual([
       'workspaces',
       'projects',
+      'project_memberships',
+      'actor_external_identities',
+      'resource_access_grants',
       'milestones',
       'work_items',
       'status_transitions',
@@ -94,7 +100,10 @@ describe('canonical schema foundation', () => {
     for (const table of [
       schema.agentRuns,
       schema.approvalRequests,
-      schema.accessRequests
+      schema.accessRequests,
+      schema.projectMemberships,
+      schema.actorExternalIdentities,
+      schema.resourceAccessGrants
     ]) {
       expect(getTableColumns(table)).toHaveProperty('version');
     }
