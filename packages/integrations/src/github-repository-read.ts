@@ -857,17 +857,27 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
     };
   }
   });
-  const pendingSnapshots = new WeakMap<object, Promise<TrackerRepositorySnapshot>>();
+  const pendingSnapshots = new Map<string, Promise<TrackerRepositorySnapshot>>();
+  const snapshotReadKey = (
+    input: Parameters<NonNullable<TrackerAdapter['readRepositorySnapshot']>>[0]
+  ): string => JSON.stringify([
+    input.repository.owner,
+    input.repository.repository,
+    input.credentialRef.provider,
+    input.credentialRef.reference,
+    input.credentialRef.scope
+  ]);
   const readCompatibilitySnapshot = (
     input: Parameters<NonNullable<TrackerAdapter['readRepositorySnapshot']>>[0]
   ): Promise<TrackerRepositorySnapshot> => {
-    const cached = pendingSnapshots.get(input);
+    const key = snapshotReadKey(input);
+    const cached = pendingSnapshots.get(key);
     if (cached !== undefined) return cached;
     const pending = compatibilityAdapter.readRepositorySnapshot!(input);
-    pendingSnapshots.set(input, pending);
+    pendingSnapshots.set(key, pending);
     void pending.then(
-      () => pendingSnapshots.delete(input),
-      () => pendingSnapshots.delete(input)
+      () => pendingSnapshots.delete(key),
+      () => pendingSnapshots.delete(key)
     );
     return pending;
   };

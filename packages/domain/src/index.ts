@@ -2012,6 +2012,14 @@ export type TrackerSnapshotProjectionBase = Readonly<{
   actorId: string;
   correlationId: string;
   provider: string;
+  /**
+   * Optional split provenance for a composed read. `provider` remains the
+   * repository provider for legacy callers and repository snapshot fences.
+   */
+  providers?: Readonly<{
+    taskTracker: string;
+    repositoryObservation: string;
+  }>;
   snapshot: TrackerRepositorySnapshot;
 }>;
 export type TrackerSnapshotBootstrapInput = TrackerSnapshotProjectionBase & Readonly<{mode: 'bootstrap'}>;
@@ -2064,6 +2072,19 @@ export type TrackerSnapshotProjector = Readonly<{
 export type TrackerRepositoryReadInput = Readonly<{
   repository: TrackerRepositoryRef;
   credentialRef: OpaqueSecretRef;
+}>;
+/** One independently configured provider source used to read a composed snapshot. */
+export type TrackerRepositorySnapshotSource = Readonly<{
+  provider: string;
+  credentialRef: OpaqueSecretRef;
+}>;
+/**
+ * A task tracker and repository host can be distinct providers with distinct
+ * credential references. Each source is authorized before any provider read.
+ */
+export type TrackerRepositorySnapshotSources = Readonly<{
+  taskTracker: TrackerRepositorySnapshotSource;
+  repositoryObservation: TrackerRepositorySnapshotSource;
 }>;
 export type TaskTrackerPort = Readonly<{
   provider: string;

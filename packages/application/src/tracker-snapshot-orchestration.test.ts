@@ -19,6 +19,12 @@ const id = (): string => randomUUID();
 const credentialRef: OpaqueSecretRef = {
   provider: 'test-secrets', reference: 'tracker/read', scope: ['repository:read']
 };
+const taskTrackerCredentialRef: OpaqueSecretRef = {
+  provider: 'test-secrets', reference: 'task-tracker/read', scope: ['work-items:read']
+};
+const repositoryCredentialRef: OpaqueSecretRef = {
+  provider: 'test-secrets', reference: 'repository-host/read', scope: ['evidence:read']
+};
 const snapshot: TrackerRepositorySnapshot = {
   repository: {
     externalId: 'provider:repository:1', externalVersion: 'provider:repository:v1',
@@ -89,6 +95,19 @@ const input = (overrides: Record<string, unknown> = {}) => ({
   mode: 'bootstrap' as const,
   ...overrides
 });
+
+const composedInput = (overrides: Record<string, unknown> = {}) => {
+  const {expectedProvider: _expectedProvider, credentialRef: _credentialRef, ...request} = input({
+    ...overrides
+  });
+  return {
+    ...request,
+    sources: {
+      taskTracker: {provider: 'linear-like', credentialRef: taskTrackerCredentialRef},
+      repositoryObservation: {provider: 'forge-like', credentialRef: repositoryCredentialRef}
+    }
+  };
+};
 
 const reconciliationInput = (overrides: Record<string, unknown> = {}) => {
   const request = input({
@@ -262,10 +281,13 @@ describe('tracker repository snapshot orchestration', () => {
       provider: request.expectedProvider,
       snapshot
     }));
+    expect(fake.bootstrap).toHaveBeenCalledWith(expect.not.objectContaining({
+      providers: expect.anything()
+    }));
     expect(fake.synchronize).not.toHaveBeenCalled();
   });
 
-  it('composes separate task-tracker and repository-observation ports', async () => {
+  it('composes distinct provider sources deterministically with their own credentials', async () => {
     const fake = fakes();
     const readWorkItems = vi.fn<TaskTrackerPort['readWorkItems']>(async () => ({
       externalVersion: 'jira-like:work-items:v1',
@@ -281,12 +303,12 @@ describe('tracker repository snapshot orchestration', () => {
     );
     const service = createTrackerRepositorySnapshotOrchestrationService({
       taskTracker: {
-        provider: 'jira-like',
+        provider: 'linear-like',
         capabilities: {readWorkItems: true, writeWorkItems: false},
         readWorkItems
       },
       repositoryObservation: {
-        provider: 'test-tracker',
+        provider: 'forge-like',
         capabilities: {readPullRequests: true, readChecks: true},
         readRepositoryObservation
       },
@@ -294,17 +316,122 @@ describe('tracker repository snapshot orchestration', () => {
       scopeAuthorizer: fake.scopeAuthorizer
     });
 
-    await expect(service.orchestrate(input())).resolves.toEqual(applied);
+    const request = composedInput();
+    await expect(service.orchestrate(request)).resolves.toEqual(applied);
     expect(readWorkItems).toHaveBeenCalledTimes(1);
     expect(readRepositoryObservation).toHaveBeenCalledTimes(1);
+    expect(readWorkItems).toHaveBeenCalledWith({
+      repository: request.repository, credentialRef: taskTrackerCredentialRef
+    });
+    expect(readRepositoryObservation).toHaveBeenCalledWith({
+      repository: request.repository, credentialRef: repositoryCredentialRef
+    });
+    expect(fake.authorizeScope).toHaveBeenCalledTimes(2);
+    expect(fake.authorizeScope).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'linear-like', credentialRef: taskTrackerCredentialRef
+    }));
+    expect(fake.authorizeScope).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'forge-like', credentialRef: repositoryCredentialRef
+    }));
     expect(fake.bootstrap).toHaveBeenCalledWith(expect.objectContaining({
-      provider: 'test-tracker',
+      provider: 'forge-like',
+      providers: {taskTracker: 'linear-like', repositoryObservation: 'forge-like'},
       snapshot: expect.objectContaining({
         workItems: snapshot.workItems,
         repository: snapshot.repository,
         externalVersion: expect.stringMatching(/^composed:sha256:/)
       })
     }));
+  });
+
+  it('denies an unconfigured task tracker source before either provider read', async () => {
+    const fake = fakes();
+    const readWorkItems = vi.fn<TaskTrackerPort['readWorkItems']>();
+    const readRepositoryObservation = vi.fn<RepositoryObservationPort['readRepositoryObservation']>();
+    fake.authorizeScope.mockImplementation(async ({provider}) => provider === 'linear-like'
+      ? {status: 'denied'}
+      : {status: 'authorized', repositoryExternalId: snapshot.repository.externalId}
+    );
+    const service = createTrackerRepositorySnapshotOrchestrationService({
+      taskTracker: {
+        provider: 'linear-like',
+        capabilities: {readWorkItems: true, writeWorkItems: false},
+        readWorkItems
+      },
+      repositoryObservation: {
+        provider: 'forge-like',
+        capabilities: {readPullRequests: true, readChecks: true},
+        readRepositoryObservation
+      },
+      projector: fake.projector,
+      scopeAuthorizer: fake.scopeAuthorizer
+    });
+
+    await expect(service.orchestrate(composedInput())).resolves.toEqual({
+      status: 'denied', code: 'POLICY_DENIED'
+    });
+    expect(fake.authorizeScope).toHaveBeenCalledTimes(2);
+    expect(readWorkItems).not.toHaveBeenCalled();
+    expect(readRepositoryObservation).not.toHaveBeenCalled();
+    expect(fake.bootstrap).not.toHaveBeenCalled();
+  });
+
+  it('includes distinct provider identities in a composed version even when observations match', async () => {
+    const fake = fakes();
+    const service = createTrackerRepositorySnapshotOrchestrationService({
+      taskTracker: {
+        provider: 'linear-like',
+        capabilities: {readWorkItems: true, writeWorkItems: false},
+        readWorkItems: async () => ({externalVersion: 'shared:v1', workItems: snapshot.workItems})
+      },
+      repositoryObservation: {
+        provider: 'forge-like',
+        capabilities: {readPullRequests: true, readChecks: true},
+        readRepositoryObservation: async () => ({
+          repository: snapshot.repository,
+          externalVersion: 'shared:v1',
+          pullRequests: snapshot.pullRequests,
+          checks: snapshot.checks
+        })
+      },
+      projector: fake.projector,
+      scopeAuthorizer: fake.scopeAuthorizer
+    });
+
+    await expect(service.orchestrate(composedInput())).resolves.toEqual(applied);
+    expect(fake.bootstrap).toHaveBeenCalledWith(expect.objectContaining({
+      snapshot: expect.objectContaining({externalVersion: expect.stringMatching(/^composed:sha256:/)})
+    }));
+  });
+
+  it.each([
+    ['task tracker', 'unexpected-tracker', 'forge-like'],
+    ['repository host', 'linear-like', 'unexpected-repository']
+  ])('fails closed when the %s provider differs from its configured source', async (
+    _name,
+    taskTrackerProvider,
+    repositoryProvider
+  ) => {
+    const fake = fakes();
+    const service = createTrackerRepositorySnapshotOrchestrationService({
+      taskTracker: {
+        provider: taskTrackerProvider,
+        capabilities: {readWorkItems: true, writeWorkItems: false},
+        readWorkItems: vi.fn()
+      },
+      repositoryObservation: {
+        provider: repositoryProvider,
+        capabilities: {readPullRequests: true, readChecks: true},
+        readRepositoryObservation: vi.fn()
+      },
+      projector: fake.projector,
+      scopeAuthorizer: fake.scopeAuthorizer
+    });
+
+    await expect(service.orchestrate(composedInput())).resolves.toEqual({
+      status: 'failed', code: 'adapter_provider_mismatch'
+    });
+    expect(fake.authorizeScope).toHaveBeenCalledTimes(2);
   });
 
   it('projects a synchronization snapshot exactly once with its expected version', async () => {

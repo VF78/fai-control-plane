@@ -90,6 +90,7 @@ import {
   type TrackerAdapter,
   type TrackerCheckStatus,
   type TrackerRepositoryRef,
+  type TrackerRepositorySnapshotSources,
   type TrackerSnapshotProjectionResult,
   type TrackerSnapshotProjector,
   type TrackerRepositoryReadScopeAuthorizer,
@@ -530,16 +531,32 @@ type TrackerRepositorySnapshotOrchestrationBase = Readonly<{
   projectId: string;
   operationId: string;
   correlationId: string;
-  expectedProvider: string;
   repository: TrackerRepositoryRef;
+}>;
+type LegacyTrackerRepositorySnapshotSource = Readonly<{
+  expectedProvider: string;
   credentialRef: OpaqueSecretRef;
+  sources?: never;
+}>;
+type ComposedTrackerRepositorySnapshotSource = Readonly<{
+  sources: TrackerRepositorySnapshotSources;
+  expectedProvider?: never;
+  credentialRef?: never;
 }>;
 export type TrackerRepositorySnapshotOrchestrationInput =
-  | (TrackerRepositorySnapshotOrchestrationBase & Readonly<{
+  | (TrackerRepositorySnapshotOrchestrationBase & LegacyTrackerRepositorySnapshotSource & Readonly<{
       mode: 'bootstrap';
       expectedPreviousExternalVersion?: never;
     }>)
-  | (TrackerRepositorySnapshotOrchestrationBase & Readonly<{
+  | (TrackerRepositorySnapshotOrchestrationBase & ComposedTrackerRepositorySnapshotSource & Readonly<{
+      mode: 'bootstrap';
+      expectedPreviousExternalVersion?: never;
+    }>)
+  | (TrackerRepositorySnapshotOrchestrationBase & LegacyTrackerRepositorySnapshotSource & Readonly<{
+      mode: 'synchronize';
+      expectedPreviousExternalVersion: string;
+    }>)
+  | (TrackerRepositorySnapshotOrchestrationBase & ComposedTrackerRepositorySnapshotSource & Readonly<{
       mode: 'synchronize';
       expectedPreviousExternalVersion: string;
     }>);
@@ -784,23 +801,32 @@ const snapshotCredentialRef = (value: unknown): OpaqueSecretRef | null => {
     : {provider, reference, scope: scope as string[]};
 };
 
+const sameSnapshotCredentialRef = (left: OpaqueSecretRef, right: OpaqueSecretRef): boolean =>
+  left.provider === right.provider && left.reference === right.reference &&
+  left.scope.length === right.scope.length &&
+  left.scope.every((scope, index) => scope === right.scope[index]);
+
 type ValidTrackerRepositorySnapshotOrchestrationInput =
   | (TrackerRepositorySnapshotOrchestrationBase &
-      Readonly<{mode: 'bootstrap'}>)
+      Readonly<{mode: 'bootstrap'; sources: TrackerRepositorySnapshotSources}>)
   | (TrackerRepositorySnapshotOrchestrationBase &
-      Readonly<{mode: 'synchronize'; expectedPreviousExternalVersion: string}>);
+      Readonly<{
+        mode: 'synchronize';
+        expectedPreviousExternalVersion: string;
+        sources: TrackerRepositorySnapshotSources;
+      }>);
 
 const validateTrackerRepositorySnapshotOrchestrationInput = (
   value: unknown
 ): ValidTrackerRepositorySnapshotOrchestrationInput | null => {
   const baseKeys = [
     'actor', 'workspaceId', 'projectId', 'operationId', 'correlationId',
-    'expectedProvider', 'repository', 'credentialRef', 'mode'
+    'repository', 'mode'
   ];
   const base = dataObjectWithAllowedKeys(
     value,
     baseKeys,
-    ['expectedPreviousExternalVersion']
+    ['expectedProvider', 'credentialRef', 'sources', 'expectedPreviousExternalVersion']
   );
   if (base === null || (base.mode !== 'bootstrap' && base.mode !== 'synchronize')) return null;
   const actor = base.actor;
@@ -808,19 +834,51 @@ const validateTrackerRepositorySnapshotOrchestrationInput = (
   const projectId = boundedSnapshotIdentifier(base.projectId, 128);
   const operationId = boundedSnapshotIdentifier(base.operationId, 128);
   const correlationId = boundedSnapshotIdentifier(base.correlationId, 128);
-  const expectedProvider = boundedSnapshotIdentifier(base.expectedProvider, 64);
   const repository = snapshotRepositoryRef(base.repository);
-  const credentialRef = snapshotCredentialRef(base.credentialRef);
+  const legacyExpectedProvider = base.expectedProvider === undefined
+    ? null
+    : boundedSnapshotIdentifier(base.expectedProvider, 64);
+  const legacyCredentialRef = base.credentialRef === undefined
+    ? null
+    : snapshotCredentialRef(base.credentialRef);
+  const sourceRecord = base.sources === undefined
+    ? null
+    : dataObjectWithAllowedKeys(base.sources, ['taskTracker', 'repositoryObservation']);
+  const source = (value: unknown) => {
+    const record = dataObjectWithAllowedKeys(value, ['provider', 'credentialRef']);
+    if (record === null) return null;
+    const provider = boundedSnapshotIdentifier(record.provider, 64);
+    const credentialRef = snapshotCredentialRef(record.credentialRef);
+    return provider === null || credentialRef === null ? null : {provider, credentialRef};
+  };
+  const sources = sourceRecord === null
+    ? null
+    : (() => {
+        const taskTracker = source(sourceRecord.taskTracker);
+        const repositoryObservation = source(sourceRecord.repositoryObservation);
+        return taskTracker === null || repositoryObservation === null
+          ? null
+          : {taskTracker, repositoryObservation};
+      })();
+  const normalizedSources = sources ?? (
+    legacyExpectedProvider === null || legacyCredentialRef === null
+      ? null
+      : {
+          taskTracker: {provider: legacyExpectedProvider, credentialRef: legacyCredentialRef},
+          repositoryObservation: {provider: legacyExpectedProvider, credentialRef: legacyCredentialRef}
+        }
+  );
   if (
     workspaceId === null || projectId === null || operationId === null ||
-    correlationId === null || expectedProvider === null || repository === null ||
-    credentialRef === null
+    correlationId === null || repository === null || normalizedSources === null ||
+    (base.sources !== undefined && (base.expectedProvider !== undefined || base.credentialRef !== undefined)) ||
+    (base.sources === undefined && (base.expectedProvider === undefined || base.credentialRef === undefined))
   ) return null;
   if (base.mode === 'bootstrap') {
     if (base.expectedPreviousExternalVersion !== undefined) return null;
     return {
       actor: actor as TrustedActorContext, workspaceId, projectId, operationId, correlationId,
-      expectedProvider, repository, credentialRef, mode: 'bootstrap'
+      repository, sources: normalizedSources, mode: 'bootstrap'
     };
   }
   const expectedPreviousExternalVersion = boundedSnapshotIdentifier(
@@ -829,7 +887,7 @@ const validateTrackerRepositorySnapshotOrchestrationInput = (
   );
   return expectedPreviousExternalVersion === null ? null : {
     actor: actor as TrustedActorContext, workspaceId, projectId, operationId, correlationId,
-    expectedProvider, repository, credentialRef, mode: 'synchronize', expectedPreviousExternalVersion
+    repository, sources: normalizedSources, mode: 'synchronize', expectedPreviousExternalVersion
   };
 };
 
@@ -899,20 +957,40 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
     const writeAuthorization = authorize(request.actor, trackerProjectionWritePolicy);
     if (!writeAuthorization.ok) return deniedTrackerSnapshotResult(authorizationDenialCode(writeAuthorization.error.code));
 
-    let scopeAuthorization: Awaited<ReturnType<TrackerRepositoryReadScopeAuthorizer['authorize']>>;
+    let taskTrackerScopeAuthorization: Awaited<ReturnType<TrackerRepositoryReadScopeAuthorizer['authorize']>>;
+    let repositoryScopeAuthorization: Awaited<ReturnType<TrackerRepositoryReadScopeAuthorizer['authorize']>>;
+    const sameSourceConfiguration =
+      request.sources.taskTracker.provider === request.sources.repositoryObservation.provider &&
+      sameSnapshotCredentialRef(
+        request.sources.taskTracker.credentialRef,
+        request.sources.repositoryObservation.credentialRef
+      );
     try {
-      scopeAuthorization = await dependencies.scopeAuthorizer.authorize({
+      repositoryScopeAuthorization = await dependencies.scopeAuthorizer.authorize({
         workspaceId: request.workspaceId,
         projectId: request.projectId,
         actorId: request.actor.actorId,
-        provider: request.expectedProvider,
+        provider: request.sources.repositoryObservation.provider,
         repository: request.repository,
-        credentialRef: request.credentialRef
+        credentialRef: request.sources.repositoryObservation.credentialRef
       });
+      taskTrackerScopeAuthorization = sameSourceConfiguration
+        ? repositoryScopeAuthorization
+        : await dependencies.scopeAuthorizer.authorize({
+            workspaceId: request.workspaceId,
+            projectId: request.projectId,
+            actorId: request.actor.actorId,
+            provider: request.sources.taskTracker.provider,
+            repository: request.repository,
+            credentialRef: request.sources.taskTracker.credentialRef
+          });
     } catch {
       return failedTrackerSnapshotResult('repository_scope_authorization_failed');
     }
-    if (scopeAuthorization.status !== 'authorized') return deniedTrackerSnapshotResult('POLICY_DENIED');
+    if (
+      repositoryScopeAuthorization.status !== 'authorized' ||
+      taskTrackerScopeAuthorization.status !== 'authorized'
+    ) return deniedTrackerSnapshotResult('POLICY_DENIED');
 
     const compatibilityAdapter = dependencies.adapter;
     const taskTracker = dependencies.taskTracker;
@@ -923,17 +1001,29 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
     ) {
       return failedTrackerSnapshotResult('adapter_capability_unavailable');
     }
+    const taskTrackerProvider = compatibilityAdapter?.provider ?? taskTracker!.provider;
     const repositoryProvider = compatibilityAdapter?.provider ?? repositoryObservation!.provider;
     try {
       if (
-        repositoryProvider !== request.expectedProvider ||
+        taskTrackerProvider !== request.sources.taskTracker.provider ||
+        repositoryProvider !== request.sources.repositoryObservation.provider ||
         !(compatibilityAdapter?.capabilities.readWorkItems ?? taskTracker!.capabilities.readWorkItems) ||
         !(compatibilityAdapter?.capabilities.readPullRequests ?? repositoryObservation!.capabilities.readPullRequests) ||
         !(compatibilityAdapter?.capabilities.readChecks ?? repositoryObservation!.capabilities.readChecks)
       ) {
-        return repositoryProvider !== request.expectedProvider
+        return taskTrackerProvider !== request.sources.taskTracker.provider ||
+          repositoryProvider !== request.sources.repositoryObservation.provider
           ? failedTrackerSnapshotResult('adapter_provider_mismatch')
           : failedTrackerSnapshotResult('adapter_capability_unavailable');
+      }
+      if (
+        compatibilityAdapter !== undefined &&
+        !sameSnapshotCredentialRef(
+          request.sources.taskTracker.credentialRef,
+          request.sources.repositoryObservation.credentialRef
+        )
+      ) {
+        return failedTrackerSnapshotResult('adapter_capability_unavailable');
       }
     } catch {
       return failedTrackerSnapshotResult('adapter_capability_unavailable');
@@ -941,22 +1031,27 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
 
     let readSnapshot;
     try {
-      const readInput = {
+      const taskTrackerReadInput = {
         repository: request.repository,
-        credentialRef: request.credentialRef
+        credentialRef: request.sources.taskTracker.credentialRef
+      };
+      const repositoryReadInput = {
+        repository: request.repository,
+        credentialRef: request.sources.repositoryObservation.credentialRef
       };
       if (compatibilityAdapter !== undefined) {
         const reader = compatibilityAdapter.readRepositorySnapshot;
         if (typeof reader !== 'function') {
           return failedTrackerSnapshotResult('adapter_capability_unavailable');
         }
-        readSnapshot = await reader(readInput);
+        readSnapshot = await reader(repositoryReadInput);
       } else {
         const [taskObservation, repositorySnapshotObservation] = await Promise.all([
-          taskTracker!.readWorkItems(readInput),
-          repositoryObservation!.readRepositoryObservation(readInput)
+          taskTracker!.readWorkItems(taskTrackerReadInput),
+          repositoryObservation!.readRepositoryObservation(repositoryReadInput)
         ]);
-        const externalVersion = taskObservation.externalVersion === repositorySnapshotObservation.externalVersion
+        const externalVersion = taskTrackerProvider === repositoryProvider &&
+          taskObservation.externalVersion === repositorySnapshotObservation.externalVersion
           ? repositorySnapshotObservation.externalVersion
           : `composed:sha256:${createHash('sha256').update(canonicalJson({
               taskTrackerProvider: taskTracker!.provider,
@@ -976,9 +1071,12 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
     const snapshot = validateTrackerRepositorySnapshot({
       snapshot: readSnapshot,
       repository: request.repository,
-      repositoryExternalId: scopeAuthorization.repositoryExternalId
+      repositoryExternalId: repositoryScopeAuthorization.repositoryExternalId
     });
     if (snapshot === null) return failedTrackerSnapshotResult('invalid_repository_snapshot');
+    const projectionProviders = taskTrackerProvider === repositoryProvider
+      ? {}
+      : {providers: {taskTracker: taskTrackerProvider, repositoryObservation: repositoryProvider}};
 
     try {
       return request.mode === 'bootstrap'
@@ -989,6 +1087,7 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
             actorId: request.actor.actorId,
             correlationId: request.correlationId,
             provider: repositoryProvider,
+            ...projectionProviders,
             snapshot
           })
         : await dependencies.projector.synchronize({
@@ -998,6 +1097,7 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
             actorId: request.actor.actorId,
             correlationId: request.correlationId,
             provider: repositoryProvider,
+            ...projectionProviders,
             snapshot,
             expectedPreviousExternalVersion: request.expectedPreviousExternalVersion
           });
