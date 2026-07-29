@@ -10,12 +10,16 @@ import {
 } from '@fai-control-plane/domain';
 import {
   agentRuns,
+  actorExternalIdentities,
   approvalRequests,
   auditEvents,
   commandReceipts,
   createDatabase,
   createPostgresUnitOfWork,
   outboxEvents,
+  projectMemberships,
+  resourceAccessGrants,
+  runtimeRegistrations,
   statusTransitions,
   taskPackets,
   trackerBindings,
@@ -54,6 +58,10 @@ const fixture = {
   otherProjectId: randomUUID(),
   otherActorId: randomUUID(),
   otherProfileId: randomUUID(),
+  runtimeActorId: randomUUID(),
+  runtimeProfileId: randomUUID(),
+  otherRuntimeActorId: randomUUID(),
+  otherRuntimeProfileId: randomUUID(),
   otherWorkItemId: randomUUID(),
   otherEventId: randomUUID()
 };
@@ -175,6 +183,8 @@ describePostgres(
           projectId: fixture.projectId,
           actorId: fixture.actorId,
           profileId: fixture.profileId,
+          runtimeActorId: fixture.runtimeActorId,
+          runtimeProfileId: fixture.runtimeProfileId,
           workItemId: fixture.workItemId,
           eventId: fixture.eventId,
           label: 'Primary'
@@ -184,6 +194,8 @@ describePostgres(
           projectId: fixture.otherProjectId,
           actorId: fixture.otherActorId,
           profileId: fixture.otherProfileId,
+          runtimeActorId: fixture.otherRuntimeActorId,
+          runtimeProfileId: fixture.otherRuntimeProfileId,
           workItemId: fixture.otherWorkItemId,
           eventId: fixture.otherEventId,
           label: 'Other'
@@ -226,6 +238,31 @@ describePostgres(
             entry.actorId,
             `${entry.label.toLowerCase()}-runtime`
           ]
+        );
+        await testPool.query(
+          `INSERT INTO actors (
+             id, workspace_id, type, role, display_name, auth_mode
+           ) VALUES (
+             $1, $2, 'agent', 'agent_operator', $3, 'agent'
+           )`,
+          [entry.runtimeActorId, entry.workspaceId, `${entry.label} runtime agent`]
+        );
+        await testPool.query(
+          `INSERT INTO agent_profiles (
+             id, workspace_id, actor_id, runtime_id, runtime_profile
+           ) VALUES ($1, $2, $3, $4, 'test')`,
+          [
+            entry.runtimeProfileId,
+            entry.workspaceId,
+            entry.runtimeActorId,
+            `${entry.label.toLowerCase()}-registered-runtime`
+          ]
+        );
+        await testPool.query(
+          `INSERT INTO project_memberships (
+             id, project_id, actor_id, role, active
+           ) VALUES ($1, $2, $3, 'agent', true)`,
+          [randomUUID(), entry.projectId, entry.runtimeActorId]
         );
         await testPool.query(
           `INSERT INTO work_items (
@@ -703,6 +740,222 @@ describePostgres(
         status: 'key_reused',
         error: {code: 'IDEMPOTENCY_KEY_REUSED'}
       });
+    });
+
+    it('persists scoped access commands with CAS, audit, and separate observation', async () => {
+      const membershipId = randomUUID();
+      const identityId = randomUUID();
+      const grantId = randomUUID();
+      const resourceId = randomUUID();
+      const membership = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'project_membership.set',
+        {
+          membershipId,
+          projectId: fixture.projectId,
+          subjectActorId: fixture.actorId,
+          role: 'workspace_owner',
+          active: true,
+          expectedVersion: null
+        }
+      ));
+      expect(membership).toMatchObject({
+        receipt: {result: {ok: true, value: {version: 1}}}
+      });
+
+      await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'actor_external_identity.bind',
+        {
+          identityId,
+          subjectActorId: fixture.actorId,
+          provider: 'github',
+          externalSubject: 'github:user:123',
+          active: true,
+          expectedVersion: null
+        }
+      ));
+      await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'resource_access_grant.set',
+        {
+          grantId,
+          projectId: fixture.projectId,
+          subjectActorId: fixture.actorId,
+          resourceType: 'repository',
+          resourceId,
+          desiredLevel: 'write',
+          expectedVersion: null
+        }
+      ));
+      const observed = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'resource_access_grant.observe',
+        {
+          grantId,
+          provider: 'github',
+          externalResourceRef: 'github:repository:456',
+          confirmedLevel: 'read',
+          observedAt: '2026-07-29T10:00:00.000Z',
+          expectedVersion: 1
+        }
+      ));
+      expect(observed).toMatchObject({
+        receipt: {result: {ok: true, value: {version: 2}}}
+      });
+      expect(await testDb.select().from(projectMemberships)
+        .where(eq(projectMemberships.id, membershipId)))
+        .toMatchObject([{role: 'workspace_owner', version: 1}]);
+      expect(await testDb.select().from(actorExternalIdentities)
+        .where(eq(actorExternalIdentities.id, identityId)))
+        .toMatchObject([{provider: 'github', externalSubject: 'github:user:123'}]);
+      expect(await testDb.select().from(resourceAccessGrants)
+        .where(eq(resourceAccessGrants.id, grantId)))
+        .toMatchObject([{
+          resourceId,
+          desiredLevel: 'write',
+          observedProvider: 'github',
+          observedLevel: 'read',
+          version: 2
+        }]);
+
+      const stale = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'resource_access_grant.set',
+        {
+          grantId,
+          projectId: fixture.projectId,
+          subjectActorId: fixture.actorId,
+          resourceType: 'repository',
+          resourceId,
+          desiredLevel: 'admin',
+          expectedVersion: 1
+        }
+      ));
+      expect(receiptErrorCode(stale)).toBe('VERSION_CONFLICT');
+
+      const crossWorkspace = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'project_membership.set',
+        {
+          membershipId: randomUUID(),
+          projectId: fixture.otherProjectId,
+          subjectActorId: fixture.actorId,
+          role: 'project_owner',
+          active: true,
+          expectedVersion: null
+        }
+      ));
+      expect(receiptErrorCode(crossWorkspace)).toBe('NOT_FOUND');
+      expect(await testDb.select().from(auditEvents)
+        .where(eq(auditEvents.targetId, grantId))).toHaveLength(3);
+    });
+
+    it('persists isolated runtime registration create, update, disable, CAS, replay, and audit', async () => {
+      const registrationId = randomUUID();
+      const create = command(
+        fixture.workspaceId,
+        primaryActor,
+        'runtime_registration.create',
+        {
+          registrationId,
+          projectId: fixture.projectId,
+          subjectActorId: fixture.runtimeActorId,
+          agentProfileId: fixture.runtimeProfileId,
+          provider: 'codex',
+          runtimeKey: 'workstation:primary',
+          enabled: true
+        },
+        `runtime-registration-${randomUUID()}`
+      );
+
+      await expect(service().execute(create)).resolves.toMatchObject({
+        status: 'completed',
+        receipt: {result: {ok: true, value: {enabled: true, version: 1}}}
+      });
+      await expect(service().execute(create)).resolves.toMatchObject({
+        status: 'replayed',
+        receipt: {result: {ok: true, value: {version: 1}}}
+      });
+      await expect(service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'runtime_registration.update',
+        {
+          registrationId,
+          provider: 'codex',
+          runtimeKey: 'workstation:secondary',
+          enabled: true,
+          expectedVersion: 1
+        }
+      ))).resolves.toMatchObject({
+        receipt: {result: {ok: true, value: {enabled: true, version: 2}}}
+      });
+      const staleDisable = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'runtime_registration.disable',
+        {registrationId, expectedVersion: 1}
+      ));
+      expect(receiptErrorCode(staleDisable)).toBe('VERSION_CONFLICT');
+      await expect(service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'runtime_registration.disable',
+        {registrationId, expectedVersion: 2}
+      ))).resolves.toMatchObject({
+        receipt: {result: {ok: true, value: {enabled: false, version: 3}}}
+      });
+      await expect(testDb.select().from(runtimeRegistrations)
+        .where(eq(runtimeRegistrations.id, registrationId))).resolves.toMatchObject([{
+        projectId: fixture.projectId,
+        actorId: fixture.runtimeActorId,
+        agentProfileId: fixture.runtimeProfileId,
+        provider: 'codex',
+        runtimeKey: 'workstation:secondary',
+        enabled: false,
+        version: 3
+      }]);
+
+      const crossWorkspace = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'runtime_registration.create',
+        {
+          registrationId: randomUUID(),
+          projectId: fixture.projectId,
+          subjectActorId: fixture.otherRuntimeActorId,
+          agentProfileId: fixture.otherRuntimeProfileId,
+          provider: 'hermes',
+          runtimeKey: 'other:runtime',
+          enabled: true
+        }
+      ));
+      expect(receiptErrorCode(crossWorkspace)).toBe('NOT_FOUND');
+
+      const nonAgent = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'runtime_registration.create',
+        {
+          registrationId: randomUUID(),
+          projectId: fixture.projectId,
+          subjectActorId: fixture.actorId,
+          agentProfileId: fixture.profileId,
+          provider: 'codex',
+          runtimeKey: 'human:profile',
+          enabled: true
+        }
+      ));
+      expect(receiptErrorCode(nonAgent)).toBe('NOT_FOUND');
+      expect(await testDb.select().from(auditEvents)
+        .where(eq(auditEvents.targetId, registrationId))).toHaveLength(4);
     });
   }
 );

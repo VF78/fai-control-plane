@@ -1,4 +1,17 @@
 import {createHash} from 'node:crypto';
+export * from './instruction-versioning.ts';
+import type {
+  ActorExternalIdentity,
+  ProjectMembership,
+  ProjectMembershipRole,
+  ResourceAccessGrant,
+  AccessLevel,
+  AccessResourceType
+} from './access.ts';
+import type {RuntimeRegistration} from './runtime-registration.ts';
+
+export * from './access.ts';
+export * from './runtime-registration.ts';
 
 export const workItemStatuses = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
 export type WorkItemStatus = (typeof workItemStatuses)[number];
@@ -727,6 +740,80 @@ export type DecideAccessRequestCommand = CanonicalCommandEnvelope<
   'access_request.decide',
   Readonly<{requestId: string; status: Exclude<AccessRequestStatus, 'pending'>; expectedVersion: number}>
 >;
+export type SetProjectMembershipCommand = CanonicalCommandEnvelope<
+  'project_membership.set',
+  Readonly<{
+    membershipId: string;
+    projectId: string;
+    subjectActorId: string;
+    role: ProjectMembershipRole;
+    active: boolean;
+    expectedVersion: number | null;
+  }>
+>;
+export type BindActorExternalIdentityCommand = CanonicalCommandEnvelope<
+  'actor_external_identity.bind',
+  Readonly<{
+    identityId: string;
+    subjectActorId: string;
+    provider: string;
+    externalSubject: string;
+    active: boolean;
+    expectedVersion: number | null;
+  }>
+>;
+export type SetResourceAccessGrantCommand = CanonicalCommandEnvelope<
+  'resource_access_grant.set',
+  Readonly<{
+    grantId: string;
+    projectId: string;
+    subjectActorId: string;
+    resourceType: AccessResourceType;
+    resourceId: string;
+    desiredLevel: AccessLevel;
+    expectedVersion: number | null;
+  }>
+>;
+export type ObserveResourceAccessGrantCommand = CanonicalCommandEnvelope<
+  'resource_access_grant.observe',
+  Readonly<{
+    grantId: string;
+    provider: string;
+    externalResourceRef: string;
+    confirmedLevel: AccessLevel;
+    observedAt: string;
+    expectedVersion: number;
+  }>
+>;
+export type CreateRuntimeRegistrationCommand = CanonicalCommandEnvelope<
+  'runtime_registration.create',
+  Readonly<{
+    registrationId: string;
+    projectId: string;
+    subjectActorId: string;
+    agentProfileId: string;
+    provider: string;
+    runtimeKey: string;
+    enabled: boolean;
+  }>
+>;
+export type UpdateRuntimeRegistrationCommand = CanonicalCommandEnvelope<
+  'runtime_registration.update',
+  Readonly<{
+    registrationId: string;
+    provider: string;
+    runtimeKey: string;
+    enabled: boolean;
+    expectedVersion: number;
+  }>
+>;
+export type DisableRuntimeRegistrationCommand = CanonicalCommandEnvelope<
+  'runtime_registration.disable',
+  Readonly<{
+    registrationId: string;
+    expectedVersion: number;
+  }>
+>;
 export type CanonicalCommand =
   | TransitionWorkItemCommand
   | SetBlockedCommand
@@ -737,7 +824,14 @@ export type CanonicalCommand =
   | RequestApprovalCommand
   | DecideApprovalCommand
   | RequestAccessCommand
-  | DecideAccessRequestCommand;
+  | DecideAccessRequestCommand
+  | SetProjectMembershipCommand
+  | BindActorExternalIdentityCommand
+  | SetResourceAccessGrantCommand
+  | ObserveResourceAccessGrantCommand
+  | CreateRuntimeRegistrationCommand
+  | UpdateRuntimeRegistrationCommand
+  | DisableRuntimeRegistrationCommand;
 
 export type CanonicalJson =
   | null
@@ -2008,6 +2102,30 @@ export type AccessRequestMutation = Readonly<{
   expectedPersistedVersion: number | null;
   aggregate: AccessRequest;
 }>;
+export type ProjectMembershipMutation = Readonly<{
+  aggregateType: 'project_membership';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: ProjectMembership;
+}>;
+export type ActorExternalIdentityMutation = Readonly<{
+  aggregateType: 'actor_external_identity';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: ActorExternalIdentity;
+}>;
+export type ResourceAccessGrantMutation = Readonly<{
+  aggregateType: 'resource_access_grant';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: ResourceAccessGrant;
+}>;
+export type RuntimeRegistrationMutation = Readonly<{
+  aggregateType: 'runtime_registration';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: RuntimeRegistration;
+}>;
 export type CanonicalMutation =
   | WorkItemUpdateMutation
   | AgentProfileUpdateMutation
@@ -2015,7 +2133,11 @@ export type CanonicalMutation =
   | AgentRunMutation
   | ApprovalInsertMutation
   | ApprovalUpdateMutation
-  | AccessRequestMutation;
+  | AccessRequestMutation
+  | ProjectMembershipMutation
+  | ActorExternalIdentityMutation
+  | ResourceAccessGrantMutation
+  | RuntimeRegistrationMutation;
 export type PersistedCanonicalMutation = Readonly<{
   cas: PersistedVersionCas;
   audit: AuditAppendToken;
@@ -2109,6 +2231,30 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     accessRequestId: string
   ): Promise<AccessRequest | null>;
+  loadProjectMembership(
+    claimToken: ReceiptClaimToken,
+    membershipId: string
+  ): Promise<ProjectMembership | null>;
+  loadActorExternalIdentity(
+    claimToken: ReceiptClaimToken,
+    identityId: string
+  ): Promise<ActorExternalIdentity | null>;
+  loadResourceAccessGrant(
+    claimToken: ReceiptClaimToken,
+    grantId: string
+  ): Promise<ResourceAccessGrant | null>;
+  loadRuntimeRegistration(
+    claimToken: ReceiptClaimToken,
+    registrationId: string
+  ): Promise<RuntimeRegistration | null>;
+  loadAccessCommandAuthority(
+    claimToken: ReceiptClaimToken,
+    actorId: string,
+    projectId?: string
+  ): Promise<Readonly<{
+    workspaceAdmin: boolean;
+    projectRole: ProjectMembershipRole | null;
+  }> | null>;
   /** Atomically compare-and-swaps the aggregate and appends its audit event. */
   persistAuditedMutation(input: Readonly<{
     claimToken: ReceiptClaimToken;

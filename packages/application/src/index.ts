@@ -1,5 +1,16 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export {
+  createInstructionVersionService,
+  type InstructionVersionCommand,
+  type InstructionVersionExecution,
+  type InstructionVersionPreview,
+  type InstructionVersionReceipt,
+  type InstructionVersionService,
+  type InstructionVersionStore,
+  type PublishInstructionVersionCommand,
+  type RollbackInstructionVersionCommand
+} from './instruction-versioning.ts';
+export {
   createProjectShareService,
   type CreateProjectShareGrantInput,
   type CreateProjectShareInput,
@@ -14,6 +25,8 @@ export {
 } from './project-share.ts';
 import {
   actionCategories,
+  accessLevels,
+  accessResourceTypes,
   accessRequestStatuses,
   agentRunStatuses,
   CURRENT_POLICY_VERSION,
@@ -25,6 +38,7 @@ import {
   isTrustedActorContext,
   OPERATOR_CANCELLED_BEFORE_CLAIM,
   policySurfaces,
+  projectMembershipRoles,
   setWorkItemBlocked,
   trackerCheckStatuses,
   transitionAccessRequest,
@@ -34,6 +48,7 @@ import {
   updateHermesAgentProfile,
   workItemStatuses,
   type AccessRequest,
+  type ActorExternalIdentity,
   type ActionCategory,
   type AgentRun,
   type Approval,
@@ -59,6 +74,9 @@ import {
   type NonApprovalReceipt,
   type PolicyDecision,
   type PolicyRequest,
+  type ProjectMembership,
+  type ResourceAccessGrant,
+  type RuntimeRegistration,
   type ReceiptClaimToken,
   type RunnerClaimAuthorization,
   type RunnerClaimRecord,
@@ -588,7 +606,14 @@ const commandTypes = new Set<CanonicalCommand['type']>([
   'approval.request',
   'approval.decide',
   'access_request.request',
-  'access_request.decide'
+  'access_request.decide',
+  'project_membership.set',
+  'actor_external_identity.bind',
+  'resource_access_grant.set',
+  'resource_access_grant.observe',
+  'runtime_registration.create',
+  'runtime_registration.update',
+  'runtime_registration.disable'
 ]);
 
 const defaultIds: IdGenerator = {next: randomUUID};
@@ -1326,8 +1351,65 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
       return hasExactKeys(payload, ['requestId', 'status', 'expectedVersion']) && isUuid(payload.requestId) &&
         isOneOf(accessRequestStatuses.filter((status) => status !== 'pending'), payload.status) &&
         isVersion(payload.expectedVersion);
+    case 'project_membership.set':
+      return hasExactKeys(payload, [
+        'membershipId', 'projectId', 'subjectActorId', 'role', 'active', 'expectedVersion'
+      ]) && isUuid(payload.membershipId) && isUuid(payload.projectId) &&
+        isUuid(payload.subjectActorId) && isOneOf(projectMembershipRoles, payload.role) &&
+        typeof payload.active === 'boolean' &&
+        (payload.expectedVersion === null || isVersion(payload.expectedVersion));
+    case 'actor_external_identity.bind':
+      return hasExactKeys(payload, [
+        'identityId', 'subjectActorId', 'provider', 'externalSubject', 'active', 'expectedVersion'
+      ]) && isUuid(payload.identityId) && isUuid(payload.subjectActorId) &&
+        isProviderKey(payload.provider) && isExternalReference(payload.externalSubject) &&
+        typeof payload.active === 'boolean' &&
+        (payload.expectedVersion === null || isVersion(payload.expectedVersion));
+    case 'resource_access_grant.set':
+      return hasExactKeys(payload, [
+        'grantId', 'projectId', 'subjectActorId', 'resourceType', 'resourceId',
+        'desiredLevel', 'expectedVersion'
+      ]) && isUuid(payload.grantId) && isUuid(payload.projectId) &&
+        isUuid(payload.subjectActorId) && isOneOf(accessResourceTypes, payload.resourceType) &&
+        isUuid(payload.resourceId) && isOneOf(accessLevels, payload.desiredLevel) &&
+        (payload.expectedVersion === null || isVersion(payload.expectedVersion));
+    case 'resource_access_grant.observe':
+      return hasExactKeys(payload, [
+        'grantId', 'provider', 'externalResourceRef', 'confirmedLevel', 'observedAt',
+        'expectedVersion'
+      ]) && isUuid(payload.grantId) && isProviderKey(payload.provider) &&
+        isExternalReference(payload.externalResourceRef) &&
+        isOneOf(accessLevels, payload.confirmedLevel) &&
+        isCanonicalTimestamp(payload.observedAt) && isVersion(payload.expectedVersion);
+    case 'runtime_registration.create':
+      return hasExactKeys(payload, [
+        'registrationId', 'projectId', 'subjectActorId', 'agentProfileId',
+        'provider', 'runtimeKey', 'enabled'
+      ]) && isUuid(payload.registrationId) && isUuid(payload.projectId) &&
+        isUuid(payload.subjectActorId) && isUuid(payload.agentProfileId) &&
+        isProviderKey(payload.provider) && isExternalReference(payload.runtimeKey) &&
+        typeof payload.enabled === 'boolean';
+    case 'runtime_registration.update':
+      return hasExactKeys(payload, [
+        'registrationId', 'provider', 'runtimeKey', 'enabled', 'expectedVersion'
+      ]) && isUuid(payload.registrationId) && isProviderKey(payload.provider) &&
+        isExternalReference(payload.runtimeKey) && typeof payload.enabled === 'boolean' &&
+        isVersion(payload.expectedVersion);
+    case 'runtime_registration.disable':
+      return hasExactKeys(payload, ['registrationId', 'expectedVersion']) &&
+        isUuid(payload.registrationId) && isVersion(payload.expectedVersion);
   }
   return assertNever(type);
+};
+const isProviderKey = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
+const isExternalReference = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= 256 &&
+  !/[\u0000-\u001f\u007f]/.test(value);
+const isCanonicalTimestamp = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
 };
 
 const packetIdsAreSafe = (content: Record<string, unknown>): boolean => [
@@ -1521,6 +1603,13 @@ export const createCanonicalCommandService = (
       case 'approval.decide': return approvalDecide(transaction, claimToken, claim, command);
       case 'access_request.request': return accessRequestCreate(transaction, claimToken, claim, command);
       case 'access_request.decide': return accessRequestDecide(transaction, claimToken, claim, command);
+      case 'project_membership.set': return projectMembershipSet(transaction, claimToken, claim, command);
+      case 'actor_external_identity.bind': return actorExternalIdentityBind(transaction, claimToken, claim, command);
+      case 'resource_access_grant.set': return resourceAccessGrantSet(transaction, claimToken, claim, command);
+      case 'resource_access_grant.observe': return resourceAccessGrantObserve(transaction, claimToken, claim, command);
+      case 'runtime_registration.create': return runtimeRegistrationCreate(transaction, claimToken, claim, command);
+      case 'runtime_registration.update': return runtimeRegistrationUpdate(transaction, claimToken, claim, command);
+      case 'runtime_registration.disable': return runtimeRegistrationDisable(transaction, claimToken, claim, command);
     }
     return assertNever(command);
   };
@@ -1982,6 +2071,375 @@ export const createCanonicalCommandService = (
     }, resultTarget, value);
   }
 
+  async function accessAuthority(
+    transaction: CanonicalCommandTransaction,
+    token: ReceiptClaimToken,
+    command: CanonicalCommand,
+    projectId?: string
+  ): Promise<CommandResult<true>> {
+    if (command.actor.kind !== 'trusted_user') {
+      return failed('INVALID_ACTOR_CONTEXT', 'Only an authenticated human may manage access.');
+    }
+    const authority = await transaction.loadAccessCommandAuthority(
+      token,
+      command.actor.actorId,
+      projectId
+    );
+    if (authority === null) return failed('NOT_FOUND', 'Resource was not found.');
+    return authority.workspaceAdmin || authority.projectRole === 'workspace_owner' ||
+      authority.projectRole === 'project_owner'
+      ? succeeded(true)
+      : failed('CAPABILITY_DENIED', 'Actor is not an access owner for this scope.');
+  }
+
+  async function projectMembershipSet(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'project_membership.set'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor(
+      'project_membership',
+      payload.membershipId,
+      payload.expectedVersion ?? undefined
+    );
+    const authorization = await accessAuthority(transaction, token, command, payload.projectId);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    const current = await transaction.loadProjectMembership(token, payload.membershipId);
+    if (
+      (payload.expectedVersion === null && current !== null) ||
+      (payload.expectedVersion !== null && current?.version !== payload.expectedVersion)
+    ) return completeNoMutation(
+      transaction, token, claim, command,
+      targetFor('project_membership', payload.membershipId, payload.expectedVersion ?? undefined, current?.version),
+      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
+      'access_change'
+    );
+    if (current !== null &&
+      (current.projectId !== payload.projectId || current.actorId !== payload.subjectActorId)) {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('INVALID_COMMAND', 'Membership project and actor are immutable.'),
+        'access_change'
+      );
+    }
+    const membership: ProjectMembership = {
+      id: payload.membershipId,
+      projectId: payload.projectId,
+      actorId: payload.subjectActorId,
+      role: payload.role,
+      active: payload.active,
+      version: (payload.expectedVersion ?? 0) + 1
+    };
+    const resultTarget = targetFor(
+      'project_membership', membership.id, payload.expectedVersion ?? undefined, membership.version
+    );
+    const value = succeeded(compactAccessAggregate(membership));
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'project_membership',
+        aggregateId: membership.id,
+        expectedPersistedVersion: payload.expectedVersion,
+        aggregate: membership
+      },
+      audit: audit(
+        claim, ids, clock, resultTarget, command.actor.actorId, command.type,
+        'access_change', value, 'allow'
+      )
+    }, resultTarget, value);
+  }
+
+  async function actorExternalIdentityBind(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'actor_external_identity.bind'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor(
+      'actor_external_identity', payload.identityId, payload.expectedVersion ?? undefined
+    );
+    const authorization = await accessAuthority(transaction, token, command);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    const current = await transaction.loadActorExternalIdentity(token, payload.identityId);
+    if (
+      (payload.expectedVersion === null && current !== null) ||
+      (payload.expectedVersion !== null && current?.version !== payload.expectedVersion)
+    ) return completeNoMutation(
+      transaction, token, claim, command,
+      targetFor('actor_external_identity', payload.identityId, payload.expectedVersion ?? undefined, current?.version),
+      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
+      'access_change'
+    );
+    if (current !== null && (
+      current.actorId !== payload.subjectActorId ||
+      current.provider !== payload.provider
+    )) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('INVALID_COMMAND', 'External identity actor and provider are immutable.'),
+      'access_change'
+    );
+    const identity: ActorExternalIdentity = {
+      id: payload.identityId,
+      actorId: payload.subjectActorId,
+      provider: payload.provider,
+      externalSubject: payload.externalSubject,
+      active: payload.active,
+      version: (payload.expectedVersion ?? 0) + 1
+    };
+    const resultTarget = targetFor(
+      'actor_external_identity', identity.id, payload.expectedVersion ?? undefined, identity.version
+    );
+    const value = succeeded(compactAccessAggregate(identity));
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'actor_external_identity',
+        aggregateId: identity.id,
+        expectedPersistedVersion: payload.expectedVersion,
+        aggregate: identity
+      },
+      audit: audit(
+        claim, ids, clock, resultTarget, command.actor.actorId, command.type,
+        'access_change', value, 'allow'
+      )
+    }, resultTarget, value);
+  }
+
+  async function resourceAccessGrantSet(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'resource_access_grant.set'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor(
+      'resource_access_grant', payload.grantId, payload.expectedVersion ?? undefined
+    );
+    const authorization = await accessAuthority(transaction, token, command, payload.projectId);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    const current = await transaction.loadResourceAccessGrant(token, payload.grantId);
+    if (
+      (payload.expectedVersion === null && current !== null) ||
+      (payload.expectedVersion !== null && current?.version !== payload.expectedVersion)
+    ) return completeNoMutation(
+      transaction, token, claim, command,
+      targetFor('resource_access_grant', payload.grantId, payload.expectedVersion ?? undefined, current?.version),
+      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
+      'access_change'
+    );
+    if (current !== null && (
+      current.projectId !== payload.projectId ||
+      current.actorId !== payload.subjectActorId ||
+      current.resourceType !== payload.resourceType ||
+      current.resourceId !== payload.resourceId
+    )) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('INVALID_COMMAND', 'Resource grant binding keys are immutable.'),
+      'access_change'
+    );
+    const grant: ResourceAccessGrant = {
+      id: payload.grantId,
+      projectId: payload.projectId,
+      actorId: payload.subjectActorId,
+      resourceType: payload.resourceType,
+      resourceId: payload.resourceId,
+      desiredLevel: payload.desiredLevel,
+      providerObservation: current?.providerObservation ?? null,
+      version: (payload.expectedVersion ?? 0) + 1
+    };
+    return persistAccessGrant(transaction, token, claim, command, grant, payload.expectedVersion);
+  }
+
+  async function resourceAccessGrantObserve(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'resource_access_grant.observe'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor('resource_access_grant', payload.grantId, payload.expectedVersion);
+    const current = await transaction.loadResourceAccessGrant(token, payload.grantId);
+    if (current === null) return completeNoMutation(
+      transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.'),
+      'access_change'
+    );
+    const authorization = await accessAuthority(transaction, token, command, current.projectId);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    if (current.version !== payload.expectedVersion) return completeNoMutation(
+      transaction, token, claim, command,
+      targetFor('resource_access_grant', current.id, payload.expectedVersion, current.version),
+      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
+      'access_change'
+    );
+    if (
+      current.providerObservation != null &&
+      new Date(payload.observedAt).getTime() <=
+        new Date(current.providerObservation.observedAt).getTime()
+    ) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('INVALID_COMMAND', 'Provider access observation must be newer.'),
+      'access_change'
+    );
+    const observation = {
+      provider: payload.provider,
+      externalResourceRef: payload.externalResourceRef,
+      confirmedLevel: payload.confirmedLevel,
+      observedAt: payload.observedAt
+    };
+    const grant: ResourceAccessGrant = {
+      ...current,
+      providerObservation: observation,
+      version: current.version + 1
+    };
+    return persistAccessGrant(transaction, token, claim, command, grant, current.version);
+  }
+
+  async function persistAccessGrant(
+    transaction: CanonicalCommandTransaction,
+    token: ReceiptClaimToken,
+    claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {
+      type: 'resource_access_grant.set' | 'resource_access_grant.observe'
+    }>,
+    grant: ResourceAccessGrant,
+    expectedVersion: number | null
+  ) {
+    const resultTarget = targetFor(
+      'resource_access_grant', grant.id, expectedVersion ?? undefined, grant.version
+    );
+    const value = succeeded(compactAccessAggregate(grant));
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'resource_access_grant',
+        aggregateId: grant.id,
+        expectedPersistedVersion: expectedVersion,
+        aggregate: grant
+      },
+      audit: audit(
+        claim, ids, clock, resultTarget, command.actor.actorId, command.type,
+        'access_change', value, 'allow'
+      )
+    }, resultTarget, value);
+  }
+
+  async function runtimeRegistrationCreate(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'runtime_registration.create'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor('runtime_registration', payload.registrationId);
+    const authorization = await accessAuthority(transaction, token, command, payload.projectId);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    const current = await transaction.loadRuntimeRegistration(token, payload.registrationId);
+    if (current !== null) return completeNoMutation(
+      transaction, token, claim, command,
+      targetFor('runtime_registration', payload.registrationId, undefined, current.version),
+      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
+      'access_change'
+    );
+    return persistRuntimeRegistration(transaction, token, claim, command, {
+      id: payload.registrationId,
+      projectId: payload.projectId,
+      actorId: payload.subjectActorId,
+      agentProfileId: payload.agentProfileId,
+      provider: payload.provider,
+      runtimeKey: payload.runtimeKey,
+      enabled: payload.enabled,
+      version: 1
+    }, null);
+  }
+
+  async function runtimeRegistrationUpdate(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'runtime_registration.update'}>
+  ) {
+    const payload = command.payload;
+    const current = await transaction.loadRuntimeRegistration(token, payload.registrationId);
+    const target = targetFor('runtime_registration', payload.registrationId, payload.expectedVersion, current?.version);
+    if (current === null) return completeNoMutation(
+      transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.'),
+      'access_change'
+    );
+    const authorization = await accessAuthority(transaction, token, command, current.projectId);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    if (current.version !== payload.expectedVersion) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
+      'access_change'
+    );
+    return persistRuntimeRegistration(transaction, token, claim, command, {
+      ...current,
+      provider: payload.provider,
+      runtimeKey: payload.runtimeKey,
+      enabled: payload.enabled,
+      version: current.version + 1
+    }, current.version);
+  }
+
+  async function runtimeRegistrationDisable(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'runtime_registration.disable'}>
+  ) {
+    const payload = command.payload;
+    const current = await transaction.loadRuntimeRegistration(token, payload.registrationId);
+    const target = targetFor('runtime_registration', payload.registrationId, payload.expectedVersion, current?.version);
+    if (current === null) return completeNoMutation(
+      transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.'),
+      'access_change'
+    );
+    const authorization = await accessAuthority(transaction, token, command, current.projectId);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    if (current.version !== payload.expectedVersion) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
+      'access_change'
+    );
+    return persistRuntimeRegistration(transaction, token, claim, command, {
+      ...current,
+      enabled: false,
+      version: current.version + 1
+    }, current.version);
+  }
+
+  async function persistRuntimeRegistration(
+    transaction: CanonicalCommandTransaction,
+    token: ReceiptClaimToken,
+    claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {
+      type: 'runtime_registration.create' | 'runtime_registration.update' | 'runtime_registration.disable'
+    }>,
+    registration: RuntimeRegistration,
+    expectedVersion: number | null
+  ) {
+    const resultTarget = targetFor(
+      'runtime_registration', registration.id, expectedVersion ?? undefined, registration.version
+    );
+    const value = succeeded(compactRuntimeRegistration(registration));
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'runtime_registration',
+        aggregateId: registration.id,
+        expectedPersistedVersion: expectedVersion,
+        aggregate: registration
+      },
+      audit: audit(
+        claim, ids, clock, resultTarget, command.actor.actorId, command.type,
+        'access_change', value, 'allow'
+      )
+    }, resultTarget, value);
+  }
+
   return service;
 };
 
@@ -1999,6 +2457,19 @@ const commandTarget = (command: CanonicalCommand): Target => {
       command.type === 'approval.decide' ? command.payload.expectedVersion : undefined);
     case 'access_request.request': return targetFor('access_request', command.payload.requestId);
     case 'access_request.decide': return targetFor('access_request', command.payload.requestId, command.payload.expectedVersion);
+    case 'project_membership.set':
+      return targetFor('project_membership', command.payload.membershipId, command.payload.expectedVersion ?? undefined);
+    case 'actor_external_identity.bind':
+      return targetFor('actor_external_identity', command.payload.identityId, command.payload.expectedVersion ?? undefined);
+    case 'resource_access_grant.set':
+      return targetFor('resource_access_grant', command.payload.grantId, command.payload.expectedVersion ?? undefined);
+    case 'resource_access_grant.observe':
+      return targetFor('resource_access_grant', command.payload.grantId, command.payload.expectedVersion);
+    case 'runtime_registration.create':
+      return targetFor('runtime_registration', command.payload.registrationId);
+    case 'runtime_registration.update':
+    case 'runtime_registration.disable':
+      return targetFor('runtime_registration', command.payload.registrationId, command.payload.expectedVersion);
   }
   return assertNever(command);
 };
@@ -2019,3 +2490,14 @@ const compactApproval = (approval: Approval): ApprovalReceipt => ({
   ...(approval.decidedAt === undefined ? {} : {decidedAt: approval.decidedAt})
 });
 const compactAccessRequest = (request: AccessRequest): CanonicalJson => ({id: request.id, status: request.status, version: request.version});
+const compactAccessAggregate = (
+  aggregate: ProjectMembership | ActorExternalIdentity | ResourceAccessGrant
+): CanonicalJson => ({
+  id: aggregate.id,
+  version: aggregate.version
+});
+const compactRuntimeRegistration = (registration: RuntimeRegistration): CanonicalJson => ({
+  id: registration.id,
+  enabled: registration.enabled,
+  version: registration.version
+});

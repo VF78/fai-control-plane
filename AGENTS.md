@@ -34,22 +34,36 @@ workspace, not the product's sole navigation or value proposition.
 - Read issue `#1`, then the selected child issue and its dependencies before
   proposing or implementing a change.
 - Work on one bounded issue per branch and draft PR.
-- Keep the primary task focused on decomposition, approvals, integration,
-  acceptance, Project/PR state, and release decisions. Delegate bounded
-  implementation, research, documentation, and QA work.
-- Route routine work to `gpt-5.6-terra` medium; complex debugging and
-  multi-module implementation to `gpt-5.6-terra` high; architecture, security,
-  and migrations to `gpt-5.6-sol` medium. Use `gpt-5.6-sol` high only for
-  critical ambiguity or after a cheaper route fails.
-- Give each delegated task one outcome, exact inputs, constraints, and
-  verification. Accept only a compact return: result, changed files, checks,
-  risks, and next action.
-- Do not import full agent transcripts or logs into the primary task. Inspect
-  the resulting files and rerun only the integration checks that can detect
-  cross-boundary regressions.
+- The primary task is the managing engineer, not an agent dispatcher. It owns
+  decisions, integration, technical acceptance, Project/PR state and releases,
+  and may implement work directly.
+- Handle a change directly when it is about 10–15 minutes, touches at most
+  three files and has one verification surface. For larger work, choose exactly
+  one executor: Terra medium for routine audits/docs/code/CSS, Terra high for
+  difficult multi-module implementation or debugging, Sol medium for
+  architecture, access/security models, migrations, policy or difficult domain
+  work. Use Sol high only for critical ambiguity, irreversible risk or a failed
+  Sol medium attempt.
+- One executor owns the bounded slice end to end: targeted reads, design,
+  implementation, necessary tests, focused checks and self-review. Its compact
+  return contains only the result, changed files, checks, risks and next action.
+- The primary task reviews the final diff, issue scope and architecture. Do not
+  repeat the executor's research or successful focused checks; run at most one
+  additional integration check that the executor could not perform.
+- Do not create a standing architect/reviewer/QA pipeline. Use one independent
+  Sol medium reviewer only when the inspected diff leaves a concrete risk of
+  data loss, irreversible migration, deny-by-default failure, secret/customer
+  data leakage, dangerous external write, or production/deploy/security
+  boundary regression. Give it only the diff and exact questions. Reuse the
+  original executor for at most one correction loop.
+- For UI, one Terra high executor performs implementation and responsive
+  self-check; the primary reviews the diff and key screenshots, and Vladimir
+  performs product/visual acceptance. Add independent QA only for a large route
+  matrix, a found responsive regression or an otherwise unverifiable viewport.
 - Before edits, inspect `git status`. Preserve unrelated changes.
-- Before publishing, run the smallest relevant lint, typecheck, tests, migration
-  check, and local bootstrap checks.
+- Use focused tests during implementation, typecheck/migration checks only for
+  touched surfaces, and one full build before a PR. Do not rerun a full build
+  after every small correction or create tests for quantity.
 - Keep changes provider-neutral at the repository, tracker, chat and runtime
   boundaries. Do not add a generic plugin registry without a demonstrated need.
 - Do not broaden the current MVP into multi-tenancy, a workflow canvas, generic

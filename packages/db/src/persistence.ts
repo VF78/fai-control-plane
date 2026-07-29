@@ -5,6 +5,7 @@ import {
 } from '@fai-control-plane/domain';
 import type {
   AccessRequest,
+  ActorExternalIdentity,
   AgentProfileConfiguration,
   AgentRun,
   AgentRunView,
@@ -28,7 +29,10 @@ import type {
   NonApprovalReceipt,
   PersistedCanonicalMutation,
   PersistedVersionCas,
+  ProjectMembership,
   ReceiptClaimToken,
+  ResourceAccessGrant,
+  RuntimeRegistration,
   TaskPacket,
   TaskPacketConfirmationView,
   UnitOfWork,
@@ -298,6 +302,60 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(
         mutation.aggregate.requesterActorId,
         'accessRequest.requesterActorId'
+      );
+      validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
+      break;
+    case 'project_membership':
+      uuid(mutation.aggregate.id, 'projectMembership.id');
+      uuid(mutation.aggregate.projectId, 'projectMembership.projectId');
+      uuid(mutation.aggregate.actorId, 'projectMembership.actorId');
+      validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
+      break;
+    case 'actor_external_identity':
+      uuid(mutation.aggregate.id, 'actorExternalIdentity.id');
+      uuid(mutation.aggregate.actorId, 'actorExternalIdentity.actorId');
+      invariant(
+        /^[a-z][a-z0-9_-]{0,63}$/.test(mutation.aggregate.provider),
+        'External identity provider must be a canonical provider key.'
+      );
+      validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
+      break;
+    case 'resource_access_grant':
+      uuid(mutation.aggregate.id, 'resourceAccessGrant.id');
+      uuid(mutation.aggregate.projectId, 'resourceAccessGrant.projectId');
+      uuid(mutation.aggregate.actorId, 'resourceAccessGrant.actorId');
+      uuid(mutation.aggregate.resourceId, 'resourceAccessGrant.resourceId');
+      if (mutation.aggregate.providerObservation != null) {
+        invariant(
+          /^[a-z][a-z0-9_-]{0,63}$/.test(
+            mutation.aggregate.providerObservation.provider
+          ),
+          'Access observation provider must be a canonical provider key.'
+        );
+        invariant(
+          date(
+            mutation.aggregate.providerObservation.observedAt,
+            'resourceAccessGrant.providerObservation.observedAt'
+          ).toISOString() === mutation.aggregate.providerObservation.observedAt,
+          'Access observation timestamp must be canonical.'
+        );
+      }
+      validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
+      break;
+    case 'runtime_registration':
+      uuid(mutation.aggregate.id, 'runtimeRegistration.id');
+      uuid(mutation.aggregate.projectId, 'runtimeRegistration.projectId');
+      uuid(mutation.aggregate.actorId, 'runtimeRegistration.actorId');
+      uuid(mutation.aggregate.agentProfileId, 'runtimeRegistration.agentProfileId');
+      invariant(
+        /^[a-z][a-z0-9_-]{0,63}$/.test(mutation.aggregate.provider),
+        'Runtime registration provider must be a canonical provider key.'
+      );
+      invariant(
+        mutation.aggregate.runtimeKey.length > 0 &&
+          mutation.aggregate.runtimeKey.length <= 256 &&
+          !/[\u0000-\u001f\u007f]/.test(mutation.aggregate.runtimeKey),
+        'Runtime registration key must be a bounded external reference.'
       );
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
@@ -585,6 +643,62 @@ const currentVersion = async (
             eq(schema.accessRequests.workspaceId, workspaceId)
           )
         );
+      return row?.version ?? null;
+    }
+    case 'project_membership': {
+      const [row] = await tx
+        .select({version: schema.projectMemberships.version})
+        .from(schema.projectMemberships)
+        .innerJoin(
+          schema.projects,
+          eq(schema.projects.id, schema.projectMemberships.projectId)
+        )
+        .where(and(
+          eq(schema.projectMemberships.id, mutation.aggregateId),
+          eq(schema.projects.workspaceId, workspaceId)
+        ));
+      return row?.version ?? null;
+    }
+    case 'actor_external_identity': {
+      const [row] = await tx
+        .select({version: schema.actorExternalIdentities.version})
+        .from(schema.actorExternalIdentities)
+        .innerJoin(
+          schema.actors,
+          eq(schema.actors.id, schema.actorExternalIdentities.actorId)
+        )
+        .where(and(
+          eq(schema.actorExternalIdentities.id, mutation.aggregateId),
+          eq(schema.actors.workspaceId, workspaceId)
+        ));
+      return row?.version ?? null;
+    }
+    case 'resource_access_grant': {
+      const [row] = await tx
+        .select({version: schema.resourceAccessGrants.version})
+        .from(schema.resourceAccessGrants)
+        .innerJoin(
+          schema.projects,
+          eq(schema.projects.id, schema.resourceAccessGrants.projectId)
+        )
+        .where(and(
+          eq(schema.resourceAccessGrants.id, mutation.aggregateId),
+          eq(schema.projects.workspaceId, workspaceId)
+        ));
+      return row?.version ?? null;
+    }
+    case 'runtime_registration': {
+      const [row] = await tx
+        .select({version: schema.runtimeRegistrations.version})
+        .from(schema.runtimeRegistrations)
+        .innerJoin(
+          schema.projects,
+          eq(schema.projects.id, schema.runtimeRegistrations.projectId)
+        )
+        .where(and(
+          eq(schema.runtimeRegistrations.id, mutation.aggregateId),
+          eq(schema.projects.workspaceId, workspaceId)
+        ));
       return row?.version ?? null;
     }
   }
@@ -1111,6 +1225,274 @@ const persistAccessRequest = async (
       };
 };
 
+const accessSubjectIsScoped = async (
+  tx: Transaction,
+  workspaceId: string,
+  projectId: string,
+  actorId: string
+): Promise<boolean> =>
+  await workspaceHasProject(tx, workspaceId, projectId) &&
+  await workspaceHasActor(tx, workspaceId, actorId);
+
+const persistProjectMembership = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'project_membership'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (!await accessSubjectIsScoped(
+    tx, workspaceId, aggregate.projectId, aggregate.actorId
+  )) return {status: 'not_found'};
+  if (mutation.expectedPersistedVersion === null) {
+    const [row] = await tx.insert(schema.projectMemberships).values({
+      id: aggregate.id,
+      projectId: aggregate.projectId,
+      actorId: aggregate.actorId,
+      role: aggregate.role,
+      active: aggregate.active,
+      version: 1
+    }).onConflictDoNothing().returning({version: schema.projectMemberships.version});
+    return row === undefined
+      ? conflictOrNotFound(tx, workspaceId, mutation)
+      : {
+          status: 'persisted',
+          cas: {expectedPersistedVersion: null, persistedVersion: row.version},
+          projectId: aggregate.projectId
+        };
+  }
+  const [row] = await tx.update(schema.projectMemberships).set({
+    role: aggregate.role,
+    active: aggregate.active,
+    version: sql`${schema.projectMemberships.version} + 1`,
+    updatedAt: new Date()
+  }).where(and(
+    eq(schema.projectMemberships.id, aggregate.id),
+    eq(schema.projectMemberships.projectId, aggregate.projectId),
+    eq(schema.projectMemberships.actorId, aggregate.actorId),
+    eq(schema.projectMemberships.version, mutation.expectedPersistedVersion)
+  )).returning({version: schema.projectMemberships.version});
+  return row === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {
+          expectedPersistedVersion: mutation.expectedPersistedVersion,
+          persistedVersion: row.version
+        },
+        projectId: aggregate.projectId
+      };
+};
+
+const persistActorExternalIdentity = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'actor_external_identity'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (!await workspaceHasActor(tx, workspaceId, aggregate.actorId)) {
+    return {status: 'not_found'};
+  }
+  if (mutation.expectedPersistedVersion === null) {
+    const [row] = await tx.insert(schema.actorExternalIdentities).values({
+      id: aggregate.id,
+      actorId: aggregate.actorId,
+      provider: aggregate.provider,
+      externalSubject: aggregate.externalSubject,
+      active: aggregate.active,
+      version: 1
+    }).onConflictDoNothing().returning({
+      version: schema.actorExternalIdentities.version
+    });
+    return row === undefined
+      ? conflictOrNotFound(tx, workspaceId, mutation)
+      : {
+          status: 'persisted',
+          cas: {expectedPersistedVersion: null, persistedVersion: row.version},
+          projectId: null
+        };
+  }
+  const [row] = await tx.update(schema.actorExternalIdentities).set({
+    externalSubject: aggregate.externalSubject,
+    active: aggregate.active,
+    version: sql`${schema.actorExternalIdentities.version} + 1`,
+    updatedAt: new Date()
+  }).where(and(
+    eq(schema.actorExternalIdentities.id, aggregate.id),
+    eq(schema.actorExternalIdentities.actorId, aggregate.actorId),
+    eq(schema.actorExternalIdentities.provider, aggregate.provider),
+    eq(schema.actorExternalIdentities.version, mutation.expectedPersistedVersion)
+  )).returning({version: schema.actorExternalIdentities.version});
+  return row === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {
+          expectedPersistedVersion: mutation.expectedPersistedVersion,
+          persistedVersion: row.version
+        },
+        projectId: null
+      };
+};
+
+const persistResourceAccessGrant = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'resource_access_grant'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (!await accessSubjectIsScoped(
+    tx, workspaceId, aggregate.projectId, aggregate.actorId
+  )) return {status: 'not_found'};
+  const [membership] = await tx.select({id: schema.projectMemberships.id})
+    .from(schema.projectMemberships)
+    .where(and(
+      eq(schema.projectMemberships.projectId, aggregate.projectId),
+      eq(schema.projectMemberships.actorId, aggregate.actorId),
+      eq(schema.projectMemberships.active, true)
+    ));
+  if (membership === undefined) return {status: 'not_found'};
+  const observation = aggregate.providerObservation;
+  if (mutation.expectedPersistedVersion === null) {
+    const [row] = await tx.insert(schema.resourceAccessGrants).values({
+      id: aggregate.id,
+      projectId: aggregate.projectId,
+      actorId: aggregate.actorId,
+      resourceType: aggregate.resourceType,
+      resourceId: aggregate.resourceId,
+      desiredLevel: aggregate.desiredLevel,
+      observedProvider: observation?.provider ?? null,
+      observedExternalResourceRef: observation?.externalResourceRef ?? null,
+      observedLevel: observation?.confirmedLevel ?? null,
+      observedAt: observation == null ? null : new Date(observation.observedAt),
+      version: 1
+    }).onConflictDoNothing().returning({version: schema.resourceAccessGrants.version});
+    return row === undefined
+      ? conflictOrNotFound(tx, workspaceId, mutation)
+      : {
+          status: 'persisted',
+          cas: {expectedPersistedVersion: null, persistedVersion: row.version},
+          projectId: aggregate.projectId
+        };
+  }
+  const [row] = await tx.update(schema.resourceAccessGrants).set({
+    desiredLevel: aggregate.desiredLevel,
+    observedProvider: observation?.provider ?? null,
+    observedExternalResourceRef: observation?.externalResourceRef ?? null,
+    observedLevel: observation?.confirmedLevel ?? null,
+    observedAt: observation == null ? null : new Date(observation.observedAt),
+    version: sql`${schema.resourceAccessGrants.version} + 1`,
+    updatedAt: new Date()
+  }).where(and(
+    eq(schema.resourceAccessGrants.id, aggregate.id),
+    eq(schema.resourceAccessGrants.projectId, aggregate.projectId),
+    eq(schema.resourceAccessGrants.actorId, aggregate.actorId),
+    eq(schema.resourceAccessGrants.resourceType, aggregate.resourceType),
+    eq(schema.resourceAccessGrants.resourceId, aggregate.resourceId),
+    eq(schema.resourceAccessGrants.version, mutation.expectedPersistedVersion)
+  )).returning({version: schema.resourceAccessGrants.version});
+  return row === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {
+          expectedPersistedVersion: mutation.expectedPersistedVersion,
+          persistedVersion: row.version
+        },
+        projectId: aggregate.projectId
+      };
+};
+
+const runtimeRegistrationSubjectIsScoped = async (
+  tx: Transaction,
+  workspaceId: string,
+  registration: RuntimeRegistration
+): Promise<boolean> => {
+  if (!await workspaceHasProject(tx, workspaceId, registration.projectId)) return false;
+  const [binding] = await tx.select({
+    profileId: schema.agentProfiles.id,
+    actorDisabledAt: schema.actors.disabledAt
+  })
+    .from(schema.actors)
+    .innerJoin(
+      schema.agentProfiles,
+      and(
+        eq(schema.agentProfiles.id, registration.agentProfileId),
+        eq(schema.agentProfiles.actorId, schema.actors.id),
+        eq(schema.agentProfiles.workspaceId, schema.actors.workspaceId)
+      )
+    )
+    .where(and(
+      eq(schema.actors.id, registration.actorId),
+      eq(schema.actors.workspaceId, workspaceId),
+      eq(schema.actors.type, 'agent')
+    ));
+  if (binding === undefined) return false;
+  if (!registration.enabled) return true;
+  if (binding.actorDisabledAt !== null) return false;
+  const [membership] = await tx.select({id: schema.projectMemberships.id})
+    .from(schema.projectMemberships)
+    .where(and(
+      eq(schema.projectMemberships.projectId, registration.projectId),
+      eq(schema.projectMemberships.actorId, registration.actorId),
+      eq(schema.projectMemberships.role, 'agent'),
+      eq(schema.projectMemberships.active, true)
+    ));
+  return membership !== undefined;
+};
+
+const persistRuntimeRegistration = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'runtime_registration'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (!await runtimeRegistrationSubjectIsScoped(tx, workspaceId, aggregate)) {
+    return {status: 'not_found'};
+  }
+  if (mutation.expectedPersistedVersion === null) {
+    const [row] = await tx.insert(schema.runtimeRegistrations).values({
+      id: aggregate.id,
+      projectId: aggregate.projectId,
+      actorId: aggregate.actorId,
+      agentProfileId: aggregate.agentProfileId,
+      provider: aggregate.provider,
+      runtimeKey: aggregate.runtimeKey,
+      enabled: aggregate.enabled,
+      version: 1
+    }).onConflictDoNothing().returning({version: schema.runtimeRegistrations.version});
+    return row === undefined
+      ? conflictOrNotFound(tx, workspaceId, mutation)
+      : {
+          status: 'persisted',
+          cas: {expectedPersistedVersion: null, persistedVersion: row.version},
+          projectId: aggregate.projectId
+        };
+  }
+  const [row] = await tx.update(schema.runtimeRegistrations).set({
+    provider: aggregate.provider,
+    runtimeKey: aggregate.runtimeKey,
+    enabled: aggregate.enabled,
+    version: sql`${schema.runtimeRegistrations.version} + 1`,
+    updatedAt: new Date()
+  }).where(and(
+    eq(schema.runtimeRegistrations.id, aggregate.id),
+    eq(schema.runtimeRegistrations.projectId, aggregate.projectId),
+    eq(schema.runtimeRegistrations.actorId, aggregate.actorId),
+    eq(schema.runtimeRegistrations.agentProfileId, aggregate.agentProfileId),
+    eq(schema.runtimeRegistrations.version, mutation.expectedPersistedVersion)
+  )).returning({version: schema.runtimeRegistrations.version});
+  return row === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {
+          expectedPersistedVersion: mutation.expectedPersistedVersion,
+          persistedVersion: row.version
+        },
+        projectId: aggregate.projectId
+      };
+};
+
 const conflictOrNotFound = async (
   tx: Transaction,
   workspaceId: string,
@@ -1145,6 +1527,14 @@ const persistAggregate = (
       return persistApproval(tx, workspaceId, mutation);
     case 'access_request':
       return persistAccessRequest(tx, workspaceId, mutation);
+    case 'project_membership':
+      return persistProjectMembership(tx, workspaceId, mutation);
+    case 'actor_external_identity':
+      return persistActorExternalIdentity(tx, workspaceId, mutation);
+    case 'resource_access_grant':
+      return persistResourceAccessGrant(tx, workspaceId, mutation);
+    case 'runtime_registration':
+      return persistRuntimeRegistration(tx, workspaceId, mutation);
   }
 };
 
@@ -1575,6 +1965,168 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             ...row,
             targetSurface: row.targetSurface as AccessRequest['targetSurface'],
             status: row.status as AccessRequest['status']
+          };
+        },
+
+        async loadProjectMembership(token, membershipId): Promise<ProjectMembership | null> {
+          const state = requireClaim(token);
+          if (!isUuid(membershipId)) return null;
+          const [row] = await tx.select({
+            id: schema.projectMemberships.id,
+            projectId: schema.projectMemberships.projectId,
+            actorId: schema.projectMemberships.actorId,
+            role: schema.projectMemberships.role,
+            active: schema.projectMemberships.active,
+            version: schema.projectMemberships.version
+          }).from(schema.projectMemberships).innerJoin(
+            schema.projects,
+            eq(schema.projects.id, schema.projectMemberships.projectId)
+          ).where(and(
+            eq(schema.projectMemberships.id, membershipId),
+            eq(schema.projects.workspaceId, state.claim.workspaceId)
+          ));
+          return row ?? null;
+        },
+
+        async loadActorExternalIdentity(
+          token,
+          identityId
+        ): Promise<ActorExternalIdentity | null> {
+          const state = requireClaim(token);
+          if (!isUuid(identityId)) return null;
+          const [row] = await tx.select({
+            id: schema.actorExternalIdentities.id,
+            actorId: schema.actorExternalIdentities.actorId,
+            provider: schema.actorExternalIdentities.provider,
+            externalSubject: schema.actorExternalIdentities.externalSubject,
+            active: schema.actorExternalIdentities.active,
+            version: schema.actorExternalIdentities.version
+          }).from(schema.actorExternalIdentities).innerJoin(
+            schema.actors,
+            eq(schema.actors.id, schema.actorExternalIdentities.actorId)
+          ).where(and(
+            eq(schema.actorExternalIdentities.id, identityId),
+            eq(schema.actors.workspaceId, state.claim.workspaceId)
+          ));
+          return row ?? null;
+        },
+
+        async loadResourceAccessGrant(
+          token,
+          grantId
+        ): Promise<ResourceAccessGrant | null> {
+          const state = requireClaim(token);
+          if (!isUuid(grantId)) return null;
+          const [row] = await tx.select({
+            id: schema.resourceAccessGrants.id,
+            projectId: schema.resourceAccessGrants.projectId,
+            actorId: schema.resourceAccessGrants.actorId,
+            resourceType: schema.resourceAccessGrants.resourceType,
+            resourceId: schema.resourceAccessGrants.resourceId,
+            desiredLevel: schema.resourceAccessGrants.desiredLevel,
+            observedProvider: schema.resourceAccessGrants.observedProvider,
+            observedExternalResourceRef:
+              schema.resourceAccessGrants.observedExternalResourceRef,
+            observedLevel: schema.resourceAccessGrants.observedLevel,
+            observedAt: schema.resourceAccessGrants.observedAt,
+            version: schema.resourceAccessGrants.version
+          }).from(schema.resourceAccessGrants).innerJoin(
+            schema.projects,
+            eq(schema.projects.id, schema.resourceAccessGrants.projectId)
+          ).where(and(
+            eq(schema.resourceAccessGrants.id, grantId),
+            eq(schema.projects.workspaceId, state.claim.workspaceId)
+          ));
+          if (row === undefined) return null;
+          return {
+            id: row.id,
+            projectId: row.projectId,
+            actorId: row.actorId,
+            resourceType: row.resourceType,
+            resourceId: row.resourceId,
+            desiredLevel: row.desiredLevel,
+            providerObservation: row.observedProvider === null
+              ? null
+              : {
+                  provider: row.observedProvider,
+                  externalResourceRef: row.observedExternalResourceRef!,
+                  confirmedLevel: row.observedLevel!,
+                  observedAt: row.observedAt!.toISOString()
+                },
+            version: row.version
+          };
+        },
+
+        async loadRuntimeRegistration(
+          token,
+          registrationId
+        ): Promise<RuntimeRegistration | null> {
+          const state = requireClaim(token);
+          if (!isUuid(registrationId)) return null;
+          const [row] = await tx.select({
+            id: schema.runtimeRegistrations.id,
+            projectId: schema.runtimeRegistrations.projectId,
+            actorId: schema.runtimeRegistrations.actorId,
+            agentProfileId: schema.runtimeRegistrations.agentProfileId,
+            provider: schema.runtimeRegistrations.provider,
+            runtimeKey: schema.runtimeRegistrations.runtimeKey,
+            enabled: schema.runtimeRegistrations.enabled,
+            version: schema.runtimeRegistrations.version
+          }).from(schema.runtimeRegistrations)
+            .innerJoin(
+              schema.projects,
+              eq(schema.projects.id, schema.runtimeRegistrations.projectId)
+            )
+            .innerJoin(
+              schema.actors,
+              eq(schema.actors.id, schema.runtimeRegistrations.actorId)
+            )
+            .innerJoin(
+              schema.agentProfiles,
+              eq(schema.agentProfiles.id, schema.runtimeRegistrations.agentProfileId)
+            )
+            .where(and(
+              eq(schema.runtimeRegistrations.id, registrationId),
+              eq(schema.projects.workspaceId, state.claim.workspaceId),
+              eq(schema.actors.workspaceId, state.claim.workspaceId),
+              eq(schema.agentProfiles.workspaceId, state.claim.workspaceId),
+              eq(schema.agentProfiles.actorId, schema.runtimeRegistrations.actorId)
+            ));
+          return row ?? null;
+        },
+
+        async loadAccessCommandAuthority(token, actorId, projectId) {
+          const state = requireClaim(token);
+          if (!isUuid(actorId) || (projectId !== undefined && !isUuid(projectId))) {
+            return null;
+          }
+          const [actor] = await tx.select({role: schema.actors.role})
+            .from(schema.actors)
+            .where(and(
+              eq(schema.actors.id, actorId),
+              eq(schema.actors.workspaceId, state.claim.workspaceId),
+              isNull(schema.actors.disabledAt)
+            ));
+          if (actor === undefined) return null;
+          if (projectId === undefined) {
+            return {
+              workspaceAdmin: actor.role === 'workspace_admin',
+              projectRole: null
+            };
+          }
+          if (!await workspaceHasProject(tx, state.claim.workspaceId, projectId)) {
+            return null;
+          }
+          const [membership] = await tx.select({role: schema.projectMemberships.role})
+            .from(schema.projectMemberships)
+            .where(and(
+              eq(schema.projectMemberships.projectId, projectId),
+              eq(schema.projectMemberships.actorId, actorId),
+              eq(schema.projectMemberships.active, true)
+            ));
+          return {
+            workspaceAdmin: actor.role === 'workspace_admin',
+            projectRole: membership?.role ?? null
           };
         },
 

@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   uuid
 } from 'drizzle-orm/pg-core';
+import type {AnyPgColumn} from 'drizzle-orm/pg-core';
 
 const id = () => uuid('id').defaultRandom().primaryKey();
 const createdAt = () =>
@@ -36,6 +37,28 @@ export const actorRoleEnum = pgEnum('actor_role', [
   'delivery_lead',
   'developer',
   'agent_operator'
+]);
+export const projectMembershipRoleEnum = pgEnum('project_membership_role', [
+  'workspace_owner',
+  'project_owner',
+  'contributor',
+  'reviewer',
+  'client_viewer',
+  'agent'
+]);
+export const accessResourceTypeEnum = pgEnum('access_resource_type', [
+  'repository',
+  'tracker',
+  'internal_chat',
+  'client_chat',
+  'environment',
+  'control_plane_action'
+]);
+export const accessLevelEnum = pgEnum('access_level', [
+  'none',
+  'read',
+  'write',
+  'admin'
 ]);
 export const authModeEnum = pgEnum('auth_mode', ['user', 'agent', 'system']);
 export const runStatusEnum = pgEnum('agent_run_status', [
@@ -228,6 +251,115 @@ export const projects = pgTable(
   ]
 );
 
+export const projectMemberships = pgTable(
+  'project_memberships',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    role: projectMembershipRoleEnum('role').notNull(),
+    active: boolean('active').default(true).notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('project_memberships_project_actor_unique').on(
+      table.projectId,
+      table.actorId
+    ),
+    index('project_memberships_actor_idx').on(table.actorId),
+    check('project_memberships_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const actorExternalIdentities = pgTable(
+  'actor_external_identities',
+  {
+    id: id(),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    provider: text('provider').notNull(),
+    externalSubject: text('external_subject').notNull(),
+    active: boolean('active').default(true).notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('actor_external_identities_provider_subject_unique').on(
+      table.provider,
+      table.externalSubject
+    ),
+    uniqueIndex('actor_external_identities_actor_provider_unique').on(
+      table.actorId,
+      table.provider
+    ),
+    check(
+      'actor_external_identities_provider_key',
+      sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
+    ),
+    check('actor_external_identities_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const resourceAccessGrants = pgTable(
+  'resource_access_grants',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    resourceType: accessResourceTypeEnum('resource_type').notNull(),
+    resourceId: uuid('resource_id').notNull(),
+    desiredLevel: accessLevelEnum('desired_level').notNull(),
+    observedProvider: text('observed_provider'),
+    observedExternalResourceRef: text('observed_external_resource_ref'),
+    observedLevel: accessLevelEnum('observed_level'),
+    observedAt: timestamp('observed_at', {withTimezone: true}),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('resource_access_grants_binding_unique').on(
+      table.projectId,
+      table.actorId,
+      table.resourceType,
+      table.resourceId
+    ),
+    index('resource_access_grants_actor_project_idx').on(
+      table.actorId,
+      table.projectId
+    ),
+    check(
+      'resource_access_grants_observation_complete',
+      sql`(${table.observedProvider} is null
+          and ${table.observedExternalResourceRef} is null
+          and ${table.observedLevel} is null
+          and ${table.observedAt} is null)
+        or (${table.observedProvider} is not null
+          and ${table.observedExternalResourceRef} is not null
+          and ${table.observedLevel} is not null
+          and ${table.observedAt} is not null)`
+    ),
+    check(
+      'resource_access_grants_observed_provider_key',
+      sql`${table.observedProvider} is null
+        or ${table.observedProvider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
+    ),
+    check('resource_access_grants_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
 export const projectShareGrants = pgTable(
   'project_share_grants',
   {
@@ -349,6 +481,136 @@ export const agentProfiles = pgTable(
     ),
     check('agent_profiles_version_positive', sql`${table.version} > 0`),
     check('agent_profiles_config_hash_sha256', sql`${table.configHash} ~ '^[0-9a-f]{64}$'`)
+  ]
+);
+
+export const runtimeRegistrations = pgTable(
+  'runtime_registrations',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    agentProfileId: uuid('agent_profile_id')
+      .notNull()
+      .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    provider: text('provider').notNull(),
+    runtimeKey: text('runtime_key').notNull(),
+    enabled: boolean('enabled').default(true).notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('runtime_registrations_binding_unique').on(
+      table.projectId,
+      table.actorId,
+      table.agentProfileId,
+      table.provider,
+      table.runtimeKey
+    ),
+    index('runtime_registrations_project_actor_idx').on(
+      table.projectId,
+      table.actorId
+    ),
+    check(
+      'runtime_registrations_provider_key',
+      sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
+    ),
+    check(
+      'runtime_registrations_runtime_key_bounded',
+      sql`length(${table.runtimeKey}) between 1 and 256
+        and ${table.runtimeKey} !~ '[[:cntrl:]]'`
+    ),
+    check('runtime_registrations_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const workspaceInstructionVersions = pgTable(
+  'workspace_instruction_versions',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    version: integer('version').notNull(),
+    instructions: text('instructions').notNull(),
+    settings: jsonb('settings')
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    contentHash: text('content_hash').notNull(),
+    authoredByActorId: uuid('authored_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    approvedByActorId: uuid('approved_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    rollbackOfVersionId: uuid('rollback_of_version_id').references(
+      (): AnyPgColumn => workspaceInstructionVersions.id,
+      {onDelete: 'restrict'}
+    ),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('workspace_instruction_versions_sequence_unique').on(
+      table.workspaceId,
+      table.version
+    ),
+    check('workspace_instruction_versions_version_positive', sql`${table.version} > 0`),
+    check(
+      'workspace_instruction_versions_content_hash_sha256',
+      sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+export const agentProfileInstructionVersions = pgTable(
+  'agent_profile_instruction_versions',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    agentProfileId: uuid('agent_profile_id')
+      .notNull()
+      .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    version: integer('version').notNull(),
+    instructions: text('instructions').notNull(),
+    settings: jsonb('settings')
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    contentHash: text('content_hash').notNull(),
+    authoredByActorId: uuid('authored_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    approvedByActorId: uuid('approved_by_actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    rollbackOfVersionId: uuid('rollback_of_version_id').references(
+      (): AnyPgColumn => agentProfileInstructionVersions.id,
+      {onDelete: 'restrict'}
+    ),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('agent_profile_instruction_versions_sequence_unique').on(
+      table.agentProfileId,
+      table.version
+    ),
+    index('agent_profile_instruction_versions_workspace_profile_idx').on(
+      table.workspaceId,
+      table.agentProfileId
+    ),
+    check('agent_profile_instruction_versions_version_positive', sql`${table.version} > 0`),
+    check(
+      'agent_profile_instruction_versions_content_hash_sha256',
+      sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`
+    )
   ]
 );
 
