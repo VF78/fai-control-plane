@@ -132,4 +132,22 @@ describe('canonical schema foundation', () => {
       ])
     );
   });
+
+  it('persists bounded evidence lifecycle fields on snapshot-backed facts', () => {
+    for (const table of [
+      schema.trackerBindings,
+      schema.prLinks,
+      schema.buildChecks
+    ]) {
+      expect(Object.values(getTableColumns(table)).map(({name}) => name)).toEqual(
+        expect.arrayContaining([
+          'external_version',
+          'observed_at',
+          'confirmed_at',
+          'evidence_state',
+          'conflict_reason'
+        ])
+      );
+    }
+  });
 });
