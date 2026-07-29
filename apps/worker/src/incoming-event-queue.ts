@@ -1,6 +1,7 @@
 import type {PgBoss, QueueOptions} from 'pg-boss';
+import {withControlPlaneDeadLetter} from './queue-dead-letter';
 
-export const incomingEventQueueOptions = Object.freeze({
+export const incomingEventQueueOptions = withControlPlaneDeadLetter({
   retryLimit: 5,
   retryDelay: 5,
   retryBackoff: true,

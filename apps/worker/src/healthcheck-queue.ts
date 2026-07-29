@@ -1,7 +1,8 @@
 import type {PgBoss, QueueOptions} from 'pg-boss';
 import {HEALTHCHECK_QUEUE, healthcheckCron} from '@fai-control-plane/db/runtime';
+import {withControlPlaneDeadLetter} from './queue-dead-letter';
 
-export const healthcheckQueueOptions = Object.freeze({
+export const healthcheckQueueOptions = withControlPlaneDeadLetter({
   retryLimit: 3,
   retryDelay: 30,
   retryBackoff: true,

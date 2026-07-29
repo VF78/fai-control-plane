@@ -1,9 +1,10 @@
 import type {PgBoss, QueueOptions} from 'pg-boss';
+import {withControlPlaneDeadLetter} from './queue-dead-letter';
 
 export const GITHUB_RECONCILIATION_QUEUE = 'github-reconciliation';
 export const githubReconciliationCron = '*/5 * * * *';
 
-export const githubReconciliationQueueOptions = Object.freeze({
+export const githubReconciliationQueueOptions = withControlPlaneDeadLetter({
   retryLimit: 3,
   retryDelay: 30,
   retryBackoff: true,

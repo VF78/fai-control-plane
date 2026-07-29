@@ -1,7 +1,8 @@
 import type {PgBoss, QueueOptions} from 'pg-boss';
 import {PM_REPORT_CHECK_QUEUE, pmReportCheckCron} from '@fai-control-plane/db/runtime';
+import {withControlPlaneDeadLetter} from './queue-dead-letter';
 
-export const pmReportCheckQueueOptions = Object.freeze({
+export const pmReportCheckQueueOptions = withControlPlaneDeadLetter({
   retryLimit: 3,
   retryDelay: 300,
   retryBackoff: true,

@@ -1,7 +1,8 @@
 import type {PgBoss, QueueOptions} from 'pg-boss';
 import {DAILY_PM_REPORT_QUEUE, dailyPmReportCron} from '@fai-control-plane/db/runtime';
+import {withControlPlaneDeadLetter} from './queue-dead-letter';
 
-export const dailyPmReportQueueOptions = Object.freeze({
+export const dailyPmReportQueueOptions = withControlPlaneDeadLetter({
   retryLimit: 3,
   retryDelay: 300,
   retryBackoff: true,
