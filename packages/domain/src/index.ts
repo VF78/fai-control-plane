@@ -7,8 +7,10 @@ import type {
   AccessLevel,
   AccessResourceType
 } from './access.ts';
+import type {RuntimeRegistration} from './runtime-registration.ts';
 
 export * from './access.ts';
+export * from './runtime-registration.ts';
 
 export const workItemStatuses = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
 export type WorkItemStatus = (typeof workItemStatuses)[number];
@@ -782,6 +784,35 @@ export type ObserveResourceAccessGrantCommand = CanonicalCommandEnvelope<
     expectedVersion: number;
   }>
 >;
+export type CreateRuntimeRegistrationCommand = CanonicalCommandEnvelope<
+  'runtime_registration.create',
+  Readonly<{
+    registrationId: string;
+    projectId: string;
+    subjectActorId: string;
+    agentProfileId: string;
+    provider: string;
+    runtimeKey: string;
+    enabled: boolean;
+  }>
+>;
+export type UpdateRuntimeRegistrationCommand = CanonicalCommandEnvelope<
+  'runtime_registration.update',
+  Readonly<{
+    registrationId: string;
+    provider: string;
+    runtimeKey: string;
+    enabled: boolean;
+    expectedVersion: number;
+  }>
+>;
+export type DisableRuntimeRegistrationCommand = CanonicalCommandEnvelope<
+  'runtime_registration.disable',
+  Readonly<{
+    registrationId: string;
+    expectedVersion: number;
+  }>
+>;
 export type CanonicalCommand =
   | TransitionWorkItemCommand
   | SetBlockedCommand
@@ -796,7 +827,10 @@ export type CanonicalCommand =
   | SetProjectMembershipCommand
   | BindActorExternalIdentityCommand
   | SetResourceAccessGrantCommand
-  | ObserveResourceAccessGrantCommand;
+  | ObserveResourceAccessGrantCommand
+  | CreateRuntimeRegistrationCommand
+  | UpdateRuntimeRegistrationCommand
+  | DisableRuntimeRegistrationCommand;
 
 export type CanonicalJson =
   | null
@@ -2085,6 +2119,12 @@ export type ResourceAccessGrantMutation = Readonly<{
   expectedPersistedVersion: number | null;
   aggregate: ResourceAccessGrant;
 }>;
+export type RuntimeRegistrationMutation = Readonly<{
+  aggregateType: 'runtime_registration';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: RuntimeRegistration;
+}>;
 export type CanonicalMutation =
   | WorkItemUpdateMutation
   | AgentProfileUpdateMutation
@@ -2095,7 +2135,8 @@ export type CanonicalMutation =
   | AccessRequestMutation
   | ProjectMembershipMutation
   | ActorExternalIdentityMutation
-  | ResourceAccessGrantMutation;
+  | ResourceAccessGrantMutation
+  | RuntimeRegistrationMutation;
 export type PersistedCanonicalMutation = Readonly<{
   cas: PersistedVersionCas;
   audit: AuditAppendToken;
@@ -2201,6 +2242,10 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     grantId: string
   ): Promise<ResourceAccessGrant | null>;
+  loadRuntimeRegistration(
+    claimToken: ReceiptClaimToken,
+    registrationId: string
+  ): Promise<RuntimeRegistration | null>;
   loadAccessCommandAuthority(
     claimToken: ReceiptClaimToken,
     actorId: string,

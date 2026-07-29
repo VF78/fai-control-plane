@@ -22,6 +22,7 @@ import {
   type ReceiptClaimToken,
   type ProjectMembership,
   type ResourceAccessGrant,
+  type RuntimeRegistration,
   type TaskPacket,
   type UnitOfWork,
   type WorkItem
@@ -121,6 +122,7 @@ class FakeUnitOfWork implements UnitOfWork {
   readonly projectMemberships = new Map<string, ProjectMembership>();
   readonly actorExternalIdentities = new Map<string, ActorExternalIdentity>();
   readonly resourceAccessGrants = new Map<string, ResourceAccessGrant>();
+  readonly runtimeRegistrations = new Map<string, RuntimeRegistration>();
   readonly receipts = new Map<string, CommandReceipt>();
   readonly audits: unknown[] = [];
   readonly mutations: unknown[] = [];
@@ -171,6 +173,8 @@ class FakeUnitOfWork implements UnitOfWork {
         this.actorExternalIdentities.get(value) ?? null,
       loadResourceAccessGrant: async (_token, value) =>
         this.resourceAccessGrants.get(value) ?? null,
+      loadRuntimeRegistration: async (_token, value) =>
+        this.runtimeRegistrations.get(value) ?? null,
       loadAccessCommandAuthority: async () => ({
         workspaceAdmin: this.accessAdmin,
         projectRole: null
@@ -189,6 +193,7 @@ class FakeUnitOfWork implements UnitOfWork {
         if (mutation.aggregateType === 'project_membership') this.projectMemberships.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'actor_external_identity') this.actorExternalIdentities.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'resource_access_grant') this.resourceAccessGrants.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'runtime_registration') this.runtimeRegistrations.set(mutation.aggregateId, mutation.aggregate);
         return {status: 'persisted' as const, mutation: {cas: {expectedPersistedVersion: mutation.expectedPersistedVersion, persistedVersion: mutation.aggregateType === 'task_packet' ? 1 : mutation.aggregate.version}, audit: {} as never} as never};
       },
       persistApprovalRequired: async ({outcome}) => {
@@ -849,5 +854,79 @@ describe('canonical command service', () => {
       receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}
     });
     expect(uow.mutations).toHaveLength(0);
+  });
+
+  it('creates, updates, disables, and idempotently receipts a scoped runtime registration', async () => {
+    const uow = new FakeUnitOfWork();
+    const service = serviceFor(uow);
+    const registrationId = id();
+    const subjectActorId = id();
+    const agentProfileId = id();
+    const create = command('runtime_registration.create', {
+      registrationId,
+      projectId,
+      subjectActorId,
+      agentProfileId,
+      provider: 'codex',
+      runtimeKey: 'workstation:primary',
+      enabled: true
+    });
+
+    await expect(service.execute(create)).resolves.toMatchObject({
+      status: 'completed',
+      receipt: {result: {ok: true, value: {id: registrationId, enabled: true, version: 1}}}
+    });
+    await expect(service.execute(create)).resolves.toMatchObject({
+      status: 'replayed',
+      receipt: {result: {ok: true, value: {version: 1}}}
+    });
+    await expect(service.execute(command('runtime_registration.update', {
+      registrationId,
+      provider: 'codex',
+      runtimeKey: 'workstation:replacement',
+      enabled: true,
+      expectedVersion: 1
+    }))).resolves.toMatchObject({
+      receipt: {result: {ok: true, value: {enabled: true, version: 2}}}
+    });
+    await expect(service.execute(command('runtime_registration.disable', {
+      registrationId,
+      expectedVersion: 1
+    }))).resolves.toMatchObject({
+      receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}
+    });
+    await expect(service.execute(command('runtime_registration.disable', {
+      registrationId,
+      expectedVersion: 2
+    }))).resolves.toMatchObject({
+      receipt: {result: {ok: true, value: {enabled: false, version: 3}}}
+    });
+    expect(uow.runtimeRegistrations.get(registrationId)).toMatchObject({
+      projectId,
+      actorId: subjectActorId,
+      agentProfileId,
+      provider: 'codex',
+      runtimeKey: 'workstation:replacement',
+      enabled: false,
+      version: 3
+    });
+    expect(uow.mutations).toHaveLength(3);
+  });
+
+  it('denies runtime registration without access-owner authority', async () => {
+    const uow = new FakeUnitOfWork();
+    uow.accessAdmin = false;
+    await expect(serviceFor(uow).execute(command('runtime_registration.create', {
+      registrationId: id(),
+      projectId,
+      subjectActorId: id(),
+      agentProfileId: id(),
+      provider: 'hermes',
+      runtimeKey: 'hermes:primary',
+      enabled: true
+    }))).resolves.toMatchObject({
+      receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}
+    });
+    expect(uow.runtimeRegistrations.size).toBe(0);
   });
 });

@@ -18,6 +18,7 @@ const requiredTables = [
   schema.deployments,
   schema.actors,
   schema.agentProfiles,
+  schema.runtimeRegistrations,
   schema.runbooks,
   schema.scheduledJobs,
   schema.incomingEvents,
@@ -52,6 +53,7 @@ describe('canonical schema foundation', () => {
       'deployments',
       'actors',
       'agent_profiles',
+      'runtime_registrations',
       'runbooks',
       'scheduled_jobs',
       'incoming_events',
@@ -103,7 +105,8 @@ describe('canonical schema foundation', () => {
       schema.accessRequests,
       schema.projectMemberships,
       schema.actorExternalIdentities,
-      schema.resourceAccessGrants
+      schema.resourceAccessGrants,
+      schema.runtimeRegistrations
     ]) {
       expect(getTableColumns(table)).toHaveProperty('version');
     }

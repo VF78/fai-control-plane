@@ -32,6 +32,7 @@ import type {
   ProjectMembership,
   ReceiptClaimToken,
   ResourceAccessGrant,
+  RuntimeRegistration,
   TaskPacket,
   TaskPacketConfirmationView,
   UnitOfWork,
@@ -339,6 +340,23 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
           'Access observation timestamp must be canonical.'
         );
       }
+      validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
+      break;
+    case 'runtime_registration':
+      uuid(mutation.aggregate.id, 'runtimeRegistration.id');
+      uuid(mutation.aggregate.projectId, 'runtimeRegistration.projectId');
+      uuid(mutation.aggregate.actorId, 'runtimeRegistration.actorId');
+      uuid(mutation.aggregate.agentProfileId, 'runtimeRegistration.agentProfileId');
+      invariant(
+        /^[a-z][a-z0-9_-]{0,63}$/.test(mutation.aggregate.provider),
+        'Runtime registration provider must be a canonical provider key.'
+      );
+      invariant(
+        mutation.aggregate.runtimeKey.length > 0 &&
+          mutation.aggregate.runtimeKey.length <= 256 &&
+          !/[\u0000-\u001f\u007f]/.test(mutation.aggregate.runtimeKey),
+        'Runtime registration key must be a bounded external reference.'
+      );
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
   }
@@ -665,6 +683,20 @@ const currentVersion = async (
         )
         .where(and(
           eq(schema.resourceAccessGrants.id, mutation.aggregateId),
+          eq(schema.projects.workspaceId, workspaceId)
+        ));
+      return row?.version ?? null;
+    }
+    case 'runtime_registration': {
+      const [row] = await tx
+        .select({version: schema.runtimeRegistrations.version})
+        .from(schema.runtimeRegistrations)
+        .innerJoin(
+          schema.projects,
+          eq(schema.projects.id, schema.runtimeRegistrations.projectId)
+        )
+        .where(and(
+          eq(schema.runtimeRegistrations.id, mutation.aggregateId),
           eq(schema.projects.workspaceId, workspaceId)
         ));
       return row?.version ?? null;
@@ -1370,6 +1402,97 @@ const persistResourceAccessGrant = async (
       };
 };
 
+const runtimeRegistrationSubjectIsScoped = async (
+  tx: Transaction,
+  workspaceId: string,
+  registration: RuntimeRegistration
+): Promise<boolean> => {
+  if (!await workspaceHasProject(tx, workspaceId, registration.projectId)) return false;
+  const [binding] = await tx.select({
+    profileId: schema.agentProfiles.id,
+    actorDisabledAt: schema.actors.disabledAt
+  })
+    .from(schema.actors)
+    .innerJoin(
+      schema.agentProfiles,
+      and(
+        eq(schema.agentProfiles.id, registration.agentProfileId),
+        eq(schema.agentProfiles.actorId, schema.actors.id),
+        eq(schema.agentProfiles.workspaceId, schema.actors.workspaceId)
+      )
+    )
+    .where(and(
+      eq(schema.actors.id, registration.actorId),
+      eq(schema.actors.workspaceId, workspaceId),
+      eq(schema.actors.type, 'agent')
+    ));
+  if (binding === undefined) return false;
+  if (!registration.enabled) return true;
+  if (binding.actorDisabledAt !== null) return false;
+  const [membership] = await tx.select({id: schema.projectMemberships.id})
+    .from(schema.projectMemberships)
+    .where(and(
+      eq(schema.projectMemberships.projectId, registration.projectId),
+      eq(schema.projectMemberships.actorId, registration.actorId),
+      eq(schema.projectMemberships.role, 'agent'),
+      eq(schema.projectMemberships.active, true)
+    ));
+  return membership !== undefined;
+};
+
+const persistRuntimeRegistration = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'runtime_registration'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (!await runtimeRegistrationSubjectIsScoped(tx, workspaceId, aggregate)) {
+    return {status: 'not_found'};
+  }
+  if (mutation.expectedPersistedVersion === null) {
+    const [row] = await tx.insert(schema.runtimeRegistrations).values({
+      id: aggregate.id,
+      projectId: aggregate.projectId,
+      actorId: aggregate.actorId,
+      agentProfileId: aggregate.agentProfileId,
+      provider: aggregate.provider,
+      runtimeKey: aggregate.runtimeKey,
+      enabled: aggregate.enabled,
+      version: 1
+    }).onConflictDoNothing().returning({version: schema.runtimeRegistrations.version});
+    return row === undefined
+      ? conflictOrNotFound(tx, workspaceId, mutation)
+      : {
+          status: 'persisted',
+          cas: {expectedPersistedVersion: null, persistedVersion: row.version},
+          projectId: aggregate.projectId
+        };
+  }
+  const [row] = await tx.update(schema.runtimeRegistrations).set({
+    provider: aggregate.provider,
+    runtimeKey: aggregate.runtimeKey,
+    enabled: aggregate.enabled,
+    version: sql`${schema.runtimeRegistrations.version} + 1`,
+    updatedAt: new Date()
+  }).where(and(
+    eq(schema.runtimeRegistrations.id, aggregate.id),
+    eq(schema.runtimeRegistrations.projectId, aggregate.projectId),
+    eq(schema.runtimeRegistrations.actorId, aggregate.actorId),
+    eq(schema.runtimeRegistrations.agentProfileId, aggregate.agentProfileId),
+    eq(schema.runtimeRegistrations.version, mutation.expectedPersistedVersion)
+  )).returning({version: schema.runtimeRegistrations.version});
+  return row === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {
+          expectedPersistedVersion: mutation.expectedPersistedVersion,
+          persistedVersion: row.version
+        },
+        projectId: aggregate.projectId
+      };
+};
+
 const conflictOrNotFound = async (
   tx: Transaction,
   workspaceId: string,
@@ -1410,6 +1533,8 @@ const persistAggregate = (
       return persistActorExternalIdentity(tx, workspaceId, mutation);
     case 'resource_access_grant':
       return persistResourceAccessGrant(tx, workspaceId, mutation);
+    case 'runtime_registration':
+      return persistRuntimeRegistration(tx, workspaceId, mutation);
   }
 };
 
@@ -1930,6 +2055,44 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
                 },
             version: row.version
           };
+        },
+
+        async loadRuntimeRegistration(
+          token,
+          registrationId
+        ): Promise<RuntimeRegistration | null> {
+          const state = requireClaim(token);
+          if (!isUuid(registrationId)) return null;
+          const [row] = await tx.select({
+            id: schema.runtimeRegistrations.id,
+            projectId: schema.runtimeRegistrations.projectId,
+            actorId: schema.runtimeRegistrations.actorId,
+            agentProfileId: schema.runtimeRegistrations.agentProfileId,
+            provider: schema.runtimeRegistrations.provider,
+            runtimeKey: schema.runtimeRegistrations.runtimeKey,
+            enabled: schema.runtimeRegistrations.enabled,
+            version: schema.runtimeRegistrations.version
+          }).from(schema.runtimeRegistrations)
+            .innerJoin(
+              schema.projects,
+              eq(schema.projects.id, schema.runtimeRegistrations.projectId)
+            )
+            .innerJoin(
+              schema.actors,
+              eq(schema.actors.id, schema.runtimeRegistrations.actorId)
+            )
+            .innerJoin(
+              schema.agentProfiles,
+              eq(schema.agentProfiles.id, schema.runtimeRegistrations.agentProfileId)
+            )
+            .where(and(
+              eq(schema.runtimeRegistrations.id, registrationId),
+              eq(schema.projects.workspaceId, state.claim.workspaceId),
+              eq(schema.actors.workspaceId, state.claim.workspaceId),
+              eq(schema.agentProfiles.workspaceId, state.claim.workspaceId),
+              eq(schema.agentProfiles.actorId, schema.runtimeRegistrations.actorId)
+            ));
+          return row ?? null;
         },
 
         async loadAccessCommandAuthority(token, actorId, projectId) {

@@ -483,6 +483,51 @@ export const agentProfiles = pgTable(
   ]
 );
 
+export const runtimeRegistrations = pgTable(
+  'runtime_registrations',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    agentProfileId: uuid('agent_profile_id')
+      .notNull()
+      .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    provider: text('provider').notNull(),
+    runtimeKey: text('runtime_key').notNull(),
+    enabled: boolean('enabled').default(true).notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('runtime_registrations_binding_unique').on(
+      table.projectId,
+      table.actorId,
+      table.agentProfileId,
+      table.provider,
+      table.runtimeKey
+    ),
+    index('runtime_registrations_project_actor_idx').on(
+      table.projectId,
+      table.actorId
+    ),
+    check(
+      'runtime_registrations_provider_key',
+      sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
+    ),
+    check(
+      'runtime_registrations_runtime_key_bounded',
+      sql`length(${table.runtimeKey}) between 1 and 256
+        and ${table.runtimeKey} !~ '[[:cntrl:]]'`
+    ),
+    check('runtime_registrations_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
 export const runbooks = pgTable(
   'runbooks',
   {
