@@ -249,6 +249,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       const url = signal.workItemId === null ? null : urlByItemId.get(signal.workItemId) ?? null;
       return [{
         id: `risk:${signal.id}`, projectId: signal.projectId, severity: signal.severity, project: project.name,
+        workItemId: signal.workItemId,
         object: signal.workItemTitle ?? 'Project risk signal', reason: signal.summary,
         impact: signal.workItemId === null ? 'Unresolved project risk' : 'Unresolved linked work item risk',
         freshness: signal.updatedAt, owner: signal.owner, evidence: `Risk signal: ${signal.code}`,
@@ -264,6 +265,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       const url = workItemId === null ? null : urlByItemId.get(workItemId) ?? null;
       return [{
         id: `outbox:${event.id}`, projectId: event.projectId, severity: 'red', project: project.name,
+        workItemId,
         object: item?.title ?? 'GitHub project status write', reason: event.failureCode ?? 'GitHub status write failed',
         impact: 'Canonical status is not confirmed in GitHub', freshness: event.updatedAt, owner: null,
         evidence: `Outbox failed after ${event.attemptCount} attempts`,
@@ -276,6 +278,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       if (project === undefined) return [];
       return [{
         id: `job:${job.id}`, projectId: job.projectId, severity: 'red', project: project.name, object: job.name,
+        workItemId: null,
         reason: 'Scheduled job is unhealthy', impact: 'Scheduled recovery is not in a healthy state',
         freshness: job.heartbeatAt ?? job.updatedAt, owner: null, evidence: 'Scheduled job status',
         action: {label: 'No external record', href: null}

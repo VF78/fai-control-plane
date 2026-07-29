@@ -1,5 +1,5 @@
 import {cookies} from 'next/headers';
-import {notFound} from 'next/navigation';
+import {notFound, redirect} from 'next/navigation';
 import {
   isOperatorProjectSlug, loadAccessData, loadHealthData, loadPortfolioData,
   loadProjectData, loadRunsData, type OperatorProjectSlug
@@ -11,39 +11,47 @@ import {PrototypeShell, type PrototypeRoute} from '../../../src/prototype-ui';
 
 export const dynamic = 'force-dynamic';
 
+const exact = (value: string | string[] | undefined): string | null =>
+  typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : null;
+const project = (value: string | undefined): OperatorProjectSlug | null =>
+  value !== undefined && isOperatorProjectSlug(value) ? value : null;
+
 const routeFrom = (path: readonly string[] | undefined, scope: PrototypeRoute['scope']): PrototypeRoute => {
-  const [area = 'portfolio', tab, id, extra] = path ?? [];
-  if (area === 'portfolio' && tab === undefined) return {area, tab: 'overview', scope, selected: null};
-  if (area === 'delivery' && ['overview', 'protocol'].includes(tab ?? '') && id === undefined) return {area, tab: tab as PrototypeRoute['tab'], scope, selected: null};
-  if (area === 'delivery' && (tab === 'tasks' || tab === 'runs') && extra === undefined) return {area, tab, scope, selected: id ?? null};
-  if ((area === 'conversations' || area === 'agents-systems') && tab === undefined) return {area, tab: 'overview', scope, selected: null};
-  if (area === 'people-access' && extra === undefined) return {area, tab: 'overview', scope, selected: tab ?? null};
+  const parts = path ?? [];
+  if (parts.length === 0) redirect('/prototype/dashboard');
+  if (parts.length === 1 && parts[0] === 'dashboard') return {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope};
+  if (parts.length === 1 && parts[0] === 'projects') return {screen: 'projects', project: null, taskId: null, runId: null, agentId: null, scope};
+  if (parts.length === 1 && parts[0] === 'agents') return {screen: 'agents', project: null, taskId: null, runId: null, agentId: null, scope};
+  if (parts.length === 2 && parts[0] === 'agents') return {screen: 'agent', project: null, taskId: null, runId: null, agentId: parts[1]!, scope};
+  const slug = project(parts[1]);
+  if (parts[0] !== 'projects' || slug === null) notFound();
+  const tab = parts[2];
+  if (tab === 'overview' && parts.length === 3) return {screen: 'overview', project: slug, taskId: null, runId: null, agentId: null, scope};
+  if (tab === 'tasks' && parts.length === 3) return {screen: 'tasks', project: slug, taskId: null, runId: null, agentId: null, scope};
+  if (tab === 'tasks' && parts.length === 4) return {screen: 'task', project: slug, taskId: parts[3]!, runId: null, agentId: null, scope};
+  if (tab === 'protocol' && parts.length === 3) return {screen: 'protocol', project: slug, taskId: null, runId: null, agentId: null, scope};
+  if (tab === 'runs' && parts.length === 3) return {screen: 'runs', project: slug, taskId: null, runId: null, agentId: null, scope};
+  if (tab === 'runs' && parts.length === 4) return {screen: 'run', project: slug, taskId: null, runId: parts[3]!, agentId: null, scope};
+  if (tab === 'chats' && parts.length === 3) return {screen: 'chats', project: slug, taskId: null, runId: null, agentId: null, scope};
+  if (tab === 'access' && parts.length === 3) return {screen: 'access', project: slug, taskId: null, runId: null, agentId: null, scope};
   notFound();
 };
 
-const projectFrom = (value: string | string[] | undefined): OperatorProjectSlug | null =>
-  typeof value === 'string' && isOperatorProjectSlug(value) ? value : null;
-const stringFrom = (value: string | string[] | undefined): string | null =>
-  typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : null;
-
 export default async function PrototypePage({params, searchParams}: {
   params: Promise<{path?: string[]}>;
-  searchParams: Promise<{project?: string | string[]; environment?: string | string[]; from?: string | string[]; to?: string | string[]}>;
+  searchParams: Promise<{environment?: string | string[]; from?: string | string[]; to?: string | string[]}>;
 }) {
-  const [routeParams, query] = await Promise.all([params, searchParams]);
-  const route = routeFrom(routeParams.path, {
-    project: projectFrom(query.project), environment: stringFrom(query.environment), from: stringFrom(query.from), to: stringFrom(query.to)
-  });
+  const [resolvedParams, query] = await Promise.all([params, searchParams]);
+  const route = routeFrom(resolvedParams.path, {environment: exact(query.environment), from: exact(query.from), to: exact(query.to)});
   const cookieStore = await cookies();
   const auth = await currentOperatorSession(cookieStore.get(OPERATOR_SESSION_COOKIE)?.value);
   if (auth.enabled && auth.session === null) return <OperatorLogin />;
-  const needsProject = route.area === 'delivery' || route.area === 'agents-systems';
+  const requiresProject = route.project !== null;
   const [portfolio, access, projectData, runs, health] = await Promise.all([
-    loadPortfolioData(),
-    loadAccessData(),
-    needsProject && route.scope.project !== null ? loadProjectData(route.scope.project) : Promise.resolve(null),
-    route.area === 'delivery' && route.scope.project !== null ? loadRunsData(route.scope.project) : Promise.resolve(null),
-    route.area === 'agents-systems' ? loadHealthData(route.scope.project ?? undefined) : Promise.resolve(null)
+    loadPortfolioData(), loadAccessData(),
+    requiresProject ? loadProjectData(route.project!) : Promise.resolve(null),
+    route.screen === 'dashboard' || requiresProject ? loadRunsData(route.project ?? undefined) : Promise.resolve(null),
+    route.screen === 'agents' || route.screen === 'agent' ? loadHealthData() : Promise.resolve(null)
   ]);
   return <PrototypeShell route={route} data={{portfolio, access, project: projectData, runs, health}} />;
 }

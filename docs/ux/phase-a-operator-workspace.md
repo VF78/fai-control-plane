@@ -1,118 +1,75 @@
 # Phase A operator workspace
 
-This document records the prototype contract for the unified operator
-workspace. It is a design and data inventory, not production authorization.
+This is the local, web-first Phase A prototype contract. It authorizes neither
+schema changes nor production changes.
 
-## Route and information architecture
+## Information architecture
 
-The local prototype is available at
-`http://127.0.0.1:4017/prototype/portfolio`.
-
-```text
-/prototype/portfolio
-/prototype/delivery/overview
-/prototype/delivery/protocol
-/prototype/delivery/tasks/:taskId
-/prototype/delivery/runs/:runId
-/prototype/conversations
-/prototype/people-access/:actorId
-/prototype/agents-systems
-```
-
-Project, environment and time remain one explicit scope contract and are
-preserved in links. A detail ID that is absent or unknown fails closed instead
-of selecting another record.
-
-The five product areas contain six functions:
-
-- Portfolio: project signals and the Attention Queue.
-- Delivery: Overview, Protocol, Tasks and Runs; task control stays here.
-- Conversations: internal and client channels.
-- People & Access: people, agents, roles and effective access.
-- Agents & Systems: fleet, instructions, integrations, recovery and audit.
-
-## Navigation and interaction model
-
-- Desktop uses a labelled product rail; tablet uses accessible icon navigation;
-  mobile keeps Portfolio, Delivery and Conversations primary and places People
-  & Access and Agents & Systems under More.
-- Portfolio is the only all-project surface. Entering Delivery fixes one
-  project scope.
-- Desktop and tablet use master-detail. Mobile task, actor and run details are
-  full-width route states.
-- Overview is visual-summary-first. Tasks owns task master-detail. Runs owns
-  run, decision, receipt and evidence detail.
-- Missing facts use `Unknown`, `Not configured` or `Not observed`; an invalid
-  entity ID never falls back to the first entity.
-
-The governed journey is:
+The workspace follows the familiar GitHub mental model: a global header,
+project breadcrumb, contextual horizontal tabs and dense, inspectable rows.
+There is no permanent product rail, dashboard-card grid, workflow canvas or
+mobile bottom navigation.
 
 ```text
-Portfolio signal or configured project
-→ project/task
-→ task stage
-→ assigned responsibility or explicit Unknown
-→ policy/approval
-→ exact associated run
-→ receipt/evidence
-→ canonical next action or explicit Unknown
+/prototype/dashboard
+/prototype/projects
+/prototype/projects/:projectId/overview
+/prototype/projects/:projectId/tasks
+/prototype/projects/:projectId/tasks/:taskId
+/prototype/projects/:projectId/protocol
+/prototype/projects/:projectId/runs
+/prototype/projects/:projectId/runs/:runId
+/prototype/projects/:projectId/chats
+/prototype/projects/:projectId/access
+/prototype/agents
+/prototype/agents/:agentId
 ```
 
-An observed execution agent is shown separately from task responsibility. A
-run actor is not presented as an assigned owner unless PostgreSQL records that
-assignment.
+Top level is **Dashboard · Projects · Agents**. Within one project, the
+contextual tabs are **Overview · Tasks · Protocol · Runs · Chats · Access**.
+This retains the five product areas: Portfolio (Dashboard/Projects), Delivery
+(Overview/Protocol/Tasks/Runs), Conversations (Chats), People & Access
+(Access), and Agents & Systems (Agents). Project, environment and time are one
+scope; project is fixed in project URLs, while environment/time query values
+are restorable. Invalid IDs fail closed.
 
-## Visual system
+## Interaction model
 
-- Neutral canvas, one rule/elevation grammar, compact typography and semantic
-  color only for state.
-- Lucide icons with accessible names; icons complement rather than replace
-  meaning.
-- Stage and governed-flow rails, fact strips and receipt timelines replace
-  explanatory dashboard cards.
-- No nested cards, gradients, workflow canvas or decorative metrics.
-- Reduced-motion, visible-focus and touch-target rules are included.
+The golden flow is visible as a linked, governed path:
 
-The portable product contract is the TypeScript read model, route/scope state,
-semantic status vocabulary, icon vocabulary and interaction sequence. Next.js
-links and CSS are web adapters; a future native client should reuse the
-contract, not the DOM component implementation. Phase A does not add a second
-Expo or React Native client.
+```text
+Dashboard signal → project/task → delivery stage → responsible human/agent
+→ policy/approval → action/run → receipt/evidence → next action
+```
 
-## Confirmed PostgreSQL-backed data used
+Tasks use a dense list, then a main-detail/metadata-rail page on desktop and
+tablet. On mobile the detail is a separate route and its details follow the
+main content. Runs use the same pattern, with an Actions-like receipt timeline.
+At 1440, 1024, 390 and 320 pixels the shell stays within the page width; tabs
+and filters scroll locally when needed. Controls have visible focus and a
+minimum 44px mobile target.
 
-- Configured projects, synchronization observation, project health projection,
-  unresolved risk counts and persisted Attention Queue signals.
-- Work-item ID, title, summary, canonical status, blocker state, owner when
-  recorded, provider observation link and persisted handoff target.
-- Exact run ID, work-item ID, observed run agent, runtime profile, attempt,
-  lifecycle timestamps and failure code.
-- Approval request ID, policy version, decision state, action category,
-  surface, environment and decision time when recorded.
-- Receipt timestamp, terminal outcome, SHA-256, duration, artifacts, redaction
-  observation and receipt-acceptance eligibility.
-- Actor identity/type/role/capabilities/disabled state and Hermes profile
-  configuration.
-- Integration provider/mode and observation timestamp. These observations are
-  not labelled as integration health.
+## Architecture and future portability
 
-## Facts intentionally absent
+Next.js/React, semantic HTML, scoped CSS and `lucide-react` remain the only UI
+stack. Phase A deliberately does **not** add React Native Web, Expo, a native
+application or a shared component runtime.
 
-- Configured environment and time-window dimensions.
-- Editable delivery protocol, per-stage responsibility and protocol exceptions.
-- Conversation threads, participants, messages and binding health.
-- Project membership and effective-access derivation.
-- Task responsibility when no owner or assignment is recorded.
-- Agent fleet health and runtime liveness.
-- Approval or policy facts not associated with the selected run.
-- A next action not established by canonical receipt eligibility or policy.
+`packages/operator-contracts` holds serializable screen, command and receipt
+references. `packages/operator-tokens` holds small framework-neutral visual
+tokens. The web layer maps these concepts to URLs, DOM and CSS. A later native
+client can reuse the contracts, state vocabulary and data view models without
+forcing a second rendering stack into this prototype.
 
-## Local visual evidence
+## Confirmed data and explicit gaps
 
-- `/private/tmp/fcp-phase-a-screenshots/portfolio-desktop-1440x1000.png`
-- `/private/tmp/fcp-phase-a-screenshots/delivery-task-tablet-1024x1366.png`
-- `/private/tmp/fcp-phase-a-screenshots/run-receipt-mobile-390x844.png`
+Used only when present in PostgreSQL: configured projects, synchronization
+observations, risk signals, canonical task status/title/summary/owner, exact
+governed handoffs, run/approval/receipt observations, actor records and
+configured agent profiles. Compact `Unknown`, `Not observed` and `Not
+configured` states appear where no canonical fact exists.
 
-The local database currently has no unresolved Portfolio signals, so the
-verified journey starts from a configured project and continues through an
-exact task, associated run and receipt.
+The prototype does not invent deadlines, message traffic, effective grants,
+protocol stages/ownership, agent liveness, health scores, forecasts or next
+actions. Chats and protocol remain compact honest states until their canonical
+records exist.

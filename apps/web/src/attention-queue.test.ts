@@ -8,6 +8,7 @@ const item = (
 ): AttentionQueueItem => ({
   id,
   projectId: 'project',
+  workItemId: null,
   severity,
   project: 'MSA',
   object: 'Work item',
