@@ -249,6 +249,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       const url = signal.workItemId === null ? null : urlByItemId.get(signal.workItemId) ?? null;
       return [{
         id: `risk:${signal.id}`, projectId: signal.projectId, severity: signal.severity, project: project.name,
+        workItemId: signal.workItemId,
         object: signal.workItemTitle ?? 'Project risk signal', reason: signal.summary,
         impact: signal.workItemId === null ? 'Unresolved project risk' : 'Unresolved linked work item risk',
         freshness: signal.updatedAt, owner: signal.owner, evidence: `Risk signal: ${signal.code}`,
@@ -264,6 +265,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       const url = workItemId === null ? null : urlByItemId.get(workItemId) ?? null;
       return [{
         id: `outbox:${event.id}`, projectId: event.projectId, severity: 'red', project: project.name,
+        workItemId,
         object: item?.title ?? 'GitHub project status write', reason: event.failureCode ?? 'GitHub status write failed',
         impact: 'Canonical status is not confirmed in GitHub', freshness: event.updatedAt, owner: null,
         evidence: `Outbox failed after ${event.attemptCount} attempts`,
@@ -276,6 +278,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       if (project === undefined) return [];
       return [{
         id: `job:${job.id}`, projectId: job.projectId, severity: 'red', project: project.name, object: job.name,
+        workItemId: null,
         reason: 'Scheduled job is unhealthy', impact: 'Scheduled recovery is not in a healthy state',
         freshness: job.heartbeatAt ?? job.updatedAt, owner: null, evidence: 'Scheduled job status',
         action: {label: 'No external record', href: null}
@@ -324,6 +327,8 @@ export type ProjectData = Readonly<{
     handoff: Readonly<{
       label: string;
       state: 'pending' | 'queued' | 'running' | 'waiting_approval' | 'done' | 'failed';
+      kind: 'approval' | 'packet' | 'run';
+      targetId: string;
       href: string;
     }> | null;
   }>[];
@@ -419,7 +424,7 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       const failedRun = latestRun?.status === 'failed' ? latestRun : undefined;
       const packet = unconfirmedPacketByItem.get(item.id);
       const handoff = approval !== undefined
-        ? {label: 'Approval pending', state: 'pending' as const, href: `/runs?project=${slug}#approval-${approval.id}`}
+        ? {label: 'Approval pending', state: 'pending' as const, kind: 'approval' as const, targetId: approval.id, href: `/runs?project=${slug}#approval-${approval.id}`}
         : activeRun !== undefined
           ? {
               label: activeRun.status === 'waiting_approval'
@@ -428,15 +433,16 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
               state: activeRun.status === 'waiting_approval'
                 ? 'waiting_approval' as const
                 : activeRun.status === 'running' ? 'running' as const : 'queued' as const,
+              kind: 'run' as const,
+              targetId: activeRun.id,
               href: `/runs?project=${slug}#run-${activeRun.id}`
             }
-          : completedRun !== undefined &&
-              (item.status === 'qa' || item.status === 'acceptance' || item.status === 'done')
-            ? {label: 'Run completed', state: 'done' as const, href: `/runs?project=${slug}#run-${completedRun.id}`}
+          : completedRun !== undefined
+            ? {label: 'Run completed', state: 'done' as const, kind: 'run' as const, targetId: completedRun.id, href: `/runs?project=${slug}#run-${completedRun.id}`}
           : failedRun !== undefined && (packet === undefined || failedRun.updatedAt >= packet.createdAt)
-            ? {label: 'Run failed', state: 'failed' as const, href: `/runs?project=${slug}#run-${failedRun.id}`}
+            ? {label: 'Run failed', state: 'failed' as const, kind: 'run' as const, targetId: failedRun.id, href: `/runs?project=${slug}#run-${failedRun.id}`}
             : packet !== undefined
-              ? {label: 'Packet needs confirmation', state: 'queued' as const, href: `/runs?project=${slug}#packet-${packet.id}`}
+              ? {label: 'Packet needs confirmation', state: 'queued' as const, kind: 'packet' as const, targetId: packet.id, href: `/runs?project=${slug}#packet-${packet.id}`}
               : null;
       return [{
         ...item,
@@ -450,8 +456,8 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
 
 export type RunsData = Readonly<{
   runs: readonly Readonly<{
-    id: string; project: string; projectSlug: OperatorProjectSlug; workItem: string | null; agent: string | null;
-    status: 'queued' | 'running' | 'waiting_approval' | 'done' | 'failed'; runtimeProfile: string;
+    id: string; project: string; projectSlug: OperatorProjectSlug; workItemId: string | null; workItem: string | null; agent: string | null;
+    status: 'queued' | 'running' | 'waiting_approval' | 'done' | 'failed'; runtimeProfile: string; attempt: number;
     packetGoal: string; timeboxMinutes: number; startedAt: Date | null; completedAt: Date | null;
     heartbeatAt: Date | null; failureCode: string | null; version: number;
     workItemVersion: number | null; canAcceptReceipt: boolean;
@@ -470,7 +476,7 @@ export type RunsData = Readonly<{
     artifacts: readonly Readonly<{kind: string; sizeBytes: number; redacted: boolean; createdAt: Date}>[];
   }>[];
   approvals: readonly Readonly<{
-    id: string; project: string; projectSlug: OperatorProjectSlug; actionCategory: string; surface: string;
+    id: string; project: string; projectSlug: OperatorProjectSlug; workItemId: string | null; agentRunId: string | null; actionCategory: string; surface: string;
     environment: string; status: string; policyVersion: number; expiresAt: Date; decidedAt: Date | null;
   }>[];
   packets: readonly Readonly<{
@@ -497,7 +503,7 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
   const [runs, approvals, packetRows, profiles, repositoryBindings] = await Promise.all([
     db.select({
-      id: agentRuns.id, projectId: taskPackets.projectId, workItem: workItems.title,
+      id: agentRuns.id, projectId: taskPackets.projectId, workItemId: taskPackets.workItemId, workItem: workItems.title,
       workItemStatus: workItems.status, workItemVersion: workItems.version,
       agent: actors.displayName, runAttempt: agentRuns.attempt,
       confirmedPacketHash: agentRuns.confirmedPacketHash, packetContentHash: taskPackets.contentHash,
@@ -508,7 +514,7 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
       .leftJoin(workItems, eq(taskPackets.workItemId, workItems.id)).leftJoin(agentProfiles, eq(agentRuns.agentProfileId, agentProfiles.id))
       .leftJoin(actors, eq(agentProfiles.actorId, actors.id)).where(inArray(taskPackets.projectId, projectIds)).orderBy(desc(agentRuns.updatedAt), agentRuns.id),
     db.select({
-      id: approvalRequests.id, projectId: approvalRequests.projectId, actionCategory: approvalRequests.actionCategory,
+      id: approvalRequests.id, projectId: approvalRequests.projectId, workItemId: approvalRequests.workItemId, agentRunId: approvalRequests.agentRunId, actionCategory: approvalRequests.actionCategory,
       surface: approvalRequests.surface, environment: approvalRequests.environment, status: approvalRequests.status,
       policyVersion: approvalRequests.policyVersion, expiresAt: approvalRequests.expiresAt, decidedAt: approvalRequests.decidedAt
     }).from(approvalRequests).where(inArray(approvalRequests.projectId, projectIds)).orderBy(desc(approvalRequests.updatedAt), approvalRequests.id)
@@ -668,6 +674,7 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
           : []).at(-1) ?? null;
       return [{
         ...run,
+        attempt: run.runAttempt,
         project: project.name,
         projectSlug: project.slug,
         canAcceptReceipt: receiptIsValid && run.workItemStatus === 'in_dev',

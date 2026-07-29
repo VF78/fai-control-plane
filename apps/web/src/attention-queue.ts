@@ -1,6 +1,8 @@
 export type AttentionQueueItem = Readonly<{
   id: string;
   projectId: string;
+  /** Canonical WorkItem identity when the signal is task-scoped. */
+  workItemId: string | null;
   severity: 'red' | 'yellow' | 'green';
   project: string;
   object: string;
