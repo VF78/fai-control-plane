@@ -151,22 +151,32 @@ const incomingEventProcessor = createPostgresIncomingEventProcessor(db);
 const incomingEventConsumer = createIncomingEventQueueConsumer({
   processor: incomingEventProcessor
 });
+const healthcheckQueueNames = [
+  INCOMING_EVENT_QUEUE,
+  HEALTHCHECK_QUEUE,
+  RECOVERY_SCAN_QUEUE,
+  DAILY_PM_REPORT_QUEUE,
+  PM_REPORT_CHECK_QUEUE,
+  QA_INTAKE_QUEUE,
+  ...(githubSyncEnabled ? [GITHUB_RECONCILIATION_QUEUE] : [])
+];
 const healthcheckProducer = createPostgresHealthcheckProducer(db, {
-  queueFailures: async () => Promise.all([
-    INCOMING_EVENT_QUEUE,
-    HEALTHCHECK_QUEUE,
-    RECOVERY_SCAN_QUEUE,
-    DAILY_PM_REPORT_QUEUE,
-    PM_REPORT_CHECK_QUEUE,
-    QA_INTAKE_QUEUE,
-    ...(githubSyncEnabled ? [GITHUB_RECONCILIATION_QUEUE] : [])
-  ].map(async (queueName) => {
-    const [stats] = await boss.getQueueStats(queueName, {force: true});
-    return {
+  queueFailures: async () => {
+    const result = await pool.query<{queue_name: string; failed_count: number}>(
+      `select name as queue_name, count(*)::integer as failed_count
+       from pgboss.job
+       where state = 'failed' and name = any($1::text[])
+       group by name`,
+      [healthcheckQueueNames]
+    );
+    const failures = new Map(
+      result.rows.map((row) => [row.queue_name, row.failed_count] as const)
+    );
+    return healthcheckQueueNames.map((queueName) => ({
       queueName,
-      failedCount: stats?.failedCount ?? 0
-    };
-  }))
+      failedCount: failures.get(queueName) ?? 0
+    }));
+  }
 });
 const recoveryScanProducer = createPostgresRecoveryScanProducer(db, boss);
 const dailyPmReportProducer = createPostgresDailyPmReportProducer(db);
