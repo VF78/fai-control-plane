@@ -9,6 +9,9 @@ export {
 } from './github-project-status-writeback';
 export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
 export {
+  createPostgresTrackerEvidenceProjectionReader
+} from './tracker-evidence-projection';
+export {
   createPostgresTrackerStatusObservationProcessor,
   type TrackerStatusObservationProcessorResult
 } from './tracker-status-observation-processor';

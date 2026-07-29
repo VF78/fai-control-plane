@@ -726,6 +726,10 @@ export const trackerBindings = pgTable(
     entityType: text('entity_type').notNull(),
     entityId: uuid('entity_id').notNull(),
     externalVersion: text('external_version'),
+    observedAt: timestamp('observed_at', {withTimezone: true}).defaultNow().notNull(),
+    confirmedAt: timestamp('confirmed_at', {withTimezone: true}),
+    evidenceState: text('evidence_state').default('observed').notNull(),
+    conflictReason: text('conflict_reason'),
     lastInboundVersion: text('last_inbound_version'),
     lastOutboundMutationId: text('last_outbound_mutation_id'),
     metadata: jsonb('metadata')
@@ -746,6 +750,19 @@ export const trackerBindings = pgTable(
       table.surface,
       table.entityType,
       table.entityId
+    ),
+    check(
+      'tracker_bindings_evidence_state_valid',
+      sql`${table.evidenceState} in (
+        'observed', 'pending_confirmation', 'confirmed', 'stale', 'conflict', 'missing'
+      )`
+    ),
+    check(
+      'tracker_bindings_conflict_reason_valid',
+      sql`(${table.evidenceState} = 'conflict'
+        and ${table.conflictReason} is not null
+        and length(${table.conflictReason}) between 1 and 255)
+      or (${table.evidenceState} <> 'conflict' and ${table.conflictReason} is null)`
     )
   ]
 );
@@ -874,11 +891,16 @@ export const prLinks = pgTable(
     provider: text('provider').notNull(),
     repositoryRef: text('repository_ref').notNull(),
     externalId: text('external_id').notNull(),
+    externalVersion: text('external_version'),
     url: text('url').notNull(),
     headRef: text('head_ref').notNull(),
     baseRef: text('base_ref').notNull(),
     state: text('state').notNull(),
     draft: boolean('draft').default(true).notNull(),
+    observedAt: timestamp('observed_at', {withTimezone: true}).defaultNow().notNull(),
+    confirmedAt: timestamp('confirmed_at', {withTimezone: true}),
+    evidenceState: text('evidence_state').default('observed').notNull(),
+    conflictReason: text('conflict_reason'),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
@@ -887,6 +909,19 @@ export const prLinks = pgTable(
       table.provider,
       table.repositoryRef,
       table.externalId
+    ),
+    check(
+      'pr_links_evidence_state_valid',
+      sql`${table.evidenceState} in (
+        'observed', 'pending_confirmation', 'confirmed', 'stale', 'conflict', 'missing'
+      )`
+    ),
+    check(
+      'pr_links_conflict_reason_valid',
+      sql`(${table.evidenceState} = 'conflict'
+        and ${table.conflictReason} is not null
+        and length(${table.conflictReason}) between 1 and 255)
+      or (${table.evidenceState} <> 'conflict' and ${table.conflictReason} is null)`
     )
   ]
 );
@@ -900,10 +935,15 @@ export const buildChecks = pgTable(
       .references(() => prLinks.id, {onDelete: 'cascade'}),
     provider: text('provider').notNull(),
     externalId: text('external_id').notNull(),
+    externalVersion: text('external_version'),
     name: text('name').notNull(),
     status: text('status').notNull(),
     conclusion: text('conclusion'),
     detailsUrl: text('details_url'),
+    observedAt: timestamp('observed_at', {withTimezone: true}).defaultNow().notNull(),
+    confirmedAt: timestamp('confirmed_at', {withTimezone: true}),
+    evidenceState: text('evidence_state').default('observed').notNull(),
+    conflictReason: text('conflict_reason'),
     startedAt: timestamp('started_at', {withTimezone: true}),
     completedAt: timestamp('completed_at', {withTimezone: true}),
     createdAt: createdAt(),
@@ -913,6 +953,19 @@ export const buildChecks = pgTable(
     uniqueIndex('build_checks_provider_external_unique').on(
       table.provider,
       table.externalId
+    ),
+    check(
+      'build_checks_evidence_state_valid',
+      sql`${table.evidenceState} in (
+        'observed', 'pending_confirmation', 'confirmed', 'stale', 'conflict', 'missing'
+      )`
+    ),
+    check(
+      'build_checks_conflict_reason_valid',
+      sql`(${table.evidenceState} = 'conflict'
+        and ${table.conflictReason} is not null
+        and length(${table.conflictReason}) between 1 and 255)
+      or (${table.evidenceState} <> 'conflict' and ${table.conflictReason} is null)`
     )
   ]
 );

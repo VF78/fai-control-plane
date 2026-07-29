@@ -10,6 +10,7 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {createCanonicalCommandService} from '../../application/src/index.ts';
 import {
   createDatabase,
+  createPostgresTrackerEvidenceProjectionReader,
   createPostgresTrackerStatusObservationProcessor,
   createPostgresTrackerSnapshotProjector,
   createPostgresUnitOfWork
@@ -295,6 +296,95 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     });
   });
 
+  it('retains absent PR/check history and exposes scoped provider-neutral evidence', async () => {
+    const projectId = randomUUID();
+    await testPool.query(
+      `INSERT INTO projects (id, workspace_id, name, slug)
+       VALUES ($1, $2, 'Evidence lifecycle', $3)`,
+      [projectId, ids.workspace, `evidence-${randomUUID()}`]
+    );
+    const projector = createPostgresTrackerSnapshotProjector(db);
+    const repository = {
+      externalId: 'test:repository:evidence',
+      externalVersion: 'test:repository:evidence:1',
+      owner: 'Test',
+      name: 'Evidence'
+    };
+    const initial = snapshot('test:snapshot:evidence:1', {
+      repository,
+      workItems: [issue('test:issue:4001')],
+      pullRequests: [pullRequest('test:pull_request:4010', ['test:issue:4001'])],
+      checks: [check('test:check:4100', 'test:pull_request:4010')]
+    });
+    const bootstrap = {...operation(initial), projectId, provider: 'test-evidence'};
+    const applied = await projector.bootstrap(bootstrap);
+    expect(applied.status).toBe('applied');
+    const initialProjection = await createPostgresTrackerEvidenceProjectionReader(db).read({
+      workspaceId: ids.workspace,
+      projectId,
+      providerRef: 'test-evidence',
+      repositoryExternalRef: repository.externalId
+    });
+    expect(initialProjection?.pullRequests[0]?.evidence).toMatchObject({
+      externalVersion: 'github:sha256:test:pull_request:4010',
+      state: 'observed',
+      confirmedAt: null,
+      conflictReason: null
+    });
+    expect(initialProjection?.buildChecks[0]?.evidence.state).toBe('observed');
+
+    const absent = {...initial, externalVersion: 'test:snapshot:evidence:2', pullRequests: [], checks: []};
+    await projector.synchronize({
+      ...operation(absent),
+      projectId,
+      provider: 'test-evidence',
+      expectedPreviousExternalVersion: initial.externalVersion
+    });
+    const reader = createPostgresTrackerEvidenceProjectionReader(db);
+    const missingProjection = await reader.read({
+      workspaceId: ids.workspace,
+      projectId,
+      providerRef: 'test-evidence',
+      repositoryExternalRef: repository.externalId
+    });
+    expect(missingProjection?.pullRequests).toHaveLength(1);
+    expect(missingProjection?.pullRequests[0]?.evidence.state).toBe('missing');
+    expect(missingProjection?.buildChecks).toHaveLength(1);
+    expect(missingProjection?.buildChecks[0]?.evidence.state).toBe('stale');
+
+    const reappeared = {...initial, externalVersion: 'test:snapshot:evidence:3'};
+    await projector.synchronize({
+      ...operation(reappeared),
+      projectId,
+      provider: 'test-evidence',
+      expectedPreviousExternalVersion: absent.externalVersion
+    });
+    const confirmedProjection = await reader.read({
+      workspaceId: ids.workspace,
+      projectId,
+      providerRef: 'test-evidence',
+      repositoryExternalRef: repository.externalId
+    });
+    expect(confirmedProjection?.pullRequests[0]?.evidence).toMatchObject({
+      state: 'confirmed',
+      conflictReason: null
+    });
+    expect(confirmedProjection?.pullRequests[0]?.evidence.confirmedAt).not.toBeNull();
+    expect(confirmedProjection?.buildChecks[0]?.evidence.state).toBe('confirmed');
+    await expect(reader.read({
+      workspaceId: ids.workspace,
+      projectId,
+      providerRef: 'test-evidence',
+      repositoryExternalRef: 'test:repository:other'
+    })).resolves.toBeNull();
+    await expect(reader.read({
+      workspaceId: randomUUID(),
+      projectId,
+      providerRef: 'test-evidence',
+      repositoryExternalRef: repository.externalId
+    })).resolves.toBeNull();
+  });
+
   it('keeps a newer canonical GitHub status and outbound marker when a stale provider status arrives', async () => {
     const projectId = randomUUID();
     await testPool.query(
@@ -348,13 +438,16 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     expect(afterStale[0]).toMatchObject({status: 'in_dev', version: 2});
     expect(staleBinding[0]).toMatchObject({
       lastOutboundMutationId: outboundMutationId,
-      lastInboundVersion: 'github:sha256:github:issue:9001:Issue title'
+      lastInboundVersion: 'github:sha256:github:issue:9001:Issue title',
+      evidenceState: 'conflict',
+      conflictReason: 'outbound_race'
     });
 
     const confirmedStatus = {...projectStatus, optionExternalId: '47fc9ee4', status: 'in_dev' as const};
+    const confirmedIssue = issue('github:issue:9001', 'Provider-confirmed title');
     const confirmation = await projector.synchronize({
       ...operation({...initial, externalVersion: 'github:sha256:reconcile-3', workItems: [{
-        ...issue('github:issue:9001'), projectStatus: confirmedStatus
+        ...confirmedIssue, projectStatus: confirmedStatus
       }]}),
       projectId,
       expectedPreviousExternalVersion: 'github:sha256:reconcile-2'
@@ -371,9 +464,13 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
     ]);
     expect(confirmedBinding[0]).toMatchObject({
       lastOutboundMutationId: null,
-      lastInboundVersion: 'github:sha256:github:issue:9001:Issue title',
+      externalVersion: confirmedIssue.externalVersion,
+      lastInboundVersion: confirmedIssue.externalVersion,
+      evidenceState: 'confirmed',
+      conflictReason: null,
       metadata: {projectStatus: confirmedStatus}
     });
+    expect(confirmedBinding[0]?.confirmedAt).not.toBeNull();
     expect(audits).toHaveLength(1);
     expect(writes).toHaveLength(0);
   });

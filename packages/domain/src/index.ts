@@ -1518,6 +1518,52 @@ export type TrackerRepositorySnapshot = Readonly<{
   pullRequests: readonly TrackerPullRequestSnapshot[];
   checks: readonly TrackerCheckSnapshot[];
 }>;
+export const providerEvidenceStates = Object.freeze([
+  'observed',
+  'pending_confirmation',
+  'confirmed',
+  'stale',
+  'conflict',
+  'missing'
+] as const);
+export type ProviderEvidenceState = (typeof providerEvidenceStates)[number];
+export type ProviderEvidence = Readonly<{
+  providerRef: string;
+  externalRef: string;
+  externalVersion: string | null;
+  observedAt: string;
+  confirmedAt: string | null;
+  state: ProviderEvidenceState;
+  conflictReason: string | null;
+}>;
+export type TrackerEvidenceProjectionInput = Readonly<{
+  workspaceId: string;
+  projectId: string;
+  providerRef: string;
+  repositoryExternalRef: string;
+}>;
+export type TrackerEvidenceProjection = Readonly<{
+  bindings: readonly Readonly<{
+    bindingId: string;
+    surface: string;
+    entityType: string;
+    entityId: string;
+    evidence: ProviderEvidence;
+  }>[];
+  pullRequests: readonly Readonly<{
+    pullRequestLinkId: string;
+    workItemId: string;
+    evidence: ProviderEvidence;
+  }>[];
+  buildChecks: readonly Readonly<{
+    buildCheckId: string;
+    pullRequestLinkId: string;
+    evidence: ProviderEvidence;
+  }>[];
+}>;
+export type TrackerEvidenceProjectionReader = Readonly<{
+  read(input: TrackerEvidenceProjectionInput): Promise<TrackerEvidenceProjection | null>;
+}>;
 export type TaskTrackerObservation = Readonly<{
   externalVersion: string;
   workItems: readonly TrackerWorkItemSnapshot[];
