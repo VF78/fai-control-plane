@@ -150,4 +150,20 @@ describe('canonical schema foundation', () => {
       );
     }
   });
+
+  it('persists canonical, deduplicated risk signal provenance and action fields', () => {
+    expect(Object.values(getTableColumns(schema.riskSignals)).map(({name}) => name)).toEqual(
+      expect.arrayContaining([
+        'rule_id',
+        'rule_version',
+        'signal_class',
+        'evidence_references',
+        'impact',
+        'owner_actor_id',
+        'next_action',
+        'observed_at',
+        'deduplication_key'
+      ])
+    );
+  });
 });

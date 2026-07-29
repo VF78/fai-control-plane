@@ -197,6 +197,13 @@
       "when": 1785360694820,
       "tag": "0027_delivery_journey",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1785367369373,
+      "tag": "0028_risk_signal_core",
+      "breakpoints": true
     }
   ]
 }

@@ -113,6 +113,10 @@ export const riskSeverityEnum = pgEnum('risk_severity', [
   'yellow',
   'red'
 ]);
+export const riskSignalClassEnum = pgEnum('risk_signal_class', [
+  'fact',
+  'inference'
+]);
 export const outboxStatusEnum = pgEnum('outbox_status', [
   'pending',
   'publishing',
@@ -1711,12 +1715,26 @@ export const riskSignals = pgTable(
       onDelete: 'cascade'
     }),
     code: text('code').notNull(),
+    ruleId: text('rule_id').notNull(),
+    ruleVersion: text('rule_version').notNull(),
+    signalClass: riskSignalClassEnum('signal_class').notNull(),
     severity: riskSeverityEnum('severity').notNull(),
     summary: text('summary').notNull(),
     details: jsonb('details')
       .$type<Record<string, unknown>>()
       .default(sql`'{}'::jsonb`)
       .notNull(),
+    evidenceReferences: jsonb('evidence_references')
+      .$type<readonly Readonly<{type: string; id: string}>[]>()
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
+    impact: text('impact').notNull(),
+    ownerActorId: uuid('owner_actor_id').references(() => actors.id, {
+      onDelete: 'set null'
+    }),
+    nextAction: text('next_action').notNull(),
+    observedAt: timestamp('observed_at', {withTimezone: true}).notNull(),
+    deduplicationKey: text('deduplication_key').notNull(),
     resolvedAt: timestamp('resolved_at', {withTimezone: true}),
     createdAt: createdAt(),
     updatedAt: updatedAt()
@@ -1726,7 +1744,10 @@ export const riskSignals = pgTable(
       table.projectId,
       table.severity,
       table.resolvedAt
-    )
+    ),
+    uniqueIndex('risk_signals_project_unresolved_dedup_unique')
+      .on(table.projectId, table.deduplicationKey)
+      .where(sql`${table.resolvedAt} is null`)
   ]
 );
 
