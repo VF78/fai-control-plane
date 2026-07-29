@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -639,6 +640,7 @@ export const runbooks = pgTable(
       table.name,
       table.version
     ),
+    uniqueIndex('runbooks_id_version_unique').on(table.id, table.version),
     uniqueIndex('runbooks_one_active_delivery_protocol_per_project')
       .on(table.projectId)
       .where(sql`${table.protocolState} = 'published' AND ${table.active}`),
@@ -680,6 +682,53 @@ export const workItems = pgTable(
   (table) => [
     index('work_items_project_status_idx').on(table.projectId, table.status),
     check('work_items_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const deliveryJourneys = pgTable(
+  'delivery_journeys',
+  {
+    workItemId: uuid('work_item_id').primaryKey()
+      .references(() => workItems.id, {onDelete: 'cascade'}),
+    protocolId: uuid('protocol_id').notNull(),
+    protocolVersion: integer('protocol_version').notNull(),
+    stageKey: text('stage_key').notNull(),
+    deadlineAt: timestamp('deadline_at', {withTimezone: true}),
+    version: integer('version').default(1).notNull(),
+    startedAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    foreignKey({
+      name: 'delivery_journeys_protocol_version_fk',
+      columns: [table.protocolId, table.protocolVersion],
+      foreignColumns: [runbooks.id, runbooks.version]
+    }).onDelete('restrict'),
+    index('delivery_journeys_protocol_version_idx').on(table.protocolId, table.protocolVersion),
+    check('delivery_journeys_stage_key_valid', sql`${table.stageKey} ~ '^[a-z][a-z0-9_]{0,63}$'`),
+    check('delivery_journeys_protocol_version_positive', sql`${table.protocolVersion} > 0`),
+    check('delivery_journeys_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const deliveryJourneyEvidence = pgTable(
+  'delivery_journey_evidence',
+  {
+    id: id(),
+    workItemId: uuid('work_item_id').notNull()
+      .references(() => deliveryJourneys.workItemId, {onDelete: 'cascade'}),
+    stageKey: text('stage_key').notNull(),
+    requirement: text('requirement').notNull(),
+    evidenceReference: text('evidence_reference').notNull(),
+    commandId: text('command_id').notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('delivery_journey_evidence_stage_requirement_unique')
+      .on(table.workItemId, table.stageKey, table.requirement),
+    index('delivery_journey_evidence_work_item_idx').on(table.workItemId, table.createdAt),
+    check('delivery_journey_evidence_reference_nonempty',
+      sql`length(${table.evidenceReference}) BETWEEN 1 AND 2048`)
   ]
 );
 

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import type {CanonicalJson, CommandResult} from './index.ts';
+import type {CanonicalJson, CommandResult, WorkItemStatus} from './index.ts';
 import {
   projectMembershipRoles,
   type ProjectMembershipRole
@@ -37,6 +37,7 @@ export type DeliveryProtocolStage = Readonly<{
   key: string;
   name: string;
   enabled: boolean;
+  taskStatus: WorkItemStatus;
   responsibility: DeliveryProtocolResponsibility;
   executionMode: DeliveryProtocolExecutionMode;
   entryCriteria: readonly string[];
@@ -105,6 +106,9 @@ export type DeliveryProtocolSimulation = Readonly<{
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const stageKeyPattern = /^[a-z][a-z0-9_]{0,63}$/;
+const workItemStatusSet = new Set<WorkItemStatus>([
+  'backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'
+]);
 const success = <T>(value: T): CommandResult<T> => ({ok: true, value});
 const failure = <T>(message: string): CommandResult<T> => ({
   ok: false,
@@ -209,6 +213,7 @@ export const validateDeliveryProtocolDefinition = (
         'key',
         'name',
         'enabled',
+        'taskStatus',
         'responsibility',
         'executionMode',
         'entryCriteria',
@@ -223,6 +228,8 @@ export const validateDeliveryProtocolDefinition = (
       raw.name.length === 0 ||
       raw.name.length > 120 ||
       typeof raw.enabled !== 'boolean' ||
+      typeof raw.taskStatus !== 'string' ||
+      !workItemStatusSet.has(raw.taskStatus as WorkItemStatus) ||
       !deliveryProtocolExecutionModes.includes(raw.executionMode as DeliveryProtocolExecutionMode) ||
       !denseStrings(raw.entryCriteria) ||
       !denseStrings(raw.requiredEvidence) ||
@@ -251,6 +258,7 @@ export const validateDeliveryProtocolDefinition = (
       key: raw.key,
       name: raw.name,
       enabled: raw.enabled,
+      taskStatus: raw.taskStatus as WorkItemStatus,
       responsibility: owner,
       executionMode: raw.executionMode as DeliveryProtocolExecutionMode,
       entryCriteria: [...raw.entryCriteria],
@@ -391,6 +399,7 @@ export const defaultDeliveryProtocolDefinition = (): DeliveryProtocolDefinition 
       key: 'intake',
       name: 'Intake',
       enabled: true,
+      taskStatus: 'ready',
       responsibility: {kind: 'project_role', role: 'project_owner'},
       executionMode: 'manual',
       entryCriteria: ['Task context is complete'],
@@ -401,6 +410,7 @@ export const defaultDeliveryProtocolDefinition = (): DeliveryProtocolDefinition 
       key: 'development',
       name: 'Development',
       enabled: true,
+      taskStatus: 'in_dev',
       responsibility: {kind: 'project_role', role: 'contributor'},
       executionMode: 'manual',
       entryCriteria: ['Task is ready for implementation'],
@@ -411,6 +421,7 @@ export const defaultDeliveryProtocolDefinition = (): DeliveryProtocolDefinition 
       key: 'qa',
       name: 'QA',
       enabled: true,
+      taskStatus: 'qa',
       responsibility: {kind: 'project_role', role: 'reviewer'},
       executionMode: 'human_approval',
       entryCriteria: ['Development evidence is complete'],
@@ -421,6 +432,7 @@ export const defaultDeliveryProtocolDefinition = (): DeliveryProtocolDefinition 
       key: 'staging',
       name: 'Staging',
       enabled: true,
+      taskStatus: 'acceptance',
       responsibility: {kind: 'project_role', role: 'project_owner'},
       executionMode: 'human_approval',
       entryCriteria: ['QA passed'],
@@ -431,6 +443,7 @@ export const defaultDeliveryProtocolDefinition = (): DeliveryProtocolDefinition 
       key: 'production',
       name: 'Production',
       enabled: true,
+      taskStatus: 'done',
       responsibility: {kind: 'project_role', role: 'project_owner'},
       executionMode: 'human_approval',
       entryCriteria: ['Staging verification passed'],

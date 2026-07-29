@@ -190,6 +190,13 @@
       "when": 1785359259473,
       "tag": "0026_delivery_protocol",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1785360694820,
+      "tag": "0027_delivery_journey",
+      "breakpoints": true
     }
   ]
 }
