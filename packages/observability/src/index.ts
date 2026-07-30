@@ -1,4 +1,5 @@
 import {OTLPTraceExporter} from '@opentelemetry/exporter-trace-otlp-http';
+import {SpanStatusCode, trace} from '@opentelemetry/api';
 import {resourceFromAttributes} from '@opentelemetry/resources';
 import {NodeSDK} from '@opentelemetry/sdk-node';
 import {ATTR_SERVICE_NAME} from '@opentelemetry/semantic-conventions';
@@ -86,7 +87,12 @@ const allowedAttributeNames = new Set([
   'job.id',
   'run.id',
   'packet.id',
-  'status'
+  'status',
+  'messaging.destination.name',
+  'messaging.operation.name',
+  'messaging.message.id',
+  'messaging.source.name',
+  'job.retry_count'
 ]);
 
 export function safeTelemetryAttributes(
@@ -98,3 +104,75 @@ export function safeTelemetryAttributes(
     )
   );
 }
+
+export type DurableJobTelemetry = Readonly<{
+  queueName: string;
+  jobId: string;
+  retryCount?: number;
+}>;
+
+const durableJobTracer = trace.getTracer('fai-control-plane.durable-jobs');
+
+const durableJobAttributes = (
+  job: DurableJobTelemetry,
+  operation: 'publish' | 'process',
+  status: 'queued' | 'processing'
+) => safeTelemetryAttributes({
+  'messaging.destination.name': job.queueName,
+  'messaging.operation.name': operation,
+  'messaging.message.id': job.jobId,
+  ...(job.retryCount === undefined ? {} : {'job.retry_count': job.retryCount}),
+  status
+});
+
+export const recordDurableJobEnqueue = (job: DurableJobTelemetry): void => {
+  durableJobTracer.startActiveSpan(
+    'durable_job.enqueue',
+    {attributes: durableJobAttributes(job, 'publish', 'queued')},
+    (span) => {
+      span.setStatus({code: SpanStatusCode.OK});
+      span.end();
+    }
+  );
+};
+
+export const traceDurableJobExecution = async <Result>(
+  job: DurableJobTelemetry,
+  execute: () => Promise<Result>
+): Promise<Result> => durableJobTracer.startActiveSpan(
+  'durable_job.execute',
+  {attributes: durableJobAttributes(job, 'process', 'processing')},
+  async (span) => {
+    try {
+      const result = await execute();
+      span.setStatus({code: SpanStatusCode.OK});
+      return result;
+    } catch (error) {
+      // Do not record exceptions: queue payloads and error messages may be sensitive.
+      span.setStatus({code: SpanStatusCode.ERROR});
+      throw error;
+    } finally {
+      span.end();
+    }
+  }
+);
+
+export const recordDeadLetterQueueVisibility = (
+  sourceQueueName: string
+): void => {
+  durableJobTracer.startActiveSpan(
+    'durable_job.dead_letter_visible',
+    {
+      attributes: safeTelemetryAttributes({
+        'messaging.destination.name': 'control-plane-dead-letter',
+        'messaging.operation.name': 'receive',
+        'messaging.source.name': sourceQueueName,
+        status: 'failed'
+      })
+    },
+    (span) => {
+      span.setStatus({code: SpanStatusCode.OK});
+      span.end();
+    }
+  );
+};
