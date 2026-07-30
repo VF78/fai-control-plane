@@ -23,6 +23,9 @@ const deadlineOverdueRuleId = 'delivery_deadline_overdue';
 const staleWorkItemRuleId = 'active_work_item_stale';
 const staleApprovalRuleId = 'pending_approval_stale';
 const blockedUnownedRuleId = 'blocked_work_item_unowned';
+const failedBuildCheckRuleId = 'build_check_failed';
+const stuckAgentRunRuleId = 'agent_run_stuck';
+const stuckScheduledJobRuleId = 'scheduled_job_stuck';
 
 type Condition = RiskSignalCondition & Readonly<{
   code: 'github_status_writeback_failed' | 'queue_work_failed' | 'tracker_sync_missing_or_stale';
@@ -152,6 +155,43 @@ export const createPostgresHealthcheckProducer = (
                 new Date(runAt.getTime() - pendingApprovalStaleAfterMs)
               )
             )).orderBy(asc(schema.approvalRequests.id));
+            const failedBuildChecks = await tx.select({
+              id: schema.buildChecks.id,
+              workItemId: schema.prLinks.workItemId,
+              name: schema.buildChecks.name,
+              provider: schema.buildChecks.provider,
+              completedAt: schema.buildChecks.completedAt
+            }).from(schema.buildChecks)
+              .innerJoin(schema.prLinks, eq(schema.prLinks.id, schema.buildChecks.prLinkId))
+              .innerJoin(schema.workItems, eq(schema.workItems.id, schema.prLinks.workItemId))
+              .where(and(
+                eq(schema.workItems.projectId, projectId),
+                eq(schema.buildChecks.status, 'completed'),
+                eq(schema.buildChecks.conclusion, 'failure'),
+                inArray(schema.buildChecks.evidenceState, ['observed', 'confirmed'])
+              )).orderBy(asc(schema.buildChecks.id));
+            const stuckAgentRuns = await tx.select({
+              id: schema.agentRuns.id,
+              workItemId: schema.taskPackets.workItemId,
+              leaseExpiresAt: schema.agentRuns.leaseExpiresAt,
+              runnerId: schema.agentRuns.runnerId
+            }).from(schema.agentRuns)
+              .innerJoin(schema.taskPackets, eq(schema.taskPackets.id, schema.agentRuns.taskPacketId))
+              .where(and(
+                eq(schema.taskPackets.projectId, projectId),
+                eq(schema.agentRuns.status, 'running'),
+                lt(schema.agentRuns.leaseExpiresAt, runAt)
+              )).orderBy(asc(schema.agentRuns.id));
+            const stuckScheduledJobs = await tx.select({
+              id: schema.scheduledJobs.id,
+              name: schema.scheduledJobs.name,
+              queueName: schema.scheduledJobs.queueName,
+              nextRunAt: schema.scheduledJobs.nextRunAt
+            }).from(schema.scheduledJobs).where(and(
+              eq(schema.scheduledJobs.projectId, projectId),
+              eq(schema.scheduledJobs.status, 'active'),
+              lt(schema.scheduledJobs.nextRunAt, runAt)
+            )).orderBy(asc(schema.scheduledJobs.id));
             const staleBefore = new Date(runAt.getTime() - staleAfterMs);
             const latest = latestSnapshot[0];
             const syncCondition: Condition | null = latest === undefined || latest.createdAt < staleBefore
@@ -346,6 +386,71 @@ export const createPostgresHealthcheckProducer = (
                   nextAction: 'assign_owner_to_blocked_work_item'
                 }
               }));
+            const failedBuildCheckMembers: RiskSignalSetMember[] =
+              failedBuildChecks.map((check) => ({
+                workItemId: check.workItemId,
+                deduplicationKey: `${failedBuildCheckRuleId}:build_check:${check.id}`,
+                condition: {
+                  code: failedBuildCheckRuleId,
+                  ruleId: failedBuildCheckRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'fact',
+                  severity: 'red',
+                  summary: 'Required build check failed.',
+                  details: {
+                    buildCheckId: check.id,
+                    name: check.name,
+                    provider: check.provider,
+                    completedAt: check.completedAt?.toISOString() ?? null
+                  },
+                  evidenceReferences: [{type: 'build_check', id: check.id}],
+                  impact: 'Delivery cannot safely advance while a required check is failing.',
+                  nextAction: 'inspect_failed_build_check'
+                }
+              }));
+            const stuckAgentRunMembers: RiskSignalSetMember[] =
+              stuckAgentRuns.map((run) => ({
+                workItemId: run.workItemId,
+                agentRunId: run.id,
+                deduplicationKey: `${stuckAgentRunRuleId}:agent_run:${run.id}`,
+                condition: {
+                  code: stuckAgentRunRuleId,
+                  ruleId: stuckAgentRunRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'fact',
+                  severity: 'red',
+                  summary: 'Agent run lease expired while running.',
+                  details: {
+                    agentRunId: run.id,
+                    leaseExpiresAt: run.leaseExpiresAt!.toISOString(),
+                    runnerId: run.runnerId
+                  },
+                  evidenceReferences: [{type: 'agent_run', id: run.id}],
+                  impact: 'The active delivery action is no longer owned by a live runner lease.',
+                  nextAction: 'recover_or_stop_stuck_agent_run'
+                }
+              }));
+            const stuckScheduledJobMembers: RiskSignalSetMember[] =
+              stuckScheduledJobs.map((job) => ({
+                deduplicationKey: `${stuckScheduledJobRuleId}:scheduled_job:${job.id}`,
+                condition: {
+                  code: stuckScheduledJobRuleId,
+                  ruleId: stuckScheduledJobRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'fact',
+                  severity: 'red',
+                  summary: 'Scheduled job missed its persisted next run.',
+                  details: {
+                    scheduledJobId: job.id,
+                    name: job.name,
+                    queueName: job.queueName,
+                    nextRunAt: job.nextRunAt!.toISOString()
+                  },
+                  evidenceReferences: [{type: 'scheduled_job', id: job.id}],
+                  impact: 'Required recurring control-plane work has not run on schedule.',
+                  nextAction: 'inspect_or_recover_scheduled_job'
+                }
+              }));
             await reconcileRiskSignalSet(tx, {
               projectId,
               ruleId: deadlineOverdueRuleId,
@@ -369,6 +474,24 @@ export const createPostgresHealthcheckProducer = (
               ruleId: blockedUnownedRuleId,
               observedAt: runAt,
               members: blockedUnownedMembers
+            });
+            await reconcileRiskSignalSet(tx, {
+              projectId,
+              ruleId: failedBuildCheckRuleId,
+              observedAt: runAt,
+              members: failedBuildCheckMembers
+            });
+            await reconcileRiskSignalSet(tx, {
+              projectId,
+              ruleId: stuckAgentRunRuleId,
+              observedAt: runAt,
+              members: stuckAgentRunMembers
+            });
+            await reconcileRiskSignalSet(tx, {
+              projectId,
+              ruleId: stuckScheduledJobRuleId,
+              observedAt: runAt,
+              members: stuckScheduledJobMembers
             });
             await tx.update(schema.scheduledJobs).set({
               status: 'active',
