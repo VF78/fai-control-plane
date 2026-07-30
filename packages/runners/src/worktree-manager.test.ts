@@ -79,4 +79,59 @@ describe('WorktreeManager', () => {
     await expect(git(repositoryRoot, ['rev-parse', `refs/heads/${prepared.branch}`]))
       .resolves.toBe(advancedCommit);
   });
+
+  it('isolates run names and fails closed on collisions and traversal input', async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'fai-worktree-isolation-')));
+    const repositoryRoot = path.join(root, 'repository');
+    const worktreeRoot = path.join(root, 'worktrees');
+    await Promise.all([mkdir(repositoryRoot), mkdir(worktreeRoot)]);
+    await git(repositoryRoot, ['init', '--initial-branch=main']);
+    await git(repositoryRoot, ['config', 'user.email', 'test@example.com']);
+    await git(repositoryRoot, ['config', 'user.name', 'Test User']);
+    await writeFile(path.join(repositoryRoot, 'README.md'), 'base\n');
+    await git(repositoryRoot, ['add', 'README.md']);
+    await git(repositoryRoot, ['commit', '-m', 'base']);
+    const baseCommit = await git(repositoryRoot, ['rev-parse', 'HEAD']);
+    const manager = createWorktreeManager({repositoryRoot, worktreeRoot});
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+
+    const [first, second] = await Promise.all([
+      manager.prepare({runId: firstRunId, baseCommit}),
+      manager.prepare({runId: secondRunId, baseCommit})
+    ]);
+    expect(first.branch).not.toBe(second.branch);
+    expect(first.worktreePath).not.toBe(second.worktreePath);
+    expect(first).toMatchObject({
+      branch: `fai/run/${firstRunId}`,
+      worktreePath: path.join(worktreeRoot, firstRunId)
+    });
+    expect(second).toMatchObject({
+      branch: `fai/run/${secondRunId}`,
+      worktreePath: path.join(worktreeRoot, secondRunId)
+    });
+
+    await writeFile(path.join(first.worktreePath, 'uncommitted.txt'), 'discarded\n');
+    await expect(manager.cleanup(first)).rejects.toMatchObject({code: 'worktree_dirty'});
+    await expect(realpath(first.worktreePath)).resolves.toBe(first.worktreePath);
+    await rm(path.join(first.worktreePath, 'uncommitted.txt'));
+    await expect(manager.cleanup(first)).resolves.toBeUndefined();
+    await expect(git(repositoryRoot, ['rev-parse', `refs/heads/${first.branch}`]))
+      .resolves.toBe(baseCommit);
+    await manager.cleanup(second);
+
+    const collidingRunId = randomUUID();
+    await mkdir(path.join(worktreeRoot, collidingRunId));
+    await expect(manager.prepare({runId: collidingRunId, baseCommit}))
+      .rejects.toMatchObject({code: 'worktree_replay_mismatch'});
+    await expect(manager.prepare({
+      runId: `../${randomUUID()}`,
+      baseCommit
+    })).rejects.toMatchObject({code: 'invalid_run_id'});
+    expect(() => createWorktreeManager({
+      repositoryRoot,
+      worktreeRoot,
+      branchPrefix: 'fai/../run/'
+    })).toThrow(expect.objectContaining({code: 'invalid_branch_prefix'}));
+  });
 });

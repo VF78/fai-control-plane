@@ -183,7 +183,9 @@ const validateBranchPrefix = (branchPrefix: unknown): string => {
     typeof branchPrefix !== 'string' ||
     branchPrefix.length === 0 ||
     branchPrefix.includes('\0') ||
-    !branchPrefix.endsWith('/')
+    !branchPrefix.endsWith('/') ||
+    branchPrefix.includes('//') ||
+    branchPrefix.split('/').some((part) => part === '.' || part === '..')
   ) {
     fail('invalid_branch_prefix');
   }
