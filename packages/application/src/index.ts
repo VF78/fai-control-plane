@@ -236,6 +236,24 @@ export type RunnerCompletionPayload = Readonly<{
   }>;
   summaryArtifact?: Readonly<{
     name: string;
+    reference: string;
+    sha256: string;
+    sizeBytes: number;
+  }>;
+  artifactStore: Readonly<{
+    provider: string;
+    reference: string;
+    correlationId: string;
+  }>;
+  receiptArtifact: Readonly<{
+    name: string;
+    reference: string;
+    sha256: string;
+    sizeBytes: number;
+  }>;
+  pathManifest: Readonly<{
+    name: string;
+    reference: string;
     sha256: string;
     sizeBytes: number;
   }>;
@@ -329,13 +347,13 @@ export const parseRunnerCompletionPayload = (
     'runId', 'attempt', 'terminal', 'receiptSha256', 'receiptSizeBytes',
     'finalStatus', 'runtimeId', 'runtimeProfile', 'durationMs', 'cost', 'usage',
     'changedFiles', 'checks', 'riskCount', 'nextAction',
-    'summaryArtifact', 'branch', 'worktreeRef', 'artifactRef'
+    'summaryArtifact', 'artifactStore', 'receiptArtifact', 'pathManifest', 'branch', 'worktreeRef', 'artifactRef'
   ];
   if (!isRecord(value) || Object.keys(value).some((key) => !keys.includes(key))) return null;
   const required = [
     'runId', 'attempt', 'terminal', 'receiptSha256', 'receiptSizeBytes',
     'finalStatus', 'runtimeId', 'runtimeProfile', 'durationMs', 'cost', 'usage',
-    'changedFiles', 'checks', 'riskCount', 'nextAction'
+    'changedFiles', 'checks', 'riskCount', 'nextAction', 'artifactStore', 'receiptArtifact', 'pathManifest'
   ];
   if (required.some((key) => !(key in value))) return null;
   const attempt = value.attempt;
@@ -392,19 +410,60 @@ export const parseRunnerCompletionPayload = (
     ('worktreeRef' in value && worktreeRef === undefined) ||
     ('artifactRef' in value && artifactRef === undefined)
   ) return null;
+  const artifactStore = value.artifactStore;
+  if (
+    !isRecord(artifactStore) ||
+    !exactKeys(artifactStore, ['provider', 'reference', 'correlationId']) ||
+    typeof artifactStore.provider !== 'string' ||
+    !/^[a-z][a-z0-9-]{0,63}$/.test(artifactStore.provider) ||
+    !safeReference(artifactStore.reference) ||
+    !safeReference(artifactStore.correlationId) ||
+    artifactStore.reference !== `runs/${value.runId}` ||
+    artifactStore.correlationId !== `artifact-run-${value.runId}`
+  ) return null;
+  const receiptArtifact = value.receiptArtifact;
+  const receiptArtifactSizeBytes = isRecord(receiptArtifact) ? receiptArtifact.sizeBytes : undefined;
+  if (
+    !isRecord(receiptArtifact) ||
+    !exactKeys(receiptArtifact, ['name', 'reference', 'sha256', 'sizeBytes']) ||
+    receiptArtifact.name !== 'agent-run-receipt.json' ||
+    receiptArtifact.reference !== `${artifactStore.reference}/${receiptArtifact.name}` ||
+    !runnerPacketHashPattern.test(receiptArtifact.sha256 as string) ||
+    receiptArtifact.sha256 !== value.receiptSha256 ||
+    typeof receiptArtifactSizeBytes !== 'number' ||
+    !Number.isSafeInteger(receiptArtifactSizeBytes) ||
+    receiptArtifactSizeBytes !== receiptSizeBytes
+  ) return null;
+  const pathManifest = value.pathManifest;
+  const pathManifestSizeBytes = isRecord(pathManifest) ? pathManifest.sizeBytes : undefined;
+  if (
+    !isRecord(pathManifest) ||
+    !exactKeys(pathManifest, ['name', 'reference', 'sha256', 'sizeBytes']) ||
+    !safeReference(pathManifest.name) ||
+    !safeReference(pathManifest.reference) ||
+    pathManifest.name !== 'observed-path-manifest.json' ||
+    pathManifest.reference !== `${artifactStore.reference}/${pathManifest.name}` ||
+    !runnerPacketHashPattern.test(pathManifest.sha256 as string) ||
+    typeof pathManifestSizeBytes !== 'number' ||
+    !Number.isSafeInteger(pathManifestSizeBytes) ||
+    pathManifestSizeBytes < 1 || pathManifestSizeBytes > MAX_RUNNER_RECEIPT_BYTES
+  ) return null;
   let summaryArtifact: RunnerCompletionPayload['summaryArtifact'];
   if ('summaryArtifact' in value && value.summaryArtifact !== undefined) {
     const summary = value.summaryArtifact;
     const summarySizeBytes = isRecord(summary) ? summary.sizeBytes : undefined;
     if (
-      !isRecord(summary) || !exactKeys(summary, ['name', 'sha256', 'sizeBytes']) ||
-      !safeReference(summary.name) || !runnerPacketHashPattern.test(summary.sha256 as string) ||
+      !isRecord(summary) || !exactKeys(summary, ['name', 'reference', 'sha256', 'sizeBytes']) ||
+      summary.name !== 'structured-summary.json' ||
+      summary.reference !== `${artifactStore.reference}/${summary.name}` ||
+      !runnerPacketHashPattern.test(summary.sha256 as string) ||
       typeof summarySizeBytes !== 'number' || !Number.isSafeInteger(summarySizeBytes) ||
       summarySizeBytes <= 0 || summarySizeBytes > MAX_RUNNER_RECEIPT_BYTES ||
       value.finalStatus !== 'succeeded'
     ) return null;
     summaryArtifact = {
       name: summary.name,
+      reference: summary.reference,
       sha256: summary.sha256 as string,
       sizeBytes: summarySizeBytes
     };
@@ -421,6 +480,23 @@ export const parseRunnerCompletionPayload = (
     durationMs,
     cost: value.cost,
     usage: value.usage,
+    artifactStore: {
+      provider: artifactStore.provider,
+      reference: artifactStore.reference,
+      correlationId: artifactStore.correlationId
+    },
+    receiptArtifact: {
+      name: receiptArtifact.name,
+      reference: receiptArtifact.reference,
+      sha256: receiptArtifact.sha256 as string,
+      sizeBytes: receiptArtifactSizeBytes
+    },
+    pathManifest: {
+      name: pathManifest.name,
+      reference: pathManifest.reference,
+      sha256: pathManifest.sha256 as string,
+      sizeBytes: pathManifestSizeBytes
+    },
     ...(summaryArtifact === undefined ? {} : {summaryArtifact}),
     changedFiles,
     checks,

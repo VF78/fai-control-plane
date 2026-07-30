@@ -814,6 +814,7 @@ export const createCodexAgentRuntime = (
               name,
               status
             })),
+            riskCount: summary.summary.risks.length,
             artifact: {
               sha256: summary.sha256,
               sizeBytes: summary.sizeBytes

@@ -48,6 +48,7 @@ export type AgentRuntimeEvidence = Readonly<{
     name: string;
     status: 'passed' | 'failed' | 'not_run';
   }>[];
+  riskCount: number;
   artifact: Readonly<{
     sha256: string;
     sizeBytes: number;
@@ -121,6 +122,16 @@ export {
   type WorktreeManager,
   type WorktreeManagerOptions
 } from './worktree-manager';
+
+export {
+  ArtifactStoreError,
+  createLocalFilesystemArtifactStore,
+  type ArtifactDescriptor,
+  type ArtifactKind,
+  type ArtifactRun,
+  type ArtifactStore,
+  type LocalFilesystemArtifactStoreOptions
+} from './artifact-store';
 
 export {
   createLocalAgentRunOrchestrator,

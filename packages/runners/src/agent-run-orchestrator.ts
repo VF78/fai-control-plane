@@ -1,6 +1,4 @@
 import {createHash} from 'node:crypto';
-import {lstat, mkdir, realpath, rmdir, writeFile} from 'node:fs/promises';
-import path from 'node:path';
 import type {
   AgentRuntime,
   AgentRuntimeInput,
@@ -18,10 +16,15 @@ import type {
   AgentRunWorktreeInspection,
   WorktreeManager
 } from './worktree-manager';
+import {
+  createLocalFilesystemArtifactStore,
+  type ArtifactDescriptor,
+  type ArtifactRun,
+  type ArtifactStore
+} from './artifact-store';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const RECEIPT_FILENAME = 'agent-run-receipt.json';
 const SAFE_CHECK_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 .,_:()/-]{0,127}$/;
 const SAFE_BASE_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$/;
 
@@ -37,7 +40,9 @@ export type LocalAgentRunEnvelope = Readonly<{
 }>;
 
 type ReceiptArtifact = Readonly<{
+  provider: string;
   name: string;
+  reference: string;
   sha256: string;
   sizeBytes: number;
 }>;
@@ -62,6 +67,13 @@ export type LocalAgentRunReceipt = Readonly<{
     stderr: RedactedProcessOutputMetadata;
   }>;
   policy: AgentRuntimeResult['policy'];
+  artifacts: Readonly<{
+    provider: string;
+    storeRef: string;
+    correlationId: string;
+    pathManifest: ReceiptArtifact;
+    summary?: ReceiptArtifact;
+  }>;
   summaryArtifact?: ReceiptArtifact;
   worktreeDisposition:
     | 'removed_clean'
@@ -101,13 +113,24 @@ export type LocalAgentRunReceipt = Readonly<{
 
 export type LocalAgentRunResult = Readonly<{
   receipt: LocalAgentRunReceipt;
+  completionEvidence: Readonly<{
+    changedFiles: readonly string[];
+    checks: readonly Readonly<{
+      name: string;
+      status: 'passed' | 'failed' | 'not_run';
+    }>[];
+    riskCount: number;
+  }>;
+  receiptArtifact: ArtifactDescriptor;
   receiptRef: string;
   receiptSha256: string;
   receiptSizeBytes: number;
 }>;
 
 export type LocalAgentRunOrchestratorOptions = Readonly<{
-  artifactRoot: string;
+  /** @deprecated Use artifactStore. Kept as the local adapter convenience. */
+  artifactRoot?: string;
+  artifactStore?: ArtifactStore;
   worktrees: WorktreeManager;
   runtime: AgentRuntime;
   clock?: Readonly<{now(): Date}>;
@@ -141,76 +164,88 @@ const fail = (code: string): never => {
 const sha256 = (value: Uint8Array): string =>
   createHash('sha256').update(value).digest('hex');
 
-const canonicalRoot = async (value: string): Promise<string> => {
-  if (
-    !path.isAbsolute(value) ||
-    path.normalize(value) !== value ||
-    path.resolve(value) !== value ||
-    value === path.parse(value).root ||
-    value.includes('\0')
-  ) {
-    fail('unsafe_artifact_root');
-  }
-  let canonical: string;
-  let metadata;
-  try {
-    [canonical, metadata] = await Promise.all([realpath(value), lstat(value)]);
-  } catch {
-    return fail('missing_artifact_root');
-  }
-  if (
-    canonical !== value ||
-    !metadata.isDirectory() ||
-    metadata.isSymbolicLink()
-  ) {
-    fail('unsafe_artifact_root');
-  }
-  return canonical;
-};
-
-const createArtifactDirectory = async (
-  artifactRoot: string,
-  runId: string
-): Promise<string> => {
-  const artifactPath = path.join(artifactRoot, runId);
-  try {
-    await mkdir(artifactPath, {mode: 0o700});
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      fail('artifact_directory_collision');
-    }
-    throw error;
-  }
-  const [canonical, metadata] = await Promise.all([
-    realpath(artifactPath),
-    lstat(artifactPath)
-  ]);
-  if (
-    canonical !== artifactPath ||
-    !metadata.isDirectory() ||
-    metadata.isSymbolicLink()
-  ) {
-    fail('unsafe_artifact_directory');
-  }
-  return artifactPath;
-};
-
 const summaryArtifact = (
   result: AgentRuntimeResult,
-  artifactPath: string
+  artifact: ArtifactDescriptor | undefined
 ): ReceiptArtifact | undefined => {
-  if (result.status !== 'succeeded') return undefined;
-  if (
-    path.dirname(result.summaryRef) !== artifactPath ||
-    path.basename(result.summaryRef).length === 0
-  ) {
-    fail('unsafe_summary_reference');
-  }
+  if (result.status !== 'succeeded' || artifact === undefined) return undefined;
   return {
-    name: path.basename(result.summaryRef),
-    sha256: result.evidence.artifact.sha256,
-    sizeBytes: result.evidence.artifact.sizeBytes
+    provider: artifact.provider,
+    name: artifact.name,
+    reference: artifact.reference,
+    sha256: artifact.sha256,
+    sizeBytes: artifact.sizeBytes
   };
+};
+
+const safeObservedPath = (value: string): boolean =>
+  /^[A-Za-z0-9.][A-Za-z0-9._/-]{0,191}$/.test(value) &&
+  !value.includes('//') &&
+  !value.split('/').some((part) => part === '.' || part === '..');
+
+const observedPathManifest = (
+  worktree: AgentRunWorktree,
+  inspection: AgentRunWorktreeInspection
+): Readonly<{
+  schemaVersion: 1;
+  source: 'worktree_inspection';
+  baseCommit: string;
+  headCommit: string;
+  pathBoundaryViolation: boolean;
+  mergeCommitCount: number;
+  paths: readonly string[];
+  pathsTruncated: boolean;
+}> => {
+  const safePaths = inspection.changedPaths.filter(safeObservedPath);
+  if (safePaths.length !== inspection.changedPaths.length) {
+    fail('unsafe_observed_path');
+  }
+  const paths = [...new Set(safePaths)].sort();
+  return {
+    schemaVersion: 1,
+    source: 'worktree_inspection',
+    baseCommit: worktree.baseCommit,
+    headCommit: inspection.headCommit,
+    pathBoundaryViolation: inspection.pathBoundaryViolation,
+    mergeCommitCount: inspection.mergeCommits.length,
+    paths: paths.slice(0, 100),
+    pathsTruncated: paths.length > 100
+  };
+};
+
+const structuredSummary = (
+  result: AgentRuntimeResult,
+  manifest: ReturnType<typeof observedPathManifest>
+): Readonly<{
+  schemaVersion: 1;
+  status: 'completed' | 'blocked';
+  changedFiles: readonly string[];
+  checks: readonly Readonly<{
+    name: string;
+    status: 'passed' | 'failed' | 'not_run';
+  }>[];
+  riskCount: number;
+}> | undefined => result.status === 'succeeded'
+  ? {
+      schemaVersion: 1,
+      status: result.evidence.status,
+      changedFiles: manifest.paths,
+      checks: result.evidence.checks,
+      riskCount: result.evidence.riskCount
+    }
+  : undefined;
+
+const artifactStoreFor = (
+  options: LocalAgentRunOrchestratorOptions
+): ArtifactStore => {
+  if (options.artifactStore !== undefined && options.artifactRoot !== undefined) {
+    fail('ambiguous_artifact_store');
+  }
+  if (options.artifactStore !== undefined) return options.artifactStore;
+  if (options.artifactRoot !== undefined) {
+    return createLocalFilesystemArtifactStore({root: options.artifactRoot});
+  }
+  return fail('missing_artifact_store');
 };
 
 const nextActionFor = (
@@ -414,16 +449,20 @@ export const createLocalAgentRunOrchestrator = (
 ): LocalAgentRunOrchestrator => {
   validatePublicationOptions(options.publication);
   const clock = options.clock ?? {now: () => new Date()};
+  const artifactStore = artifactStoreFor(options);
 
   return {
     async run(envelope) {
       if (!UUID_PATTERN.test(envelope.runId)) fail('invalid_run_id');
-      const artifactRoot = await canonicalRoot(options.artifactRoot);
-      const artifactPath = await createArtifactDirectory(
-        artifactRoot,
-        envelope.runId
-      );
-      const receiptPath = path.join(artifactPath, RECEIPT_FILENAME);
+      let artifacts: ArtifactRun;
+      try {
+        artifacts = await artifactStore.allocateRun(envelope.runId);
+      } catch (error) {
+        if ((error as {code?: string}).code === 'run_collision') {
+          fail('artifact_directory_collision');
+        }
+        throw error;
+      }
 
       let worktree: AgentRunWorktree;
       try {
@@ -432,13 +471,13 @@ export const createLocalAgentRunOrchestrator = (
           baseCommit: envelope.baseCommit
         });
       } catch (error) {
-        await rmdir(artifactPath).catch(() => undefined);
+        await artifacts.abandon().catch(() => undefined);
         throw error;
       }
       let runtimeResult: AgentRuntimeResult;
       try {
         runtimeResult = await options.runtime.run(
-          runtimeInput(envelope, worktree, artifactPath)
+          runtimeInput(envelope, worktree, artifacts.runtimePath)
         );
       } catch (error) {
         try {
@@ -447,33 +486,41 @@ export const createLocalAgentRunOrchestrator = (
         } catch {
           // Cleanup is best-effort here; preserve the original runtime failure.
         }
+        await artifacts.discardRuntimeScratch().catch(() => undefined);
         throw error;
       }
-      const inspection = await options.worktrees.inspect(worktree);
-      const observedRules = observedPolicyRules(envelope.profile, inspection);
-      const effectiveRuntimeResult = denyFromObservedState(
-        runtimeResult,
-        observedRules
-      );
-      const retainForPolicy = observedRules.length > 0;
-      const retainWorktree = inspection.dirty || retainForPolicy;
-      const worktreeDisposition = inspection.dirty
-        ? 'retained_dirty'
-        : retainForPolicy
-          ? 'retained_policy_denied'
-          : 'removed_clean';
-      const summary = summaryArtifact(effectiveRuntimeResult, artifactPath);
-      const writeBack = await publicationWriteBack(
-        options,
-        envelope,
-        worktree,
-        effectiveRuntimeResult,
-        inspection,
-        summary
-      );
-      if (!retainWorktree) await options.worktrees.cleanup(worktree);
+      try {
+        const inspection = await options.worktrees.inspect(worktree);
+        const observedRules = observedPolicyRules(envelope.profile, inspection);
+        const effectiveRuntimeResult = denyFromObservedState(
+          runtimeResult,
+          observedRules
+        );
+        const retainForPolicy = observedRules.length > 0;
+        const retainWorktree = inspection.dirty || retainForPolicy;
+        const worktreeDisposition = inspection.dirty
+          ? 'retained_dirty'
+          : retainForPolicy
+            ? 'retained_policy_denied'
+            : 'removed_clean';
+        const manifest = observedPathManifest(worktree, inspection);
+        const pathManifest = await artifacts.writeJson('pathManifest', manifest);
+        const summaryEvidence = structuredSummary(effectiveRuntimeResult, manifest);
+        const storedSummary = summaryEvidence === undefined
+          ? undefined
+          : await artifacts.writeJson('summary', summaryEvidence);
+        const summary = summaryArtifact(effectiveRuntimeResult, storedSummary);
+        const writeBack = await publicationWriteBack(
+          options,
+          envelope,
+          worktree,
+          effectiveRuntimeResult,
+          inspection,
+          summary
+        );
+        if (!retainWorktree) await options.worktrees.cleanup(worktree);
 
-      const receipt: LocalAgentRunReceipt = {
+        const receipt: LocalAgentRunReceipt = {
         schemaVersion: 1,
         recordedAt: clock.now().toISOString(),
         runId: envelope.runId,
@@ -493,6 +540,19 @@ export const createLocalAgentRunOrchestrator = (
           stderr: effectiveRuntimeResult.stderr
         },
         policy: effectiveRuntimeResult.policy,
+        artifacts: {
+          provider: artifacts.provider,
+          storeRef: artifacts.reference,
+          correlationId: artifacts.correlationId,
+          pathManifest: {
+            provider: pathManifest.provider,
+            name: pathManifest.name,
+            reference: pathManifest.reference,
+            sha256: pathManifest.sha256,
+            sizeBytes: pathManifest.sizeBytes
+          },
+          ...(summary === undefined ? {} : {summary})
+        },
         ...(summary === undefined ? {} : {summaryArtifact: summary}),
         worktreeDisposition,
         cost: {
@@ -505,22 +565,25 @@ export const createLocalAgentRunOrchestrator = (
           writeBack
         ),
         writeBack
-      };
-      const body = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
-      try {
-        await writeFile(receiptPath, body, {flag: 'wx', mode: 0o600});
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-          fail('receipt_already_exists');
-        }
-        throw error;
-      }
-      return {
+        };
+        const storedReceipt = await artifacts.writeJson('receipt', receipt);
+        await artifacts.discardRuntimeScratch();
+        await artifacts.finalize();
+        return {
         receipt,
-        receiptRef: receiptPath,
-        receiptSha256: sha256(body),
-        receiptSizeBytes: body.byteLength
-      };
+        completionEvidence: {
+          changedFiles: summaryEvidence?.changedFiles ?? [],
+          checks: summaryEvidence?.checks ?? [],
+          riskCount: summaryEvidence?.riskCount ?? 0
+        },
+        receiptArtifact: storedReceipt,
+        receiptRef: storedReceipt.reference,
+        receiptSha256: storedReceipt.sha256,
+        receiptSizeBytes: storedReceipt.sizeBytes
+        };
+      } finally {
+        await artifacts.discardRuntimeScratch().catch(() => undefined);
+      }
     }
   };
 };

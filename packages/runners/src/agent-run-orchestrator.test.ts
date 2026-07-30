@@ -30,6 +30,9 @@ const emptyOutput = (): RedactedProcessOutputMetadata => ({
   contentRetained: false
 });
 
+const localArtifactPath = (artifactRoot: string, reference: string): string =>
+  path.join(artifactRoot, ...reference.replace(/^runs\//, '').split('/'));
+
 describe('local AgentRun orchestrator', () => {
   it('writes prompt-free receipts and cleans only clean worktrees', async () => {
     const artifactRoot = await realpath(
@@ -177,6 +180,7 @@ describe('local AgentRun orchestrator', () => {
                 ? 'failed'
                 : 'passed'
             }],
+            riskCount: 3,
             artifact: {
               sha256: createHash('sha256').update(summary).digest('hex'),
               sizeBytes: summary.byteLength
@@ -205,7 +209,7 @@ describe('local AgentRun orchestrator', () => {
 
     const clean = envelope('read_safe');
     const cleanResult = await orchestrator.run(clean);
-    const cleanBody = await readFile(cleanResult.receiptRef, 'utf8');
+    const cleanBody = await readFile(localArtifactPath(artifactRoot, cleanResult.receiptRef), 'utf8');
     expect(cleanResult.receipt).toMatchObject({
       finalStatus: 'succeeded',
       worktreeDisposition: 'removed_clean',
@@ -217,7 +221,21 @@ describe('local AgentRun orchestrator', () => {
       }
     });
     expect(cleanBody).not.toContain(clean.prompt);
-    expect((await stat(cleanResult.receiptRef)).mode & 0o777).toBe(0o600);
+    expect(cleanBody).not.toContain('opaque runtime evidence artifact');
+    expect(cleanResult.receipt.artifacts.correlationId).toBe(`artifact-run-${clean.runId}`);
+    expect(cleanResult.completionEvidence.riskCount).toBe(3);
+    const manifestPath = localArtifactPath(
+      artifactRoot,
+      cleanResult.receipt.artifacts.pathManifest.reference
+    );
+    const manifestBody = await readFile(manifestPath);
+    expect(createHash('sha256').update(manifestBody).digest('hex')).toBe(
+      cleanResult.receipt.artifacts.pathManifest.sha256
+    );
+    expect(manifestBody.byteLength).toBe(cleanResult.receipt.artifacts.pathManifest.sizeBytes);
+    await expect(lstat(path.join(artifactRoot, clean.runId, 'runtime')))
+      .rejects.toMatchObject({code: 'ENOENT'});
+    expect((await stat(localArtifactPath(artifactRoot, cleanResult.receiptRef))).mode & 0o777).toBe(0o400);
     expect(manager.cleanup).toHaveBeenCalledWith(
       expect.objectContaining({runId: clean.runId})
     );
@@ -240,7 +258,7 @@ describe('local AgentRun orchestrator', () => {
       },
       writeBack: {state: 'not_attempted'}
     });
-    const deniedBody = await readFile(deniedResult.receiptRef, 'utf8');
+    const deniedBody = await readFile(localArtifactPath(artifactRoot, deniedResult.receiptRef), 'utf8');
     expect(deniedBody).not.toContain('SECRET');
     expect(deniedBody).not.toContain('do-not-retain');
 
@@ -275,7 +293,7 @@ describe('local AgentRun orchestrator', () => {
       expect.objectContaining({runId: dirtyTimeout.runId})
     );
     expect(worktrees.has(dirtyTimeout.runId)).toBe(true);
-    expect(await readFile(dirtyResult.receiptRef, 'utf8'))
+    expect(await readFile(localArtifactPath(artifactRoot, dirtyResult.receiptRef), 'utf8'))
       .not.toContain(dirtyTimeout.prompt);
 
     const cancellation = envelope('write_scoped');
@@ -291,7 +309,7 @@ describe('local AgentRun orchestrator', () => {
       nextAction: 'review_worktree'
     });
     expect(worktrees.has(cancellation.runId)).toBe(true);
-    await expect(readFile(cancelledResult.receiptRef, 'utf8'))
+    await expect(readFile(localArtifactPath(artifactRoot, cancelledResult.receiptRef), 'utf8'))
       .resolves.toContain('"finalStatus": "cancelled"');
 
     const publisher = {
