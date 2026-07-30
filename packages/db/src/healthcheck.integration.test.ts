@@ -6,18 +6,24 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
   actors,
   activeWorkItemStaleAfterMs,
+  agentProfiles,
+  agentRuns,
   approvalRequests,
+  buildChecks,
+  canonicalEvents,
   createDatabase,
   createPostgresHealthcheckProducer,
   deliveryJourneys,
   milestones,
   outboxEvents,
   pendingApprovalStaleAfterMs,
+  prLinks,
   projectTrackerRepositoryScopes,
   riskSignals,
   runbooks,
   scheduledJobs,
   secretRefs,
+  taskPackets,
   trackerSnapshotOperations,
   workItems
 } from './index';
@@ -47,7 +53,18 @@ const ids = {
   otherRiskWork: randomUUID(),
   staleApproval: randomUUID(),
   boundaryApproval: randomUUID(),
-  otherApproval: randomUUID()
+  otherApproval: randomUUID(),
+  profile: randomUUID(),
+  event: randomUUID(),
+  packet: randomUUID(),
+  stuckRun: randomUUID(),
+  boundaryRun: randomUUID(),
+  prLink: randomUUID(),
+  failedBuildCheck: randomUUID(),
+  staleBuildCheck: randomUUID(),
+  stuckScheduledJob: randomUUID(),
+  boundaryScheduledJob: randomUUID(),
+  otherScheduledJob: randomUUID()
 };
 
 describePostgres('PostgreSQL healthcheck producer', () => {
@@ -91,6 +108,13 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       role: 'workspace_admin',
       displayName: 'Healthcheck owner',
       authMode: 'user'
+    });
+    await db.insert(agentProfiles).values({
+      id: ids.profile,
+      workspaceId: ids.workspace,
+      actorId: ids.actor,
+      runtimeId: 'healthcheck-runner',
+      runtimeProfile: 'codex-safe'
     });
     await db.insert(projectTrackerRepositoryScopes).values([
       {
@@ -196,6 +220,126 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       stageKey: 'delivery',
       deadlineAt: new Date(current.getTime() - 1)
     });
+    await db.insert(prLinks).values({
+      id: ids.prLink,
+      workItemId: ids.staleWork,
+      provider: 'github',
+      repositoryRef: 'VF78/MSA',
+      externalId: 'healthcheck-pr-1',
+      url: 'https://github.com/VF78/MSA/pull/1',
+      headRef: 'risk-check',
+      baseRef: 'main',
+      state: 'open',
+      draft: false
+    });
+    await db.insert(buildChecks).values([
+      {
+        id: ids.failedBuildCheck,
+        prLinkId: ids.prLink,
+        provider: 'github',
+        externalId: 'healthcheck-build-failed',
+        name: 'required-check',
+        status: 'completed',
+        conclusion: 'failure',
+        evidenceState: 'confirmed',
+        completedAt: new Date(current.getTime() - 1)
+      },
+      {
+        id: ids.staleBuildCheck,
+        prLinkId: ids.prLink,
+        provider: 'github',
+        externalId: 'healthcheck-build-stale',
+        name: 'stale-check',
+        status: 'completed',
+        conclusion: 'failure',
+        evidenceState: 'stale',
+        completedAt: new Date(current.getTime() - 1)
+      }
+    ]);
+    await db.insert(canonicalEvents).values({
+      id: ids.event,
+      workspaceId: ids.workspace,
+      projectId: ids.project,
+      eventType: 'test.healthcheck',
+      aggregateType: 'work_item',
+      aggregateId: ids.staleWork,
+      deduplicationKey: `healthcheck-${randomUUID()}`,
+      payload: {},
+      occurredAt: current
+    });
+    await db.insert(taskPackets).values({
+      id: ids.packet,
+      projectId: ids.project,
+      workItemId: ids.staleWork,
+      workItemVersion: 1,
+      goal: 'Verify stuck run risk',
+      dataPolicy: {},
+      timeboxMinutes: 15,
+      expectedOutputSchema: {},
+      reviewerActorId: ids.actor,
+      approverActorId: ids.actor,
+      runtimeProfile: 'codex-safe',
+      authMode: 'agent',
+      secretRefId: ids.secret,
+      createdFromEventId: ids.event,
+      contentHash: '1'.repeat(64),
+      createdByActorId: ids.actor
+    });
+    await db.insert(agentRuns).values([
+      {
+        id: ids.stuckRun,
+        taskPacketId: ids.packet,
+        agentProfileId: ids.profile,
+        confirmedPacketHash: '2'.repeat(64),
+        baseCommit: 'a'.repeat(40),
+        status: 'running',
+        idempotencyKey: `healthcheck-run-${ids.stuckRun}`,
+        runnerId: 'runner-stuck',
+        leaseTokenHash: '3'.repeat(64),
+        leaseExpiresAt: new Date(current.getTime() - 1)
+      },
+      {
+        id: ids.boundaryRun,
+        taskPacketId: ids.packet,
+        agentProfileId: ids.profile,
+        confirmedPacketHash: '2'.repeat(64),
+        baseCommit: 'a'.repeat(40),
+        status: 'running',
+        idempotencyKey: `healthcheck-run-${ids.boundaryRun}`,
+        runnerId: 'runner-boundary',
+        leaseTokenHash: '4'.repeat(64),
+        leaseExpiresAt: current
+      }
+    ]);
+    await db.insert(scheduledJobs).values([
+      {
+        id: ids.stuckScheduledJob,
+        projectId: ids.project,
+        name: 'stuck-job',
+        cron: '*/5 * * * *',
+        queueName: 'stuck-job',
+        status: 'active',
+        nextRunAt: new Date(current.getTime() - 1)
+      },
+      {
+        id: ids.boundaryScheduledJob,
+        projectId: ids.project,
+        name: 'boundary-job',
+        cron: '*/5 * * * *',
+        queueName: 'boundary-job',
+        status: 'active',
+        nextRunAt: current
+      },
+      {
+        id: ids.otherScheduledJob,
+        projectId: ids.otherProject,
+        name: 'other-stuck-job',
+        cron: '*/5 * * * *',
+        queueName: 'other-stuck-job',
+        status: 'active',
+        nextRunAt: new Date(current.getTime() - 1)
+      }
+    ]);
     await db.insert(approvalRequests).values([
       {
         id: ids.staleApproval,
@@ -273,12 +417,15 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     ));
     expect(active.map((signal) => signal.code).sort()).toEqual([
       'active_work_item_stale',
+      'agent_run_stuck',
       'blocked_work_item_unowned',
+      'build_check_failed',
       'delivery_deadline_overdue',
       'delivery_deadline_overdue',
       'github_status_writeback_failed',
       'pending_approval_stale',
       'queue_work_failed',
+      'scheduled_job_stuck',
       'tracker_sync_missing_or_stale'
     ]);
     expect(active.find((signal) => signal.code === 'github_status_writeback_failed'))
@@ -346,10 +493,38 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       ownerActorId: null,
       nextAction: 'assign_owner_to_blocked_work_item'
     }));
+    expect(active.find((signal) =>
+      signal.deduplicationKey === `build_check_failed:build_check:${ids.failedBuildCheck}`
+    )).toEqual(expect.objectContaining({
+      workItemId: ids.staleWork,
+      signalClass: 'fact',
+      evidenceReferences: [{type: 'build_check', id: ids.failedBuildCheck}],
+      nextAction: 'inspect_failed_build_check'
+    }));
+    expect(active.find((signal) =>
+      signal.deduplicationKey === `agent_run_stuck:agent_run:${ids.stuckRun}`
+    )).toEqual(expect.objectContaining({
+      workItemId: ids.staleWork,
+      agentRunId: ids.stuckRun,
+      signalClass: 'fact',
+      evidenceReferences: [{type: 'agent_run', id: ids.stuckRun}],
+      nextAction: 'recover_or_stop_stuck_agent_run'
+    }));
+    expect(active.find((signal) =>
+      signal.deduplicationKey ===
+        `scheduled_job_stuck:scheduled_job:${ids.stuckScheduledJob}`
+    )).toEqual(expect.objectContaining({
+      signalClass: 'fact',
+      evidenceReferences: [{type: 'scheduled_job', id: ids.stuckScheduledJob}],
+      nextAction: 'inspect_or_recover_scheduled_job'
+    }));
     expect(active.some((signal) =>
       signal.deduplicationKey.includes(ids.boundaryMilestone) ||
       signal.deduplicationKey.includes(ids.boundaryWork) ||
-      signal.deduplicationKey.includes(ids.boundaryApproval)
+      signal.deduplicationKey.includes(ids.boundaryApproval) ||
+      signal.deduplicationKey.includes(ids.boundaryRun) ||
+      signal.deduplicationKey.includes(ids.boundaryScheduledJob) ||
+      signal.deduplicationKey.includes(ids.staleBuildCheck)
     )).toBe(false);
     const otherProjectRules = (await db.select().from(riskSignals).where(and(
       eq(riskSignals.projectId, ids.otherProject),
@@ -358,18 +533,23 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       'delivery_deadline_overdue',
       'active_work_item_stale',
       'pending_approval_stale',
-      'blocked_work_item_unowned'
+      'blocked_work_item_unowned',
+      'build_check_failed',
+      'agent_run_stuck',
+      'scheduled_job_stuck'
     ].includes(signal.ruleId));
     expect(otherProjectRules.map((signal) => signal.ruleId).sort()).toEqual([
       'active_work_item_stale',
       'blocked_work_item_unowned',
       'delivery_deadline_overdue',
-      'pending_approval_stale'
+      'pending_approval_stale',
+      'scheduled_job_stuck'
     ]);
     expect(otherProjectRules.every((signal) =>
       signal.deduplicationKey.includes(ids.otherRiskWork) ||
       signal.deduplicationKey.includes(ids.otherMilestone) ||
-      signal.deduplicationKey.includes(ids.otherApproval)
+      signal.deduplicationKey.includes(ids.otherApproval) ||
+      signal.deduplicationKey.includes(ids.otherScheduledJob)
     )).toBe(true);
     expect(await db.select().from(scheduledJobs).where(and(
       eq(scheduledJobs.projectId, ids.project),
@@ -408,6 +588,25 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       decidedAt: current,
       updatedAt: current
     }).where(inArray(approvalRequests.id, [ids.staleApproval, ids.boundaryApproval]));
+    await db.update(buildChecks).set({
+      conclusion: 'success',
+      updatedAt: current
+    }).where(eq(buildChecks.id, ids.failedBuildCheck));
+    await db.update(agentRuns).set({
+      status: 'done',
+      completedAt: current,
+      runnerId: null,
+      leaseTokenHash: null,
+      leaseExpiresAt: null,
+      updatedAt: current
+    }).where(inArray(agentRuns.id, [ids.stuckRun, ids.boundaryRun]));
+    await db.update(scheduledJobs).set({
+      nextRunAt: new Date(current.getTime() + 60_000),
+      updatedAt: current
+    }).where(inArray(scheduledJobs.id, [
+      ids.stuckScheduledJob,
+      ids.boundaryScheduledJob
+    ]));
     await producer.run();
     await producer.run();
 
@@ -417,6 +616,6 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     ))).toHaveLength(0);
     expect(await db.select().from(riskSignals).where(eq(
       riskSignals.projectId, ids.project
-    ))).toHaveLength(8);
+    ))).toHaveLength(11);
   });
 });
