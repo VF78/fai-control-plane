@@ -181,8 +181,7 @@ const scopedProjects = async (db: Database, slug?: OperatorProjectSlug): Promise
     isOperatorProjectSlug(project.slug) ? [{...project, slug: project.slug}] : []);
 };
 
-const safeExternalUrl = (metadata: Record<string, unknown>): string | null => {
-  const candidate = metadata.htmlUrl;
+const safeExternalUrlValue = (candidate: unknown): string | null => {
   if (typeof candidate !== 'string' || candidate.length > 2048) return null;
   try {
     const url = new URL(candidate);
@@ -191,6 +190,9 @@ const safeExternalUrl = (metadata: Record<string, unknown>): string | null => {
     return null;
   }
 };
+
+const safeExternalUrl = (metadata: Record<string, unknown>): string | null =>
+  safeExternalUrlValue(metadata.htmlUrl);
 
 const confirmedGitHubIssueUrl = (
   metadata: Record<string, unknown>,
@@ -1134,7 +1136,7 @@ export type AccessData = Readonly<{
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
   memberships: readonly Readonly<{projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; role: string; active: boolean; version: number}>[];
   externalIdentities: readonly Readonly<{actorId: string; provider: string; active: boolean}>[];
-  resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; desiredLevel: string; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; version: number}>[];
+  resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; desiredLevel: string; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; providerAccessUrl: string | null; version: number}>[];
   agentSystems: readonly Readonly<{
     actorId: string;
     profiles: readonly Readonly<{
@@ -1333,7 +1335,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       .from(actorExternalIdentities).innerJoin(actors, eq(actors.id, actorExternalIdentities.actorId))
       .where(inArray(actors.workspaceId, workspaceIds))
       .orderBy(actorExternalIdentities.actorId, actorExternalIdentities.provider),
-    db.select({id: resourceAccessGrants.id, projectId: resourceAccessGrants.projectId, actorId: resourceAccessGrants.actorId, resourceType: resourceAccessGrants.resourceType, desiredLevel: resourceAccessGrants.desiredLevel, observedProvider: resourceAccessGrants.observedProvider, observedLevel: resourceAccessGrants.observedLevel, observedAt: resourceAccessGrants.observedAt, version: resourceAccessGrants.version})
+    db.select({id: resourceAccessGrants.id, projectId: resourceAccessGrants.projectId, actorId: resourceAccessGrants.actorId, resourceType: resourceAccessGrants.resourceType, desiredLevel: resourceAccessGrants.desiredLevel, observedProvider: resourceAccessGrants.observedProvider, observedExternalResourceRef: resourceAccessGrants.observedExternalResourceRef, observedLevel: resourceAccessGrants.observedLevel, observedAt: resourceAccessGrants.observedAt, version: resourceAccessGrants.version})
       .from(resourceAccessGrants).where(inArray(resourceAccessGrants.projectId, projectIds))
       .orderBy(resourceAccessGrants.projectId, resourceAccessGrants.actorId, resourceAccessGrants.resourceType)
   ]);
@@ -1462,7 +1464,16 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     externalIdentities,
     resourceGrants: resourceGrants.flatMap((grant) => {
       const project = projectById.get(grant.projectId);
-      return project === undefined ? [] : [{...grant, project: project.name, projectSlug: project.slug}];
+      return project === undefined ? [] : [{
+        ...grant,
+        project: project.name,
+        projectSlug: project.slug,
+        // A provider locator is never shown. It becomes a link only when the
+        // provider-confirmed observation itself carries a safe HTTPS URL.
+        providerAccessUrl: grant.observedProvider === null
+          ? null
+          : safeExternalUrlValue(grant.observedExternalResourceRef)
+      }];
     }),
     agentSystems,
     requests: requests.map((request) => ({...request, requester: request.requester ?? 'No recorded requester'})),
