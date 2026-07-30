@@ -18,6 +18,7 @@ export function workspaceRoute(path: readonly string[], query: WorkspaceQuery): 
   if (path.length === 1 && path[0] === 'projects') return {screen: 'projects', project: null, taskId: null, runId: null, agentId: null, scope};
   if (path.length === 1 && path[0] === 'tasks' && (filter === null || filter === 'all' || isOperatorProjectSlug(filter))) return {screen: 'global_tasks', project: null, globalProject: filter ?? 'all', taskId: null, runId: null, agentId: null, scope};
   if (path.length === 1 && path[0] === 'chats' && (filter === null || filter === 'all' || isOperatorProjectSlug(filter))) return {screen: 'global_chats', project: null, globalProject: filter ?? 'all', taskId: null, runId: null, agentId: null, scope};
+  if (path.length === 1 && path[0] === 'people') return {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope};
   if (path.length === 1 && path[0] === 'agents' && (filter === null || isOperatorProjectSlug(filter))) return {screen: 'agents', project: null, globalProject: filter ?? 'all', taskId: null, runId: null, agentId: null, scope};
   if (path.length === 2 && path[0] === 'agents' && exact(path[1]) !== null) return {screen: 'agent', project: null, taskId: null, runId: null, agentId: path[1]!, scope};
   const slug = path[1];

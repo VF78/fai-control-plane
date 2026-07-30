@@ -14,6 +14,7 @@ it('maps only canonical workspace routes and preserves scope on deep links', () 
   expect(workspaceRoute(['projects', 'unknown', 'overview'], {})).toBeNull();
   expect(workspaceRoute(['projects', 'msa', 'runs', ''], {})).toBeNull();
   expect(workspaceRoute(['tasks'], {project: 'unknown'})).toBeNull();
+  expect(workspaceRoute(['people'], {})).toMatchObject({screen: 'people', project: null});
 });
 
 it('derives portfolio facts from persisted work, approval, milestone, and transition records', () => {
@@ -98,13 +99,54 @@ it('keeps the web-first workspace IA and honest unavailable state', () => {
   }));
 
   expect(markup).toContain('href="/dashboard"');
-  expect(markup).toContain('aria-label="Dashboard"');
-  expect(markup).toContain('aria-label="Projects"');
-  expect(markup).toContain('aria-label="Tasks"');
+  expect(markup).toContain('aria-label="Portfolio"');
+  expect(markup).toContain('aria-label="Delivery"');
   expect(markup).toContain('aria-label="Conversations"');
-  expect(markup).toContain('aria-label="Agents"');
+  expect(markup).toContain('aria-label="People &amp; Access"');
+  expect(markup).toContain('aria-label="Agents &amp; Systems"');
   expect(markup).toContain('Control plane data is unavailable');
   expect(markup).not.toContain('Provider ID');
+});
+
+it('keeps the five workspace areas explicit and deferred actions non-operative', () => {
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
+    data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: []}
+  }));
+  expect(markup).toContain('Primary workspace areas');
+  expect(markup).toContain('People &amp; Access');
+  expect(markup).toContain('People and access are unavailable');
+  expect(markup).not.toContain('Manage members');
+});
+
+it('renders only the fixed MSA and ASCON roster memberships in People & Access', () => {
+  const data = {
+    portfolio: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [],
+    access: {state: 'ready', data: {
+      canRetireAgents: false,
+      actors: [
+        {id: 'vladimir', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}},
+        {id: 'vitaliy', displayName: 'Vitaliy', type: 'human', role: 'contributor', disabledAt: null, capabilities: {}},
+        {id: 'hermes', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}
+      ],
+      memberships: [
+        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'vladimir', role: 'project_owner', active: true, version: 1},
+        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', role: 'contributor', active: true, version: 1},
+        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'hermes', role: 'agent', active: true, version: 1},
+        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', role: 'project_owner', active: true, version: 1},
+        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vitaliy', role: 'contributor', active: true, version: 1},
+        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'hermes', role: 'agent', active: true, version: 1}
+      ], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}
+    }}
+  } as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data
+  }));
+  expect(markup).toContain('Vladimir</strong><small>MSA · project owner · human');
+  expect(markup).toContain('Vitaliy</strong><small>ASCON · contributor · human');
+  expect(markup).toContain('Hermes</strong><small>ASCON · agent · agent');
+  expect(markup).toContain('href="/projects/ascon/access/hermes"');
+  expect(markup).not.toContain('Add person');
 });
 
 it('renders isolated internal/client conversation states and current access facts', () => {
