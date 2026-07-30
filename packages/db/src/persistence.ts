@@ -348,6 +348,16 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       );
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
+    case 'actor':
+      uuid(mutation.aggregate.id, 'actor.id');
+      uuid(mutation.aggregate.workspaceId, 'actor.workspaceId');
+      invariant(mutation.expectedPersistedVersion === 0, 'Actor retirement must expect active state.');
+      invariant(
+        mutation.aggregate.disabledAt !== null &&
+          date(mutation.aggregate.disabledAt, 'actor.disabledAt').toISOString() === mutation.aggregate.disabledAt,
+        'Actor retirement timestamp must be canonical.'
+      );
+      break;
     case 'resource_access_grant':
       uuid(mutation.aggregate.id, 'resourceAccessGrant.id');
       uuid(mutation.aggregate.projectId, 'resourceAccessGrant.projectId');
@@ -442,7 +452,9 @@ const expectedAuditTarget = (
 });
 
 const mutationResultVersion = (mutation: CanonicalMutation): number =>
-  mutation.aggregateType === 'task_packet' ? 1 : mutation.aggregate.version;
+  mutation.aggregateType === 'task_packet' || mutation.aggregateType === 'actor'
+    ? 1
+    : mutation.aggregate.version;
 
 const validateAuditEnvelope = (
   audit: AuditEvent | NonApprovalAuditEvent,
@@ -730,6 +742,17 @@ const currentVersion = async (
           eq(schema.actors.workspaceId, workspaceId)
         ));
       return row?.version ?? null;
+    }
+    case 'actor': {
+      const [row] = await tx
+        .select({disabledAt: schema.actors.disabledAt})
+        .from(schema.actors)
+        .where(and(
+          eq(schema.actors.id, mutation.aggregateId),
+          eq(schema.actors.workspaceId, workspaceId),
+          eq(schema.actors.type, 'agent')
+        ));
+      return row === undefined ? null : row.disabledAt === null ? 0 : 1;
     }
     case 'resource_access_grant': {
       const [row] = await tx
@@ -1694,6 +1717,44 @@ const conflictOrNotFound = async (
       };
 };
 
+const persistActorRetirement = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'actor'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const [current] = await tx.select({disabledAt: schema.actors.disabledAt})
+    .from(schema.actors)
+    .where(and(
+      eq(schema.actors.id, mutation.aggregateId),
+      eq(schema.actors.workspaceId, workspaceId),
+      eq(schema.actors.type, 'agent')
+    ))
+    .for('update');
+  if (current === undefined) return {status: 'not_found'};
+  if (current.disabledAt !== null) return {
+    status: 'version_conflict',
+    expectedPersistedVersion: 0,
+    persistedVersion: 1
+  };
+  const disabledAt = date(mutation.aggregate.disabledAt!, 'actor.disabledAt');
+  const [updated] = await tx.update(schema.actors)
+    .set({disabledAt, updatedAt: disabledAt})
+    .where(and(
+      eq(schema.actors.id, mutation.aggregateId),
+      eq(schema.actors.workspaceId, workspaceId),
+      eq(schema.actors.type, 'agent'),
+      isNull(schema.actors.disabledAt)
+    ))
+    .returning({id: schema.actors.id});
+  return updated === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {expectedPersistedVersion: 0, persistedVersion: 1},
+        projectId: null
+      };
+};
+
 const persistAggregate = (
   tx: Transaction,
   workspaceId: string,
@@ -1717,6 +1778,8 @@ const persistAggregate = (
       return persistProjectMembership(tx, workspaceId, mutation);
     case 'actor_external_identity':
       return persistActorExternalIdentity(tx, workspaceId, mutation);
+    case 'actor':
+      return persistActorRetirement(tx, workspaceId, mutation);
     case 'resource_access_grant':
       return persistResourceAccessGrant(tx, workspaceId, mutation);
     case 'runtime_registration':
@@ -2283,6 +2346,24 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
           return row ?? null;
         },
 
+        async loadRetirableAgent(token, agentId) {
+          const state = requireClaim(token);
+          if (!isUuid(agentId)) return null;
+          const [row] = await tx.select({
+            id: schema.actors.id,
+            workspaceId: schema.actors.workspaceId,
+            disabledAt: schema.actors.disabledAt
+          }).from(schema.actors).where(and(
+            eq(schema.actors.id, agentId),
+            eq(schema.actors.workspaceId, state.claim.workspaceId),
+            eq(schema.actors.type, 'agent')
+          ));
+          return row === undefined ? null : {
+            ...row,
+            disabledAt: row.disabledAt?.toISOString() ?? null
+          };
+        },
+
         async loadAccessCommandAuthority(token, actorId, projectId) {
           const state = requireClaim(token);
           if (!isUuid(actorId) || (projectId !== undefined && !isUuid(projectId))) {
@@ -2297,9 +2378,19 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             ));
           if (actor === undefined) return null;
           if (projectId === undefined) {
+            const [ownership] = await tx.select({role: schema.projectMemberships.role})
+              .from(schema.projectMemberships)
+              .innerJoin(schema.projects, eq(schema.projects.id, schema.projectMemberships.projectId))
+              .where(and(
+                eq(schema.projects.workspaceId, state.claim.workspaceId),
+                eq(schema.projectMemberships.actorId, actorId),
+                eq(schema.projectMemberships.active, true),
+                eq(schema.projectMemberships.role, 'workspace_owner')
+              ))
+              .limit(1);
             return {
               workspaceAdmin: actor.role === 'workspace_admin',
-              projectRole: null
+              projectRole: ownership?.role ?? null
             };
           }
           if (!await workspaceHasProject(tx, state.claim.workspaceId, projectId)) {

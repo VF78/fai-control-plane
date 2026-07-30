@@ -10,6 +10,8 @@ import {
 } from '@fai-control-plane/domain';
 import {
   agentRuns,
+  actors,
+  agentProfiles,
   actorExternalIdentities,
   approvalRequests,
   auditEvents,
@@ -26,7 +28,7 @@ import {
   workItems
 } from '@fai-control-plane/db';
 import {dropDatabaseWhenDisconnected} from '../../db/src/integration-test-utils';
-import {eq, inArray} from 'drizzle-orm';
+import {and, eq, inArray} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {
@@ -1379,6 +1381,79 @@ describePostgres(
           outcome: 'succeeded',
           reasonCode: null
         }]));
+    });
+
+    it('soft-retires only the bound agent and preserves dependent records', async () => {
+      const agentId = randomUUID();
+      const profileId = randomUUID();
+      const registrationId = randomUUID();
+      const identityId = randomUUID();
+      await testDb.insert(actors).values({
+        id: agentId,
+        workspaceId: fixture.workspaceId,
+        type: 'agent',
+        role: 'agent_operator',
+        displayName: 'Retirement fixture',
+        authMode: 'agent'
+      });
+      await testDb.insert(agentProfiles).values({
+        id: profileId,
+        workspaceId: fixture.workspaceId,
+        actorId: agentId,
+        runtimeId: 'codex',
+        runtimeProfile: 'test',
+        allowedTools: [],
+        forbiddenSurfaces: [],
+        instructions: 'Test',
+        settings: {},
+        configHash: 'a'.repeat(64)
+      });
+      await testDb.insert(runtimeRegistrations).values({
+        id: registrationId,
+        projectId: fixture.projectId,
+        actorId: agentId,
+        agentProfileId: profileId,
+        provider: 'codex',
+        runtimeKey: 'retirement-fixture'
+      });
+      await testDb.insert(actorExternalIdentities).values({
+        id: identityId,
+        actorId: agentId,
+        provider: 'test',
+        externalSubject: `agent:${agentId}`,
+        active: true
+      });
+      const retire = command(
+        fixture.workspaceId,
+        primaryActor,
+        'actor.retire',
+        {agentId}
+      );
+
+      await expect(service().execute(retire)).resolves.toMatchObject({
+        status: 'completed',
+        receipt: {result: {ok: true, value: {id: agentId}}}
+      });
+      await expect(service().execute(retire)).resolves.toMatchObject({status: 'replayed'});
+      expect(receiptErrorCode(await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'actor.retire',
+        {agentId}
+      )))).toBe('VERSION_CONFLICT');
+      await expect(testDb.select({disabledAt: actors.disabledAt}).from(actors)
+        .where(eq(actors.id, agentId))).resolves.toMatchObject([{disabledAt: expect.any(Date)}]);
+      await expect(testDb.select({id: agentProfiles.id}).from(agentProfiles)
+        .where(eq(agentProfiles.id, profileId))).resolves.toEqual([{id: profileId}]);
+      await expect(testDb.select({id: runtimeRegistrations.id}).from(runtimeRegistrations)
+        .where(eq(runtimeRegistrations.id, registrationId))).resolves.toEqual([{id: registrationId}]);
+      await expect(testDb.select({id: actorExternalIdentities.id}).from(actorExternalIdentities)
+        .where(eq(actorExternalIdentities.id, identityId))).resolves.toEqual([{id: identityId}]);
+      await expect(testDb.select({id: auditEvents.id}).from(auditEvents).where(and(
+        eq(auditEvents.targetId, agentId),
+        eq(auditEvents.action, 'actor.retire'),
+        eq(auditEvents.outcome, 'succeeded')
+      ))).resolves.toHaveLength(1);
     });
   }
 );

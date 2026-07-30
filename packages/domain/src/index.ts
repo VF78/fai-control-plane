@@ -784,6 +784,10 @@ export type BindActorExternalIdentityCommand = CanonicalCommandEnvelope<
     expectedVersion: number | null;
   }>
 >;
+export type RetireActorCommand = CanonicalCommandEnvelope<
+  'actor.retire',
+  Readonly<{agentId: string}>
+>;
 export type SetResourceAccessGrantCommand = CanonicalCommandEnvelope<
   'resource_access_grant.set',
   Readonly<{
@@ -860,6 +864,7 @@ export type CanonicalCommand =
   | DecideAccessRequestCommand
   | SetProjectMembershipCommand
   | BindActorExternalIdentityCommand
+  | RetireActorCommand
   | SetResourceAccessGrantCommand
   | ObserveResourceAccessGrantCommand
   | CreateRuntimeRegistrationCommand
@@ -2327,6 +2332,17 @@ export type ActorExternalIdentityMutation = Readonly<{
   expectedPersistedVersion: number | null;
   aggregate: ActorExternalIdentity;
 }>;
+export type RetirableAgent = Readonly<{
+  id: string;
+  workspaceId: string;
+  disabledAt: string | null;
+}>;
+export type ActorRetirementMutation = Readonly<{
+  aggregateType: 'actor';
+  aggregateId: string;
+  expectedPersistedVersion: 0;
+  aggregate: RetirableAgent;
+}>;
 export type ResourceAccessGrantMutation = Readonly<{
   aggregateType: 'resource_access_grant';
   aggregateId: string;
@@ -2353,6 +2369,7 @@ export type CanonicalMutation =
   | AccessRequestMutation
   | ProjectMembershipMutation
   | ActorExternalIdentityMutation
+  | ActorRetirementMutation
   | ResourceAccessGrantMutation
   | RuntimeRegistrationMutation;
 export type PersistedCanonicalMutation = Readonly<{
@@ -2456,6 +2473,10 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     identityId: string
   ): Promise<ActorExternalIdentity | null>;
+  loadRetirableAgent(
+    claimToken: ReceiptClaimToken,
+    agentId: string
+  ): Promise<RetirableAgent | null>;
   loadResourceAccessGrant(
     claimToken: ReceiptClaimToken,
     grantId: string

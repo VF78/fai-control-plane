@@ -4,7 +4,7 @@ import type {
   RunnerClaimRecord,
   RunnerTransportStore
 } from '@fai-control-plane/domain';
-import {and, asc, eq, exists, inArray, or, sql} from 'drizzle-orm';
+import {and, asc, eq, exists, inArray, isNull, or, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -218,6 +218,7 @@ export const createPostgresRunnerClaimStore = (
             eq(schema.projects.workspaceId, input.workspaceId),
             eq(schema.agentProfiles.workspaceId, input.workspaceId),
             eq(schema.actors.workspaceId, input.workspaceId),
+            isNull(schema.actors.disabledAt),
             eq(schema.agentProfiles.enabled, true),
             exists(
               tx

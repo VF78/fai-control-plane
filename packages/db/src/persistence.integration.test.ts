@@ -309,7 +309,9 @@ const completeNonApproval = async (
   if (persisted.status !== 'persisted') throw persisted;
   const mutation = outcome.mutation;
   const resultVersion =
-    mutation.aggregateType === 'task_packet' ? 1 : mutation.aggregate.version;
+    mutation.aggregateType === 'task_packet' || mutation.aggregateType === 'actor'
+      ? 1
+      : mutation.aggregate.version;
   const completed = await transaction.completeReceipt({
     claimToken,
     mutation: persisted.mutation,
