@@ -463,8 +463,11 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         id: `outbox:${event.id}`, riskSignalId: null, projectId: event.projectId, severity: 'red', project: project.name,
         workItemId,
         object: item?.title ?? 'GitHub project status write', reason: event.failureCode ?? 'GitHub status write failed',
-        stage: null, signalClass: null, impact: null, freshness: event.updatedAt, owner: null,
-        evidenceReferences: [], nextAction: null, sourceUrl: url,
+        stage: null, signalClass: 'fact',
+        impact: 'Canonical delivery status was not published to the tracker.',
+        freshness: event.updatedAt, owner: null,
+        evidenceReferences: [{type: 'outbox_event', id: event.id}],
+        nextAction: 'inspect_failed_status_writeback', sourceUrl: url,
         evidence: `Outbox failed after ${event.attemptCount} attempts`, action: {label: url === null ? 'No external record' : 'Open source', href: url},
         dispositionVersion: 0,
         disposition: null
@@ -477,8 +480,11 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       return [{
         id: `job:${job.id}`, riskSignalId: null, projectId: job.projectId, severity: 'red', project: project.name, object: job.name,
         workItemId: null,
-        reason: 'Scheduled job is unhealthy', stage: null, signalClass: null, impact: null,
-        freshness: job.heartbeatAt ?? job.updatedAt, owner: null, evidenceReferences: [], nextAction: null,
+        reason: 'Scheduled job is unhealthy', stage: null, signalClass: 'fact',
+        impact: 'Required recurring control-plane work is not healthy.',
+        freshness: job.heartbeatAt ?? job.updatedAt, owner: null,
+        evidenceReferences: [{type: 'scheduled_job', id: job.id}],
+        nextAction: 'inspect_or_recover_scheduled_job',
         sourceUrl: null, evidence: 'Scheduled job status', action: {label: 'No external record', href: null},
         dispositionVersion: 0,
         disposition: null
