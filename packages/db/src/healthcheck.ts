@@ -1,4 +1,4 @@
-import {and, asc, desc, eq, inArray, isNull, lt, ne, sql} from 'drizzle-orm';
+import {and, asc, desc, eq, gt, inArray, isNull, lt, lte, ne, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {
   reconcileRiskSignal,
@@ -20,6 +20,7 @@ const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const healthcheckName = 'healthcheck';
 const activeWorkItemStatuses = new Set(['in_dev', 'qa', 'acceptance']);
 const deadlineOverdueRuleId = 'delivery_deadline_overdue';
+const atRiskMilestoneRuleId = 'milestone_at_risk';
 const staleWorkItemRuleId = 'active_work_item_stale';
 const staleApprovalRuleId = 'pending_approval_stale';
 const blockedUnownedRuleId = 'blocked_work_item_unowned';
@@ -115,6 +116,24 @@ export const createPostgresHealthcheckProducer = (
               isNull(schema.milestones.closedAt),
               lt(schema.milestones.targetAt, runAt)
             )).orderBy(asc(schema.milestones.id));
+            const atRiskMilestoneWorkItems = await tx.select({
+              milestoneId: schema.milestones.id,
+              targetAt: schema.milestones.targetAt,
+              workItemId: schema.workItems.id,
+              workItemStatus: schema.workItems.status,
+              ownerActorId: schema.workItems.ownerActorId
+            }).from(schema.milestones).innerJoin(
+              schema.workItems,
+              eq(schema.workItems.milestoneId, schema.milestones.id)
+            ).where(and(
+              eq(schema.milestones.projectId, projectId),
+              isNull(schema.milestones.closedAt),
+              gt(schema.milestones.targetAt, runAt),
+              lte(schema.milestones.targetAt, new Date(runAt.getTime() + 7 * 24 * 60 * 60 * 1_000)),
+              isNull(schema.workItems.deletedAt),
+              eq(schema.workItems.blocked, true),
+              ne(schema.workItems.status, 'done')
+            )).orderBy(asc(schema.milestones.id), asc(schema.workItems.id));
             const overdueDeliveryJourneys = await tx.select({
               workItemId: schema.deliveryJourneys.workItemId,
               deadlineAt: schema.deliveryJourneys.deadlineAt,
@@ -339,6 +358,55 @@ export const createPostgresHealthcheckProducer = (
                   nextAction: 'review_stale_work_item'
                 }
               }));
+            const atRiskMilestoneWorkItemsByMilestone = new Map<
+              string,
+              typeof atRiskMilestoneWorkItems
+            >();
+            for (const item of atRiskMilestoneWorkItems) {
+              const members = atRiskMilestoneWorkItemsByMilestone.get(item.milestoneId);
+              if (members === undefined) atRiskMilestoneWorkItemsByMilestone.set(item.milestoneId, [item]);
+              else members.push(item);
+            }
+            const atRiskMilestoneMembers: RiskSignalSetMember[] = [];
+            for (const milestoneWorkItems of atRiskMilestoneWorkItemsByMilestone.values()) {
+              const [milestone] = milestoneWorkItems;
+              if (milestone === undefined || milestone.targetAt === null) continue;
+              const ownerActorIds = new Set(milestoneWorkItems.map((item) => item.ownerActorId));
+              const [ownerActorId] = ownerActorIds;
+              atRiskMilestoneMembers.push({
+                deduplicationKey: `${atRiskMilestoneRuleId}:milestone:${milestone.milestoneId}`,
+                condition: {
+                  code: atRiskMilestoneRuleId,
+                  ruleId: atRiskMilestoneRuleId,
+                  ruleVersion: '1',
+                  signalClass: 'inference',
+                  severity: 'yellow',
+                  summary: 'Open milestone is at risk from blocked delivery work.',
+                  details: {
+                    milestoneId: milestone.milestoneId,
+                    targetAt: milestone.targetAt.toISOString(),
+                    blockedWorkItems: milestoneWorkItems.map((item) => ({
+                      workItemId: item.workItemId,
+                      status: item.workItemStatus,
+                      ownerActorId: item.ownerActorId
+                    })),
+                    riskHorizonDays: 7
+                  },
+                  evidenceReferences: [
+                    {type: 'milestone', id: milestone.milestoneId},
+                    ...milestoneWorkItems.map((item) => ({
+                      type: 'work_item',
+                      id: item.workItemId
+                    }))
+                  ],
+                  impact: 'Blocked delivery work may prevent this open milestone from meeting its target date.',
+                  ownerActorId: ownerActorIds.size === 1 && ownerActorId !== undefined
+                    ? ownerActorId
+                    : null,
+                  nextAction: 'review_blocked_work_for_at_risk_milestone'
+                }
+              });
+            }
             const staleApprovalMembers: RiskSignalSetMember[] = staleApprovals.map(
               (approval) => ({
                 workItemId: approval.workItemId,
@@ -462,6 +530,12 @@ export const createPostgresHealthcheckProducer = (
               ruleId: staleWorkItemRuleId,
               observedAt: runAt,
               members: staleWorkItemMembers
+            });
+            await reconcileRiskSignalSet(tx, {
+              projectId,
+              ruleId: atRiskMilestoneRuleId,
+              observedAt: runAt,
+              members: atRiskMilestoneMembers
             });
             await reconcileRiskSignalSet(tx, {
               projectId,
