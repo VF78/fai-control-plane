@@ -1620,7 +1620,7 @@ export {
   type RuntimeAvailabilityProjection,
   type RuntimeAvailabilityThresholds,
   type RuntimeComponentAvailability
-} from './runtime-monitoring';
+} from './runtime-monitoring.ts';
 
 export type ProjectTaskProjectionInput = Readonly<{
   workspaceId: string;
