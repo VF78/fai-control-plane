@@ -34,6 +34,15 @@ type RecoveryMutationStatus =
       version: number;
     }>
   | Readonly<{status: 'forbidden' | 'not_found' | 'stale' | 'invalid'}>;
+type ReplacementMutationStatus =
+  | Readonly<{
+      status: 'updated' | 'replayed';
+      commandId: string;
+      commandType: 'runtime_registration.replace';
+      source: Readonly<{enabled: false; version: number}>;
+      target: Readonly<{enabled: true; version: number}>;
+    }>
+  | Readonly<{status: 'forbidden' | 'not_found' | 'stale' | 'invalid'}>;
 
 const enabledCapabilities = (capabilities: Record<string, boolean>): Capability[] =>
   Object.entries(capabilities).flatMap(([capability, enabled]) =>
@@ -85,6 +94,15 @@ export type RuntimeRegistrationRuntime = Readonly<{
     agentRunId: string;
     expectedRunVersion: number;
   }>): Promise<RecoveryMutationStatus>;
+  replace(input: Readonly<{
+    workspaceId: string;
+    operatorActorId: string;
+    projectId: string;
+    sourceRegistrationId: string;
+    sourceExpectedVersion: number;
+    targetRegistrationId: string;
+    targetExpectedVersion: number;
+  }>): Promise<ReplacementMutationStatus>;
 }>;
 
 export const createRuntimeRegistrationRuntime = (db: Database): RuntimeRegistrationRuntime => ({
@@ -260,6 +278,79 @@ export const createRuntimeRegistrationRuntime = (db: Database): RuntimeRegistrat
       commandType: 'agent_run.transition',
       failureCode: OPERATOR_RECOVERED_EXPIRED_LEASE,
       version: run.version
+    };
+  },
+  async replace(input) {
+    const actor = await operatorActor(
+      db, input.workspaceId, input.operatorActorId
+    );
+    if (actor === null) return {status: 'forbidden'};
+    const inputHash = createHash('sha256').update([
+      input.projectId,
+      input.sourceRegistrationId,
+      input.sourceExpectedVersion,
+      input.targetRegistrationId,
+      input.targetExpectedVersion
+    ].join('\0')).digest('hex');
+    const result = await createCanonicalCommandService({
+      unitOfWork: createPostgresUnitOfWork(db)
+    }).execute({
+      commandId: randomUUID(),
+      workspaceId: input.workspaceId,
+      correlationId: randomUUID(),
+      idempotencyKey: [
+        'runtime_registration.replace.v1',
+        input.sourceRegistrationId,
+        input.sourceExpectedVersion,
+        inputHash
+      ].join(':'),
+      issuedAt: new Date().toISOString(),
+      actor,
+      type: 'runtime_registration.replace',
+      payload: {
+        projectId: input.projectId,
+        sourceRegistrationId: input.sourceRegistrationId,
+        sourceExpectedVersion: input.sourceExpectedVersion,
+        targetRegistrationId: input.targetRegistrationId,
+        targetExpectedVersion: input.targetExpectedVersion
+      }
+    });
+    if (!('receipt' in result)) return {status: 'invalid'};
+    if (!result.receipt.result.ok) {
+      switch (result.receipt.result.error.code) {
+        case 'CAPABILITY_DENIED':
+        case 'POLICY_DENIED':
+        case 'INVALID_ACTOR_CONTEXT':
+          return {status: 'forbidden'};
+        case 'NOT_FOUND':
+          return {status: 'not_found'};
+        case 'INVALID_TRANSITION':
+        case 'VERSION_CONFLICT':
+          return {status: 'stale'};
+        default:
+          return {status: 'invalid'};
+      }
+    }
+    const value = result.receipt.result.value;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return {status: 'invalid'};
+    }
+    const replacement = value as Readonly<{
+      source?: Readonly<{enabled?: unknown; version?: unknown}>;
+      target?: Readonly<{enabled?: unknown; version?: unknown}>;
+    }>;
+    if (
+      replacement.source?.enabled !== false ||
+      typeof replacement.source.version !== 'number' ||
+      replacement.target?.enabled !== true ||
+      typeof replacement.target.version !== 'number'
+    ) return {status: 'invalid'};
+    return {
+      status: result.status === 'replayed' ? 'replayed' : 'updated',
+      commandId: result.receipt.commandId,
+      commandType: 'runtime_registration.replace',
+      source: {enabled: false, version: replacement.source.version},
+      target: {enabled: true, version: replacement.target.version}
     };
   }
 });

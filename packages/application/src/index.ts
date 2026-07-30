@@ -63,6 +63,7 @@ import {
   OPERATOR_RECOVERED_EXPIRED_LEASE,
   policySurfaces,
   projectMembershipRoles,
+  replaceRuntimeRegistrations,
   setWorkItemBlocked,
   trackerCheckStatuses,
   transitionAccessRequest,
@@ -792,7 +793,8 @@ const commandTypes = new Set<CanonicalCommand['type']>([
   'resource_access_grant.observe',
   'runtime_registration.create',
   'runtime_registration.update',
-  'runtime_registration.disable'
+  'runtime_registration.disable',
+  'runtime_registration.replace'
 ]);
 
 const defaultIds: IdGenerator = {next: randomUUID};
@@ -1761,6 +1763,16 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
     case 'runtime_registration.disable':
       return hasExactKeys(payload, ['registrationId', 'expectedVersion']) &&
         isUuid(payload.registrationId) && isVersion(payload.expectedVersion);
+    case 'runtime_registration.replace':
+      return hasExactKeys(payload, [
+        'projectId', 'sourceRegistrationId', 'sourceExpectedVersion',
+        'targetRegistrationId', 'targetExpectedVersion'
+      ]) && isUuid(payload.projectId) &&
+        isUuid(payload.sourceRegistrationId) &&
+        isVersion(payload.sourceExpectedVersion) &&
+        isUuid(payload.targetRegistrationId) &&
+        payload.targetRegistrationId !== payload.sourceRegistrationId &&
+        isVersion(payload.targetExpectedVersion);
   }
   return assertNever(type);
 };
@@ -1974,6 +1986,7 @@ export const createCanonicalCommandService = (
       case 'runtime_registration.create': return runtimeRegistrationCreate(transaction, claimToken, claim, command);
       case 'runtime_registration.update': return runtimeRegistrationUpdate(transaction, claimToken, claim, command);
       case 'runtime_registration.disable': return runtimeRegistrationDisable(transaction, claimToken, claim, command);
+      case 'runtime_registration.replace': return runtimeRegistrationReplace(transaction, claimToken, claim, command);
     }
     return assertNever(command);
   };
@@ -2894,6 +2907,97 @@ export const createCanonicalCommandService = (
     }, current.version);
   }
 
+  async function runtimeRegistrationReplace(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'runtime_registration.replace'}>
+  ) {
+    const payload = command.payload;
+    const source = await transaction.loadRuntimeRegistration(
+      token, payload.sourceRegistrationId
+    );
+    const target = await transaction.loadRuntimeRegistration(
+      token, payload.targetRegistrationId
+    );
+    const commandTarget = targetFor(
+      'runtime_registration',
+      payload.sourceRegistrationId,
+      payload.sourceExpectedVersion,
+      source?.version
+    );
+    if (source === null || target === null) {
+      return completeNoMutation(
+        transaction, token, claim, command, commandTarget,
+        failed('NOT_FOUND', 'A replacement registration was not found.'),
+        'access_change'
+      );
+    }
+    const authorization = await accessAuthority(
+      transaction, token, command, payload.projectId
+    );
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, commandTarget, authorization,
+      'access_change'
+    );
+    if (
+      source.projectId !== payload.projectId ||
+      target.projectId !== payload.projectId
+    ) {
+      return completeNoMutation(
+        transaction, token, claim, command, commandTarget,
+        failed('NOT_FOUND', 'Replacement registrations are outside the project scope.'),
+        'access_change'
+      );
+    }
+    if (
+      source.version !== payload.sourceExpectedVersion ||
+      target.version !== payload.targetExpectedVersion
+    ) {
+      return completeNoMutation(
+        transaction, token, claim, command, commandTarget,
+        failed('VERSION_CONFLICT', 'A replacement registration changed.'),
+        'access_change'
+      );
+    }
+    const replacement = replaceRuntimeRegistrations(source, target);
+    if (replacement === null) {
+      return completeNoMutation(
+        transaction, token, claim, command, commandTarget,
+        failed(
+          'INVALID_TRANSITION',
+          'Replacement requires an enabled source and disabled target for another agent.'
+        ),
+        'access_change'
+      );
+    }
+    const resultTarget = targetFor(
+      'runtime_registration',
+      replacement.source.id,
+      source.version,
+      replacement.source.version
+    );
+    const value = succeeded({
+      source: compactRuntimeRegistration(replacement.source),
+      target: compactRuntimeRegistration(replacement.target)
+    });
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'runtime_registration',
+        aggregateId: replacement.source.id,
+        expectedPersistedVersion: source.version,
+        aggregate: replacement.source,
+        replacementTarget: {
+          expectedPersistedVersion: target.version,
+          aggregate: replacement.target
+        }
+      },
+      audit: audit(
+        claim, ids, clock, resultTarget, command.actor.actorId, command.type,
+        'access_change', value, 'allow'
+      )
+    }, resultTarget, value);
+  }
+
   async function persistRuntimeRegistration(
     transaction: CanonicalCommandTransaction,
     token: ReceiptClaimToken,
@@ -2954,6 +3058,12 @@ const commandTarget = (command: CanonicalCommand): Target => {
     case 'runtime_registration.update':
     case 'runtime_registration.disable':
       return targetFor('runtime_registration', command.payload.registrationId, command.payload.expectedVersion);
+    case 'runtime_registration.replace':
+      return targetFor(
+        'runtime_registration',
+        command.payload.sourceRegistrationId,
+        command.payload.sourceExpectedVersion
+      );
   }
   return assertNever(command);
 };

@@ -126,7 +126,56 @@ it('renders persisted agent registrations and authorized new-claim controls with
   expect(detail).toContain('registration v3');
   expect(detail).toContain('aria-label="Disable MSA runtime registration for new claims"');
   expect(detail).toContain('Stops new claims');
+  expect(detail).toContain('Replacement not available');
   if (data.access.state !== 'ready') throw new Error('Expected ready access fixture.');
+  const replacementData: WorkspaceData = {...data, access: {state: 'ready', data: {
+    ...data.access.data,
+    actors: [
+      ...data.access.data.actors,
+      {id: 'agent-2', displayName: 'Codex', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}
+    ],
+    memberships: [{
+      projectId: 'project-1',
+      project: 'MSA',
+      projectSlug: 'msa',
+      actorId: 'agent-2',
+      role: 'agent',
+      active: true,
+      version: 1
+    }],
+    agentSystems: [
+      ...data.access.data.agentSystems,
+      {
+        actorId: 'agent-2',
+        profiles: [{
+          id: 'profile-2',
+          runtimeId: 'codex',
+          runtimeProfile: 'read_safe',
+          enabled: true,
+          configHash: 'c'.repeat(64),
+          registrations: [{
+            id: 'registration-2',
+            projectId: 'project-1',
+            project: 'MSA',
+            projectSlug: 'msa',
+            provider: 'provider_neutral',
+            runtimeKey: 'codex',
+            enabled: false,
+            version: 2,
+            canManage: true
+          }],
+          instruction: null,
+          latestRun: null,
+          fleet: {health: 'disabled', freshnessAt: null, currentWork: null, lastReceipt: null}
+        }]
+      }
+    ]
+  }}};
+  const replacement = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data: replacementData}));
+  expect(replacement).toContain('aria-label="Replacement target for MSA"');
+  expect(replacement).toContain('Codex · codex/read_safe');
+  expect(replacement).toContain('aria-label="Replace MSA runtime registration"');
+  expect(replacement).toContain('Atomic switch · preserves history');
   const staleData: WorkspaceData = {...data, access: {state: 'ready', data: {
     ...data.access.data,
     agentSystems: data.access.data.agentSystems.map((system) => ({

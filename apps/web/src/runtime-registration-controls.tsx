@@ -1,7 +1,7 @@
 'use client';
 
 import {useState} from 'react';
-import {Power, PowerOff, RotateCcw} from 'lucide-react';
+import {Power, PowerOff, Replace as ReplaceIcon, RotateCcw} from 'lucide-react';
 
 type RegistrationResponse = Readonly<{
   message?: string;
@@ -18,6 +18,7 @@ export function RuntimeRegistrationControls({
   projectId,
   projectName,
   registrationId,
+  replacementTargets,
   staleRun
 }: Readonly<{
   agentId: string;
@@ -29,17 +30,29 @@ export function RuntimeRegistrationControls({
   projectId: string;
   projectName: string;
   registrationId: string;
+  replacementTargets: readonly Readonly<{
+    id: string;
+    version: number;
+    label: string;
+  }>[];
   staleRun: Readonly<{id: string; version: number}> | null;
 }>) {
   const [busy, setBusy] = useState(false);
+  const [replacementTargetId, setReplacementTargetId] = useState(
+    replacementTargets[0]?.id ?? ''
+  );
   const [notice, setNotice] = useState<Readonly<{
     tone: 'success' | 'error';
     text: string;
   }> | null>(null);
   if (!canManage || csrfToken === null) return null;
 
-  const submit = async (action: 'enable' | 'disable' | 'recover') => {
+  const submit = async (action: 'enable' | 'disable' | 'recover' | 'replace') => {
     if (action === 'recover' && staleRun === null) return;
+    const replacementTarget = replacementTargets.find(
+      (target) => target.id === replacementTargetId
+    );
+    if (action === 'replace' && replacementTarget === undefined) return;
     setBusy(true);
     setNotice(null);
     try {
@@ -51,7 +64,12 @@ export function RuntimeRegistrationControls({
           body: JSON.stringify({
             _csrf: csrfToken,
             action,
-            agentId,
+            ...(action === 'replace'
+              ? {
+                  targetExpectedVersion: replacementTarget?.version,
+                  targetRegistrationId: replacementTarget?.id
+                }
+              : {agentId}),
             ...(action === 'recover'
               ? {
                   agentProfileId,
@@ -74,7 +92,7 @@ export function RuntimeRegistrationControls({
       }
       setNotice({
         tone: 'success',
-        text: `${action === 'recover' ? 'Recovery' : action === 'disable' ? 'Disabled' : 'Enabled'} · receipt ${result.receipt.commandId.slice(0, 8)}`
+        text: `${action === 'recover' ? 'Recovery' : action === 'replace' ? 'Replacement' : action === 'disable' ? 'Disabled' : 'Enabled'} · receipt ${result.receipt.commandId.slice(0, 8)}`
       });
       window.setTimeout(() => window.location.reload(), 450);
     } catch {
@@ -105,6 +123,32 @@ export function RuntimeRegistrationControls({
       {busy ? 'Saving…' : 'Recover'}
     </button>}
     {!enabled || staleRun === null ? null : <small>Ends expired lease · preserves history</small>}
+    {!enabled ? null : replacementTargets.length === 0
+      ? <small>Replacement not available</small>
+      : <>
+          <label>
+            <span className="fcp-sr-only">Replacement target for {projectName}</span>
+            <select
+              aria-label={`Replacement target for ${projectName}`}
+              disabled={busy}
+              onChange={(event) => setReplacementTargetId(event.target.value)}
+              value={replacementTargetId}
+            >
+              {replacementTargets.map((target) =>
+                <option key={target.id} value={target.id}>{target.label}</option>)}
+            </select>
+          </label>
+          <button
+            aria-label={`Replace ${projectName} runtime registration`}
+            disabled={busy}
+            onClick={() => void submit('replace')}
+            type="button"
+          >
+            <ReplaceIcon aria-hidden="true" size={15}/>
+            {busy ? 'Saving…' : 'Replace'}
+          </button>
+          <small>Atomic switch · preserves history</small>
+        </>}
     {notice === null ? null : <p
       aria-live="polite"
       className={`fcp-command-notice ${notice.tone}`}
