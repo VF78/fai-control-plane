@@ -2,7 +2,11 @@ import {and, eq} from 'drizzle-orm';
 import {
   DEFAULT_AGENT_INSTRUCTIONS,
   DEFAULT_AGENT_SETTINGS,
-  hashAgentProfileConfiguration
+  defaultDeliveryProtocolDefinition,
+  effectiveInstructions,
+  hashAgentProfileConfiguration,
+  hashDeliveryProtocolDefinition,
+  type DeliveryProtocolDefinition
 } from '@fai-control-plane/domain';
 import {
   createDatabase,
@@ -10,7 +14,10 @@ import {
   agentProfiles,
   projects,
   projectTrackerRepositoryScopes,
+  runtimeRegistrations,
+  runbooks,
   secretRefs,
+  workspaceInstructionVersions,
   workspaces
 } from './index';
 import {
@@ -39,6 +46,51 @@ const repositorySeeds = [
   {name: 'MSA', slug: 'msa', owner: 'VF78', repository: 'MSA', externalId: 'github:repository:1278325372'},
   {name: 'ASCON', slug: 'ascon', owner: 'VF78', repository: 'ascon', externalId: 'github:repository:1279114011'}
 ] as const;
+
+const launchDeliveryProtocol = (
+  projectSlug: typeof repositorySeeds[number]['slug'],
+  hermesActorId: string,
+  hermesProfileId: string
+): DeliveryProtocolDefinition => {
+  const definition = defaultDeliveryProtocolDefinition();
+  if (projectSlug === 'ascon') return definition;
+  return {
+    ...definition,
+    stages: definition.stages.map((stage) => {
+      if (stage.key === 'development') {
+        return {
+          ...stage,
+          responsibility: {kind: 'project_role', role: 'contributor'} as const
+        };
+      }
+      if (stage.key === 'qa') {
+        return {
+          ...stage,
+          responsibility: {
+            kind: 'actor',
+            actorId: hermesActorId,
+            actorType: 'agent',
+            agentProfileId: hermesProfileId
+          } as const,
+          executionMode: 'autonomous' as const
+        };
+      }
+      if (stage.key === 'staging') {
+        return {
+          ...stage,
+          responsibility: {
+            kind: 'actor',
+            actorId: hermesActorId,
+            actorType: 'agent',
+            agentProfileId: hermesProfileId
+          } as const,
+          executionMode: 'human_approval' as const
+        };
+      }
+      return stage;
+    })
+  };
+};
 
 try {
   const [workspace] = await db.insert(workspaces).values(workspaceSeed)
@@ -120,6 +172,28 @@ try {
   }).onConflictDoNothing({
     target: [agentProfiles.actorId, agentProfiles.runtimeId, agentProfiles.runtimeProfile]
   });
+  const [hermesProfile] = await db.select({id: agentProfiles.id}).from(agentProfiles).where(and(
+    eq(agentProfiles.workspaceId, persistedWorkspace.id),
+    eq(agentProfiles.actorId, hermesActor.id),
+    eq(agentProfiles.runtimeId, hermesConfig.runtimeId),
+    eq(agentProfiles.runtimeProfile, hermesConfig.runtimeProfile)
+  ));
+  if (hermesProfile === undefined) throw new Error('Hermes profile seed failed');
+  const baselineInstructions = effectiveInstructions({
+    instructions: DEFAULT_AGENT_INSTRUCTIONS,
+    settings: DEFAULT_AGENT_SETTINGS
+  });
+  await db.insert(workspaceInstructionVersions).values({
+    workspaceId: persistedWorkspace.id,
+    version: 1,
+    instructions: baselineInstructions.instructions,
+    settings: baselineInstructions.settings as Record<string, unknown>,
+    contentHash: baselineInstructions.hash,
+    authoredByActorId: bootstrapActor.id,
+    approvedByActorId: bootstrapActor.id
+  }).onConflictDoNothing({
+    target: [workspaceInstructionVersions.workspaceId, workspaceInstructionVersions.version]
+  });
   await db.insert(agentProfiles).values({
     workspaceId: persistedWorkspace.id,
     actorId: bootstrapActor.id,
@@ -183,6 +257,67 @@ try {
       launchHumanRoster.members,
       hermesActor.id
     );
+    const deliveryProtocol = launchDeliveryProtocol(
+      repository.slug,
+      hermesActor.id,
+      hermesProfile.id
+    );
+    const deliveryProtocolHash = hashDeliveryProtocolDefinition(deliveryProtocol);
+    const [activeProtocol] = await db.select({
+      id: runbooks.id,
+      contentHash: runbooks.contentHash
+    }).from(runbooks).where(and(
+      eq(runbooks.projectId, persistedProject.id),
+      eq(runbooks.protocolState, 'published'),
+      eq(runbooks.active, true)
+    ));
+    if (
+      activeProtocol !== undefined &&
+      activeProtocol.contentHash !== deliveryProtocolHash
+    ) {
+      throw new Error(
+        `active delivery protocol differs from launch protocol: ${repository.slug}`
+      );
+    }
+    if (activeProtocol === undefined) {
+      await db.insert(runbooks).values({
+        projectId: persistedProject.id,
+        name: 'Delivery',
+        version: 1,
+        definition: deliveryProtocol as unknown as Record<string, unknown>,
+        active: true,
+        protocolState: 'published',
+        revision: 1,
+        contentHash: deliveryProtocolHash
+      });
+    }
+    if (repository.slug === 'msa') {
+      await db.insert(runtimeRegistrations).values({
+        projectId: persistedProject.id,
+        actorId: hermesActor.id,
+        agentProfileId: hermesProfile.id,
+        provider: 'provider_neutral',
+        runtimeKey: 'hermes',
+        enabled: true,
+        serviceMaxAgeSeconds: 300,
+        schedulerMaxAgeSeconds: 900,
+        deliveryMaxAgeSeconds: 93_600
+      }).onConflictDoUpdate({
+        target: [
+          runtimeRegistrations.projectId,
+          runtimeRegistrations.actorId,
+          runtimeRegistrations.agentProfileId,
+          runtimeRegistrations.provider,
+          runtimeRegistrations.runtimeKey
+        ],
+        set: {
+          enabled: true,
+          serviceMaxAgeSeconds: 300,
+          schedulerMaxAgeSeconds: 900,
+          deliveryMaxAgeSeconds: 93_600
+        }
+      });
+    }
     await db.insert(projectTrackerRepositoryScopes).values({
       projectId: persistedProject.id,
       provider: 'github',
