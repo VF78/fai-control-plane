@@ -1,6 +1,7 @@
 import {and, eq, isNull, notInArray} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {ensureNotificationIntentForRiskSignal} from './notification-intent';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Database['transaction']>[0] extends (
@@ -66,7 +67,7 @@ export const reconcileRiskSignal = async (
     return;
   }
 
-  await tx.insert(schema.riskSignals).values({
+  const [signal] = await tx.insert(schema.riskSignals).values({
     projectId,
     workItemId,
     agentRunId,
@@ -108,6 +109,20 @@ export const reconcileRiskSignal = async (
       observedAt,
       updatedAt: observedAt
     }
+  }).returning({id: schema.riskSignals.id});
+  if (signal === undefined) {
+    throw new Error('Risk signal reconciliation did not return an occurrence.');
+  }
+  await ensureNotificationIntentForRiskSignal(tx, {
+    projectId,
+    riskSignalId: signal.id,
+    category: condition.code,
+    severity: condition.severity,
+    summary: condition.summary,
+    nextAction: condition.nextAction,
+    evidenceReferences: condition.evidenceReferences,
+    ownerActorId: condition.ownerActorId ?? null,
+    createdAt: observedAt
   });
 };
 

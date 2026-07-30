@@ -121,6 +121,14 @@ export const riskSignalDispositionKindEnum = pgEnum(
   'risk_signal_disposition_kind',
   ['acknowledged', 'snoozed']
 );
+export const notificationAudienceKindEnum = pgEnum(
+  'notification_audience_kind',
+  ['actor', 'project_operators']
+);
+export const notificationDeliveryStatusEnum = pgEnum(
+  'notification_delivery_status',
+  ['accepted', 'delivered', 'failed']
+);
 export const outboxStatusEnum = pgEnum('outbox_status', [
   'pending',
   'publishing',
@@ -1802,6 +1810,96 @@ export const riskSignalDispositionEvents = pgTable(
     ),
     check(
       'risk_signal_disposition_events_version_positive',
+      sql`${table.version} > 0`
+    )
+  ]
+);
+
+export const notificationIntents = pgTable(
+  'notification_intents',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    riskSignalId: uuid('risk_signal_id')
+      .notNull()
+      .references(() => riskSignals.id, {onDelete: 'restrict'}),
+    audienceKind: notificationAudienceKindEnum('audience_kind').notNull(),
+    audienceActorId: uuid('audience_actor_id').references(() => actors.id, {
+      onDelete: 'restrict'
+    }),
+    category: text('category').notNull(),
+    severity: riskSeverityEnum('severity').notNull(),
+    summary: text('summary').notNull(),
+    nextAction: text('next_action').notNull(),
+    evidenceReferences: jsonb('evidence_references')
+      .$type<readonly Readonly<{type: string; id: string}>[]>()
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
+    deduplicationKey: text('deduplication_key').notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('notification_intents_risk_signal_unique')
+      .on(table.riskSignalId),
+    uniqueIndex('notification_intents_project_dedup_unique')
+      .on(table.projectId, table.deduplicationKey),
+    index('notification_intents_project_created_idx')
+      .on(table.projectId, table.createdAt),
+    check(
+      'notification_intents_audience_shape',
+      sql`(${table.audienceKind} = 'actor' and ${table.audienceActorId} is not null)
+        or (${table.audienceKind} = 'project_operators' and ${table.audienceActorId} is null)`
+    ),
+    check(
+      'notification_intents_category_key',
+      sql`${table.category} ~ '^[a-z][a-z0-9_]{0,127}$'`
+    ),
+    check(
+      'notification_intents_dedup_key_bounded',
+      sql`length(${table.deduplicationKey}) between 1 and 200`
+    ),
+    check(
+      'notification_intents_actionable',
+      sql`length(btrim(${table.summary})) between 1 and 500
+        and length(btrim(${table.nextAction})) between 1 and 500`
+    )
+  ]
+);
+
+export const notificationDeliveryReceipts = pgTable(
+  'notification_delivery_receipts',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    notificationIntentId: uuid('notification_intent_id')
+      .notNull()
+      .references(() => notificationIntents.id, {onDelete: 'restrict'}),
+    commandId: text('command_id').notNull(),
+    correlationId: text('correlation_id').notNull(),
+    status: notificationDeliveryStatusEnum('status').notNull(),
+    failureCode: text('failure_code'),
+    version: integer('version').notNull(),
+    occurredAt: timestamp('occurred_at', {withTimezone: true}).notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('notification_delivery_receipts_project_command_unique')
+      .on(table.projectId, table.commandId),
+    uniqueIndex('notification_delivery_receipts_intent_version_unique')
+      .on(table.notificationIntentId, table.version),
+    index('notification_delivery_receipts_project_intent_idx')
+      .on(table.projectId, table.notificationIntentId, table.version),
+    check(
+      'notification_delivery_receipts_failure_shape',
+      sql`(${table.status} = 'failed' and ${table.failureCode} ~ '^[a-z][a-z0-9_]{0,63}$')
+        or (${table.status} <> 'failed' and ${table.failureCode} is null)`
+    ),
+    check(
+      'notification_delivery_receipts_version_positive',
       sql`${table.version} > 0`
     )
   ]

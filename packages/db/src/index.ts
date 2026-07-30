@@ -20,6 +20,16 @@ export {
   type RiskSignalDispositionReason,
   type RiskSignalDispositionResult
 } from './risk-signal-disposition';
+export {
+  createPostgresNotificationDeliveryReceiptStore,
+  ensureNotificationIntentForRiskSignal,
+  loadFailedNotificationDeliveryFacts,
+  type FailedNotificationDeliveryFact,
+  type NotificationDeliveryReceipt,
+  type NotificationDeliveryReceiptCommand,
+  type NotificationDeliveryReceiptResult,
+  type NotificationIntentInput
+} from './notification-intent';
 export {createPostgresUnitOfWork} from './persistence';
 export {
   createPostgresDeliveryProtocolStore
