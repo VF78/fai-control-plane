@@ -117,6 +117,10 @@ export const riskSignalClassEnum = pgEnum('risk_signal_class', [
   'fact',
   'inference'
 ]);
+export const riskSignalDispositionKindEnum = pgEnum(
+  'risk_signal_disposition_kind',
+  ['acknowledged', 'snoozed']
+);
 export const outboxStatusEnum = pgEnum('outbox_status', [
   'pending',
   'publishing',
@@ -1748,6 +1752,58 @@ export const riskSignals = pgTable(
     uniqueIndex('risk_signals_project_unresolved_dedup_unique')
       .on(table.projectId, table.deduplicationKey)
       .where(sql`${table.resolvedAt} is null`)
+  ]
+);
+
+export const riskSignalDispositionEvents = pgTable(
+  'risk_signal_disposition_events',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {onDelete: 'restrict'}),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    riskSignalId: uuid('risk_signal_id')
+      .notNull()
+      .references(() => riskSignals.id, {onDelete: 'restrict'}),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    commandId: text('command_id').notNull(),
+    correlationId: text('correlation_id').notNull(),
+    kind: riskSignalDispositionKindEnum('kind').notNull(),
+    reason: text('reason').notNull(),
+    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
+    reentryCondition: text('reentry_condition').notNull(),
+    version: integer('version').notNull(),
+    occurredAt: timestamp('occurred_at', {withTimezone: true}).notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('risk_signal_disposition_events_workspace_command_unique')
+      .on(table.workspaceId, table.commandId),
+    uniqueIndex('risk_signal_disposition_events_signal_version_unique')
+      .on(table.riskSignalId, table.version),
+    index('risk_signal_disposition_events_project_signal_idx')
+      .on(table.projectId, table.riskSignalId, table.version),
+    check(
+      'risk_signal_disposition_events_reason_bounded',
+      sql`${table.reason} in ('investigating', 'awaiting_evidence', 'planned_maintenance', 'external_dependency')`
+    ),
+    check(
+      'risk_signal_disposition_events_expiry_after_occurrence',
+      sql`${table.expiresAt} > ${table.occurredAt}`
+    ),
+    check(
+      'risk_signal_disposition_events_reentry_condition',
+      sql`${table.reentryCondition} = 'risk_unresolved_at_expiry'`
+    ),
+    check(
+      'risk_signal_disposition_events_version_positive',
+      sql`${table.version} > 0`
+    )
   ]
 );
 

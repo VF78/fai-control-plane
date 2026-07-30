@@ -1,5 +1,7 @@
 export type AttentionQueueItem = Readonly<{
   id: string;
+  /** Canonical RiskSignal identity; absent for compatibility-only operational rows. */
+  riskSignalId: string | null;
   projectId: string;
   /** Canonical WorkItem identity when the signal is task-scoped. */
   workItemId: string | null;
@@ -22,7 +24,24 @@ export type AttentionQueueItem = Readonly<{
   evidence: string;
   /** Compatibility-only provider action for the legacy operator surface. */
   action: Readonly<{label: string; href: string | null}>;
+  /** Latest immutable disposition event version, including after expiry. */
+  dispositionVersion: number;
+  disposition: Readonly<{
+    kind: 'acknowledged' | 'snoozed';
+    reason: 'investigating' | 'awaiting_evidence' | 'planned_maintenance' | 'external_dependency';
+    expiresAt: Date;
+    reentryCondition: 'risk_unresolved_at_expiry';
+    version: number;
+  }> | null;
 }>;
+
+export const activeRiskDisposition = (
+  disposition: AttentionQueueItem['disposition'],
+  asOf: Date
+): AttentionQueueItem['disposition'] =>
+  disposition !== null && disposition.expiresAt.getTime() > asOf.getTime()
+    ? disposition
+    : null;
 
 const severityRank: Record<AttentionQueueItem['severity'], number> = {
   red: 0,

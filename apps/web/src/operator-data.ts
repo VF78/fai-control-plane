@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {and, desc, eq, inArray, isNull, or} from 'drizzle-orm';
+import {and, desc, eq, inArray, isNull, max, or} from 'drizzle-orm';
 import {
   CANONICAL_COMMAND_POLICY,
   parseRunnerCompletionPayload
@@ -28,6 +28,7 @@ import {
   projects,
   projectMemberships,
   runbooks,
+  riskSignalDispositionEvents,
   riskSignals,
   scheduledJobs,
   secretRefs,
@@ -42,6 +43,7 @@ import {
   type LedgerCost,
   type LedgerRecord,
   type LedgerRoi,
+  type RiskSignalDispositionReason,
   type ValueEvidence
 } from '@fai-control-plane/db';
 import {
@@ -58,7 +60,11 @@ import {
   type CanonicalJson,
   type PolicyDecision
 } from '@fai-control-plane/domain';
-import {rankAttentionQueue, type AttentionQueueItem} from './attention-queue';
+import {
+  activeRiskDisposition,
+  rankAttentionQueue,
+  type AttentionQueueItem
+} from './attention-queue';
 
 export const operatorProjectSlugs = ['msa', 'ascon'] as const;
 export type OperatorProjectSlug = (typeof operatorProjectSlugs)[number];
@@ -298,7 +304,15 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
   const configuredProjects = await scopedProjects(db);
   if (configuredProjects.length === 0) return {projects: [], attention: []};
   const projectIds = configuredProjects.map(({id}) => id);
-  const [snapshots, operations, signals, failedOutbox, unhealthyJobs, items, bindings, metricItems, pendingApprovals, projectMilestones, projectDeadlines, transitions] = await Promise.all([
+  const latestDispositionVersions = db.select({
+    riskSignalId: riskSignalDispositionEvents.riskSignalId,
+    latestVersion: max(riskSignalDispositionEvents.version)
+      .as('latest_version')
+  }).from(riskSignalDispositionEvents)
+    .where(inArray(riskSignalDispositionEvents.projectId, projectIds))
+    .groupBy(riskSignalDispositionEvents.riskSignalId)
+    .as('latest_risk_disposition_versions');
+  const [snapshots, operations, signals, dispositions, failedOutbox, unhealthyJobs, items, bindings, metricItems, pendingApprovals, projectMilestones, projectDeadlines, transitions] = await Promise.all([
     db.select({projectId: dashboardSnapshots.projectId, health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(inArray(dashboardSnapshots.projectId, projectIds)).orderBy(desc(dashboardSnapshots.capturedAt)),
     db.select({projectId: trackerSnapshotOperations.projectId, createdAt: trackerSnapshotOperations.createdAt})
@@ -318,6 +332,24 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       ))
       .where(and(inArray(riskSignals.projectId, projectIds), isNull(riskSignals.resolvedAt)))
       .orderBy(desc(riskSignals.updatedAt), riskSignals.id),
+    db.select({
+      riskSignalId: riskSignalDispositionEvents.riskSignalId,
+      kind: riskSignalDispositionEvents.kind,
+      reason: riskSignalDispositionEvents.reason,
+      expiresAt: riskSignalDispositionEvents.expiresAt,
+      reentryCondition: riskSignalDispositionEvents.reentryCondition,
+      version: riskSignalDispositionEvents.version
+    }).from(riskSignalDispositionEvents)
+      .innerJoin(latestDispositionVersions, and(
+        eq(
+          latestDispositionVersions.riskSignalId,
+          riskSignalDispositionEvents.riskSignalId
+        ),
+        eq(
+          latestDispositionVersions.latestVersion,
+          riskSignalDispositionEvents.version
+        )
+      )),
     db.select({
       id: outboxEvents.id, projectId: outboxEvents.projectId, payload: outboxEvents.payload,
       attemptCount: outboxEvents.attemptCount, failureCode: outboxEvents.failureCode, updatedAt: outboxEvents.updatedAt
@@ -348,20 +380,40 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
   const itemById = new Map(items.map((item) => [item.id, item]));
   const urlByItemId = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
+  const dispositionByRiskSignalId = new Map(
+    dispositions.map((disposition) => [
+      disposition.riskSignalId,
+      {
+        ...disposition,
+        reason: disposition.reason as RiskSignalDispositionReason,
+        reentryCondition: 'risk_unresolved_at_expiry' as const
+      }
+    ])
+  );
+  const now = Date.now();
   const attention = rankAttentionQueue([
     ...signals.flatMap((signal): AttentionQueueItem[] => {
       const project = projectById.get(signal.projectId);
       if (project === undefined) return [];
+      const recordedDisposition =
+        dispositionByRiskSignalId.get(signal.id) ?? null;
+      const disposition = activeRiskDisposition(
+        recordedDisposition,
+        new Date(now)
+      );
+      if (disposition?.kind === 'snoozed') return [];
       const url = signal.workItemId === null ? null : urlByItemId.get(signal.workItemId) ?? null;
       return [{
-        id: `risk:${signal.id}`, projectId: signal.projectId, severity: signal.severity, project: project.name,
+        id: `risk:${signal.id}`, riskSignalId: signal.id, projectId: signal.projectId, severity: signal.severity, project: project.name,
         workItemId: signal.workItemId,
         object: signal.workItemTitle ?? 'Project risk signal', reason: signal.summary,
         stage: signal.stage, signalClass: signal.signalClass, impact: signal.impact,
         freshness: signal.observedAt, owner: signal.owner, evidenceReferences: signal.evidenceReferences,
         nextAction: signal.nextAction, sourceUrl: url,
         evidence: signal.evidenceReferences.length === 0 ? 'No evidence references recorded' : signal.evidenceReferences.map((reference) => `${reference.type}: ${reference.id}`).join(' · '),
-        action: {label: url === null ? 'No external record' : 'Open source', href: url}
+        action: {label: url === null ? 'No external record' : 'Open source', href: url},
+        dispositionVersion: recordedDisposition?.version ?? 0,
+        disposition
       }];
     }),
     ...failedOutbox.flatMap((event): AttentionQueueItem[] => {
@@ -372,12 +424,14 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       const item = workItemId === null ? undefined : itemById.get(workItemId);
       const url = workItemId === null ? null : urlByItemId.get(workItemId) ?? null;
       return [{
-        id: `outbox:${event.id}`, projectId: event.projectId, severity: 'red', project: project.name,
+        id: `outbox:${event.id}`, riskSignalId: null, projectId: event.projectId, severity: 'red', project: project.name,
         workItemId,
         object: item?.title ?? 'GitHub project status write', reason: event.failureCode ?? 'GitHub status write failed',
         stage: null, signalClass: null, impact: null, freshness: event.updatedAt, owner: null,
         evidenceReferences: [], nextAction: null, sourceUrl: url,
-        evidence: `Outbox failed after ${event.attemptCount} attempts`, action: {label: url === null ? 'No external record' : 'Open source', href: url}
+        evidence: `Outbox failed after ${event.attemptCount} attempts`, action: {label: url === null ? 'No external record' : 'Open source', href: url},
+        dispositionVersion: 0,
+        disposition: null
       }];
     }),
     ...unhealthyJobs.flatMap((job): AttentionQueueItem[] => {
@@ -385,17 +439,18 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       const project = projectById.get(job.projectId);
       if (project === undefined) return [];
       return [{
-        id: `job:${job.id}`, projectId: job.projectId, severity: 'red', project: project.name, object: job.name,
+        id: `job:${job.id}`, riskSignalId: null, projectId: job.projectId, severity: 'red', project: project.name, object: job.name,
         workItemId: null,
         reason: 'Scheduled job is unhealthy', stage: null, signalClass: null, impact: null,
         freshness: job.heartbeatAt ?? job.updatedAt, owner: null, evidenceReferences: [], nextAction: null,
-        sourceUrl: null, evidence: 'Scheduled job status', action: {label: 'No external record', href: null}
+        sourceUrl: null, evidence: 'Scheduled job status', action: {label: 'No external record', href: null},
+        dispositionVersion: 0,
+        disposition: null
       }];
     })
   ]);
   const snapshotsByProject = latestByProject(snapshots);
   const operationsByProject = latestByProject(operations);
-  const now = Date.now();
   return {
     projects: configuredProjects.map((project) => {
       const projectSignals = signals.filter((signal) => signal.projectId === project.id);

@@ -11,6 +11,15 @@ export {
   type RiskSignalReconciliation,
   type RiskSignalSetMember
 } from './risk-signal';
+export {
+  RISK_SIGNAL_REENTRY_CONDITION,
+  createPostgresRiskSignalDispositionStore,
+  riskSignalDispositionReasons,
+  type RiskSignalDisposition,
+  type RiskSignalDispositionCommand,
+  type RiskSignalDispositionReason,
+  type RiskSignalDispositionResult
+} from './risk-signal-disposition';
 export {createPostgresUnitOfWork} from './persistence';
 export {
   createPostgresDeliveryProtocolStore

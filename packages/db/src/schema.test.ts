@@ -31,6 +31,7 @@ const requiredTables = [
   schema.accessRequests,
   schema.artifacts,
   schema.riskSignals,
+  schema.riskSignalDispositionEvents,
   schema.secretRefs,
   schema.projectTrackerRepositoryScopes,
   schema.auditEvents,
@@ -68,6 +69,7 @@ describe('canonical schema foundation', () => {
       'access_requests',
       'artifacts',
       'risk_signals',
+      'risk_signal_disposition_events',
       'secret_refs',
       'project_tracker_repository_scopes',
       'audit_events',
@@ -165,5 +167,17 @@ describe('canonical schema foundation', () => {
         'deduplication_key'
       ])
     );
+    expect(Object.values(getTableColumns(
+      schema.riskSignalDispositionEvents
+    )).map(({name}) => name)).toEqual(expect.arrayContaining([
+      'risk_signal_id',
+      'command_id',
+      'kind',
+      'reason',
+      'expires_at',
+      'reentry_condition',
+      'version',
+      'occurred_at'
+    ]));
   });
 });
