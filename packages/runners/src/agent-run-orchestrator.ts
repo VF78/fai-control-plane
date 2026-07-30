@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {lstat, mkdir, realpath, writeFile} from 'node:fs/promises';
+import {lstat, mkdir, realpath, rmdir, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import type {
   AgentRuntime,
@@ -162,14 +162,31 @@ const canonicalRoot = async (value: string): Promise<string> => {
   return canonical;
 };
 
-const receiptExists = async (receiptPath: string): Promise<boolean> => {
+const createArtifactDirectory = async (
+  artifactRoot: string,
+  runId: string
+): Promise<string> => {
+  const artifactPath = path.join(artifactRoot, runId);
   try {
-    await lstat(receiptPath);
-    return true;
+    await mkdir(artifactPath, {mode: 0o700});
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      fail('artifact_directory_collision');
+    }
     throw error;
   }
+  const [canonical, metadata] = await Promise.all([
+    realpath(artifactPath),
+    lstat(artifactPath)
+  ]);
+  if (
+    canonical !== artifactPath ||
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink()
+  ) {
+    fail('unsafe_artifact_directory');
+  }
+  return artifactPath;
 };
 
 const summaryArtifact = (
@@ -337,18 +354,36 @@ export const createLocalAgentRunOrchestrator = (
     async run(envelope) {
       if (!UUID_PATTERN.test(envelope.runId)) fail('invalid_run_id');
       const artifactRoot = await canonicalRoot(options.artifactRoot);
-      const artifactPath = path.join(artifactRoot, envelope.runId);
-      const receiptPath = path.join(artifactPath, RECEIPT_FILENAME);
-      if (await receiptExists(receiptPath)) fail('receipt_already_exists');
-      await mkdir(artifactPath, {recursive: true, mode: 0o700});
-
-      const worktree = await options.worktrees.prepare({
-        runId: envelope.runId,
-        baseCommit: envelope.baseCommit
-      });
-      const runtimeResult = await options.runtime.run(
-        runtimeInput(envelope, worktree, artifactPath)
+      const artifactPath = await createArtifactDirectory(
+        artifactRoot,
+        envelope.runId
       );
+      const receiptPath = path.join(artifactPath, RECEIPT_FILENAME);
+
+      let worktree: AgentRunWorktree;
+      try {
+        worktree = await options.worktrees.prepare({
+          runId: envelope.runId,
+          baseCommit: envelope.baseCommit
+        });
+      } catch (error) {
+        await rmdir(artifactPath).catch(() => undefined);
+        throw error;
+      }
+      let runtimeResult: AgentRuntimeResult;
+      try {
+        runtimeResult = await options.runtime.run(
+          runtimeInput(envelope, worktree, artifactPath)
+        );
+      } catch (error) {
+        try {
+          const inspection = await options.worktrees.inspect(worktree);
+          if (!inspection.dirty) await options.worktrees.cleanup(worktree);
+        } catch {
+          // Cleanup is best-effort here; preserve the original runtime failure.
+        }
+        throw error;
+      }
       const inspection = await options.worktrees.inspect(worktree);
       const worktreeDisposition = inspection.dirty
         ? 'retained_dirty'

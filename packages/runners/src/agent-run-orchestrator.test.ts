@@ -1,5 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {
+  lstat,
+  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -77,7 +79,7 @@ describe('local AgentRun orchestrator', () => {
             durationMs: 60_000,
             stdout: emptyOutput(),
             stderr: emptyOutput(),
-            status: 'timed_out',
+            status: input.signal?.aborted ? 'cancelled' : 'timed_out',
             exitCode: null,
             signal: 'SIGTERM'
           };
@@ -157,9 +159,11 @@ describe('local AgentRun orchestrator', () => {
     });
     expect(cleanBody).not.toContain(clean.prompt);
     expect((await stat(cleanResult.receiptRef)).mode & 0o777).toBe(0o600);
-    expect(manager.cleanup).toHaveBeenCalledTimes(1);
+    expect(manager.cleanup).toHaveBeenCalledWith(
+      expect.objectContaining({runId: clean.runId})
+    );
     await expect(orchestrator.run(clean)).rejects.toMatchObject({
-      code: 'receipt_already_exists'
+      code: 'artifact_directory_collision'
     });
 
     const dirtyTimeout = envelope('write_scoped');
@@ -173,9 +177,28 @@ describe('local AgentRun orchestrator', () => {
         reason: 'runtime_usage_not_available'
       }
     });
-    expect(manager.cleanup).toHaveBeenCalledTimes(1);
+    expect(manager.cleanup).not.toHaveBeenCalledWith(
+      expect.objectContaining({runId: dirtyTimeout.runId})
+    );
+    expect(worktrees.has(dirtyTimeout.runId)).toBe(true);
     expect(await readFile(dirtyResult.receiptRef, 'utf8'))
       .not.toContain(dirtyTimeout.prompt);
+
+    const cancellation = envelope('write_scoped');
+    const controller = new AbortController();
+    controller.abort();
+    const cancelledResult = await orchestrator.run({
+      ...cancellation,
+      signal: controller.signal
+    });
+    expect(cancelledResult.receipt).toMatchObject({
+      finalStatus: 'cancelled',
+      worktreeDisposition: 'retained_dirty',
+      nextAction: 'review_worktree'
+    });
+    expect(worktrees.has(cancellation.runId)).toBe(true);
+    await expect(readFile(cancelledResult.receiptRef, 'utf8'))
+      .resolves.toContain('"finalStatus": "cancelled"');
 
     const publisher = {
       publishDraftChange: vi.fn(async (): Promise<RepositoryHostPublicationReceipt> => ({
@@ -240,5 +263,141 @@ describe('local AgentRun orchestrator', () => {
       nextAction: 'retry_explicitly'
     });
     expect(manager.cleanup).toHaveBeenCalledTimes(4);
+  });
+
+  it('rejects artifact collisions and traversal before starting a runtime', async () => {
+    const artifactRoot = await realpath(
+      await mkdtemp(path.join(tmpdir(), 'fai-local-run-collision-'))
+    );
+    const collidingRunId = randomUUID();
+    await mkdir(path.join(artifactRoot, collidingRunId));
+    const manager: WorktreeManager = {
+      prepare: vi.fn(),
+      inspect: vi.fn(),
+      cleanup: vi.fn()
+    };
+    const runtime: AgentRuntime = {
+      runtimeId: 'test-runtime',
+      run: vi.fn()
+    };
+    const orchestrator = createLocalAgentRunOrchestrator({
+      artifactRoot,
+      worktrees: manager,
+      runtime
+    });
+    const envelope = {
+      runId: collidingRunId,
+      packetId: randomUUID(),
+      packetHash: 'a'.repeat(64),
+      baseCommit: 'b'.repeat(40),
+      prompt: 'approved task',
+      profile: 'read_safe' as const,
+      timeboxMinutes: 15
+    };
+
+    await expect(orchestrator.run(envelope)).rejects.toMatchObject({
+      code: 'artifact_directory_collision'
+    });
+    await expect(orchestrator.run({
+      ...envelope,
+      runId: `../${randomUUID()}`
+    })).rejects.toMatchObject({code: 'invalid_run_id'});
+    expect(manager.prepare).not.toHaveBeenCalled();
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it('removes empty allocation on prepare failure', async () => {
+    const artifactRoot = await realpath(
+      await mkdtemp(path.join(tmpdir(), 'fai-local-run-prepare-failure-'))
+    );
+    const runId = randomUUID();
+    const prepareFailure = new Error('prepare failed');
+    const manager: WorktreeManager = {
+      prepare: vi.fn(async () => {
+        throw prepareFailure;
+      }),
+      inspect: vi.fn(),
+      cleanup: vi.fn()
+    };
+    const runtime: AgentRuntime = {
+      runtimeId: 'test-runtime',
+      run: vi.fn()
+    };
+    const orchestrator = createLocalAgentRunOrchestrator({
+      artifactRoot,
+      worktrees: manager,
+      runtime
+    });
+
+    await expect(orchestrator.run({
+      runId,
+      packetId: randomUUID(),
+      packetHash: 'a'.repeat(64),
+      baseCommit: 'b'.repeat(40),
+      prompt: 'approved task',
+      profile: 'read_safe',
+      timeboxMinutes: 15
+    })).rejects.toBe(prepareFailure);
+    await expect(lstat(path.join(artifactRoot, runId)))
+      .rejects.toMatchObject({code: 'ENOENT'});
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it('preserves runtime failures and exception-cleans only clean worktrees', async () => {
+    const artifactRoot = await realpath(
+      await mkdtemp(path.join(tmpdir(), 'fai-local-run-runtime-failure-'))
+    );
+    const cleanRunId = randomUUID();
+    const dirtyRunId = randomUUID();
+    const runtimeFailures = new Map([
+      [cleanRunId, new Error('clean runtime failed')],
+      [dirtyRunId, new Error('dirty runtime failed')]
+    ]);
+    const manager: WorktreeManager = {
+      prepare: vi.fn(async ({runId, baseCommit}) => ({
+        runId,
+        repositoryRoot: '/trusted/repository',
+        worktreePath: `/trusted/worktrees/${runId}`,
+        branch: `fai/run/${runId}`,
+        baseCommit,
+        status: 'prepared' as const
+      })),
+      inspect: vi.fn(async (worktree) => ({
+        headCommit: worktree.baseCommit,
+        dirty: worktree.runId === dirtyRunId
+      })),
+      cleanup: vi.fn(async () => {
+        throw new Error('cleanup failed');
+      })
+    };
+    const runtime: AgentRuntime = {
+      runtimeId: 'test-runtime',
+      run: vi.fn(async (input) => {
+        throw runtimeFailures.get(input.runId);
+      })
+    };
+    const orchestrator = createLocalAgentRunOrchestrator({
+      artifactRoot,
+      worktrees: manager,
+      runtime
+    });
+    const envelope = (runId: string): LocalAgentRunEnvelope => ({
+      runId,
+      packetId: randomUUID(),
+      packetHash: 'a'.repeat(64),
+      baseCommit: 'b'.repeat(40),
+      prompt: 'approved task',
+      profile: 'write_scoped',
+      timeboxMinutes: 15
+    });
+
+    await expect(orchestrator.run(envelope(cleanRunId)))
+      .rejects.toBe(runtimeFailures.get(cleanRunId));
+    await expect(orchestrator.run(envelope(dirtyRunId)))
+      .rejects.toBe(runtimeFailures.get(dirtyRunId));
+    expect(manager.cleanup).toHaveBeenCalledTimes(1);
+    expect(manager.cleanup).toHaveBeenCalledWith(
+      expect.objectContaining({runId: cleanRunId})
+    );
   });
 });
