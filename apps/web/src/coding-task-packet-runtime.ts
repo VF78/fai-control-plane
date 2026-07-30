@@ -93,7 +93,7 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
     if (operator === undefined || operator.capabilities[requiredCapability] !== true) {
       return {status: 'forbidden'};
     }
-    const [hermesProfile] = input.agentProfileId === undefined ? [] : await db.select({
+    const [selectedProfile] = input.agentProfileId === undefined ? [] : await db.select({
       id: agentProfiles.id,
       runtimeId: agentProfiles.runtimeId,
       runtimeProfile: agentProfiles.runtimeProfile,
@@ -106,11 +106,9 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
     }).from(agentProfiles).where(and(
       eq(agentProfiles.id, input.agentProfileId),
       eq(agentProfiles.workspaceId, input.workspaceId),
-      eq(agentProfiles.runtimeId, 'hermes'),
-      eq(agentProfiles.runtimeProfile, 'read_safe'),
       eq(agentProfiles.enabled, true)
     )).limit(1);
-    if (input.agentProfileId !== undefined && hermesProfile === undefined) return {status: 'ineligible'};
+    if (input.agentProfileId !== undefined && selectedProfile === undefined) return {status: 'ineligible'};
 
     const candidates = await db.select({
       projectId: projects.id,
@@ -161,9 +159,9 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
     }
 
     const sourceIdentity = `:github:${candidate.sourceExternalVersion}`;
-    const profileIdentity = hermesProfile === undefined
+    const profileIdentity = selectedProfile === undefined
       ? ''
-      : `:hermes:${hermesProfile.id}:${hermesProfile.version}:${hermesProfile.configHash}`;
+      : `:profile:${selectedProfile.id}:${selectedProfile.version}:${selectedProfile.configHash}`;
     const eventId = deterministicUuid(
       `coding_task_packet.event.v2:${candidate.workItemId}:${candidate.workItemVersion}${sourceIdentity}${profileIdentity}`
     );
@@ -232,8 +230,8 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
           outOfScope: ['production', 'deploy', 'merge', 'protected_config', 'customer_data'],
           relevantLinks: [sourceUrl],
           relevantFiles: [],
-          allowedTools: hermesProfile?.allowedTools ?? ['git', 'read', 'test', 'build', 'issue_read'],
-          forbiddenSurfaces: hermesProfile?.forbiddenSurfaces ??
+          allowedTools: selectedProfile?.allowedTools ?? ['git', 'read', 'test', 'build', 'issue_read'],
+          forbiddenSurfaces: selectedProfile?.forbiddenSurfaces ??
             ['production', 'deploy', 'merge', 'protected_config', 'customer_data'],
           dataPolicy: {
             issueContent: 'untrusted_frozen_at_packet_build',
@@ -244,21 +242,21 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
           expectedOutputSchema: {implementation: 'scoped', verificationEvidence: 'required'},
           reviewerActorId: input.actorId,
           approverActorId: input.actorId,
-          runtimeProfile: hermesProfile?.runtimeProfile ?? 'write_scoped',
+          runtimeProfile: selectedProfile?.runtimeProfile ?? 'write_scoped',
           authMode: 'agent',
           secretsRef: null,
-          ...(hermesProfile === undefined ? {} : {
+          ...(selectedProfile === undefined ? {} : {
             agentProfileSnapshot: {
-              profileId: hermesProfile.id,
-              runtimeId: 'hermes' as const,
-              runtimeProfile: 'read_safe' as const,
-              allowedTools: hermesProfile.allowedTools,
-              forbiddenSurfaces: hermesProfile.forbiddenSurfaces,
+              profileId: selectedProfile.id,
+              runtimeId: selectedProfile.runtimeId,
+              runtimeProfile: selectedProfile.runtimeProfile,
+              allowedTools: selectedProfile.allowedTools,
+              forbiddenSurfaces: selectedProfile.forbiddenSurfaces,
               enabled: true,
-              configVersion: hermesProfile.version,
-              configHash: hermesProfile.configHash,
-              instructions: hermesProfile.instructions,
-              settings: hermesProfile.settings as {
+              configVersion: selectedProfile.version,
+              configHash: selectedProfile.configHash,
+              instructions: selectedProfile.instructions,
+              settings: selectedProfile.settings as {
                 resultFormat: 'structured_v1';
                 includeEvidence: boolean;
               }

@@ -46,6 +46,11 @@ import type {
   NodePgTransaction
 } from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {
+  isRuntimeAvailable,
+  isTaskPacketProfileEligible,
+  matchesTaskPacketProfileSnapshot
+} from './runtime-availability';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = NodePgTransaction<
@@ -1016,13 +1021,10 @@ const validateAgentRunOwnership = async (
   if (packet === undefined || packet.contentHash !== aggregate.confirmedPacketHash) {
     return {status: 'not_found'};
   }
-  if (
-    packet.agentProfileSnapshotId !== null &&
-    (
-      process.env.HERMES_RUNNER_ENABLED !== 'true' ||
-      aggregate.agentProfileId !== packet.agentProfileSnapshotId
-    )
-  ) return {status: 'not_found'};
+  if (!matchesTaskPacketProfileSnapshot(
+    packet.agentProfileSnapshotId,
+    aggregate.agentProfileId
+  )) return {status: 'not_found'};
   const [profile] = await tx
     .select({id: schema.agentProfiles.id, runtimeId: schema.agentProfiles.runtimeId})
     .from(schema.agentProfiles)
@@ -1044,10 +1046,11 @@ const validateAgentRunOwnership = async (
         isNull(schema.actors.disabledAt)
       )
     );
-  if (profile?.runtimeId === 'hermes' && packet.agentProfileSnapshotId === null) {
-    return {status: 'not_found'};
-  }
-  if (profile === undefined) return {status: 'not_found'};
+  if (profile === undefined || !isTaskPacketProfileEligible(
+    profile.runtimeId,
+    packet.agentProfileSnapshotId,
+    aggregate.agentProfileId
+  )) return {status: 'not_found'};
   return {
     status: 'found',
     projectId: packet.projectId,
@@ -2064,6 +2067,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               packetId: schema.taskPackets.id,
               approverActorId: schema.taskPackets.approverActorId,
               contentHash: schema.taskPackets.contentHash,
+              runtimeProfile: schema.taskPackets.runtimeProfile,
               agentProfileSnapshotId: schema.taskPackets.agentProfileSnapshotId,
               agentProfileSnapshotRuntimeId: schema.taskPackets.agentProfileSnapshotRuntimeId,
               agentProfileSnapshotAllowedTools: schema.taskPackets.agentProfileSnapshotAllowedTools,
@@ -2087,8 +2091,8 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               approverActorId: row.approverActorId,
               agentProfileSnapshot: hasSnapshot ? {
                 profileId: row.agentProfileSnapshotId!,
-                runtimeId: row.agentProfileSnapshotRuntimeId as 'hermes',
-                runtimeProfile: 'read_safe',
+                runtimeId: row.agentProfileSnapshotRuntimeId!,
+                runtimeProfile: row.runtimeProfile,
                 allowedTools: row.agentProfileSnapshotAllowedTools!,
                 forbiddenSurfaces: row.agentProfileSnapshotForbiddenSurfaces!,
                 enabled: row.agentProfileSnapshotEnabled!,
@@ -2099,7 +2103,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               } : null
             },
             contentHash: row.contentHash,
-            hermesRunnerEnabled: process.env.HERMES_RUNNER_ENABLED === 'true'
+            runtimeAvailable: isRuntimeAvailable(row.agentProfileSnapshotRuntimeId)
           };
         },
 

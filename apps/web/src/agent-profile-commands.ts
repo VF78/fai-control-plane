@@ -1,18 +1,19 @@
 import {requireOperatorSession} from './operator-auth-runtime';
-import {getHermesProfileRuntime} from './hermes-profile-runtime';
+import {getAgentProfileRuntime} from './agent-profile-runtime';
 
 const MAX_BODY_BYTES = 4 * 1024;
 const noStore = {'Cache-Control': 'no-store'} as const;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-type Runtime = Awaited<ReturnType<typeof getHermesProfileRuntime>>;
-export type HermesProfileCommandDependencies = Readonly<{
+type Runtime = Awaited<ReturnType<typeof getAgentProfileRuntime>>;
+export type AgentProfileCommandDependencies = Readonly<{
   requireSession: typeof requireOperatorSession;
   getRuntime(): Promise<Runtime>;
 }>;
 
-const dependencies: HermesProfileCommandDependencies = {
+const dependencies: AgentProfileCommandDependencies = {
   requireSession: requireOperatorSession,
-  getRuntime: getHermesProfileRuntime
+  getRuntime: getAgentProfileRuntime
 };
 
 const readForm = async (request: Request): Promise<URLSearchParams | null> => {
@@ -67,18 +68,20 @@ const exactValues = (form: URLSearchParams | null): Readonly<{
 const json = (status: string, code: number): Response =>
   Response.json({status}, {status: code, headers: noStore});
 
-export async function updateHermesProfileCommand(
+export async function updateAgentProfileCommand(
   request: Request,
-  overrides: HermesProfileCommandDependencies = dependencies
+  profileId: string,
+  overrides: AgentProfileCommandDependencies = dependencies
 ): Promise<Response> {
   const form = exactValues(await readForm(request));
   const authorization = await overrides.requireSession(request, {csrfToken: form?.csrf ?? null});
   if (!authorization.ok) return authorization.response;
-  if (form === null) return json('invalid_request', 400);
+  if (form === null || !uuidPattern.test(profileId)) return json('invalid_request', 400);
   try {
     const status = await (await overrides.getRuntime()).update({
       workspaceId: authorization.runtime.config.workspaceId,
       actorId: authorization.session.actorId,
+      profileId,
       expectedVersion: form.expectedVersion,
       instructions: form.instructions,
       settings: {resultFormat: 'structured_v1', includeEvidence: form.includeEvidence},

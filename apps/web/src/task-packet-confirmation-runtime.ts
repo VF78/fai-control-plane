@@ -9,6 +9,8 @@ import {
   agentRuns,
   createDatabase,
   createPostgresUnitOfWork,
+  isTaskPacketProfileEligible,
+  matchesTaskPacketProfileSnapshot,
   projects,
   taskPackets,
   trackerBindings
@@ -75,13 +77,7 @@ const createRuntime = (db: Database): TaskPacketConfirmationRuntime => ({
       .where(and(eq(taskPackets.id, packetId), isNull(agentRuns.id)))
       .limit(1);
     if (packet === undefined) return null;
-    if (
-      packet.agentProfileSnapshotId !== null &&
-      (
-        process.env.HERMES_RUNNER_ENABLED !== 'true' ||
-        packet.agentProfileSnapshotId !== agentProfileId
-      )
-    ) return null;
+    if (!matchesTaskPacketProfileSnapshot(packet.agentProfileSnapshotId, agentProfileId)) return null;
 
     const [profile] = await db.select({id: agentProfiles.id, runtimeId: agentProfiles.runtimeId})
       .from(agentProfiles).innerJoin(actors, and(
@@ -101,7 +97,11 @@ const createRuntime = (db: Database): TaskPacketConfirmationRuntime => ({
       ))
       .limit(1);
     if (profile === undefined) return null;
-    if (profile.runtimeId === 'hermes' && packet.agentProfileSnapshotId === null) return null;
+    if (!isTaskPacketProfileEligible(
+      profile.runtimeId,
+      packet.agentProfileSnapshotId,
+      agentProfileId
+    )) return null;
 
     const [repositoryBinding] = await db.select({metadata: trackerBindings.metadata})
       .from(trackerBindings)

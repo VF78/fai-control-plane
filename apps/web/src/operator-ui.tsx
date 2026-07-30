@@ -144,7 +144,7 @@ export function ProjectView({data, csrfToken}: {data: ProjectData; csrfToken: st
           </div>
           {csrfToken === null || !item.canBuildPacket ? null : <div className="packet-build-actions">
             <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><button type="submit">Build Codex packet</button></form>
-            {data.hermesAgentProfileId === null ? null : <form action={`/api/task-packets/${item.id}/build`} className="packet-build" method="post"><input name="_csrf" type="hidden" value={csrfToken} /><input name="agentProfileId" type="hidden" value={data.hermesAgentProfileId} /><button type="submit">Build Hermes packet</button></form>}
+            {data.agentProfiles.map((profile) => <form action={`/api/task-packets/${item.id}/build`} className="packet-build" key={profile.id} method="post"><input name="_csrf" type="hidden" value={csrfToken} /><input name="agentProfileId" type="hidden" value={profile.id} /><button type="submit">Build {profile.runtimeId} packet</button></form>)}
           </div>}
         </article>)}</div>{hiddenCount === 0 ? null : <p className="muted">Showing 8 most recently updated of {items.length}.</p>}</>}</section>;
       })}
@@ -217,42 +217,42 @@ export function AccessView({csrfToken, data, policyVersion, evaluatorVersion, po
   policyHash: string;
 }) {
   return <div className="control-surface">
-    <section className="agent-profile" aria-labelledby="hermes-title">
-      <header><p className="eyebrow">Governed external worker</p><h2 id="hermes-title">Hermes profile</h2></header>
-      {data.hermes === null ? <p className="muted">Hermes is not configured for this workspace.</p> : <>
+    <section className="agent-profile" aria-labelledby="profiles-title">
+      <header><p className="eyebrow">Governed external workers</p><h2 id="profiles-title">Agent profiles</h2></header>
+      {data.agentSystems.flatMap((system) => system.profiles).length === 0 ? <p className="muted">No agent profiles are configured for this workspace.</p> : data.agentSystems.flatMap((system) => system.profiles).map((profile) => <article key={profile.id}>
         <dl className="profile-facts">
-          <div><dt>Status</dt><dd>{data.hermes.enabled ? 'Enabled' : 'Disabled'}</dd></div>
-          <div><dt>Runtime</dt><dd>{data.hermes.runtimeProfile}</dd></div>
-          <div><dt>Revision</dt><dd>v{data.hermes.version}</dd></div>
-          <div><dt>Config hash</dt><dd><code>{data.hermes.configHash}</code></dd></div>
-          <div><dt>Tools</dt><dd>{data.hermes.allowedTools.join(', ') || 'None'}</dd></div>
-          <div><dt>Forbidden</dt><dd>{data.hermes.forbiddenSurfaces.join(', ') || 'None'}</dd></div>
+          <div><dt>Status</dt><dd>{profile.enabled ? 'Enabled' : 'Disabled'}</dd></div>
+          <div><dt>Runtime</dt><dd>{profile.runtimeId} · {profile.runtimeProfile}</dd></div>
+          <div><dt>Revision</dt><dd>v{profile.version}</dd></div>
+          <div><dt>Config hash</dt><dd><code>{profile.configHash}</code></dd></div>
+          <div><dt>Tools</dt><dd>{profile.allowedTools.join(', ') || 'None'}</dd></div>
+          <div><dt>Forbidden</dt><dd>{profile.forbiddenSurfaces.join(', ') || 'None'}</dd></div>
         </dl>
         {csrfToken === null ? <p className="muted">An authenticated operator session is required.</p> :
-          <form action="/api/agent-profiles/hermes" className="profile-form" method="post">
+          <form action={`/api/agent-profiles/${profile.id}`} className="profile-form" method="post">
             <input name="_csrf" type="hidden" value={csrfToken} />
-            <input name="expectedVersion" type="hidden" value={data.hermes.version} />
+            <input name="expectedVersion" type="hidden" value={profile.version} />
             <label className="profile-instructions">
               <span>Instructions</span>
-              <textarea defaultValue={data.hermes.instructions} maxLength={2000} name="instructions" required rows={5} />
+              <textarea defaultValue={profile.instructions} maxLength={2000} name="instructions" required rows={5} />
             </label>
             <label>
               <span>Evidence</span>
-              <select defaultValue={String(data.hermes.settings.includeEvidence)} name="includeEvidence">
+              <select defaultValue={String(profile.settings.includeEvidence)} name="includeEvidence">
                 <option value="true">Required</option>
                 <option value="false">Optional</option>
               </select>
             </label>
             <label>
               <span>Status</span>
-              <select defaultValue={String(data.hermes.enabled)} name="enabled">
+              <select defaultValue={String(profile.enabled)} name="enabled">
                 <option value="true">Enabled</option>
                 <option value="false">Disabled</option>
               </select>
             </label>
             <button type="submit">Update profile</button>
           </form>}
-      </>}
+      </article>)}
     </section>
     <ProjectShareControls
       csrfToken={csrfToken}
