@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import type {CSSProperties, ReactNode} from 'react';
 import {
-  Activity, AlertTriangle, Bot, ChevronRight, CircleDot, Clock3, FileCheck2,
-  FolderKanban, GitPullRequest, LayoutDashboard, ListChecks, MoreHorizontal, Search,
+  Activity, AlertTriangle, Bot, ChevronRight, CircleDot, FileCheck2,
+  FolderKanban, GitPullRequest, LayoutDashboard, ListChecks,
   ShieldCheck, UsersRound
 } from 'lucide-react';
 import {DeliveryJourneyAction, DeliveryProtocolEditor} from './delivery-controls';
@@ -14,7 +14,7 @@ import type {
 } from './operator-data';
 import {RiskDispositionControls} from './risk-disposition-controls';
 
-export type PrototypeRoute = Readonly<{
+export type WorkspaceRoute = Readonly<{
   screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
   project: OperatorProjectSlug | null;
   globalProject?: 'all' | OperatorProjectSlug;
@@ -24,7 +24,7 @@ export type PrototypeRoute = Readonly<{
   scope: OperatorScopeRef;
 }>;
 
-export type PrototypeData = Readonly<{
+export type WorkspaceData = Readonly<{
   portfolio: OperatorLoad<PortfolioData>;
   project: OperatorLoad<ProjectData | null> | null;
   runs: OperatorLoad<RunsData> | null;
@@ -33,6 +33,9 @@ export type PrototypeData = Readonly<{
   projectIndex: readonly ProjectData[];
   csrfToken?: string | null;
 }>;
+
+// Keep the internal component annotations small while public route contracts use WorkspaceRoute.
+type PrototypeRoute = WorkspaceRoute;
 
 const projectTabs = ['overview', 'tasks', 'protocol', 'runs', 'chats', 'access'] as const;
 const labels: Record<(typeof projectTabs)[number], string> = {
@@ -51,14 +54,14 @@ const scopeQuery = (scope: OperatorScopeRef) => {
   return text === '' ? '' : `?${text}`;
 };
 const screenUrl = (screen: OperatorScreenRef, scope: OperatorScopeRef): string => {
-  const path = screen.kind === 'dashboard' ? '/prototype/dashboard'
-    : screen.kind === 'projects' ? '/prototype/projects'
-    : screen.kind === 'tasks' ? `/prototype/tasks?project=${screen.project}`
-    : screen.kind === 'chats' ? `/prototype/chats?project=${screen.project}`
-    : screen.kind === 'project' ? `/prototype/projects/${screen.projectSlug}/${screen.section}`
-    : screen.kind === 'task' ? `/prototype/projects/${screen.projectSlug}/tasks/${screen.taskId}`
-    : screen.kind === 'run' ? `/prototype/projects/${screen.projectSlug}/runs/${screen.runId}`
-    : screen.kind === 'agents' ? '/prototype/agents' : `/prototype/agents/${screen.agentId}`;
+  const path = screen.kind === 'dashboard' ? '/dashboard'
+    : screen.kind === 'projects' ? '/projects'
+    : screen.kind === 'tasks' ? `/tasks?project=${screen.project}`
+    : screen.kind === 'chats' ? `/chats?project=${screen.project}`
+    : screen.kind === 'project' ? `/projects/${screen.projectSlug}/${screen.section}`
+    : screen.kind === 'task' ? `/projects/${screen.projectSlug}/tasks/${screen.taskId}`
+    : screen.kind === 'run' ? `/projects/${screen.projectSlug}/runs/${screen.runId}`
+    : screen.kind === 'agents' ? '/agents' : `/agents/${screen.agentId}`;
   const query = scopeQuery(scope);
   return query === '' ? path : `${path}${path.includes('?') ? '&' : '?'}${query.slice(1)}`;
 };
@@ -128,7 +131,7 @@ function PortfolioMetrics({project, route}: {project: PortfolioData['projects'][
     : 'Not enough history';
   return <article className="fcp-portfolio-metrics"><header><div><FolderKanban aria-hidden="true" size={17}/><Link href={projectUrl(project.slug, 'overview', route.scope)}>{project.name}</Link></div><Status value={project.health}/></header><div className="fcp-metric-core"><div><span>Active WIP</span><strong>{metrics.activeWip}</strong></div><div className={metrics.blockedWork > 0 ? 'danger' : ''}><span>Blocked</span><strong>{metrics.blockedWork}</strong></div><div className={metrics.staleActiveWork > 0 ? 'warning' : ''}><span>Stale active</span><strong>{metrics.staleActiveWork}</strong></div><div><span>Pending approval</span><strong>{metrics.pendingApprovals.count}</strong><small>{metrics.pendingApprovals.count === 0 ? 'None pending' : `Oldest ${age(metrics.pendingApprovals.oldestAt)}`}</small></div></div><ol className="fcp-portfolio-stages" aria-label={`${project.name} work items by delivery stage`}>{Object.entries(metrics.stages).map(([stage, count]) => <li key={stage}><span>{stage === 'in_dev' ? 'In dev' : stage === 'qa' ? 'QA' : stage === 'done' ? 'Done' : statusLabel(stage)}</span><strong>{count}</strong></li>)}</ol><dl className="fcp-portfolio-facts"><div><dt>Integration</dt><dd>{metrics.integrationFreshness === null ? 'Not observed' : `Observed ${compactDate(metrics.integrationFreshness)}`}</dd></div><div><dt>Deadline outlook</dt><dd>{outlook}</dd></div><div><dt>Throughput</dt><dd>{throughput}</dd></div><div><dt>Cycle time</dt><dd>{cycle}</dd></div></dl></article>;
 }
-function Dashboard({route, data}: {route: PrototypeRoute; data: PrototypeData}) {
+function Dashboard({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const portfolio = ready(data.portfolio);
   const allRuns = ready(data.runs);
   if (portfolio === null) return <Blank title="Control plane data is unavailable">Connect the configured PostgreSQL source to view portfolio facts.</Blank>;
@@ -139,7 +142,7 @@ function Dashboard({route, data}: {route: PrototypeRoute; data: PrototypeData}) 
     ...(active === undefined ? [] : [{label: 'Active runs', value: active}]), ...(failed === undefined ? [] : [{label: 'Failed runs', value: failed, tone: failed > 0 ? 'danger' : ''}])
   ]}/><section className="fcp-section"><div className="fcp-section-head"><h2>Portfolio</h2><span>Observed facts</span></div><div className="fcp-portfolio-grid">{portfolio.projects.map((project) => <PortfolioMetrics project={project} route={route} key={project.id}/>)}</div></section><section className="fcp-section"><div className="fcp-section-head"><h2>Attention</h2><span>Persisted signals only</span></div>{portfolio.attention.length === 0 ? <p className="fcp-empty-line">No recorded alerts.</p> : <div className="fcp-list">{portfolio.attention.map((signal) => <AttentionRow csrfToken={data.csrfToken ?? null} signal={signal} route={route} projects={portfolio.projects} key={signal.id}/>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Projects</h2><Link href={screenUrl({kind: 'projects'}, route.scope)}>View all</Link></div><div className="fcp-list">{portfolio.projects.map((project) => <Link className="fcp-row fcp-project-row" href={projectUrl(project.slug, 'overview', route.scope)} key={project.id}><FolderKanban aria-hidden="true" size={18}/><div><strong>{project.name}</strong><small>{project.unresolvedRiskCount === 0 ? 'No recorded risks' : `${project.unresolvedRiskCount} recorded risks`}</small></div><Status value={project.health}/><span>{project.synchronizedAt === null ? 'Source not observed' : `Observed ${date(project.synchronizedAt)}`}</span><ChevronRight aria-hidden="true" size={16}/></Link>)}</div></section></>;
 }
-function Projects({route, data}: {route: PrototypeRoute; data: PrototypeData}) {
+function Projects({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const portfolio = ready(data.portfolio);
   if (portfolio === null) return <Blank title="Projects are unavailable">The PostgreSQL portfolio read model is not available.</Blank>;
   return <><div className="fcp-page-title"><div><Crumbs route={route} project={null}/><h1>Projects</h1><p>Configured delivery workspaces.</p></div><Scope route={route}/></div><div className="fcp-list fcp-project-list">{portfolio.projects.map((project) => <Link className="fcp-row fcp-project-row" href={projectUrl(project.slug, 'overview', route.scope)} key={project.id}><FolderKanban aria-hidden="true" size={18}/><div><strong>{project.name}</strong><small>{project.unresolvedRiskCount === 0 ? 'No recorded attention' : `${project.unresolvedRiskCount} attention signals`}</small></div><Status value={project.health}/><span>{project.synchronizedAt === null ? 'Not observed' : `Observed ${date(project.synchronizedAt)}`}</span><ChevronRight aria-hidden="true" size={16}/></Link>)}</div></>;
@@ -205,7 +208,7 @@ function GlobalTasks({route, projects}: {route: PrototypeRoute; projects: readon
   return <><div className="fcp-page-title"><div><h1>Tasks</h1><p>Canonical work items across configured projects.</p></div><Scope route={route}/></div><div className="fcp-list">{rows.length === 0 ? <p className="fcp-empty-line">No tasks observed for this project filter.</p> : rows}</div></>;
 }
 function GlobalChats({route}: {route: PrototypeRoute}) { return <><div className="fcp-page-title"><div><h1>Chats</h1><p>All configured projects.</p></div><Scope route={route}/></div><Blank title="Chats not configured">No canonical conversation or thread records are available.</Blank></>; }
-function ProjectScreen({route, data}: {route: PrototypeRoute; data: PrototypeData}) {
+function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const project = ready(data.project);
   const runs = ready(data.runs);
   const access = ready(data.access);
@@ -222,8 +225,8 @@ function ProjectScreen({route, data}: {route: PrototypeRoute; data: PrototypeDat
     default: return null;
   }
 }
-export function PrototypeShell({route, data}: {route: PrototypeRoute; data: PrototypeData}) {
+export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const access = ready(data.access);
   const tokenStyle = {'--fcp-bg': operatorTokens.color.canvas, '--fcp-canvas': operatorTokens.color.surface, '--fcp-ink': operatorTokens.color.ink, '--fcp-muted': operatorTokens.color.muted, '--fcp-rule': operatorTokens.color.border, '--fcp-blue': operatorTokens.color.focus, '--fcp-red': operatorTokens.color.danger, '--fcp-amber': operatorTokens.color.warning, '--fcp-green': operatorTokens.color.success, '--fcp-target': `${operatorTokens.target.minimum}px`} as CSSProperties;
-  return <div className="fcp-prototype" style={tokenStyle}><Header route={route}/><div className="fcp-main">{route.screen === 'dashboard' ? <Dashboard route={route} data={data}/> : route.screen === 'projects' ? <Projects route={route} data={data}/> : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={data.projectIndex}/> : route.screen === 'global_chats' ? <GlobalChats route={route}/> : route.screen === 'agents' ? <Agents route={route} access={access}/> : route.screen === 'agent' ? <AgentDetail route={route} access={access}/> : <ProjectScreen route={route} data={data}/>}</div></div>;
+  return <div className="fcp-workspace" style={tokenStyle}><Header route={route}/><div className="fcp-main">{route.screen === 'dashboard' ? <Dashboard route={route} data={data}/> : route.screen === 'projects' ? <Projects route={route} data={data}/> : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={data.projectIndex}/> : route.screen === 'global_chats' ? <GlobalChats route={route}/> : route.screen === 'agents' ? <Agents route={route} access={access}/> : route.screen === 'agent' ? <AgentDetail route={route} access={access}/> : <ProjectScreen route={route} data={data}/>}</div></div>;
 }
