@@ -107,11 +107,11 @@ it('keeps the web-first workspace IA and honest unavailable state', () => {
   expect(markup).not.toContain('Provider ID');
 });
 
-it('renders persisted agent registrations and systems facts without inferring runtime liveness', () => {
+it('renders persisted agent registrations and authorized new-claim controls without inferring liveness', () => {
   const data = {
     portfolio: {state: 'unconfigured'}, project: null, runs: null, projectIndex: [], csrfToken: 'csrf',
     health: {state: 'ready', data: {jobs: [{id: 'job-1', project: 'MSA', projectSlug: 'msa', name: 'recovery', status: 'unhealthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null}], integrations: [], risks: [], audit: [], costLedger: []}},
-    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', enabled: true, configHash: 'a'.repeat(64), registrations: [{project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null, fleet: {health: 'unknown', freshnessAt: null, currentWork: null, lastReceipt: null}}]}], requests: [], secretRefs: [], policy: [], hermes: {id: 'profile-1', actorId: 'agent-1', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64)}, sharing: {enabled: false, projects: [], grants: []}}}
+    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', enabled: true, configHash: 'a'.repeat(64), registrations: [{id: 'registration-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true, version: 3, canManage: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null, fleet: {health: 'unknown', freshnessAt: null, currentWork: null, lastReceipt: null}}]}], requests: [], secretRefs: [], policy: [], hermes: {id: 'profile-1', actorId: 'agent-1', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64)}, sharing: {enabled: false, projects: [], grants: []}}}
   } as unknown as WorkspaceData;
   const list = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agents', project: null, globalProject: 'all', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
   const detail = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data}));
@@ -123,6 +123,25 @@ it('renders persisted agent registrations and systems facts without inferring ru
   expect(list).toContain('No active work observed');
   expect(detail).toContain('effective hash');
   expect(detail).toContain('action="/api/agent-profiles/hermes"');
+  expect(detail).toContain('registration v3');
+  expect(detail).toContain('aria-label="Disable MSA runtime registration for new claims"');
+  expect(detail).toContain('Stops new claims');
+  if (data.access.state !== 'ready') throw new Error('Expected ready access fixture.');
+  const readOnlyData: WorkspaceData = {...data, access: {state: 'ready', data: {
+    ...data.access.data,
+    agentSystems: data.access.data.agentSystems.map((system) => ({
+      ...system,
+      profiles: system.profiles.map((profile) => ({
+        ...profile,
+        registrations: profile.registrations.map((registration) => ({
+          ...registration,
+          canManage: false
+        }))
+      }))
+    }))
+  }}};
+  const readOnly = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data: readOnlyData}));
+  expect(readOnly).not.toContain('runtime registration for new claims');
 });
 
 it('renders project membership and provider-confirmed grant facts in the access detail', () => {
