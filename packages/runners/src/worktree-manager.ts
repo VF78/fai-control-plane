@@ -30,6 +30,9 @@ export type AgentRunWorktree = Readonly<{
 export type AgentRunWorktreeInspection = Readonly<{
   headCommit: string;
   dirty: boolean;
+  changedPaths: readonly string[];
+  mergeCommits: readonly string[];
+  pathBoundaryViolation: boolean;
 }>;
 
 export interface WorktreeManager {
@@ -69,6 +72,30 @@ function fail(code: string): never {
 }
 
 const trimOutput = (value: string): string => value.replace(/\r?\n$/, '');
+
+const parseNullDelimitedPaths = (
+  output: string
+): Readonly<{paths: readonly string[]; boundaryViolation: boolean}> => {
+  const paths: string[] = [];
+  let boundaryViolation = false;
+  for (const value of output.split('\0')) {
+    if (value === '') continue;
+    const normalized = value.replaceAll('\\', '/');
+    if (
+      normalized.length === 0 ||
+      normalized.startsWith('/') ||
+      normalized === '..' ||
+      normalized.startsWith('../') ||
+      normalized.includes('/../') ||
+      path.posix.normalize(normalized) !== normalized
+    ) {
+      boundaryViolation = true;
+      continue;
+    }
+    paths.push(normalized);
+  }
+  return {paths, boundaryViolation};
+};
 
 const isPathWithin = (parent: string, candidate: string): boolean => {
   const relative = path.relative(parent, candidate);
@@ -311,10 +338,55 @@ export const createWorktreeManager = (options: WorktreeManagerOptions): Worktree
       fail('worktree_reference_mismatch');
     }
     const headCommit = await validateExistingWorktree(refs);
-    const status = await requireGit(refs.worktreePath, [
-      'status', '--porcelain=v1', '--untracked-files=all'
-    ]);
-    return {headCommit, dirty: status.stdout !== ''};
+    const history = (await requireGit(refs.worktreePath, [
+      'rev-list', `${refs.baseCommit}..${headCommit}`
+    ])).stdout
+      .split(/\r?\n/)
+      .filter((value) => value !== '');
+    if (history.some((value) => !COMMIT_SHA_PATTERN.test(value))) {
+      fail('invalid_run_history');
+    }
+    const [status, staged, unstaged, untracked, merges, committed] =
+      await Promise.all([
+        requireGit(refs.worktreePath, [
+          'status', '--porcelain=v1', '--untracked-files=all'
+        ]),
+        requireGit(refs.worktreePath, [
+          'diff', '--cached', '--name-only', '--diff-filter=ACDMRTUXB', '-z'
+        ]),
+        requireGit(refs.worktreePath, [
+          'diff', '--name-only', '--diff-filter=ACDMRTUXB', '-z'
+        ]),
+        requireGit(refs.worktreePath, [
+          'ls-files', '--others', '--exclude-standard', '-z'
+        ]),
+        requireGit(refs.worktreePath, [
+          'rev-list', '--merges', `${refs.baseCommit}..${headCommit}`
+        ]),
+        Promise.all(history.map((commit) => requireGit(refs.worktreePath, [
+          'diff-tree', '--no-commit-id', '--name-only',
+          '--diff-filter=ACDMRTUXB', '-r', '-z', `${commit}^!`
+        ])))
+      ]);
+    const observed = [...committed, staged, unstaged, untracked]
+      .map(({stdout}) => parseNullDelimitedPaths(stdout));
+    const changedPaths = [...new Set(observed.flatMap(({paths}) => paths))]
+      .sort();
+    const mergeCommits = merges.stdout
+      .split(/\r?\n/)
+      .filter((value) => value !== '');
+    if (mergeCommits.some((value) => !COMMIT_SHA_PATTERN.test(value))) {
+      fail('invalid_merge_history');
+    }
+    return {
+      headCommit,
+      dirty: status.stdout !== '',
+      changedPaths,
+      mergeCommits,
+      pathBoundaryViolation: observed.some(
+        ({boundaryViolation}) => boundaryViolation
+      )
+    };
   };
 
   return {
