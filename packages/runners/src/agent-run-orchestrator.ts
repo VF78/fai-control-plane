@@ -409,8 +409,8 @@ const publicationWriteBack = async (
         'Automated draft change request.',
         '',
         `Run: ${envelope.runId}`,
-        `Packet: ${envelope.packetId}`,
-        `Evidence: ${values.artifact.sha256}`
+        `Head commit: ${inspection.headCommit}`,
+        `Evidence SHA-256: ${summary.sha256}`
       ].join('\n'),
       idempotencyKey
     });

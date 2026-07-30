@@ -101,22 +101,31 @@ const externalChange = (
   value: unknown,
   owner: string,
   repository: string,
-  headCommit?: string
+  expected: Readonly<{
+    branch: string;
+    baseRef: string;
+    headCommit: string;
+  }>
 ): Extract<RepositoryHostPublicationReceipt, {status: 'published'}> | undefined => {
   if (!isRecord(value)) return undefined;
   const number = value.number;
   const htmlUrl = value.html_url;
   const head = value.head;
+  const base = value.base;
   if (
     typeof number !== 'number' ||
     !Number.isSafeInteger(number) ||
     number < 1 ||
     typeof htmlUrl !== 'string' ||
     value.draft !== true ||
+    value.state !== 'open' ||
     !isRecord(head) ||
+    !isRecord(base) ||
     typeof head.sha !== 'string' ||
+    head.ref !== expected.branch ||
+    base.ref !== expected.baseRef ||
     !COMMIT_PATTERN.test(head.sha) ||
-    (headCommit !== undefined && head.sha !== headCommit)
+    head.sha !== expected.headCommit
   ) {
     return undefined;
   }
@@ -196,7 +205,7 @@ export const createGitHubRepositoryHostPublisher = (
       };
       const pullsPath = `/repos/${encodeURIComponent(options.owner)}/${encodeURIComponent(options.repository)}/pulls`;
       const lookupUrl = new URL(pullsPath, apiBaseUrl);
-      lookupUrl.searchParams.set('state', 'open');
+      lookupUrl.searchParams.set('state', 'all');
       lookupUrl.searchParams.set('head', `${options.owner}:${input.branch}`);
       lookupUrl.searchParams.set('base', input.baseRef);
       let lookup: Response;
@@ -216,11 +225,17 @@ export const createGitHubRepositoryHostPublisher = (
       let existingDraft:
         | Extract<RepositoryHostPublicationReceipt, {status: 'published'}>
         | undefined;
-      if (existing.length > 0) {
+      if (existing.length > 1) return failed('existing_change_not_draft');
+      if (existing.length === 1) {
         existingDraft = externalChange(
           existing[0],
           options.owner,
-          options.repository
+          options.repository,
+          {
+            branch: input.branch,
+            baseRef: input.baseRef,
+            headCommit: input.headCommit
+          }
         );
         if (existingDraft === undefined) {
           return failed('existing_change_not_draft');
@@ -277,7 +292,11 @@ export const createGitHubRepositoryHostPublisher = (
         value,
         options.owner,
         options.repository,
-        input.headCommit
+        {
+          branch: input.branch,
+          baseRef: input.baseRef,
+          headCommit: input.headCommit
+        }
       ) ?? failed('invalid_host_response');
     }
   };
