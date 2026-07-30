@@ -101,6 +101,7 @@ import {
   type PolicyRequest,
   type ProjectMembership,
   type ResourceAccessGrant,
+  type RetirableAgent,
   type RuntimeRegistration,
   type ReceiptClaimToken,
   type RunnerClaimAuthorization,
@@ -789,6 +790,7 @@ const commandTypes = new Set<CanonicalCommand['type']>([
   'access_request.decide',
   'project_membership.set',
   'actor_external_identity.bind',
+  'actor.retire',
   'resource_access_grant.set',
   'resource_access_grant.observe',
   'runtime_registration.create',
@@ -1730,6 +1732,8 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         isProviderKey(payload.provider) && isExternalReference(payload.externalSubject) &&
         typeof payload.active === 'boolean' &&
         (payload.expectedVersion === null || isVersion(payload.expectedVersion));
+    case 'actor.retire':
+      return hasExactKeys(payload, ['agentId']) && isUuid(payload.agentId);
     case 'resource_access_grant.set':
       return hasExactKeys(payload, [
         'grantId', 'projectId', 'subjectActorId', 'resourceType', 'resourceId',
@@ -1981,6 +1985,7 @@ export const createCanonicalCommandService = (
       case 'access_request.decide': return accessRequestDecide(transaction, claimToken, claim, command);
       case 'project_membership.set': return projectMembershipSet(transaction, claimToken, claim, command);
       case 'actor_external_identity.bind': return actorExternalIdentityBind(transaction, claimToken, claim, command);
+      case 'actor.retire': return actorRetire(transaction, claimToken, claim, command);
       case 'resource_access_grant.set': return resourceAccessGrantSet(transaction, claimToken, claim, command);
       case 'resource_access_grant.observe': return resourceAccessGrantObserve(transaction, claimToken, claim, command);
       case 'runtime_registration.create': return runtimeRegistrationCreate(transaction, claimToken, claim, command);
@@ -2647,6 +2652,45 @@ export const createCanonicalCommandService = (
     }, resultTarget, value);
   }
 
+  async function actorRetire(
+    transaction: CanonicalCommandTransaction,
+    token: ReceiptClaimToken,
+    claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'actor.retire'}>
+  ) {
+    const target = targetFor('actor', command.payload.agentId, 0);
+    const authorization = await accessAuthority(transaction, token, command);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    const current = await transaction.loadRetirableAgent(token, command.payload.agentId);
+    if (current === null) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('NOT_FOUND', 'Agent was not found.'), 'access_change'
+    );
+    if (current.disabledAt !== null) return completeNoMutation(
+      transaction, token, claim, command, targetFor('actor', current.id, 0, 1),
+      failed('VERSION_CONFLICT', 'Agent is already retired.'), 'access_change'
+    );
+    const disabledAt = clock.now().toISOString();
+    const retired: RetirableAgent = {...current, disabledAt};
+    const resultTarget = targetFor('actor', retired.id, 0, 1);
+    const value = succeeded({id: retired.id, disabledAt});
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'actor',
+        aggregateId: retired.id,
+        expectedPersistedVersion: 0,
+        aggregate: retired
+      },
+      audit: audit(
+        claim, ids, clock, resultTarget, command.actor.actorId, command.type,
+        'access_change', value, 'allow'
+      )
+    }, resultTarget, value);
+  }
+
   async function actorExternalIdentityBind(
     transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
     command: Extract<CanonicalCommand, {type: 'actor_external_identity.bind'}>
@@ -3049,6 +3093,8 @@ const commandTarget = (command: CanonicalCommand): Target => {
       return targetFor('project_membership', command.payload.membershipId, command.payload.expectedVersion ?? undefined);
     case 'actor_external_identity.bind':
       return targetFor('actor_external_identity', command.payload.identityId, command.payload.expectedVersion ?? undefined);
+    case 'actor.retire':
+      return targetFor('actor', command.payload.agentId, 0);
     case 'resource_access_grant.set':
       return targetFor('resource_access_grant', command.payload.grantId, command.payload.expectedVersion ?? undefined);
     case 'resource_access_grant.observe':

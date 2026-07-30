@@ -68,23 +68,29 @@ describePostgres(
       }
     }, 30_000);
 
-    it('claims, heartbeats, and completes one eligible run without exposing secret references', async () => {
+    it('skips a retired eligible agent, then claims, heartbeats, and completes the active run', async () => {
       const workspaceId = randomUUID();
       const projectId = randomUUID();
       const actorId = randomUUID();
+      const activeAgentId = randomUUID();
+      const retiredActorId = randomUUID();
       const workItemId = randomUUID();
+      const retiredWorkItemId = randomUUID();
       const disabledWorkItemId = randomUUID();
       const disallowedWorkItemId = randomUUID();
       const eventId = randomUUID();
       const credentialRefId = randomUUID();
       const packetSecretRefId = randomUUID();
       const eligibleProfileId = randomUUID();
+      const retiredProfileId = randomUUID();
       const disabledProfileId = randomUUID();
       const disallowedProfileId = randomUUID();
       const eligibleRunId = randomUUID();
+      const retiredRunId = randomUUID();
       const disabledRunId = randomUUID();
       const disallowedRunId = randomUUID();
       const eligibleRegistrationId = randomUUID();
+      const retiredRegistrationId = randomUUID();
       const disabledRegistrationId = randomUUID();
       const secretReference = 'file:///customer/webhook-token';
       const runnerId = 'operator-workstation';
@@ -100,16 +106,41 @@ describePostgres(
         name: 'Runner claim project',
         slug: `runner-project-${randomUUID()}`
       });
-      await testDb.insert(actors).values({
-        id: actorId,
-        workspaceId,
-        type: 'human',
-        role: 'workspace_admin',
-        displayName: 'Runner approver',
-        authMode: 'user'
-      });
+      await testDb.insert(actors).values([
+        {
+          id: actorId,
+          workspaceId,
+          type: 'human',
+          role: 'workspace_admin',
+          displayName: 'Runner approver',
+          authMode: 'user'
+        },
+        {
+          id: retiredActorId,
+          workspaceId,
+          type: 'agent',
+          role: 'agent_operator',
+          displayName: 'Retired coding agent',
+          authMode: 'agent',
+          disabledAt: new Date('2026-07-26T09:59:00.000Z')
+        },
+        {
+          id: activeAgentId,
+          workspaceId,
+          type: 'agent',
+          role: 'agent_operator',
+          displayName: 'Active coding agent',
+          authMode: 'agent'
+        }
+      ]);
       await testDb.insert(workItems).values([
         {id: workItemId, projectId, title: 'Runner claim', status: 'ready'},
+        {
+          id: retiredWorkItemId,
+          projectId,
+          title: 'Retired agent claim',
+          status: 'ready'
+        },
         {
           id: disabledWorkItemId,
           projectId,
@@ -164,7 +195,14 @@ describePostgres(
         {
           id: eligibleProfileId,
           workspaceId,
-          actorId,
+          actorId: activeAgentId,
+          runtimeId: 'coding-runner',
+          runtimeProfile: 'codex-safe'
+        },
+        {
+          id: retiredProfileId,
+          workspaceId,
+          actorId: retiredActorId,
           runtimeId: 'coding-runner',
           runtimeProfile: 'codex-safe'
         },
@@ -187,10 +225,19 @@ describePostgres(
         {
           id: eligibleRegistrationId,
           projectId,
-          actorId,
+          actorId: activeAgentId,
           agentProfileId: eligibleProfileId,
           provider: 'provider_neutral',
           runtimeKey: 'coding-runner',
+          enabled: true
+        },
+        {
+          id: retiredRegistrationId,
+          projectId,
+          actorId: retiredActorId,
+          agentProfileId: retiredProfileId,
+          provider: 'provider_neutral',
+          runtimeKey: 'retired-coding-runner',
           enabled: true
         },
         {
@@ -235,6 +282,14 @@ describePostgres(
         createdByActorId: actorId
       });
       const runFixtures = [
+        {
+          packetId: randomUUID(),
+          runId: retiredRunId,
+          profileId: retiredProfileId,
+          workItemId: retiredWorkItemId,
+          goal: 'Retired eligible agent',
+          createdAt: new Date(Date.now() - 4_000)
+        },
         {
           packetId: randomUUID(),
           runId: disabledRunId,
@@ -343,8 +398,11 @@ describePostgres(
         workspaceId,
         projectId,
         workItemId,
+        activeAgentId,
         eligibleProfileId,
         eligibleRegistrationId,
+        retiredProfileId,
+        retiredRegistrationId,
         disabledRegistrationId
       ]) {
         expect(serializedEnvelope).not.toContain(excluded);
@@ -362,6 +420,7 @@ describePostgres(
         .from(agentRuns)
         .where(inArray(agentRuns.id, [
           eligibleRunId,
+          retiredRunId,
           disabledRunId,
           disallowedRunId
         ]));
@@ -378,9 +437,18 @@ describePostgres(
           expect.objectContaining({status: 'queued', attempt: 0, version: 1})
         ])
       );
+      expect(rows.find((row) => row.id === retiredRunId)).toMatchObject({
+        status: 'queued',
+        runnerId: null,
+        attempt: 0,
+        version: 1
+      });
       expect(
         rows.find((row) => row.id === eligibleRunId)?.leaseTokenHash
       ).not.toBe(envelope?.leaseToken);
+      await testDb.update(actors)
+        .set({disabledAt: new Date('2026-07-26T10:00:00.500Z')})
+        .where(eq(actors.id, activeAgentId));
       now = new Date('2026-07-26T10:00:01.000Z');
       const heartbeat = await service.heartbeat({
         authorization,
@@ -546,7 +614,7 @@ describePostgres(
       expect(auditRows).toEqual([{
         workspaceId,
         projectId,
-        actorId,
+        actorId: activeAgentId,
         commandId: `runner.claim:${eligibleRunId}:attempt:1`,
         action: 'runner.claim',
         targetType: 'agent_run',
@@ -559,7 +627,7 @@ describePostgres(
       }, {
         workspaceId,
         projectId,
-        actorId,
+        actorId: activeAgentId,
         commandId: `runner.heartbeat:${eligibleRunId}:attempt:1:version:3`,
         action: 'runner.heartbeat',
         targetType: 'agent_run',
@@ -572,7 +640,7 @@ describePostgres(
       }, {
         workspaceId,
         projectId,
-        actorId,
+        actorId: activeAgentId,
         commandId: `runner.complete:${eligibleRunId}:attempt:1`,
         action: 'runner.complete',
         targetType: 'agent_run',

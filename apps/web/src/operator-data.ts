@@ -1130,6 +1130,7 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
 });
 
 export type AccessData = Readonly<{
+  canRetireAgents: boolean;
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
   memberships: readonly Readonly<{projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; role: string; active: boolean; version: number}>[];
   externalIdentities: readonly Readonly<{actorId: string; provider: string; active: boolean}>[];
@@ -1242,6 +1243,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
   const sharingEnabled = process.env.PUBLIC_SHARING_ENABLED === 'true';
   if (workspaceIds.length === 0) {
     return {
+      canRetireAgents: false,
       actors: [],
       memberships: [],
       externalIdentities: [],
@@ -1379,6 +1381,12 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
         ? [membership.projectId]
         : [])
   );
+  const canRetireAgents = operator?.type === 'human' && operator.disabledAt === null &&
+    (operator.role === 'workspace_admin' ||
+      memberships.some((membership) =>
+        membership.actorId === operatorActorId &&
+        membership.active &&
+        membership.role === 'workspace_owner'));
   const profilesByActor = new Map<string, AccessData['agentSystems'][number]['profiles'][number][]>();
   for (const profile of persistedProfiles) {
     const baseline = latestWorkspaceInstruction.get(profile.workspaceId);
@@ -1444,6 +1452,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     profiles
   }));
   return {
+    canRetireAgents,
     actors: persistedActors,
     memberships: memberships.flatMap((membership) => {
       const project = projectById.get(membership.projectId);

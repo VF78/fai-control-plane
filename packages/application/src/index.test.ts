@@ -22,6 +22,7 @@ import {
   type ReceiptClaimToken,
   type ProjectMembership,
   type ResourceAccessGrant,
+  type RetirableAgent,
   type RuntimeRegistration,
   type TaskPacket,
   type UnitOfWork,
@@ -121,6 +122,7 @@ class FakeUnitOfWork implements UnitOfWork {
   readonly accessRequests = new Map<string, AccessRequest>();
   readonly projectMemberships = new Map<string, ProjectMembership>();
   readonly actorExternalIdentities = new Map<string, ActorExternalIdentity>();
+  readonly retirableAgents = new Map<string, RetirableAgent>();
   readonly resourceAccessGrants = new Map<string, ResourceAccessGrant>();
   readonly runtimeRegistrations = new Map<string, RuntimeRegistration>();
   readonly receipts = new Map<string, CommandReceipt>();
@@ -171,6 +173,8 @@ class FakeUnitOfWork implements UnitOfWork {
         this.projectMemberships.get(value) ?? null,
       loadActorExternalIdentity: async (_token, value) =>
         this.actorExternalIdentities.get(value) ?? null,
+      loadRetirableAgent: async (_token, value) =>
+        this.retirableAgents.get(value) ?? null,
       loadResourceAccessGrant: async (_token, value) =>
         this.resourceAccessGrants.get(value) ?? null,
       loadRuntimeRegistration: async (_token, value) =>
@@ -192,6 +196,7 @@ class FakeUnitOfWork implements UnitOfWork {
         if (mutation.aggregateType === 'access_request') this.accessRequests.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'project_membership') this.projectMemberships.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'actor_external_identity') this.actorExternalIdentities.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'actor') this.retirableAgents.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'resource_access_grant') this.resourceAccessGrants.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'runtime_registration') {
           this.runtimeRegistrations.set(mutation.aggregateId, mutation.aggregate);
@@ -202,7 +207,7 @@ class FakeUnitOfWork implements UnitOfWork {
             );
           }
         }
-        return {status: 'persisted' as const, mutation: {cas: {expectedPersistedVersion: mutation.expectedPersistedVersion, persistedVersion: mutation.aggregateType === 'task_packet' ? 1 : mutation.aggregate.version}, audit: {} as never} as never};
+        return {status: 'persisted' as const, mutation: {cas: {expectedPersistedVersion: mutation.expectedPersistedVersion, persistedVersion: mutation.aggregateType === 'task_packet' || mutation.aggregateType === 'actor' ? 1 : mutation.aggregate.version}, audit: {} as never} as never};
       },
       persistApprovalRequired: async ({outcome}) => {
         this.approvalCalls += 1;
@@ -1123,5 +1128,46 @@ describe('canonical command service', () => {
       receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}
     });
     expect(uow.runtimeRegistrations.size).toBe(0);
+  });
+
+  it('soft-retires an agent once, replays the same command, and rejects a new attempt', async () => {
+    const uow = new FakeUnitOfWork();
+    const agentId = id();
+    uow.retirableAgents.set(agentId, {id: agentId, workspaceId, disabledAt: null});
+    const retire = command('actor.retire', {agentId});
+    const service = serviceFor(uow);
+
+    await expect(service.execute(retire)).resolves.toMatchObject({
+      status: 'completed',
+      receipt: {
+        aggregateType: 'actor',
+        aggregateId: agentId,
+        expectedVersion: 0,
+        resultVersion: 1,
+        result: {ok: true, value: {id: agentId, disabledAt: fixedClock.now().toISOString()}}
+      }
+    });
+    await expect(service.execute(retire)).resolves.toMatchObject({status: 'replayed'});
+    await expect(service.execute(command('actor.retire', {agentId}))).resolves.toMatchObject({
+      status: 'completed',
+      receipt: {result: {error: {code: 'VERSION_CONFLICT', message: 'Agent is already retired.'}}}
+    });
+    expect(uow.mutations).toHaveLength(1);
+    expect(uow.mutations[0]).toMatchObject({
+      mutation: {aggregateType: 'actor', aggregateId: agentId, expectedPersistedVersion: 0},
+      audit: {action: 'actor.retire', actionCategory: 'access_change'}
+    });
+  });
+
+  it('denies agent retirement without owner authority', async () => {
+    const uow = new FakeUnitOfWork();
+    uow.accessAdmin = false;
+    const agentId = id();
+    uow.retirableAgents.set(agentId, {id: agentId, workspaceId, disabledAt: null});
+    await expect(serviceFor(uow).execute(command('actor.retire', {agentId}))).resolves.toMatchObject({
+      receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}
+    });
+    expect(uow.retirableAgents.get(agentId)?.disabledAt).toBeNull();
+    expect(uow.mutations).toHaveLength(0);
   });
 });
