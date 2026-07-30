@@ -104,6 +104,7 @@ describePostgres('launch roster reconciliation', () => {
       await reconcileLaunchProjectMemberships(
         db,
         project.id,
+        project.slug,
         firstRoster.members,
         hermesActorId
       );
@@ -140,6 +141,7 @@ describePostgres('launch roster reconciliation', () => {
       await reconcileLaunchProjectMemberships(
         db,
         project.id,
+        project.slug,
         reconciledRoster.members,
         hermesActorId
       );
@@ -189,13 +191,15 @@ describePostgres('launch roster reconciliation', () => {
       .innerJoin(projects, eq(projects.id, projectMemberships.projectId))
       .innerJoin(actors, eq(actors.id, projectMemberships.actorId))
       .orderBy(asc(projects.slug), asc(actors.displayName));
-    expect(memberships).toEqual([
-      {project: 'ascon', actor: 'Hermes', actorType: 'agent', role: 'agent', active: true},
-      {project: 'ascon', actor: 'Vitaliy', actorType: 'human', role: 'contributor', active: true},
+    expect(memberships.filter(({active}) => active)).toEqual([
       {project: 'ascon', actor: 'Vladimir', actorType: 'human', role: 'project_owner', active: true},
       {project: 'msa', actor: 'Hermes', actorType: 'agent', role: 'agent', active: true},
       {project: 'msa', actor: 'Vitaliy', actorType: 'human', role: 'contributor', active: true},
       {project: 'msa', actor: 'Vladimir', actorType: 'human', role: 'project_owner', active: true}
+    ]);
+    expect(memberships.filter(({project, active}) => project === 'ascon' && !active)).toEqual([
+      {project: 'ascon', actor: 'Hermes', actorType: 'agent', role: 'agent', active: false},
+      {project: 'ascon', actor: 'Vitaliy', actorType: 'human', role: 'contributor', active: false}
     ]);
     expect(memberships.some(({actor}) => actor === 'Codex CLI')).toBe(false);
     expect(await db.select({id: resourceAccessGrants.id}).from(resourceAccessGrants)).toEqual([]);
