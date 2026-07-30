@@ -46,6 +46,15 @@ describe('workstation runner', () => {
           stdout: {observedBytes: 0, boundedBytes: 0, truncated: false, sha256: 'c'.repeat(64), contentRetained: false},
           stderr: {observedBytes: 0, boundedBytes: 0, truncated: false, sha256: 'c'.repeat(64), contentRetained: false}
         },
+        policy: {
+          decision: 'allowed',
+          filesystem: 'workspace_only',
+          network: 'denied',
+          approvals: 'never',
+          environment: 'allowlisted',
+          tools: ['codex_cli'],
+          deniedRuleIds: []
+        },
         summaryArtifact: {
           name: summaryName,
           sha256: createHash('sha256').update(summaryBody).digest('hex'),

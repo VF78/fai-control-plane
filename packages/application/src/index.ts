@@ -217,7 +217,12 @@ export type RunnerCompletionPayload = Readonly<{
   terminal: 'done' | 'failed';
   receiptSha256: string;
   receiptSizeBytes: number;
-  finalStatus: 'succeeded' | 'process_failed' | 'timed_out' | 'cancelled';
+  finalStatus:
+    | 'succeeded'
+    | 'process_failed'
+    | 'timed_out'
+    | 'cancelled'
+    | 'policy_denied';
   runtimeId: string;
   runtimeProfile: 'read_safe' | 'write_scoped';
   durationMs: number;
@@ -354,7 +359,13 @@ export const parseRunnerCompletionPayload = (
     !unavailable(value.cost) || !unavailable(value.usage) ||
     typeof riskCount !== 'number' || !Number.isSafeInteger(riskCount) ||
     riskCount < 0 || riskCount > MAX_RUNNER_RISK_COUNT ||
-    !['succeeded', 'process_failed', 'timed_out', 'cancelled'].includes(value.finalStatus as string) ||
+    ![
+      'succeeded',
+      'process_failed',
+      'timed_out',
+      'cancelled',
+      'policy_denied'
+    ].includes(value.finalStatus as string) ||
     !['review_receipt', 'review_worktree', 'retry_explicitly'].includes(value.nextAction as string) ||
     (value.terminal === 'done') !== (value.finalStatus === 'succeeded')
   ) return null;

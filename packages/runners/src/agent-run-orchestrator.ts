@@ -6,6 +6,7 @@ import type {
   AgentRuntimeInput,
   AgentRuntimeResult,
   RedactedProcessOutputMetadata,
+  RuntimePolicyRuleId,
   RuntimeProfile
 } from './index';
 import type {
@@ -14,6 +15,7 @@ import type {
 } from './repository-host-publisher';
 import type {
   AgentRunWorktree,
+  AgentRunWorktreeInspection,
   WorktreeManager
 } from './worktree-manager';
 
@@ -59,8 +61,12 @@ export type LocalAgentRunReceipt = Readonly<{
     stdout: RedactedProcessOutputMetadata;
     stderr: RedactedProcessOutputMetadata;
   }>;
+  policy: AgentRuntimeResult['policy'];
   summaryArtifact?: ReceiptArtifact;
-  worktreeDisposition: 'removed_clean' | 'retained_dirty';
+  worktreeDisposition:
+    | 'removed_clean'
+    | 'retained_dirty'
+    | 'retained_policy_denied';
   cost: Readonly<{
     state: 'unknown';
     reason: 'runtime_usage_not_available';
@@ -209,10 +215,10 @@ const summaryArtifact = (
 
 const nextActionFor = (
   result: AgentRuntimeResult,
-  dirty: boolean,
+  retainedWorktree: boolean,
   writeBack: LocalAgentRunReceipt['writeBack']
 ): LocalAgentRunReceipt['nextAction'] => {
-  if (dirty) return 'review_worktree';
+  if (retainedWorktree) return 'review_worktree';
   if (result.status !== 'succeeded') return 'retry_explicitly';
   if (writeBack.state === 'failed') return 'retry_explicitly';
   if (writeBack.state === 'blocked' && writeBack.reason !== 'no_changes') {
@@ -225,6 +231,65 @@ const safeRef = (value: string): boolean =>
   SAFE_BASE_REF_PATTERN.test(value) &&
   !value.includes('//') &&
   !value.split('/').some((part) => part === '.' || part === '..');
+
+const protectedObservedPath = (value: string): boolean =>
+  value === '.git' ||
+  value.startsWith('.git/') ||
+  value === '.github/workflows' ||
+  value.startsWith('.github/workflows/') ||
+  value === 'scripts/deploy' ||
+  value.startsWith('scripts/deploy-') ||
+  value.startsWith('scripts/deploy/');
+
+const observedPolicyRules = (
+  profile: RuntimeProfile,
+  inspection: AgentRunWorktreeInspection
+): readonly RuntimePolicyRuleId[] => {
+  const denied: RuntimePolicyRuleId[] = [];
+  if (profile === 'read_safe' && inspection.changedPaths.length > 0) {
+    denied.push('read_safe_worktree_changed');
+  }
+  if (inspection.changedPaths.some(protectedObservedPath)) {
+    denied.push('protected_path_changed');
+  }
+  if (inspection.pathBoundaryViolation) denied.push('worktree_path_escape');
+  if (inspection.mergeCommits.length > 0) denied.push('merge_history_changed');
+  return denied;
+};
+
+const denyFromObservedState = (
+  result: AgentRuntimeResult,
+  deniedRuleIds: readonly RuntimePolicyRuleId[]
+): AgentRuntimeResult => {
+  if (deniedRuleIds.length === 0) return result;
+  const base = {
+    runtimeId: result.runtimeId,
+    runId: result.runId,
+    packetId: result.packetId,
+    packetHash: result.packetHash,
+    profile: result.profile,
+    executionMetadata: result.executionMetadata,
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+    durationMs: result.durationMs,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    policy: {
+      ...result.policy,
+      decision: 'denied' as const,
+      deniedRuleIds: [...new Set([
+        ...result.policy.deniedRuleIds,
+        ...deniedRuleIds
+      ])]
+    }
+  };
+  return {
+    ...base,
+    status: 'policy_denied',
+    exitCode: null,
+    signal: null
+  };
+};
 
 const validatePublicationOptions = (
   publication: LocalAgentRunOrchestratorOptions['publication']
@@ -253,7 +318,7 @@ const publicationWriteBack = async (
   envelope: LocalAgentRunEnvelope,
   worktree: AgentRunWorktree,
   result: AgentRuntimeResult,
-  inspection: Readonly<{headCommit: string; dirty: boolean}>,
+  inspection: AgentRunWorktreeInspection,
   summary: ReceiptArtifact | undefined
 ): Promise<LocalAgentRunReceipt['writeBack']> => {
   const publication = options.publication;
@@ -385,19 +450,28 @@ export const createLocalAgentRunOrchestrator = (
         throw error;
       }
       const inspection = await options.worktrees.inspect(worktree);
+      const observedRules = observedPolicyRules(envelope.profile, inspection);
+      const effectiveRuntimeResult = denyFromObservedState(
+        runtimeResult,
+        observedRules
+      );
+      const retainForPolicy = observedRules.length > 0;
+      const retainWorktree = inspection.dirty || retainForPolicy;
       const worktreeDisposition = inspection.dirty
         ? 'retained_dirty'
-        : 'removed_clean';
-      const summary = summaryArtifact(runtimeResult, artifactPath);
+        : retainForPolicy
+          ? 'retained_policy_denied'
+          : 'removed_clean';
+      const summary = summaryArtifact(effectiveRuntimeResult, artifactPath);
       const writeBack = await publicationWriteBack(
         options,
         envelope,
         worktree,
-        runtimeResult,
+        effectiveRuntimeResult,
         inspection,
         summary
       );
-      if (!inspection.dirty) await options.worktrees.cleanup(worktree);
+      if (!retainWorktree) await options.worktrees.cleanup(worktree);
 
       const receipt: LocalAgentRunReceipt = {
         schemaVersion: 1,
@@ -405,26 +479,31 @@ export const createLocalAgentRunOrchestrator = (
         runId: envelope.runId,
         packetId: envelope.packetId,
         packetHash: envelope.packetHash,
-        runtimeId: runtimeResult.runtimeId,
+        runtimeId: effectiveRuntimeResult.runtimeId,
         profile: envelope.profile,
         baseCommit: worktree.baseCommit,
         branch: worktree.branch,
         headCommit: inspection.headCommit,
-        finalStatus: runtimeResult.status,
-        startedAt: runtimeResult.startedAt,
-        finishedAt: runtimeResult.finishedAt,
-        durationMs: runtimeResult.durationMs,
+        finalStatus: effectiveRuntimeResult.status,
+        startedAt: effectiveRuntimeResult.startedAt,
+        finishedAt: effectiveRuntimeResult.finishedAt,
+        durationMs: effectiveRuntimeResult.durationMs,
         output: {
-          stdout: runtimeResult.stdout,
-          stderr: runtimeResult.stderr
+          stdout: effectiveRuntimeResult.stdout,
+          stderr: effectiveRuntimeResult.stderr
         },
+        policy: effectiveRuntimeResult.policy,
         ...(summary === undefined ? {} : {summaryArtifact: summary}),
         worktreeDisposition,
         cost: {
           state: 'unknown',
           reason: 'runtime_usage_not_available'
         },
-        nextAction: nextActionFor(runtimeResult, inspection.dirty, writeBack),
+        nextAction: nextActionFor(
+          effectiveRuntimeResult,
+          retainWorktree,
+          writeBack
+        ),
         writeBack
       };
       const body = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');

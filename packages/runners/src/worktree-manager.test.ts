@@ -57,11 +57,26 @@ describe('WorktreeManager', () => {
     });
 
     await writeFile(path.join(prepared.worktreePath, 'dirty.txt'), 'dirty\n');
+    await writeFile(path.join(prepared.worktreePath, 'README.md'), 'unstaged\n');
+    await writeFile(path.join(prepared.worktreePath, 'staged.txt'), 'staged\n');
+    await git(prepared.worktreePath, ['add', 'staged.txt']);
+    await expect(manager.inspect(prepared)).resolves.toMatchObject({
+      headCommit: baseCommit,
+      dirty: true,
+      changedPaths: ['README.md', 'dirty.txt', 'staged.txt'],
+      mergeCommits: [],
+      pathBoundaryViolation: false
+    });
     await expect(manager.cleanup(prepared)).rejects.toMatchObject({code: 'worktree_dirty'});
     await expect(git(repositoryRoot, ['rev-parse', `refs/heads/${prepared.branch}`]))
       .resolves.toBe(baseCommit);
 
-    await rm(path.join(prepared.worktreePath, 'dirty.txt'));
+    await git(prepared.worktreePath, ['restore', '--staged', 'staged.txt']);
+    await git(prepared.worktreePath, ['restore', 'README.md']);
+    await Promise.all([
+      rm(path.join(prepared.worktreePath, 'dirty.txt')),
+      rm(path.join(prepared.worktreePath, 'staged.txt'))
+    ]);
     await writeFile(path.join(prepared.worktreePath, 'committed.txt'), 'advanced\n');
     await git(prepared.worktreePath, ['add', 'committed.txt']);
     await git(prepared.worktreePath, ['commit', '-m', 'advance run branch']);
@@ -70,6 +85,54 @@ describe('WorktreeManager', () => {
       ['rev-parse', `refs/heads/${prepared.branch}`]
     );
     expect(advancedCommit).not.toBe(baseCommit);
+    await expect(manager.inspect(prepared)).resolves.toMatchObject({
+      headCommit: advancedCommit,
+      dirty: false,
+      changedPaths: ['committed.txt'],
+      mergeCommits: [],
+      pathBoundaryViolation: false
+    });
+
+    const workflowDirectory = path.join(
+      prepared.worktreePath,
+      '.github',
+      'workflows'
+    );
+    await mkdir(workflowDirectory, {recursive: true});
+    await writeFile(path.join(workflowDirectory, 'release.yml'), 'unsafe\n');
+    await git(prepared.worktreePath, ['add', '.github/workflows/release.yml']);
+    await git(prepared.worktreePath, ['commit', '-m', 'touch protected path']);
+    await rm(path.join(workflowDirectory, 'release.yml'));
+    await git(prepared.worktreePath, ['add', '-A']);
+    await git(prepared.worktreePath, ['commit', '-m', 'revert protected path']);
+    await expect(manager.inspect(prepared)).resolves.toMatchObject({
+      dirty: false,
+      changedPaths: ['.github/workflows/release.yml', 'committed.txt']
+    });
+
+    const sideBranch = `side-${runId}`;
+    await git(prepared.worktreePath, ['switch', '-c', sideBranch]);
+    await writeFile(path.join(prepared.worktreePath, 'side.txt'), 'side\n');
+    await git(prepared.worktreePath, ['add', 'side.txt']);
+    await git(prepared.worktreePath, ['commit', '-m', 'side']);
+    await git(prepared.worktreePath, ['switch', prepared.branch]);
+    await writeFile(path.join(prepared.worktreePath, 'mainline.txt'), 'mainline\n');
+    await git(prepared.worktreePath, ['add', 'mainline.txt']);
+    await git(prepared.worktreePath, ['commit', '-m', 'mainline']);
+    await git(prepared.worktreePath, ['merge', '--no-ff', sideBranch, '-m', 'merge side']);
+    const mergeCommit = await git(prepared.worktreePath, ['rev-parse', 'HEAD']);
+    await expect(manager.inspect(prepared)).resolves.toMatchObject({
+      headCommit: mergeCommit,
+      dirty: false,
+      changedPaths: [
+        '.github/workflows/release.yml',
+        'committed.txt',
+        'mainline.txt',
+        'side.txt'
+      ],
+      mergeCommits: [mergeCommit],
+      pathBoundaryViolation: false
+    });
     await expect(manager.prepare({runId, baseCommit})).resolves.toEqual({
       ...prepared,
       status: 'existing'
@@ -77,7 +140,7 @@ describe('WorktreeManager', () => {
 
     await expect(manager.cleanup(prepared)).resolves.toBeUndefined();
     await expect(git(repositoryRoot, ['rev-parse', `refs/heads/${prepared.branch}`]))
-      .resolves.toBe(advancedCommit);
+      .resolves.toBe(mergeCommit);
   });
 
   it('isolates run names and fails closed on collisions and traversal input', async () => {

@@ -20,6 +20,27 @@ export type RedactedProcessOutputMetadata = Readonly<{
   contentRetained: false;
 }>;
 
+export type RuntimePolicyRuleId =
+  | 'protected_path_write'
+  | 'repository_merge'
+  | 'release_operation'
+  | 'deployment_operation'
+  | 'production_access'
+  | 'read_safe_worktree_changed'
+  | 'protected_path_changed'
+  | 'worktree_path_escape'
+  | 'merge_history_changed';
+
+export type RuntimePolicyEvidence = Readonly<{
+  decision: 'allowed' | 'denied';
+  filesystem: 'read_only' | 'workspace_only';
+  network: 'denied';
+  approvals: 'never';
+  environment: 'allowlisted';
+  tools: readonly ['codex_cli'];
+  deniedRuleIds: readonly RuntimePolicyRuleId[];
+}>;
+
 export type AgentRuntimeEvidence = Readonly<{
   status: 'completed' | 'blocked';
   changedFiles: readonly string[];
@@ -45,6 +66,7 @@ type AgentRuntimeResultBase = Readonly<{
   durationMs: number;
   stdout: RedactedProcessOutputMetadata;
   stderr: RedactedProcessOutputMetadata;
+  policy: RuntimePolicyEvidence;
 }>;
 
 export type AgentRuntimeResult =
@@ -66,6 +88,11 @@ export type AgentRuntimeResult =
       status: 'timed_out' | 'cancelled';
       exitCode: number | null;
       signal: NodeJS.Signals | null;
+    }>)
+  | (AgentRuntimeResultBase & Readonly<{
+      status: 'policy_denied';
+      exitCode: null;
+      signal: null;
     }>);
 
 export interface AgentRuntime {

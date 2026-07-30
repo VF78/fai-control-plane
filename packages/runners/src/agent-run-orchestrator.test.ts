@@ -39,6 +39,10 @@ describe('local AgentRun orchestrator', () => {
     const dirtyRuns = new Set<string>();
     const publishRuns = new Set<string>();
     const unsatisfiedEvidenceRuns = new Set<string>();
+    const observedPaths = new Map<string, readonly string[]>();
+    const mergeRuns = new Set<string>();
+    const pathBoundaryRuns = new Set<string>();
+    const falseEvidenceRuns = new Set<string>();
     const manager: WorktreeManager = {
       prepare: vi.fn(async ({runId, baseCommit}) => {
         const worktree: AgentRunWorktree = {
@@ -56,7 +60,13 @@ describe('local AgentRun orchestrator', () => {
         headCommit: publishRuns.has(worktree.runId)
           ? 'd'.repeat(40)
           : worktree.baseCommit,
-        dirty: dirtyRuns.has(worktree.runId)
+        dirty: dirtyRuns.has(worktree.runId),
+        changedPaths: observedPaths.get(worktree.runId) ??
+          (dirtyRuns.has(worktree.runId) ? ['dirty.txt'] : []),
+        mergeCommits: mergeRuns.has(worktree.runId)
+          ? ['e'.repeat(40)]
+          : [],
+        pathBoundaryViolation: pathBoundaryRuns.has(worktree.runId)
       })),
       cleanup: vi.fn(async (worktree) => {
         worktrees.delete(worktree.runId);
@@ -65,6 +75,33 @@ describe('local AgentRun orchestrator', () => {
     const runtime: AgentRuntime = {
       runtimeId: 'test-runtime',
       run: vi.fn(async (input): Promise<AgentRuntimeResult> => {
+        if (input.prompt.includes('POLICY DENIAL')) {
+          return {
+            runtimeId: 'test-runtime',
+            runId: input.runId,
+            packetId: input.packetId,
+            packetHash: input.packetHash,
+            profile: input.profile,
+            executionMetadata: {sandbox: 'workspace-write'},
+            startedAt: '2026-07-26T08:00:00.000Z',
+            finishedAt: '2026-07-26T08:00:00.000Z',
+            durationMs: 0,
+            stdout: emptyOutput(),
+            stderr: emptyOutput(),
+            policy: {
+              decision: 'denied',
+              filesystem: 'workspace_only',
+              network: 'denied',
+              approvals: 'never',
+              environment: 'allowlisted',
+              tools: ['codex_cli'],
+              deniedRuleIds: ['deployment_operation']
+            },
+            status: 'policy_denied',
+            exitCode: null,
+            signal: null
+          };
+        }
         if (input.profile === 'write_scoped' && !publishRuns.has(input.runId)) {
           dirtyRuns.add(input.runId);
           return {
@@ -79,6 +116,15 @@ describe('local AgentRun orchestrator', () => {
             durationMs: 60_000,
             stdout: emptyOutput(),
             stderr: emptyOutput(),
+            policy: {
+              decision: 'allowed',
+              filesystem: 'workspace_only',
+              network: 'denied',
+              approvals: 'never',
+              environment: 'allowlisted',
+              tools: ['codex_cli'],
+              deniedRuleIds: []
+            },
             status: input.signal?.aborted ? 'cancelled' : 'timed_out',
             exitCode: null,
             signal: 'SIGTERM'
@@ -102,6 +148,17 @@ describe('local AgentRun orchestrator', () => {
           durationMs: 10_000,
           stdout: emptyOutput(),
           stderr: emptyOutput(),
+          policy: {
+            decision: 'allowed',
+            filesystem: input.profile === 'read_safe'
+              ? 'read_only'
+              : 'workspace_only',
+            network: 'denied',
+            approvals: 'never',
+            environment: 'allowlisted',
+            tools: ['codex_cli'],
+            deniedRuleIds: []
+          },
           status: 'succeeded',
           exitCode: 0,
           summaryRef,
@@ -111,7 +168,9 @@ describe('local AgentRun orchestrator', () => {
           ),
           evidence: {
             status: 'completed',
-            changedFiles: ['packages/runners/src/agent-run-orchestrator.ts'],
+            changedFiles: falseEvidenceRuns.has(input.runId)
+              ? []
+              : ['packages/runners/src/agent-run-orchestrator.ts'],
             checks: [{
               name: 'runner typecheck',
               status: unsatisfiedEvidenceRuns.has(input.runId)
@@ -165,6 +224,41 @@ describe('local AgentRun orchestrator', () => {
     await expect(orchestrator.run(clean)).rejects.toMatchObject({
       code: 'artifact_directory_collision'
     });
+
+    const denied = {
+      ...envelope('write_scoped'),
+      prompt: 'POLICY DENIAL SECRET=do-not-retain'
+    };
+    const deniedResult = await orchestrator.run(denied);
+    expect(deniedResult.receipt).toMatchObject({
+      finalStatus: 'policy_denied',
+      worktreeDisposition: 'removed_clean',
+      nextAction: 'retry_explicitly',
+      policy: {
+        decision: 'denied',
+        deniedRuleIds: ['deployment_operation']
+      },
+      writeBack: {state: 'not_attempted'}
+    });
+    const deniedBody = await readFile(deniedResult.receiptRef, 'utf8');
+    expect(deniedBody).not.toContain('SECRET');
+    expect(deniedBody).not.toContain('do-not-retain');
+
+    const readSafeObserved = envelope('read_safe');
+    publishRuns.add(readSafeObserved.runId);
+    observedPaths.set(readSafeObserved.runId, ['README.md']);
+    falseEvidenceRuns.add(readSafeObserved.runId);
+    const readSafeDenied = await orchestrator.run(readSafeObserved);
+    expect(readSafeDenied.receipt).toMatchObject({
+      finalStatus: 'policy_denied',
+      worktreeDisposition: 'retained_policy_denied',
+      nextAction: 'review_worktree',
+      policy: {
+        decision: 'denied',
+        deniedRuleIds: ['read_safe_worktree_changed']
+      }
+    });
+    expect(worktrees.has(readSafeObserved.runId)).toBe(true);
 
     const dirtyTimeout = envelope('write_scoped');
     const dirtyResult = await orchestrator.run(dirtyTimeout);
@@ -220,6 +314,48 @@ describe('local AgentRun orchestrator', () => {
         publisher
       }
     });
+    const protectedObserved = envelope('write_scoped');
+    publishRuns.add(protectedObserved.runId);
+    observedPaths.set(protectedObserved.runId, ['.github/workflows/release.yml']);
+    falseEvidenceRuns.add(protectedObserved.runId);
+    const protectedDenied = await publishingOrchestrator.run(protectedObserved);
+    expect(protectedDenied.receipt).toMatchObject({
+      finalStatus: 'policy_denied',
+      worktreeDisposition: 'retained_policy_denied',
+      policy: {deniedRuleIds: ['protected_path_changed']},
+      writeBack: {state: 'blocked', reason: 'runtime_not_succeeded'}
+    });
+    expect(publisher.publishDraftChange).not.toHaveBeenCalled();
+
+    const mergeObserved = envelope('write_scoped');
+    publishRuns.add(mergeObserved.runId);
+    observedPaths.set(mergeObserved.runId, ['packages/runners/src/index.ts']);
+    mergeRuns.add(mergeObserved.runId);
+    falseEvidenceRuns.add(mergeObserved.runId);
+    const mergeDenied = await publishingOrchestrator.run(mergeObserved);
+    expect(mergeDenied.receipt).toMatchObject({
+      finalStatus: 'policy_denied',
+      worktreeDisposition: 'retained_policy_denied',
+      policy: {deniedRuleIds: ['merge_history_changed']},
+      writeBack: {state: 'blocked', reason: 'runtime_not_succeeded'}
+    });
+    expect(publisher.publishDraftChange).not.toHaveBeenCalled();
+
+    const pathEscapeObserved = envelope('write_scoped');
+    publishRuns.add(pathEscapeObserved.runId);
+    pathBoundaryRuns.add(pathEscapeObserved.runId);
+    falseEvidenceRuns.add(pathEscapeObserved.runId);
+    const pathEscapeDenied = await publishingOrchestrator.run(
+      pathEscapeObserved
+    );
+    expect(pathEscapeDenied.receipt).toMatchObject({
+      finalStatus: 'policy_denied',
+      worktreeDisposition: 'retained_policy_denied',
+      policy: {deniedRuleIds: ['worktree_path_escape']},
+      writeBack: {state: 'blocked', reason: 'runtime_not_succeeded'}
+    });
+    expect(publisher.publishDraftChange).not.toHaveBeenCalled();
+
     const publishable = envelope('write_scoped');
     publishRuns.add(publishable.runId);
     const published = await publishingOrchestrator.run(publishable);
@@ -239,7 +375,7 @@ describe('local AgentRun orchestrator', () => {
         branch: `fai/run/${publishable.runId}`
       })
     );
-    expect(manager.cleanup).toHaveBeenCalledTimes(2);
+    expect(manager.cleanup).toHaveBeenCalledTimes(3);
 
     const unsatisfied = envelope('write_scoped');
     publishRuns.add(unsatisfied.runId);
@@ -262,7 +398,7 @@ describe('local AgentRun orchestrator', () => {
       writeBack: {state: 'failed', reason: 'change_create_failed'},
       nextAction: 'retry_explicitly'
     });
-    expect(manager.cleanup).toHaveBeenCalledTimes(4);
+    expect(manager.cleanup).toHaveBeenCalledTimes(5);
   });
 
   it('rejects artifact collisions and traversal before starting a runtime', async () => {
@@ -364,7 +500,10 @@ describe('local AgentRun orchestrator', () => {
       })),
       inspect: vi.fn(async (worktree) => ({
         headCommit: worktree.baseCommit,
-        dirty: worktree.runId === dirtyRunId
+        dirty: worktree.runId === dirtyRunId,
+        changedPaths: worktree.runId === dirtyRunId ? ['dirty.txt'] : [],
+        mergeCommits: [],
+        pathBoundaryViolation: false
       })),
       cleanup: vi.fn(async () => {
         throw new Error('cleanup failed');
