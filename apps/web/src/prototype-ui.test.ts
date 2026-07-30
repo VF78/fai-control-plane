@@ -18,6 +18,8 @@ it('maps only canonical workspace routes and preserves scope on deep links', () 
     .toMatchObject({screen: 'global_tasks', globalProject: 'msa', taskFilters: {status: 'qa', attention: true, owner: 'Hermes'}});
   expect(workspaceRoute(['projects', 'msa', 'tasks'], {}))
     .toMatchObject({screen: 'tasks', taskFilters: {status: 'active', attention: false, owner: null}});
+  expect(workspaceRoute(['projects', 'msa', 'runs', 'run-1'], {handoff: 'accepted'}))
+    .toMatchObject({screen: 'run', handoffResult: 'accepted'});
   expect(workspaceRoute(['people'], {})).toMatchObject({screen: 'people', project: null});
 });
 
@@ -414,13 +416,13 @@ it('preserves scope and keeps the run handoff separate from an absent approval',
   const data = {
     portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null,
     project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'ASCON', slug: 'ascon', description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [{id: 'task-1', title: 'Bounded task', summary: null, status: 'in_dev', blocked: false, owner: null, updatedAt: new Date(), externalUrl: null, canBuildPacket: false, handoff: {label: 'Run completed', state: 'done', kind: 'run', targetId: 'run-1', href: '/runs?project=ascon#run-run-1'}}]}},
-    runs: {state: 'ready', data: {runs: [{id: 'run-1', workItem: 'Bounded task', agent: 'Observed runner', status: 'done', runtimeProfile: 'read_safe', startedAt: null, completedAt: null, receipt: null, artifacts: [], canAcceptReceipt: false}], approvals: [], packets: []}}
+    runs: {state: 'ready', data: {runs: [{id: 'run-1', workItemId: 'task-1', workItem: 'Bounded task', agent: 'Observed runner', status: 'done', runtimeProfile: 'read_safe', startedAt: null, completedAt: null, receipt: null, artifacts: [], canAcceptReceipt: false}], approvals: [], packets: []}}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'ascon', taskId: 'task-1', runId: null, agentId: null, scope: {environment: 'staging', from: '2026-07-01', to: '2026-07-31'}}, data}));
 
   expect(markup).toContain('Responsible human</dt><dd>Unknown');
   expect(markup).toContain('Responsible agent</dt><dd>Unknown');
-  expect(markup).toContain('Run or packet handoff');
+  expect(markup).toContain('Execution');
   expect(markup).toContain('Approval</dt><dd>Not observed');
   expect(markup).toContain('href="/projects/ascon/runs/run-1?environment=staging&amp;from=2026-07-01&amp;to=2026-07-31"');
   expect(markup).toContain('href="/projects/ascon/overview?environment=staging&amp;from=2026-07-01&amp;to=2026-07-31"');
@@ -454,6 +456,120 @@ it('renders the task lifecycle rail from recorded packet, approval, run, receipt
   }));
   expect(unavailable).toContain('Unavailable');
   expect(unavailable).toContain('PostgreSQL read unavailable');
+});
+
+it('keeps the governed task to receipt journey inside project task and run detail', () => {
+  const observedAt = new Date('2026-07-30T12:00:00.000Z');
+  const taskId = '00000000-0000-4000-8000-000000000001';
+  const packetId = '00000000-0000-4000-8000-000000000002';
+  const runId = '00000000-0000-4000-8000-000000000003';
+  const actorId = '00000000-0000-4000-8000-000000000004';
+  const baseTask = {
+    id: taskId, title: 'Governed delivery', summary: null, status: 'in_dev' as const,
+    blocked: false, owner: 'Vladimir', updatedAt: observedAt, externalUrl: null, version: 3,
+    journey: {
+      protocolId: 'protocol-1', protocolVersion: 1, stageKey: 'development', version: 2,
+      deadlineAt: null,
+      stage: {name: 'Development', taskStatus: 'in_dev' as const, executionMode: 'human_approval', responsibility: 'project_owner', nextStage: 'Quality assurance', actor: {displayName: 'Vladimir', type: 'human' as const}},
+      evidence: [], requiredEvidence: []
+    },
+    canBuildPacket: true,
+    handoff: null
+  };
+  const project = {
+    project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: observedAt},
+    agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [baseTask]
+  };
+  const shellData = (workItem: unknown, runs: unknown): WorkspaceData => ({
+    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, projectIndex: [],
+    csrfToken: 'csrf', operatorActorId: actorId,
+    project: {state: 'ready', data: {...project, workItems: [workItem]}},
+    runs: {state: 'ready', data: runs}
+  } as unknown as WorkspaceData);
+  const taskRoute = {screen: 'task' as const, project: 'msa' as const, taskId, runId: null, agentId: null, scope: {environment: null, from: null, to: null}};
+  const runRoute = {screen: 'run' as const, project: 'msa' as const, taskId: null, runId, agentId: null, scope: {environment: null, from: null, to: null}};
+  const emptyRuns = {runs: [], approvals: [], packets: []};
+
+  const taskMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: taskRoute, data: shellData(baseTask, emptyRuns)
+  }));
+  expect(taskMarkup).toContain('Build Task Packet');
+  expect(taskMarkup).toContain('Build Task Packet from the current canonical task version.');
+  expect(taskMarkup).not.toContain('/runs?');
+
+  const packet = {
+    id: packetId, project: 'MSA', projectSlug: 'msa', workItemId: taskId, workItemTitle: 'Governed delivery',
+    frozenWorkItemVersion: 3, currentWorkItemVersion: 3, goal: 'Implement bounded change',
+    acceptanceCriteria: ['Focused checks pass'], inScope: ['Bounded implementation'], outOfScope: ['Production'],
+    relevantLinks: [], relevantFiles: ['apps/web'], allowedTools: ['test'], forbiddenSurfaces: ['production'],
+    dataPolicy: {}, expectedOutputSchema: {}, timeboxMinutes: 30, reviewer: 'Vladimir',
+    approver: 'Vladimir', approverActorId: actorId, authMode: 'user', runtimeProfile: 'read_safe',
+    agentProfileSnapshotVersion: 1, agentProfileSnapshotHash: 'b'.repeat(64), contentHash: 'a'.repeat(64),
+    profiles: [{
+      id: 'profile-1', name: 'Hermes', runtimeId: 'hermes',
+      policyPreview: {
+        runnable: true, decision: 'ask', policyVersion: 1, actorType: 'agent',
+        actionCategory: 'code_change', surface: 'repository', environment: 'development',
+        actionHash: 'c'.repeat(64), baseCommit: 'd'.repeat(40), stopFactors: [],
+        requiredHumanPacketHash: 'a'.repeat(64)
+      }
+    }],
+    runnable: true, nonRunnableReason: null
+  };
+  const packetMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: taskRoute,
+    data: shellData({...baseTask, canBuildPacket: false, handoff: {label: 'Packet needs confirmation', state: 'queued', kind: 'packet', targetId: packetId, href: `/projects/msa/tasks/${taskId}#packet-${packetId}`}}, {...emptyRuns, packets: [packet]})
+  }));
+  expect(packetMarkup).toContain('Frozen task version');
+  expect(packetMarkup).toContain('Simulate policy');
+  expect(packetMarkup).toContain('Required human confirmation');
+  expect(packetMarkup).toContain('Confirm and queue');
+
+  const queuedRun = {
+    id: runId, project: 'MSA', projectSlug: 'msa', workItemId: taskId, workItem: 'Governed delivery',
+    agent: 'Hermes', status: 'queued', runtimeProfile: 'read_safe', attempt: 1, packetGoal: 'Implement bounded change',
+    timeboxMinutes: 30, startedAt: null, completedAt: null, heartbeatAt: null, failureCode: null,
+    version: 2, workItemVersion: 3, canAcceptReceipt: false, receipt: null, artifacts: []
+  };
+  const queuedMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [queuedRun]})
+  }));
+  expect(queuedMarkup).toContain('Cancel queued run');
+  expect(queuedMarkup).toContain('Wait for a governed claim or cancel this queued run.');
+
+  const completedRun = {
+    ...queuedRun, status: 'done', completedAt: observedAt, canAcceptReceipt: true,
+    receipt: {terminal: 'done', completedAt: observedAt, runtimeId: 'hermes', runtimeProfile: 'read_safe', durationMs: 1000, receiptSha256: 'e'.repeat(64), cost: null, usage: null}
+  };
+  const receiptMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [completedRun]})
+  }));
+  expect(receiptMarkup).toContain('Receipt observed');
+  expect(receiptMarkup).toContain('Accept receipt and move to QA');
+  expect(receiptMarkup).toContain('Accept the persisted receipt to move the task to QA.');
+
+  const acceptedMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {...runRoute, handoffResult: 'accepted'},
+    data: shellData(baseTask, {...emptyRuns, runs: [{...completedRun, canAcceptReceipt: false}]})
+  }));
+  expect(acceptedMarkup).toContain('Receipt accepted. The task moved to QA.');
+  expect(acceptedMarkup).toContain(`href="/projects/msa/tasks/${taskId}"`);
+
+  const qaTask = {
+    ...baseTask, status: 'qa' as const, canBuildPacket: false,
+    journey: {
+      ...baseTask.journey, stageKey: 'qa', version: 3,
+      stage: {name: 'Quality assurance', taskStatus: 'qa' as const, executionMode: 'human_approval', responsibility: 'project_owner', nextStage: 'Acceptance', actor: {displayName: 'Vladimir', type: 'human' as const}},
+      requiredEvidence: ['QA result']
+    }
+  };
+  const nextStageMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: taskRoute,
+    data: shellData(qaTask, {...emptyRuns, runs: [{...completedRun, canAcceptReceipt: false, workItemVersion: 4}]})
+  }));
+  expect(nextStageMarkup).toContain('Record required evidence: QA result.');
+  expect(nextStageMarkup).toContain('Next required');
+  expect(nextStageMarkup).toContain('QA result');
 });
 
 it('renders immutable protocol stages and persisted journey responsibility/evidence as facts', () => {

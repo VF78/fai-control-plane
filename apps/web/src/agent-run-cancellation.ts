@@ -153,9 +153,13 @@ export async function cancelAgentRunCommand(
       expectedVersion: input.expectedVersion
     });
     if (result === 'cancelled') {
+      const requestedScope = new URL(request.url).searchParams.get('project');
+      const location = requestedScope === 'msa' || requestedScope === 'ascon'
+        ? `/projects/${requestedScope}/runs/${runId}`
+        : '/dashboard';
       return new Response(null, {
         status: 303,
-        headers: {...noStore, location: new URL('/runs', request.url).toString()}
+        headers: {...noStore, location: new URL(location, request.url).toString()}
       });
     }
     const status = result === 'forbidden' ? 403

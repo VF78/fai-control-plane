@@ -20,5 +20,9 @@ export default async function WorkspacePage({params, searchParams}: {
   const auth = await currentOperatorSession(cookieStore.get(OPERATOR_SESSION_COOKIE)?.value);
   if (auth.enabled && auth.session === null) return <OperatorLogin />;
   const data = await loadWorkspaceData(route, auth.session?.actorId);
-  return <WorkspaceShell route={route} data={{...data, csrfToken: auth.session?.csrfToken ?? null}} />;
+  return <WorkspaceShell route={route} data={{
+    ...data,
+    csrfToken: auth.session?.csrfToken ?? null,
+    operatorActorId: auth.session?.actorId ?? null
+  }} />;
 }
