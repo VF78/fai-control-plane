@@ -220,6 +220,31 @@ describePostgres(
             `${entry.label.toLowerCase()}-project-${randomUUID()}`
           ]
         );
+        const credentialRefId = randomUUID();
+        await testPool.query(
+          `INSERT INTO secret_refs (
+             id, workspace_id, provider, reference
+           ) VALUES ($1, $2, 'test', $3)`,
+          [
+            credentialRefId,
+            entry.workspaceId,
+            `test://repository/${entry.projectId}`
+          ]
+        );
+        await testPool.query(
+          `INSERT INTO project_tracker_repository_scopes (
+             id, project_id, provider, repository_owner, repository_name,
+             repository_external_id, credential_ref_id
+           ) VALUES ($1, $2, 'test', $3, $4, $5, $6)`,
+          [
+            randomUUID(),
+            entry.projectId,
+            'fixture',
+            `${entry.label.toLowerCase()}-repository`,
+            `test:repository:${entry.projectId}`,
+            credentialRefId
+          ]
+        );
         await testPool.query(
           `INSERT INTO actors (
              id, workspace_id, type, role, display_name, auth_mode
@@ -530,6 +555,143 @@ describePostgres(
         userKey,
         userKey
       ]);
+    });
+
+    it('enforces one active task/repository attempt across packets and retries as a new run', async () => {
+      const workItemId = randomUUID();
+      await testDb.insert(workItems).values({
+        id: workItemId,
+        projectId: fixture.projectId,
+        title: 'Attempt guard item',
+        status: 'ready',
+        version: 1
+      });
+      const firstPacketId = randomUUID();
+      const secondPacketId = randomUUID();
+      const firstContent = packetContent('primary', {
+        workItemId,
+        workItemVersion: 1,
+        goal: 'First immutable packet'
+      });
+      const secondContent = packetContent('primary', {
+        workItemId,
+        workItemVersion: 1,
+        goal: 'Second immutable packet'
+      });
+      const firstPacket = createTaskPacket(firstPacketId, firstContent);
+      const secondPacket = createTaskPacket(secondPacketId, secondContent);
+      if (!firstPacket.ok || !secondPacket.ok) {
+        throw new Error('Attempt guard packets did not initialize.');
+      }
+      await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'task_packet.create',
+        {packetId: firstPacketId, content: firstContent}
+      ));
+      await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'task_packet.create',
+        {packetId: secondPacketId, content: secondContent}
+      ));
+      const firstRunId = randomUUID();
+      const secondRunId = randomUUID();
+      const firstQueue = command(
+        fixture.workspaceId,
+        primaryActor,
+        'agent_run.queue',
+        {
+          agentRunId: firstRunId,
+          taskPacketId: firstPacketId,
+          agentProfileId: fixture.profileId,
+          confirmedPacketHash: firstPacket.value.contentHash,
+          baseCommit: 'c'.repeat(40)
+        }
+      );
+      const secondQueue = command(
+        fixture.workspaceId,
+        primaryActor,
+        'agent_run.queue',
+        {
+          agentRunId: secondRunId,
+          taskPacketId: secondPacketId,
+          agentProfileId: fixture.profileId,
+          confirmedPacketHash: secondPacket.value.contentHash,
+          baseCommit: 'd'.repeat(40)
+        }
+      );
+
+      const queued = await Promise.all([
+        service().execute(firstQueue),
+        service().execute(secondQueue)
+      ]);
+      expect(queued.filter((result) =>
+        result.status === 'completed' && result.receipt.result.ok
+      )).toHaveLength(1);
+      expect(queued.filter((result) =>
+        receiptErrorCode(result) === 'VERSION_CONFLICT'
+      )).toHaveLength(1);
+      const [active] = await testDb
+        .select({
+          id: agentRuns.id,
+          taskPacketId: agentRuns.taskPacketId,
+          agentProfileId: agentRuns.agentProfileId,
+          confirmedPacketHash: agentRuns.confirmedPacketHash,
+          baseCommit: agentRuns.baseCommit
+        })
+        .from(agentRuns)
+        .where(eq(agentRuns.workItemId, workItemId));
+      if (active === undefined) throw new Error('Active attempt was not persisted.');
+
+      await expect(service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'agent_run.transition',
+        {agentRunId: active.id, status: 'failed', expectedVersion: 1}
+      ))).resolves.toMatchObject({receipt: {result: {ok: true}}});
+      const retryRunId = randomUUID();
+      const retry = command(
+        fixture.workspaceId,
+        primaryActor,
+        'agent_run.retry',
+        {agentRunId: retryRunId, retryOfAgentRunId: active.id}
+      );
+      await expect(service().execute(retry)).resolves.toMatchObject({
+        receipt: {result: {ok: true}, resultVersion: 1}
+      });
+
+      await expect(testDb.select({
+        id: agentRuns.id,
+        status: agentRuns.status,
+        taskPacketId: agentRuns.taskPacketId,
+        agentProfileId: agentRuns.agentProfileId,
+        confirmedPacketHash: agentRuns.confirmedPacketHash,
+        baseCommit: agentRuns.baseCommit,
+        retryOfAgentRunId: agentRuns.retryOfAgentRunId
+      }).from(agentRuns).where(inArray(agentRuns.id, [active.id, retryRunId])))
+        .resolves.toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            id: active.id,
+            status: 'failed',
+            retryOfAgentRunId: null
+          }),
+          {
+            id: retryRunId,
+            status: 'queued',
+            taskPacketId: active.taskPacketId,
+            agentProfileId: active.agentProfileId,
+            confirmedPacketHash: active.confirmedPacketHash,
+            baseCommit: active.baseCommit,
+            retryOfAgentRunId: active.id
+          }
+        ]));
+      await expect(testDb.select({action: auditEvents.action})
+        .from(auditEvents).where(eq(auditEvents.commandId, retry.commandId)))
+        .resolves.toEqual([{action: 'agent_run.retry'}]);
+      await expect(testDb.select({state: commandReceipts.state})
+        .from(commandReceipts).where(eq(commandReceipts.commandId, retry.commandId)))
+        .resolves.toEqual([{state: 'completed'}]);
     });
 
     it('rejects forged packet provenance before a receipt claim', async () => {

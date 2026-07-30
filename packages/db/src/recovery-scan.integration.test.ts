@@ -40,7 +40,8 @@ const ids = {
   workItem: randomUUID(),
   event: randomUUID(),
   packet: randomUUID(),
-  run: randomUUID()
+  run: randomUUID(),
+  repositoryScope: randomUUID()
 };
 
 describePostgres('PostgreSQL recovery scan producer', () => {
@@ -77,6 +78,7 @@ describePostgres('PostgreSQL recovery scan producer', () => {
       scope: []
     });
     await db.insert(projectTrackerRepositoryScopes).values({
+      id: ids.repositoryScope,
       projectId: ids.project,
       provider: 'github',
       repositoryOwner: 'VF78',
@@ -145,6 +147,8 @@ describePostgres('PostgreSQL recovery scan producer', () => {
       id: ids.run,
       taskPacketId: ids.packet,
       agentProfileId: ids.profile,
+      workItemId: ids.workItem,
+      repositoryScopeId: ids.repositoryScope,
       confirmedPacketHash: 'e'.repeat(64),
       baseCommit: 'a'.repeat(40),
       status: 'running',
