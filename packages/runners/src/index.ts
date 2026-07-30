@@ -103,15 +103,29 @@ export interface AgentRuntime {
 
 export {
   CodexRuntimeInputError,
+  codexRuntimeSettingsAdapter,
   createCodexAgentRuntime,
   readCodexStructuredSummary,
   type CodexAgentRuntimeOptions,
   type CodexProcessEnvironment,
+  type CodexRuntimeSettings,
   type CodexStructuredSummary,
   type ProcessExecutionRequest,
   type ProcessExecutionResult,
   type ProcessExecutor
 } from './codex-agent-runtime';
+
+export {
+  validateRuntimeSettings,
+  type PortableRuntimeBinding,
+  type RuntimeSettingsAdapter,
+  type RuntimeSettingsValidation
+} from './runtime-adapter';
+
+export {
+  hermesRuntimeSettingsAdapter,
+  type HermesRuntimeSettings
+} from './hermes-runtime-adapter';
 
 export {
   createWorktreeManager,

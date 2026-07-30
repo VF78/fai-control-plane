@@ -1,7 +1,10 @@
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import type {OpaqueSecretRef} from '@fai-control-plane/domain';
-import {createCodexAgentRuntime} from './codex-agent-runtime';
+import {
+  codexRuntimeSettingsAdapter,
+  createCodexAgentRuntime
+} from './codex-agent-runtime';
 import {createGitHubRepositoryHostPublisher} from './github-repository-host-publisher';
 import {createLocalFilesystemArtifactStore} from './artifact-store';
 import {
@@ -12,6 +15,7 @@ import {
 } from './agent-run-orchestrator';
 import type {RuntimeProfile} from './index';
 import {createWorktreeManager} from './worktree-manager';
+import {validateRuntimeSettings} from './runtime-adapter';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -487,6 +491,13 @@ export const runWorkstationRunnerFromEnvironment = async (
     ...(environment.TEMP === undefined ? {} : {TEMP: environment.TEMP}),
     ...(environment.TMP === undefined ? {} : {TMP: environment.TMP})
   };
+  const codexSettings = validateRuntimeSettings(codexRuntimeSettingsAdapter, {
+    codexHome,
+    environment: runtimeEnvironment
+  });
+  const validatedCodexSettings = codexSettings.ok
+    ? codexSettings.settings
+    : fail(codexSettings.error.code);
   const repository = parseRepository(requireValue(
     environment,
     'LOCAL_WORKSTATION_RUNNER_REPOSITORY'
@@ -500,7 +511,7 @@ export const runWorkstationRunnerFromEnvironment = async (
   const runtimes = new Map<string, LocalAgentRunOrchestrator>([['codex-cli', createLocalAgentRunOrchestrator({
     artifactStore: createLocalFilesystemArtifactStore({root: artifactRoot}),
     worktrees: createWorktreeManager({repositoryRoot, worktreeRoot}),
-    runtime: createCodexAgentRuntime({codexHome, environment: runtimeEnvironment}),
+    runtime: createCodexAgentRuntime(validatedCodexSettings),
     ...(publication === undefined ? {} : {publication})
   })]]);
   return runWorkstationRunnerOnce({
