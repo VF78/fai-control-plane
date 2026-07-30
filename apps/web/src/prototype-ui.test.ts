@@ -1,7 +1,12 @@
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {expect, it, vi} from 'vitest';
-import {deriveFleetHealth, derivePortfolioProjectMetrics} from './operator-data';
+import {
+  deriveFleetHealth,
+  derivePortfolioProjectMetrics,
+  deriveRuntimeAvailabilityAlerts,
+  type AccessData
+} from './operator-data';
 import {workspaceRoute} from './operator-workspace-route';
 import {WorkspaceShell, type WorkspaceData} from './prototype-ui';
 
@@ -53,13 +58,27 @@ it('derives portfolio facts from persisted work, approval, milestone, and transi
   expect(metrics.cycleTime.samples).toBe(1);
 });
 
-it('marks fleet health only from an observed unexpired running lease', () => {
+it('derives fleet health from availability observations with run-lease fallback', () => {
   const asOf = new Date('2026-07-30T12:00:00.000Z');
   const base = {actorDisabled: false, profileEnabled: true, registrations: [{enabled: true}]};
   expect(deriveFleetHealth({...base, currentRun: {status: 'running', heartbeatAt: asOf, leaseExpiresAt: new Date('2026-07-30T12:01:00.000Z')}, asOf})).toBe('healthy');
   expect(deriveFleetHealth({...base, currentRun: {status: 'running', heartbeatAt: asOf, leaseExpiresAt: new Date('2026-07-30T11:59:00.000Z')}, asOf})).toBe('stale');
   expect(deriveFleetHealth({...base, currentRun: {status: 'queued', heartbeatAt: null, leaseExpiresAt: null}, asOf})).toBe('unknown');
   expect(deriveFleetHealth({...base, profileEnabled: false, currentRun: null, asOf})).toBe('disabled');
+  expect(deriveFleetHealth({
+    ...base,
+    registrations: [{enabled: true, availability: {
+      health: 'healthy', freshnessAt: asOf,
+      components: {
+        service: {state: 'healthy', observedAt: asOf, evidenceReference: 'probe:service'},
+        scheduler: {state: 'healthy', observedAt: asOf, evidenceReference: 'probe:scheduler'},
+        delivery: {state: 'healthy', observedAt: asOf, evidenceReference: 'report:1'}
+      }
+    }}],
+    currentRun: null,
+    asOf
+  })).toBe('healthy');
+  expect(deriveFleetHealth({...base, registrations: [], currentRun: null, asOf})).toBe('not_configured');
 });
 
 it('renders compact per-project portfolio metrics and explicit history limits', () => {
@@ -229,18 +248,27 @@ it('renders isolated internal/client conversation states and current access fact
 });
 
 it('renders persisted agent registrations and authorized new-claim controls without inferring liveness', () => {
+  const unavailable = {
+    health: 'unknown' as const,
+    freshnessAt: null,
+    components: {
+      service: {state: 'unknown' as const, observedAt: null, evidenceReference: null},
+      scheduler: {state: 'unknown' as const, observedAt: null, evidenceReference: null},
+      delivery: {state: 'unknown' as const, observedAt: null, evidenceReference: null}
+    }
+  };
   const data = {
     portfolio: {state: 'unconfigured'}, project: null, runs: null, projectIndex: [], csrfToken: 'csrf',
     health: {state: 'ready', data: {jobs: [{id: 'job-1', project: 'MSA', projectSlug: 'msa', name: 'recovery', status: 'unhealthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null}], integrations: [], risks: [], audit: [], costLedger: []}},
-    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64), registrations: [{id: 'registration-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true, version: 3, canManage: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null, fleet: {health: 'unknown', freshnessAt: null, currentWork: null, lastReceipt: null}}]}], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}}
+    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'agent-1', role: 'agent', active: true, version: 1}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64), registrations: [{id: 'registration-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true, version: 3, updatedAt: new Date('2026-07-30T11:00:00.000Z'), availability: unavailable, canManage: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null, fleet: {health: 'unknown', freshnessAt: null, currentWork: null, lastReceipt: null}}]}], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}}
   } as unknown as WorkspaceData;
   const list = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agents', project: null, globalProject: 'all', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
   const detail = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data}));
   expect(list).toContain('Agents &amp; Systems');
   expect(list).toContain('heartbeat Not observed');
   expect(detail).toContain('provider_neutral/hermes');
-  expect(detail).toContain('Fleet projection from persisted execution facts.');
-  expect(list).toContain('Healthy requires an active observed lease');
+  expect(detail).toContain('Fleet projection from persisted availability and execution facts.');
+  expect(list).toContain('Fresh observations can keep an idle runtime Healthy');
   expect(list).toContain('No active work observed');
   expect(detail).toContain('effective hash');
   expect(detail).toContain('action="/api/agent-profiles/profile-1"');
@@ -306,6 +334,16 @@ it('renders persisted agent registrations and authorized new-claim controls with
             runtimeKey: 'codex',
             enabled: false,
             version: 2,
+            updatedAt: new Date('2026-07-30T11:00:00.000Z'),
+            availability: {
+              ...unavailable,
+              health: 'disabled',
+              components: {
+                service: {state: 'disabled', observedAt: null, evidenceReference: null},
+                scheduler: {state: 'disabled', observedAt: null, evidenceReference: null},
+                delivery: {state: 'disabled', observedAt: null, evidenceReference: null}
+              }
+            },
             canManage: true
           }],
           instruction: null,
@@ -360,6 +398,78 @@ it('renders persisted agent registrations and authorized new-claim controls with
   }}};
   const readOnly = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data: readOnlyData}));
   expect(readOnly).not.toContain('runtime registration for new claims');
+});
+
+it('shows owned Hermes availability attention and treats ASCON no-bot scope as configured absence', () => {
+  const observedAt = new Date('2026-07-30T12:00:00.000Z');
+  const staleAvailability = {
+    health: 'stale' as const,
+    freshnessAt: observedAt,
+    components: {
+      service: {state: 'healthy' as const, observedAt, evidenceReference: 'probe:service'},
+      scheduler: {state: 'stale' as const, observedAt: new Date('2026-07-30T10:00:00.000Z'), evidenceReference: 'probe:scheduler'},
+      delivery: {state: 'healthy' as const, observedAt, evidenceReference: 'report:daily'}
+    }
+  };
+  const access = {
+    canRetireAgents: false,
+    actors: [
+      {id: 'vladimir', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}},
+      {id: 'hermes', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}
+    ],
+    memberships: [
+      {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vladimir', role: 'project_owner', active: true, version: 1},
+      {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'hermes', role: 'agent', active: true, version: 1},
+      {projectId: 'ascon-id', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', role: 'project_owner', active: true, version: 1}
+    ],
+    externalIdentities: [], resourceGrants: [],
+    agentSystems: [{actorId: 'hermes', profiles: [{
+      id: 'profile-hermes', runtimeId: 'hermes', runtimeProfile: 'read_safe',
+      enabled: true, configHash: 'a'.repeat(64), allowedTools: [], forbiddenSurfaces: [],
+      instructions: 'Observe.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, version: 1,
+      registrations: [{
+        id: 'registration-hermes', projectId: 'msa-id', project: 'MSA', projectSlug: 'msa',
+        provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true, version: 1,
+        updatedAt: observedAt, availability: staleAvailability, canManage: false
+      }],
+      instruction: null, latestRun: null,
+      fleet: {health: 'stale', freshnessAt: observedAt, currentWork: null, lastReceipt: null}
+    }]}],
+    requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}
+  } as unknown as AccessData;
+  const alerts = deriveRuntimeAvailabilityAlerts(access);
+  expect(alerts).toMatchObject([{
+    project: 'MSA',
+    object: 'Hermes availability',
+    reason: 'scheduler: stale',
+    owner: 'Vladimir',
+    severity: 'red',
+    nextAction: 'Refresh the provider-neutral observations and inspect stale components.'
+  }]);
+  const metrics = {stages: {backlog: 0, ready: 0, in_dev: 0, qa: 0, acceptance: 0, done: 0}, activeWip: 0, blockedWork: 0, staleActiveWork: 0, pendingApprovals: {count: 0, oldestAt: null}, integrationFreshness: null, milestoneOutlook: {state: 'unknown', due: 0, overdue: 0}, throughputTrend: {state: 'not_enough_history', recent: 0, previous: 0}, cycleTime: {state: 'not_enough_history', averageHours: null, samples: 0}};
+  const data = {
+    portfolio: {state: 'ready', data: {projects: [
+      {id: 'msa-id', name: 'MSA', slug: 'msa', health: 'yellow', snapshotAt: null, synchronizedAt: null, unresolvedRiskCount: 0, metrics},
+      {id: 'ascon-id', name: 'ASCON', slug: 'ascon', health: 'green', snapshotAt: null, synchronizedAt: null, unresolvedRiskCount: 0, metrics}
+    ], attention: []}},
+    access: {state: 'ready', data: access},
+    project: null, runs: {state: 'ready', data: {runs: [], approvals: [], packets: []}},
+    health: null, projectIndex: []
+  } as unknown as WorkspaceData;
+  const dashboard = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
+    data
+  }));
+  expect(dashboard).toContain('Hermes availability');
+  expect(dashboard).toContain('scheduler: stale');
+  expect(dashboard).toContain('Vladimir');
+  const ascon = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {screen: 'agents', project: null, globalProject: 'ascon', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
+    data
+  }));
+  expect(ascon).toContain('No managed bot configured');
+  expect(ascon).toContain('this is not an outage');
+  expect(ascon).not.toContain('Hermes</strong>');
 });
 
 it('renders project membership and provider-confirmed grant facts in the access detail', () => {

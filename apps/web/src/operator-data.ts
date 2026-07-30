@@ -32,6 +32,7 @@ import {
   projects,
   projectMemberships,
   resourceAccessGrants,
+  runtimeAvailabilityObservations,
   runtimeRegistrations,
   runbooks,
   riskSignalDispositionEvents,
@@ -60,6 +61,7 @@ import {
   actionCategories,
   actorTypes,
   canonicalJson,
+  deriveRuntimeAvailability,
   effectiveInstructions,
   environments,
   policyDecisionFor,
@@ -68,7 +70,8 @@ import {
   validateDeliveryProtocolDefinition,
   type DeliveryProtocol,
   type CanonicalJson,
-  type PolicyDecision
+  type PolicyDecision,
+  type RuntimeAvailabilityProjection
 } from '@fai-control-plane/domain';
 import {
   activeRiskDisposition,
@@ -1299,12 +1302,14 @@ export type AccessData = Readonly<{
         runtimeKey: string;
         enabled: boolean;
         version: number;
+        updatedAt: Date;
+        availability: RuntimeAvailabilityProjection;
         canManage: boolean;
       }>[];
       instruction: Readonly<{workspaceVersion: number; profileVersion: number | null; hash: string; provenance: string}> | null;
       latestRun: Readonly<{id: string; status: string; updatedAt: Date; completedAt: Date | null; receipt: Readonly<{terminal: string; completedAt: Date}> | null}> | null;
       fleet: Readonly<{
-        health: 'healthy' | 'stale' | 'unknown' | 'disabled';
+        health: 'healthy' | 'stale' | 'unknown' | 'not_configured' | 'disabled';
         freshnessAt: Date | null;
         currentWork: Readonly<{id: string; version: number; status: string; title: string; project: string; projectSlug: OperatorProjectSlug; startedAt: Date | null}> | null;
         lastReceipt: Readonly<{terminal: string; completedAt: Date; title: string; project: string; projectSlug: OperatorProjectSlug}> | null;
@@ -1339,6 +1344,64 @@ export type AccessData = Readonly<{
   }>;
 }>;
 
+export const deriveRuntimeAvailabilityAlerts = (
+  access: AccessData
+): AttentionQueueItem[] => {
+  const actorById = new Map(access.actors.map((actor) => [actor.id, actor]));
+  const activeAgentMemberships = access.memberships.filter((membership) =>
+    membership.active && membership.role === 'agent');
+  return access.agentSystems.flatMap((system) => {
+    const actor = actorById.get(system.actorId);
+    if (actor === undefined || actor.type !== 'agent' || actor.disabledAt !== null) return [];
+    return system.profiles.flatMap((profile) => profile.registrations.flatMap((registration) => {
+      const membership = activeAgentMemberships.find((item) =>
+        item.actorId === system.actorId && item.projectId === registration.projectId);
+      const health = registration.availability.health;
+      if (membership === undefined || !registration.enabled || !profile.enabled ||
+        health === 'healthy' || health === 'disabled') return [];
+      const affectedComponents = Object.entries(registration.availability.components)
+        .filter(([, component]) => component.state === 'stale' || component.state === 'unknown')
+        .map(([component, fact]) => `${component}: ${fact.state}`);
+      const ownerMembership = access.memberships.find((item) =>
+        item.projectId === registration.projectId &&
+        item.active &&
+        (item.role === 'project_owner' || item.role === 'workspace_owner'));
+      const owner = ownerMembership === undefined ? null : actorById.get(ownerMembership.actorId)?.displayName ?? null;
+      const evidenceReferences = Object.entries(registration.availability.components).flatMap(([component, fact]) =>
+        fact.evidenceReference === null ? [] : [{type: `runtime_${component}`, id: fact.evidenceReference}]);
+      const reason = health === 'not_configured'
+        ? 'Provider-neutral availability monitoring is not configured.'
+        : affectedComponents.length === 0
+          ? 'Runtime availability evidence is incomplete.'
+          : affectedComponents.join(' · ');
+      return [{
+        id: `runtime-availability:${registration.id}`,
+        riskSignalId: null,
+        projectId: registration.projectId,
+        workItemId: null,
+        severity: health === 'stale' ? 'red' as const : 'yellow' as const,
+        project: registration.project,
+        object: `${actor.displayName} availability`,
+        reason,
+        stage: null,
+        signalClass: 'fact' as const,
+        impact: 'Automated project support may be unavailable or its freshness is unproven.',
+        freshness: registration.availability.freshnessAt ?? registration.updatedAt,
+        owner,
+        evidenceReferences,
+        nextAction: health === 'not_configured'
+          ? 'Configure observation thresholds and a script-only runtime adapter.'
+          : 'Refresh the provider-neutral observations and inspect stale components.',
+        sourceUrl: null,
+        evidence: evidenceReferences.length === 0 ? 'No runtime observation recorded' : 'Persisted runtime availability observations',
+        action: {label: 'Open Agents & Systems', href: null},
+        dispositionVersion: 0,
+        disposition: null
+      }];
+    }));
+  });
+};
+
 const policySummary = () => actorTypes.map((actorType) => {
   const count = {allow: 0, ask: 0, deny: 0};
   for (const actionCategory of actionCategories) for (const surface of policySurfaces) {
@@ -1355,20 +1418,27 @@ type FleetRunFact = Readonly<{
   leaseExpiresAt: Date | null;
 }>;
 
-/** A runtime is healthy only while its current run has an observed, unexpired lease. */
+/** Fresh provider-neutral component evidence keeps an idle runtime healthy; run leases remain a compatibility fallback. */
 export const deriveFleetHealth = (input: Readonly<{
   actorDisabled: boolean;
   profileEnabled: boolean;
-  registrations: readonly Readonly<{enabled: boolean}>[];
+  registrations: readonly Readonly<{enabled: boolean; availability?: RuntimeAvailabilityProjection}>[];
   currentRun: FleetRunFact | null;
   asOf: Date;
-}>): 'healthy' | 'stale' | 'unknown' | 'disabled' => {
+}>): 'healthy' | 'stale' | 'unknown' | 'not_configured' | 'disabled' => {
   if (input.actorDisabled || !input.profileEnabled ||
     (input.registrations.length > 0 && input.registrations.every((registration) => !registration.enabled))) {
     return 'disabled';
   }
+  const monitored = input.registrations
+    .filter((registration) => registration.enabled)
+    .flatMap((registration) => registration.availability === undefined ||
+      registration.availability.health === 'not_configured' ? [] : [registration.availability]);
+  if (monitored.some(({health}) => health === 'stale')) return 'stale';
+  if (monitored.some(({health}) => health === 'unknown')) return 'unknown';
+  if (monitored.length > 0 && monitored.every(({health}) => health === 'healthy')) return 'healthy';
   if (input.currentRun?.status !== 'running' || input.currentRun.heartbeatAt === null || input.currentRun.leaseExpiresAt === null) {
-    return 'unknown';
+    return input.registrations.length === 0 ? 'not_configured' : 'unknown';
   }
   return input.currentRun.leaseExpiresAt.getTime() > input.asOf.getTime() ? 'healthy' : 'stale';
 };
@@ -1392,7 +1462,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     };
   }
   const projectIds = configuredProjects.map(({id}) => id);
-  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants] = await Promise.all([
+  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, availabilityObservations, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
     db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt})
@@ -1429,8 +1499,30 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       id: runtimeRegistrations.id, agentProfileId: runtimeRegistrations.agentProfileId, actorId: runtimeRegistrations.actorId,
       projectId: runtimeRegistrations.projectId, provider: runtimeRegistrations.provider,
       runtimeKey: runtimeRegistrations.runtimeKey, enabled: runtimeRegistrations.enabled,
-      version: runtimeRegistrations.version
+      serviceMaxAgeSeconds: runtimeRegistrations.serviceMaxAgeSeconds,
+      schedulerMaxAgeSeconds: runtimeRegistrations.schedulerMaxAgeSeconds,
+      deliveryMaxAgeSeconds: runtimeRegistrations.deliveryMaxAgeSeconds,
+      version: runtimeRegistrations.version, updatedAt: runtimeRegistrations.updatedAt
     }).from(runtimeRegistrations).where(inArray(runtimeRegistrations.projectId, projectIds)),
+    db.selectDistinctOn([
+      runtimeAvailabilityObservations.runtimeRegistrationId,
+      runtimeAvailabilityObservations.component
+    ], {
+      id: runtimeAvailabilityObservations.id,
+      runtimeRegistrationId: runtimeAvailabilityObservations.runtimeRegistrationId,
+      component: runtimeAvailabilityObservations.component,
+      state: runtimeAvailabilityObservations.state,
+      observedAt: runtimeAvailabilityObservations.observedAt,
+      evidenceReference: runtimeAvailabilityObservations.evidenceReference
+    }).from(runtimeAvailabilityObservations)
+      .innerJoin(runtimeRegistrations, eq(runtimeRegistrations.id, runtimeAvailabilityObservations.runtimeRegistrationId))
+      .where(inArray(runtimeRegistrations.projectId, projectIds))
+      .orderBy(
+        runtimeAvailabilityObservations.runtimeRegistrationId,
+        runtimeAvailabilityObservations.component,
+        desc(runtimeAvailabilityObservations.observedAt),
+        desc(runtimeAvailabilityObservations.id)
+      ),
     db.select({workspaceId: workspaceInstructionVersions.workspaceId, version: workspaceInstructionVersions.version, instructions: workspaceInstructionVersions.instructions, settings: workspaceInstructionVersions.settings})
       .from(workspaceInstructionVersions).where(inArray(workspaceInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(workspaceInstructionVersions.version)),
     db.select({agentProfileId: agentProfileInstructionVersions.agentProfileId, version: agentProfileInstructionVersions.version, instructions: agentProfileInstructionVersions.instructions, settings: agentProfileInstructionVersions.settings})
@@ -1493,6 +1585,14 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       latestReceiptByProfile.set(run.agentProfileId, run);
     }
   }
+  const availabilityByRegistration = new Map<string, (typeof availabilityObservations)[number][]>();
+  for (const observation of availabilityObservations) {
+    availabilityByRegistration.set(observation.runtimeRegistrationId, [
+      ...(availabilityByRegistration.get(observation.runtimeRegistrationId) ?? []),
+      observation
+    ]);
+  }
+  const asOf = new Date();
   const actorById = new Map(persistedActors.map((actor) => [actor.id, actor]));
   const operator = operatorActorId === undefined ? undefined : actorById.get(operatorActorId);
   const manageableProjectIds = new Set(
@@ -1526,7 +1626,18 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
         id: registration.id, projectId: registration.projectId,
         project: project.name, projectSlug: project.slug, provider: registration.provider,
         runtimeKey: registration.runtimeKey, enabled: registration.enabled,
-        version: registration.version,
+        version: registration.version, updatedAt: registration.updatedAt,
+        availability: deriveRuntimeAvailability({
+          enabled: registration.enabled && profile.enabled &&
+            (actorById.get(profile.actorId)?.disabledAt ?? null) === null,
+          thresholds: {
+            service: registration.serviceMaxAgeSeconds,
+            scheduler: registration.schedulerMaxAgeSeconds,
+            delivery: registration.deliveryMaxAgeSeconds
+          },
+          observations: availabilityByRegistration.get(registration.id) ?? [],
+          asOf
+        }),
         canManage: operator?.type === 'human' && operator.disabledAt === null &&
           (operator.role === 'workspace_admin' || manageableProjectIds.has(registration.projectId))
       }];
@@ -1555,9 +1666,11 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
             profileEnabled: profile.enabled,
             registrations: profileRegistrations,
             currentRun,
-            asOf: new Date()
+            asOf
           }),
-          freshnessAt: currentRun?.heartbeatAt ?? null,
+          freshnessAt: profileRegistrations.flatMap(({availability}) =>
+            availability.freshnessAt === null ? [] : [availability.freshnessAt])
+            .sort((left, right) => right.getTime() - left.getTime())[0] ?? currentRun?.heartbeatAt ?? null,
           currentWork: currentRun === null || currentProject === undefined ? null : {
             id: currentRun.id, version: currentRun.version, status: currentRun.status, title: currentRun.workItemTitle,
             project: currentProject.name, projectSlug: currentProject.slug, startedAt: currentRun.startedAt
