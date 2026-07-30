@@ -57,7 +57,7 @@ it('links a WorkItem handoff state to the exact persisted approval', () => {
         defaultBranch: 'main',
         updatedAt: new Date('2026-07-28T10:00:00.000Z')
       },
-      hermesAgentProfileId: null,
+      agentProfiles: [],
       snapshot: null,
       synchronizedAt: null,
       workItems: [{

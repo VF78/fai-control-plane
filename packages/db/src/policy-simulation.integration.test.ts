@@ -142,7 +142,7 @@ describePostgres('policy simulation', () => {
     let clockTick = 0;
     const store = createPostgresPolicySimulationStore(db, {
       runnerQueueEnabled: true,
-      hermesRunnerEnabled: false,
+      runtimeAvailable: false,
       now: () => new Date(now.getTime() + clockTick++ * 1_000)
     });
     const input = {

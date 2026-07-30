@@ -10,7 +10,7 @@ import {
   canonicalJson,
   createActorContextIssuer,
   type Capability,
-  type HermesAgentSettings
+  type PortableAgentSettings
 } from '@fai-control-plane/domain';
 import {and, eq, isNull} from 'drizzle-orm';
 
@@ -21,18 +21,19 @@ const enabledCapabilities = (capabilities: Record<string, boolean>): Capability[
   Object.entries(capabilities).flatMap(([capability, enabled]) =>
     enabled ? [capability as Capability] : []);
 
-export type HermesProfileRuntime = Readonly<{
+export type AgentProfileRuntime = Readonly<{
   update(input: Readonly<{
     workspaceId: string;
     actorId: string;
+    profileId: string;
     expectedVersion: number;
     instructions: string;
-    settings: HermesAgentSettings;
+    settings: PortableAgentSettings;
     enabled: boolean;
   }>): Promise<'updated' | 'replayed' | 'forbidden' | 'not_found' | 'stale' | 'invalid'>;
 }>;
 
-const createRuntime = (db: Database): HermesProfileRuntime => ({
+const createRuntime = (db: Database): AgentProfileRuntime => ({
   async update(input) {
     const [operator] = await db.select({capabilities: actors.capabilities})
       .from(actors)
@@ -50,9 +51,8 @@ const createRuntime = (db: Database): HermesProfileRuntime => ({
     const [profile] = await db.select({id: agentProfiles.id})
       .from(agentProfiles)
       .where(and(
-        eq(agentProfiles.workspaceId, input.workspaceId),
-        eq(agentProfiles.runtimeId, 'hermes'),
-        eq(agentProfiles.runtimeProfile, 'read_safe')
+        eq(agentProfiles.id, input.profileId),
+        eq(agentProfiles.workspaceId, input.workspaceId)
       ))
       .limit(1);
     if (profile === undefined) return 'not_found';
@@ -106,9 +106,9 @@ const createRuntime = (db: Database): HermesProfileRuntime => ({
   }
 });
 
-let runtimePromise: Promise<HermesProfileRuntime> | undefined;
+let runtimePromise: Promise<AgentProfileRuntime> | undefined;
 
-export const getHermesProfileRuntime = async (): Promise<HermesProfileRuntime> => {
+export const getAgentProfileRuntime = async (): Promise<AgentProfileRuntime> => {
   if (runtimePromise !== undefined) return runtimePromise;
   runtimePromise = (async () => {
     const databaseUrl = process.env.DATABASE_URL;

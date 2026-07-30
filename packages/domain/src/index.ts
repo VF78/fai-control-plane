@@ -595,7 +595,7 @@ export type PolicySimulationTrustedContext = Readonly<{
   operatorActorId: string;
   operatorCapabilities: readonly string[];
   runnerQueueEnabled: boolean;
-  hermesRunnerEnabled: boolean;
+  runtimeAvailable: boolean;
   packet: Readonly<{
     packetId: string;
     contentHash: string;
@@ -690,7 +690,7 @@ export type UpdateAgentProfileCommand = CanonicalCommandEnvelope<
     agentProfileId: string;
     expectedVersion: number;
     instructions: string;
-    settings: HermesAgentSettings;
+    settings: PortableAgentSettings;
     enabled: boolean;
   }>
 >;
@@ -949,7 +949,7 @@ export type OpaqueSecretRef = Readonly<{
   scope: readonly string[];
 }>;
 
-export type HermesAgentSettings = Readonly<{
+export type PortableAgentSettings = Readonly<{
   resultFormat: 'structured_v1';
   includeEvidence: boolean;
 }>;
@@ -963,7 +963,7 @@ export type AgentProfileConfiguration = Readonly<{
   allowedTools: readonly string[];
   forbiddenSurfaces: readonly string[];
   instructions: string;
-  settings: HermesAgentSettings;
+  settings: PortableAgentSettings;
   enabled: boolean;
   version: number;
   configHash: string;
@@ -971,15 +971,15 @@ export type AgentProfileConfiguration = Readonly<{
 
 export type AgentProfileSnapshot = Readonly<{
   profileId: string;
-  runtimeId: 'hermes';
-  runtimeProfile: 'read_safe';
+  runtimeId: string;
+  runtimeProfile: string;
   allowedTools: readonly string[];
   forbiddenSurfaces: readonly string[];
   enabled: boolean;
   configVersion: number;
   configHash: string;
   instructions: string;
-  settings: HermesAgentSettings;
+  settings: PortableAgentSettings;
 }>;
 
 export type TaskPacketContent = Readonly<{
@@ -1021,7 +1021,7 @@ export type TaskPacketConfirmationView = Readonly<{
     agentProfileSnapshot: AgentProfileSnapshot | null;
   }>;
   contentHash: string;
-  hermesRunnerEnabled?: boolean;
+  runtimeAvailable?: boolean;
 }>;
 
 const packetStringFields = [
@@ -1110,15 +1110,15 @@ const secretValuePattern =
 export const containsHighConfidenceSecretContent = (value: string): boolean =>
   secretValuePattern.test(value);
 
-export const DEFAULT_HERMES_INSTRUCTIONS =
+export const DEFAULT_AGENT_INSTRUCTIONS =
   'Act only from canonical Task Packets. Return a structured result with status, evidence, artifacts, and next action.';
 
-export const DEFAULT_HERMES_SETTINGS: HermesAgentSettings = {
+export const DEFAULT_AGENT_SETTINGS: PortableAgentSettings = {
   resultFormat: 'structured_v1',
   includeEvidence: true
 };
 
-const isHermesSettings = (value: unknown): value is HermesAgentSettings =>
+const isPortableAgentSettings = (value: unknown): value is PortableAgentSettings =>
   isPlainObject(value) &&
   Object.keys(value).length === 2 &&
   value.resultFormat === 'structured_v1' &&
@@ -1139,25 +1139,25 @@ export const hashAgentProfileConfiguration = (profile: Readonly<Pick<
   version: profile.version
 })).digest('hex');
 
-export const updateHermesAgentProfile = (
+export const updateAgentProfile = (
   profile: AgentProfileConfiguration,
   input: Readonly<{
     instructions: string;
-    settings: HermesAgentSettings;
+    settings: PortableAgentSettings;
     enabled: boolean;
   }>
 ): CommandResult<AgentProfileConfiguration> => {
   const instructions = input.instructions.trim();
   if (
-    profile.runtimeId !== 'hermes' ||
-    profile.runtimeProfile !== 'read_safe' ||
+    !hasNonEmptyString(profile.runtimeId) ||
+    !hasNonEmptyString(profile.runtimeProfile) ||
     instructions.length < 1 ||
     instructions.length > 2_000 ||
     containsHighConfidenceSecretContent(instructions) ||
-    !isHermesSettings(input.settings) ||
+    !isPortableAgentSettings(input.settings) ||
     typeof input.enabled !== 'boolean'
   ) {
-    return failed('INVALID_COMMAND', 'Hermes profile configuration is invalid or may contain a secret.');
+    return failed('INVALID_COMMAND', 'Agent profile configuration is invalid or may contain a secret.');
   }
   const next = {
     ...profile,
@@ -1173,8 +1173,10 @@ const isAgentProfileSnapshot = (value: unknown): value is AgentProfileSnapshot =
   isPlainObject(value) &&
   Object.keys(value).length === 10 &&
   hasNonEmptyString(value.profileId) &&
-  value.runtimeId === 'hermes' &&
-  value.runtimeProfile === 'read_safe' &&
+  hasNonEmptyString(value.runtimeId) &&
+  value.runtimeId.length <= 128 &&
+  hasNonEmptyString(value.runtimeProfile) &&
+  value.runtimeProfile.length <= 128 &&
   isStringArray(value.allowedTools) &&
   isStringArray(value.forbiddenSurfaces) &&
   typeof value.enabled === 'boolean' &&
@@ -1186,7 +1188,7 @@ const isAgentProfileSnapshot = (value: unknown): value is AgentProfileSnapshot =
   value.instructions.trim().length > 0 &&
   value.instructions.length <= 2_000 &&
   !containsHighConfidenceSecretContent(value.instructions) &&
-  isHermesSettings(value.settings) &&
+  isPortableAgentSettings(value.settings) &&
   hashAgentProfileConfiguration({
     runtimeId: value.runtimeId,
     runtimeProfile: value.runtimeProfile,
@@ -1279,9 +1281,8 @@ export const simulateAgentRunQueuePolicy = (input: Readonly<{
     )) {
       missingContext.push('stale.agent_profile_snapshot');
     }
-    if (profile.runtimeId === 'hermes') {
-      if (packet.agentProfileSnapshotId === null) missingContext.push('missing.hermes_profile_snapshot');
-      if (!input.context.hermesRunnerEnabled) missingContext.push('missing.hermes_runner');
+    if (packet.agentProfileSnapshotId !== null && !input.context.runtimeAvailable) {
+      missingContext.push('missing.profile_runtime');
     }
   }
   if (!input.context.runnerQueueEnabled) missingContext.push('missing.runner_queue');

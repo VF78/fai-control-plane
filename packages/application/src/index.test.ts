@@ -2,8 +2,8 @@ import {randomUUID} from 'node:crypto';
 import {describe, expect, it} from 'vitest';
 import {
   CURRENT_POLICY_VERSION,
-  DEFAULT_HERMES_INSTRUCTIONS,
-  DEFAULT_HERMES_SETTINGS,
+  DEFAULT_AGENT_INSTRUCTIONS,
+  DEFAULT_AGENT_SETTINGS,
   createActorContextIssuer,
   createApprovalBinding,
   createTaskPacket,
@@ -132,7 +132,7 @@ class FakeUnitOfWork implements UnitOfWork {
   failure: 'not_found' | 'version_conflict' | undefined;
   failCompletion = false;
   approvalCalls = 0;
-  hermesRunnerEnabled = true;
+  runtimeAvailable = true;
   accessAdmin = true;
 
   async executeCommand<T>(claim: CommandReceiptClaim, work: (
@@ -163,7 +163,7 @@ class FakeUnitOfWork implements UnitOfWork {
             agentProfileSnapshot: packet.content.agentProfileSnapshot ?? null
           },
           contentHash: packet.contentHash,
-          hermesRunnerEnabled: this.hermesRunnerEnabled
+          runtimeAvailable: this.runtimeAvailable
         };
       },
       loadAgentRun: async (_token, value) => this.agentRuns.get(value) ?? null,
@@ -790,8 +790,8 @@ describe('canonical command service', () => {
       runtimeProfile: 'read_safe',
       allowedTools: ['task_packet_read', 'artifact_write'],
       forbiddenSurfaces: ['external_message', 'github_write', 'production', 'deploy', 'merge'],
-      instructions: DEFAULT_HERMES_INSTRUCTIONS,
-      settings: DEFAULT_HERMES_SETTINGS,
+      instructions: DEFAULT_AGENT_INSTRUCTIONS,
+      settings: DEFAULT_AGENT_SETTINGS,
       enabled: true,
       version: 1
     } as const;
@@ -845,7 +845,7 @@ describe('canonical command service', () => {
       }
     })).toMatchObject({ok: false, error: {code: 'SECRET_VALUE_FORBIDDEN'}});
     uow.taskPackets.set(packet.value.packetId, packet.value);
-    uow.hermesRunnerEnabled = false;
+    uow.runtimeAvailable = false;
     await expect(service.execute(command('agent_run.queue', {
       agentRunId: id(),
       taskPacketId: packet.value.packetId,
@@ -853,7 +853,7 @@ describe('canonical command service', () => {
       confirmedPacketHash: packet.value.contentHash,
       baseCommit: 'a'.repeat(40)
     }))).resolves.toMatchObject({receipt: {result: {error: {code: 'POLICY_DENIED'}}}});
-    uow.hermesRunnerEnabled = true;
+    uow.runtimeAvailable = true;
     await expect(service.execute(command('agent_run.queue', {
       agentRunId: id(),
       taskPacketId: packet.value.packetId,
@@ -865,7 +865,7 @@ describe('canonical command service', () => {
       agentProfileId: profile.id,
       expectedVersion: 1,
       instructions: 'Stale change.',
-      settings: DEFAULT_HERMES_SETTINGS,
+      settings: DEFAULT_AGENT_SETTINGS,
       enabled: true
     }))).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
     await service.execute(command('agent_profile.update', {

@@ -70,7 +70,7 @@ import {
   transitionAgentRun,
   transitionApproval,
   transitionWorkItem,
-  updateHermesAgentProfile,
+  updateAgentProfile,
   workItemStatuses,
   type AccessRequest,
   type ActorExternalIdentity,
@@ -2117,7 +2117,7 @@ export const createCanonicalCommandService = (
         failed('VERSION_CONFLICT', 'Resource version conflicts with the command.')
       );
     }
-    const updated = updateHermesAgentProfile(profile, command.payload);
+    const updated = updateAgentProfile(profile, command.payload);
     if (!updated.ok) {
       return completeNoMutation(transaction, token, claim, command, target, updated);
     }
@@ -2207,17 +2207,11 @@ export const createCanonicalCommandService = (
       );
     }
     const snapshot = packet.content.agentProfileSnapshot;
-    if (profile.runtimeId === 'hermes' && (snapshot === undefined || snapshot === null)) {
-      return completeNoMutation(
-        transaction, token, claim, command, target,
-        failed('VERSION_CONFLICT', 'Hermes requires a profile-bound task packet.')
-      );
-    }
     if (snapshot !== undefined && snapshot !== null) {
-      if (!packet.hermesRunnerEnabled) {
+      if (!packet.runtimeAvailable) {
         return completeNoMutation(
           transaction, token, claim, command, target,
-          failed('POLICY_DENIED', 'Hermes runner is not enabled on this server.')
+          failed('POLICY_DENIED', 'The profile runtime is not enabled on this server.')
         );
       }
       if (command.payload.agentProfileId !== snapshot.profileId) {
@@ -2228,6 +2222,8 @@ export const createCanonicalCommandService = (
       }
       if (
         !profile.enabled ||
+        profile.runtimeId !== snapshot.runtimeId ||
+        profile.runtimeProfile !== snapshot.runtimeProfile ||
         profile.version !== snapshot.configVersion ||
         profile.configHash !== snapshot.configHash
       ) {

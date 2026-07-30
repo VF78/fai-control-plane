@@ -32,6 +32,11 @@ export {
 } from './notification-intent';
 export {createPostgresUnitOfWork} from './persistence';
 export {
+  isRuntimeAvailable,
+  isTaskPacketProfileEligible,
+  matchesTaskPacketProfileSnapshot
+} from './runtime-availability';
+export {
   createPostgresDeliveryProtocolStore
 } from './delivery-protocol';
 export {createPostgresDeliveryJourneyStore} from './delivery-journey';

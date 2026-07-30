@@ -8,6 +8,7 @@ import {
 import {and, eq, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {isRuntimeAvailable} from './runtime-availability';
 
 type Database = NodePgDatabase<typeof schema>;
 
@@ -34,7 +35,7 @@ export const createPostgresPolicySimulationStore = (
   db: Database,
   options: Readonly<{
     runnerQueueEnabled?: boolean;
-    hermesRunnerEnabled?: boolean;
+    runtimeAvailable?: boolean;
     now?: () => Date;
   }> = {}
 ) => ({
@@ -126,8 +127,7 @@ export const createPostgresPolicySimulationStore = (
         runnerQueueEnabled: options.runnerQueueEnabled ??
           (process.env.RUNNER_ENABLED === 'true' &&
             process.env.LOCAL_RUNNER_TRANSPORT_ENABLED === 'true'),
-        hermesRunnerEnabled: options.hermesRunnerEnabled ??
-          process.env.HERMES_RUNNER_ENABLED === 'true',
+        runtimeAvailable: options.runtimeAvailable ?? isRuntimeAvailable(profile?.runtimeId),
         packet: packet === undefined ? null : {
           packetId: packet.packetId,
           contentHash: packet.contentHash,

@@ -1,7 +1,7 @@
 import {and, eq} from 'drizzle-orm';
 import {
-  DEFAULT_HERMES_INSTRUCTIONS,
-  DEFAULT_HERMES_SETTINGS,
+  DEFAULT_AGENT_INSTRUCTIONS,
+  DEFAULT_AGENT_SETTINGS,
   hashAgentProfileConfiguration
 } from '@fai-control-plane/domain';
 import {
@@ -155,8 +155,8 @@ try {
     runtimeProfile: 'read_safe',
     allowedTools: ['task_packet_read', 'artifact_write'] as string[],
     forbiddenSurfaces: ['external_message', 'github_write', 'production', 'deploy', 'merge'] as string[],
-    instructions: DEFAULT_HERMES_INSTRUCTIONS,
-    settings: DEFAULT_HERMES_SETTINGS,
+    instructions: DEFAULT_AGENT_INSTRUCTIONS,
+    settings: DEFAULT_AGENT_SETTINGS,
     enabled: true,
     version: 1
   } as const;
