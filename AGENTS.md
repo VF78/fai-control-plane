@@ -1,5 +1,21 @@
 # AGENTS.md
 
+## Start
+
+- Canonical repository: `/Users/vf/Projects/fai-control-plane`.
+- Read this file, `docs/AI_CONTEXT.md`, and only the README sections needed for
+  the active issue.
+- Run `gh auth status`, fetch `origin`, and use the existing `VF78` GitHub CLI
+  login. Never print a token, run `gh auth token`, or reauthenticate
+  automatically.
+- Resolve `origin/main`, open PRs, GitHub Project `f(AI) Studio` #1, issue #1,
+  and the sole `In progress` item before choosing work.
+- Do not trust the default checkout branch. Create a clean `codex/...`
+  worktree from `origin/main`, unless continuing the one documented unmerged
+  branch for the active issue.
+- GitHub Project and issues own live status, production baseline, acceptance,
+  dependencies, and delivery order. Do not mirror live status in repo docs.
+
 ## Product boundary
 
 This repository contains the single-tenant f(AI) software-delivery control
@@ -33,7 +49,11 @@ workspace, not the product's sole navigation or value proposition.
   checkout may intentionally remain on an older merged feature branch.
 - Read issue `#1`, then the selected child issue and its dependencies before
   proposing or implementing a change.
-- Work on one bounded issue per branch and draft PR.
+- WIP limit is one active issue and one integrable PR. Do not begin the next
+  issue until the current implementation is accepted and merged into `main`.
+- One chat owns one coherent issue/PR. After merge, a genuine scope branch,
+  90 minutes of work, or a second context compaction, leave a compact issue
+  handoff and continue in a fresh chat without inherited history.
 - The primary task is the managing engineer, not an agent dispatcher. It owns
   decisions, integration, technical acceptance, Project/PR state and releases,
   and may implement work directly.
@@ -46,7 +66,9 @@ workspace, not the product's sole navigation or value proposition.
   Sol medium attempt.
 - One executor owns the bounded slice end to end: targeted reads, design,
   implementation, necessary tests, focused checks and self-review. Its compact
-  return contains only the result, changed files, checks, risks and next action.
+  return is at most 250 words and contains only the result, changed files,
+  checks, risks and next action. Give it fresh minimal context, not the parent
+  transcript.
 - The primary task reviews the final diff, issue scope and architecture. Do not
   repeat the executor's research or successful focused checks; run at most one
   additional integration check that the executor could not perform.
@@ -64,11 +86,40 @@ workspace, not the product's sole navigation or value proposition.
 - Use focused tests during implementation, typecheck/migration checks only for
   touched surfaces, and one full build before a PR. Do not rerun a full build
   after every small correction or create tests for quantity.
+- Normal managing acceptance uses `git diff --stat`, `git diff --check`, the
+  changed-file list, targeted architecture/security/persistence hunks, and at
+  most one missing integration check. Do not print or reread a full large diff.
+- Use `implementation complete, pending merge` until code is merged. After
+  merge, leave one compact evidence comment and update Project status.
 - Keep changes provider-neutral at the repository, tracker, chat and runtime
   boundaries. Do not add a generic plugin registry without a demonstrated need.
 - Do not broaden the current MVP into multi-tenancy, a workflow canvas, generic
   IAM/BI, a chat replacement, marketplace, billing platform, automatic
   merge/deploy, or production-ready Jira/Slack/Claude implementations.
+
+## Context and usage discipline
+
+- Use the Standard service tier. Never enable Fast mode, paid GitHub Actions,
+  or another paid capability without Vladimir's explicit approval.
+- Keep tool output bounded to 1,000-3,000 tokens by default. Use `rg`, `--stat`,
+  `--name-only`, targeted hunks, and the last 100-200 failure lines.
+- Do not paste full issue lists, Project payloads, documentation pages, build
+  logs, HTML, agent transcripts, or reasoning into the primary chat.
+- Wait for an executor with one bounded long wait instead of repeated short
+  polling. User updates are limited to slice start, a real blocker/decision,
+  and the completed result.
+- Default per-chat checkpoint is 75,000 processed tokens and normal stop is
+  150,000. For a justified security/migration slice they are 150,000 and
+  300,000. At a checkpoint, finish only the current atomic operation and
+  prepare a handoff; do not start another slice.
+- A first compaction means finish the current atomic slice. A second compaction
+  requires a fresh chat. Never let repeated compaction or repeated failed
+  commands continue unattended.
+- Do not recheck a known unchanged external failure, including the existing
+  GitHub Actions spending-limit condition. Check once only when its state can
+  change the current decision.
+- When paused, verify that no executor, automation, or background terminal is
+  still running.
 
 ## Production
 
