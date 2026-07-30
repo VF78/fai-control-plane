@@ -213,6 +213,13 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.id, 'agentRun.id');
       uuid(mutation.aggregate.taskPacketId, 'agentRun.taskPacketId');
       uuid(mutation.aggregate.agentProfileId, 'agentRun.agentProfileId');
+      if (mutation.aggregate.retryOfAgentRunId != null) {
+        uuid(mutation.aggregate.retryOfAgentRunId, 'agentRun.retryOfAgentRunId');
+        invariant(
+          mutation.aggregate.retryOfAgentRunId !== mutation.aggregate.id,
+          'An AgentRun cannot retry itself.'
+        );
+      }
       invariant(
         sha256Pattern.test(mutation.aggregate.confirmedPacketHash),
         'agentRun.confirmedPacketHash must be a lowercase SHA-256 digest.'
@@ -907,10 +914,18 @@ const validateAgentRunOwnership = async (
   tx: Transaction,
   workspaceId: string,
   aggregate: AgentRun
-): Promise<Readonly<{status: 'found'; projectId: string}> | Readonly<{status: 'not_found'}>> => {
+): Promise<
+  | Readonly<{
+      status: 'found';
+      projectId: string;
+      workItemId: string;
+    }>
+  | Readonly<{status: 'not_found'}>
+> => {
   const [packet] = await tx
     .select({
       projectId: schema.taskPackets.projectId,
+      workItemId: schema.taskPackets.workItemId,
       contentHash: schema.taskPackets.contentHash,
       runtimeProfile: schema.taskPackets.runtimeProfile,
       agentProfileSnapshotId: schema.taskPackets.agentProfileSnapshotId,
@@ -958,9 +973,12 @@ const validateAgentRunOwnership = async (
   if (profile?.runtimeId === 'hermes' && packet.agentProfileSnapshotId === null) {
     return {status: 'not_found'};
   }
-  return profile === undefined
-    ? {status: 'not_found'}
-    : {status: 'found', projectId: packet.projectId};
+  if (profile === undefined) return {status: 'not_found'};
+  return {
+    status: 'found',
+    projectId: packet.projectId,
+    workItemId: packet.workItemId
+  };
 };
 
 const persistAgentRun = async (
@@ -971,14 +989,24 @@ const persistAgentRun = async (
   const aggregate = mutation.aggregate;
   const ownership = await validateAgentRunOwnership(tx, workspaceId, aggregate);
   if (ownership.status === 'not_found') return ownership;
-  const {projectId} = ownership;
+  const {projectId, workItemId} = ownership;
   if (mutation.expectedPersistedVersion === null) {
+    const repositoryScopes = await tx
+      .select({id: schema.projectTrackerRepositoryScopes.id})
+      .from(schema.projectTrackerRepositoryScopes)
+      .where(eq(schema.projectTrackerRepositoryScopes.projectId, projectId))
+      .limit(2);
+    if (repositoryScopes.length !== 1) return {status: 'not_found'};
+    const repositoryScopeId = repositoryScopes[0]!.id;
     const [row] = await tx
       .insert(schema.agentRuns)
       .values({
         id: aggregate.id,
         taskPacketId: aggregate.taskPacketId,
         agentProfileId: aggregate.agentProfileId,
+        workItemId,
+        repositoryScopeId,
+        retryOfAgentRunId: aggregate.retryOfAgentRunId,
         confirmedPacketHash: aggregate.confirmedPacketHash,
         baseCommit: aggregate.baseCommit,
         status: aggregate.status,
@@ -1862,6 +1890,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               id: schema.agentRuns.id,
               taskPacketId: schema.agentRuns.taskPacketId,
               agentProfileId: schema.agentRuns.agentProfileId,
+              retryOfAgentRunId: schema.agentRuns.retryOfAgentRunId,
               confirmedPacketHash: schema.agentRuns.confirmedPacketHash,
               baseCommit: schema.agentRuns.baseCommit,
               status: schema.agentRuns.status,
@@ -1881,6 +1910,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               id: row.id,
               taskPacketId: row.taskPacketId,
               agentProfileId: row.agentProfileId,
+              retryOfAgentRunId: row.retryOfAgentRunId,
               confirmedPacketHash: row.confirmedPacketHash,
               baseCommit: row.baseCommit,
               status: row.status as AgentRun['status'],

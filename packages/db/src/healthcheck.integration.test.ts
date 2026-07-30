@@ -68,6 +68,8 @@ const ids = {
   packet: randomUUID(),
   stuckRun: randomUUID(),
   boundaryRun: randomUUID(),
+  repositoryScope: randomUUID(),
+  boundaryRepositoryScope: randomUUID(),
   prLink: randomUUID(),
   failedBuildCheck: randomUUID(),
   staleBuildCheck: randomUUID(),
@@ -127,11 +129,21 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     });
     await db.insert(projectTrackerRepositoryScopes).values([
       {
+        id: ids.repositoryScope,
         projectId: ids.project,
         provider: 'github',
         repositoryOwner: 'VF78',
         repositoryName: 'MSA',
         repositoryExternalId: 'github:repository:1278325372',
+        credentialRefId: ids.secret
+      },
+      {
+        id: ids.boundaryRepositoryScope,
+        projectId: ids.project,
+        provider: 'github',
+        repositoryOwner: 'VF78',
+        repositoryName: 'MSA-boundary',
+        repositoryExternalId: 'github:repository:1278325373',
         credentialRefId: ids.secret
       },
       {
@@ -372,6 +384,8 @@ describePostgres('PostgreSQL healthcheck producer', () => {
         id: ids.stuckRun,
         taskPacketId: ids.packet,
         agentProfileId: ids.profile,
+        workItemId: ids.staleWork,
+        repositoryScopeId: ids.repositoryScope,
         confirmedPacketHash: '2'.repeat(64),
         baseCommit: 'a'.repeat(40),
         status: 'running',
@@ -384,6 +398,8 @@ describePostgres('PostgreSQL healthcheck producer', () => {
         id: ids.boundaryRun,
         taskPacketId: ids.packet,
         agentProfileId: ids.profile,
+        workItemId: ids.staleWork,
+        repositoryScopeId: ids.boundaryRepositoryScope,
         confirmedPacketHash: '2'.repeat(64),
         baseCommit: 'a'.repeat(40),
         status: 'running',

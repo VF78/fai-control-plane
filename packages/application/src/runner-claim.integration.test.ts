@@ -72,6 +72,8 @@ describePostgres(
       const projectId = randomUUID();
       const actorId = randomUUID();
       const workItemId = randomUUID();
+      const disabledWorkItemId = randomUUID();
+      const disallowedWorkItemId = randomUUID();
       const eventId = randomUUID();
       const credentialRefId = randomUUID();
       const packetSecretRefId = randomUUID();
@@ -103,12 +105,21 @@ describePostgres(
         displayName: 'Runner approver',
         authMode: 'user'
       });
-      await testDb.insert(workItems).values({
-        id: workItemId,
-        projectId,
-        title: 'Runner claim',
-        status: 'ready'
-      });
+      await testDb.insert(workItems).values([
+        {id: workItemId, projectId, title: 'Runner claim', status: 'ready'},
+        {
+          id: disabledWorkItemId,
+          projectId,
+          title: 'Disabled runner claim',
+          status: 'ready'
+        },
+        {
+          id: disallowedWorkItemId,
+          projectId,
+          title: 'Disallowed runner claim',
+          status: 'ready'
+        }
+      ]);
       await testDb.insert(canonicalEvents).values({
         id: eventId,
         workspaceId,
@@ -136,7 +147,9 @@ describePostgres(
           scope: ['task:read']
         }
       ]);
+      const repositoryScopeId = randomUUID();
       await testDb.insert(projectTrackerRepositoryScopes).values({
+        id: repositoryScopeId,
         projectId,
         provider: 'github',
         repositoryOwner: 'VF78',
@@ -169,9 +182,12 @@ describePostgres(
         }
       ]);
 
-      const packetContent = (goal: string): TaskPacketContent => ({
+      const packetContent = (
+        goal: string,
+        packetWorkItemId: string
+      ): TaskPacketContent => ({
         projectId,
-        workItemId,
+        workItemId: packetWorkItemId,
         workItemVersion: 1,
         goal,
         acceptanceCriteria: ['Only one claim succeeds'],
@@ -201,6 +217,7 @@ describePostgres(
           packetId: randomUUID(),
           runId: disabledRunId,
           profileId: disabledProfileId,
+          workItemId: disabledWorkItemId,
           goal: 'Disabled profile',
           createdAt: new Date(Date.now() - 3_000)
         },
@@ -208,6 +225,7 @@ describePostgres(
           packetId: randomUUID(),
           runId: disallowedRunId,
           profileId: disallowedProfileId,
+          workItemId: disallowedWorkItemId,
           goal: 'Disallowed runtime',
           createdAt: new Date(Date.now() - 2_000)
         },
@@ -215,6 +233,7 @@ describePostgres(
           packetId: randomUUID(),
           runId: eligibleRunId,
           profileId: eligibleProfileId,
+          workItemId,
           goal: 'Eligible profile',
           createdAt: new Date(Date.now() - 1_000)
         }
@@ -222,13 +241,13 @@ describePostgres(
       for (const fixture of runFixtures) {
         const packet = createTaskPacket(
           fixture.packetId,
-          packetContent(fixture.goal)
+          packetContent(fixture.goal, fixture.workItemId)
         );
         if (!packet.ok) throw new Error('Runner claim packet did not initialize.');
         await testDb.insert(taskPackets).values({
           id: fixture.packetId,
           projectId,
-          workItemId,
+          workItemId: fixture.workItemId,
           workItemVersion: packet.value.content.workItemVersion,
           goal: packet.value.content.goal,
           acceptanceCriteria: [...packet.value.content.acceptanceCriteria],
@@ -256,6 +275,8 @@ describePostgres(
           id: fixture.runId,
           taskPacketId: fixture.packetId,
           agentProfileId: fixture.profileId,
+          workItemId: fixture.workItemId,
+          repositoryScopeId,
           confirmedPacketHash: packet.value.contentHash,
           baseCommit: 'a'.repeat(40),
           idempotencyKey: `runner-claim-${fixture.runId}`,

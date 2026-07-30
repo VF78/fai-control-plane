@@ -19,6 +19,8 @@ import {
   ledgerRoi,
   outboxEvents,
   projects,
+  projectTrackerRepositoryScopes,
+  secretRefs,
   taskPackets,
   workItems,
   workspaces
@@ -74,6 +76,8 @@ describePostgres('AgentRun cost/value ledger', () => {
       packet: randomUUID(),
       run: randomUUID()
     };
+    const secretRefId = randomUUID();
+    const repositoryScopeId = randomUUID();
     const now = new Date('2026-07-28T10:00:00.000Z');
     await db.insert(workspaces).values({
       id: ids.workspace,
@@ -85,6 +89,21 @@ describePostgres('AgentRun cost/value ledger', () => {
       workspaceId: ids.workspace,
       name: 'Ledger project',
       slug: 'ledger'
+    });
+    await db.insert(secretRefs).values({
+      id: secretRefId,
+      workspaceId: ids.workspace,
+      provider: 'test',
+      reference: `test://ledger/${ids.project}`
+    });
+    await db.insert(projectTrackerRepositoryScopes).values({
+      id: repositoryScopeId,
+      projectId: ids.project,
+      provider: 'test',
+      repositoryOwner: 'fixture',
+      repositoryName: 'ledger',
+      repositoryExternalId: `test:repository:${ids.project}`,
+      credentialRefId: secretRefId
     });
     await db.insert(actors).values([
       {
@@ -151,6 +170,8 @@ describePostgres('AgentRun cost/value ledger', () => {
       id: ids.run,
       taskPacketId: ids.packet,
       agentProfileId: ids.profile,
+      workItemId: ids.workItem,
+      repositoryScopeId,
       confirmedPacketHash: 'b'.repeat(64),
       baseCommit: 'c'.repeat(40),
       status: 'done',

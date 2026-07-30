@@ -692,6 +692,7 @@ const commandTypes = new Set<CanonicalCommand['type']>([
   'agent_profile.update',
   'task_packet.create',
   'agent_run.queue',
+  'agent_run.retry',
   'agent_run.transition',
   'approval.request',
   'approval.decide',
@@ -1579,6 +1580,10 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         isUuid(payload.agentProfileId) && typeof payload.confirmedPacketHash === 'string' &&
         sha256Pattern.test(payload.confirmedPacketHash) &&
         typeof payload.baseCommit === 'string' && gitCommitPattern.test(payload.baseCommit);
+    case 'agent_run.retry':
+      return hasExactKeys(payload, ['agentRunId', 'retryOfAgentRunId']) &&
+        isUuid(payload.agentRunId) && isUuid(payload.retryOfAgentRunId) &&
+        payload.agentRunId !== payload.retryOfAgentRunId;
     case 'agent_run.transition':
       return (
         hasExactKeys(payload, ['agentRunId', 'status', 'expectedVersion']) ||
@@ -1852,6 +1857,7 @@ export const createCanonicalCommandService = (
       case 'agent_profile.update': return agentProfileUpdate(transaction, claimToken, claim, command);
       case 'task_packet.create': return taskPacketCreate(transaction, claimToken, claim, command);
       case 'agent_run.queue': return agentRunQueue(transaction, claimToken, claim, command);
+      case 'agent_run.retry': return agentRunRetry(transaction, claimToken, claim, command);
       case 'agent_run.transition': return agentRunTransition(transaction, claimToken, claim, command);
       case 'approval.request': return approvalRequest(transaction, claimToken, claim, command);
       case 'approval.decide': return approvalDecide(transaction, claimToken, claim, command);
@@ -2153,6 +2159,66 @@ export const createCanonicalCommandService = (
     return completeMutation(transaction, token, claim, command, {
       kind: 'non_approval', mutation: {aggregateType: 'agent_run', aggregateId: transitioned.id, expectedPersistedVersion: view.aggregate.version, aggregate: transitioned},
       audit: audit(claim, ids, clock, resultTarget, command.actor.actorId, command.type, 'write', value)
+    }, resultTarget, value);
+  }
+
+  async function agentRunRetry(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'agent_run.retry'}>
+  ) {
+    const target = targetFor('agent_run', command.payload.agentRunId);
+    const previous = await transaction.loadAgentRun(token, command.payload.retryOfAgentRunId);
+    if (previous === null) {
+      return completeNoMutation(
+        transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.')
+      );
+    }
+    if (previous.aggregate.status !== 'failed') {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('INVALID_TRANSITION', 'Only a failed agent run can be retried.')
+      );
+    }
+    const packet = await transaction.loadTaskPacket(token, previous.aggregate.taskPacketId);
+    if (packet === null) {
+      return completeNoMutation(
+        transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.')
+      );
+    }
+    if (
+      command.actor.kind !== 'trusted_user' ||
+      command.actor.actorId !== packet.content.approverActorId
+    ) {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('INVALID_ACTOR_CONTEXT', 'Only the task packet approver may retry its run.')
+      );
+    }
+    const run: AgentRun = {
+      id: command.payload.agentRunId,
+      taskPacketId: previous.aggregate.taskPacketId,
+      agentProfileId: previous.aggregate.agentProfileId,
+      retryOfAgentRunId: previous.aggregate.id,
+      confirmedPacketHash: previous.aggregate.confirmedPacketHash,
+      baseCommit: previous.aggregate.baseCommit,
+      status: 'queued',
+      idempotencyKey: command.idempotencyKey,
+      version: 1
+    };
+    const resultTarget = targetFor('agent_run', run.id, undefined, run.version);
+    const value = succeeded(compactAgentRun(run));
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'agent_run',
+        aggregateId: run.id,
+        expectedPersistedVersion: null,
+        aggregate: run
+      },
+      audit: audit(
+        claim, ids, clock, resultTarget, command.actor.actorId,
+        command.type, 'write', value
+      )
     }, resultTarget, value);
   }
 
@@ -2705,6 +2771,7 @@ const commandTarget = (command: CanonicalCommand): Target => {
       return targetFor('agent_profile', command.payload.agentProfileId, command.payload.expectedVersion);
     case 'task_packet.create': return targetFor('task_packet', command.payload.packetId);
     case 'agent_run.queue': return targetFor('agent_run', command.payload.agentRunId);
+    case 'agent_run.retry': return targetFor('agent_run', command.payload.agentRunId);
     case 'agent_run.transition': return targetFor('agent_run', command.payload.agentRunId, command.payload.expectedVersion);
     case 'approval.request':
     case 'approval.decide': return targetFor('approval', command.payload.approvalId,

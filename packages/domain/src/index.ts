@@ -100,6 +100,7 @@ export type AgentRun = Readonly<{
   id: string;
   taskPacketId: string;
   agentProfileId: string;
+  retryOfAgentRunId?: string | null;
   confirmedPacketHash: string;
   baseCommit: string;
   status: AgentRunStatus;
@@ -706,6 +707,13 @@ export type QueueAgentRunCommand = CanonicalCommandEnvelope<
     baseCommit: string;
   }>
 >;
+export type RetryAgentRunCommand = CanonicalCommandEnvelope<
+  'agent_run.retry',
+  Readonly<{
+    agentRunId: string;
+    retryOfAgentRunId: string;
+  }>
+>;
 export type TransitionAgentRunCommand = CanonicalCommandEnvelope<
   'agent_run.transition',
   Readonly<{
@@ -822,6 +830,7 @@ export type CanonicalCommand =
   | UpdateAgentProfileCommand
   | CreateTaskPacketCommand
   | QueueAgentRunCommand
+  | RetryAgentRunCommand
   | TransitionAgentRunCommand
   | RequestApprovalCommand
   | DecideApprovalCommand

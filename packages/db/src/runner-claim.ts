@@ -159,8 +159,8 @@ export const createPostgresRunnerClaimStore = (
         .innerJoin(
           schema.projectTrackerRepositoryScopes,
           eq(
-            schema.projectTrackerRepositoryScopes.projectId,
-            schema.taskPackets.projectId
+            schema.projectTrackerRepositoryScopes.id,
+            schema.agentRuns.repositoryScopeId
           )
         )
         .where(
@@ -291,7 +291,7 @@ export const createPostgresRunnerClaimStore = (
         .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
         .innerJoin(
           schema.projectTrackerRepositoryScopes,
-          eq(schema.projectTrackerRepositoryScopes.projectId, schema.taskPackets.projectId)
+          eq(schema.projectTrackerRepositoryScopes.id, schema.agentRuns.repositoryScopeId)
         )
         .where(and(
           eq(schema.agentRuns.id, input.runId),
@@ -391,7 +391,7 @@ export const createPostgresRunnerClaimStore = (
         .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
         .innerJoin(
           schema.projectTrackerRepositoryScopes,
-          eq(schema.projectTrackerRepositoryScopes.projectId, schema.taskPackets.projectId)
+          eq(schema.projectTrackerRepositoryScopes.id, schema.agentRuns.repositoryScopeId)
         )
         .leftJoin(
           schema.agentRunReceipts,

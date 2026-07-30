@@ -1497,6 +1497,13 @@ export const agentRuns = pgTable(
     agentProfileId: uuid('agent_profile_id')
       .notNull()
       .references(() => agentProfiles.id, {onDelete: 'restrict'}),
+    workItemId: uuid('work_item_id')
+      .notNull()
+      .references(() => workItems.id, {onDelete: 'restrict'}),
+    repositoryScopeId: uuid('repository_scope_id')
+      .notNull()
+      .references(() => projectTrackerRepositoryScopes.id, {onDelete: 'restrict'}),
+    retryOfAgentRunId: uuid('retry_of_agent_run_id'),
     confirmedPacketHash: text('confirmed_packet_hash').notNull(),
     baseCommit: text('base_commit').notNull(),
     status: runStatusEnum('status').default('queued').notNull(),
@@ -1519,6 +1526,9 @@ export const agentRuns = pgTable(
   },
   (table) => [
     uniqueIndex('agent_runs_idempotency_unique').on(table.idempotencyKey),
+    uniqueIndex('agent_runs_one_active_attempt_unique')
+      .on(table.workItemId, table.repositoryScopeId)
+      .where(sql`${table.status} in ('queued', 'running', 'waiting_approval')`),
     index('agent_runs_status_heartbeat_idx').on(
       table.status,
       table.heartbeatAt
@@ -1545,7 +1555,16 @@ export const agentRuns = pgTable(
     check(
       'agent_runs_runner_id_nonempty',
       sql`${table.runnerId} is null or length(${table.runnerId}) between 1 and 128`
-    )
+    ),
+    check(
+      'agent_runs_retry_not_self',
+      sql`${table.retryOfAgentRunId} is null or ${table.retryOfAgentRunId} <> ${table.id}`
+    ),
+    foreignKey({
+      name: 'agent_runs_retry_of_agent_run_id_agent_runs_id_fk',
+      columns: [table.retryOfAgentRunId],
+      foreignColumns: [table.id]
+    }).onDelete('restrict')
   ]
 );
 
