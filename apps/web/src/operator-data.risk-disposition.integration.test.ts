@@ -7,6 +7,8 @@ import {
   RISK_SIGNAL_REENTRY_CONDITION,
   actors,
   createDatabase,
+  notificationDeliveryReceipts,
+  notificationIntents,
   projects,
   riskSignalDispositionEvents,
   riskSignals,
@@ -146,6 +148,30 @@ describePostgres('operator risk disposition projection', () => {
         new Date(now.getTime() - 60 * 60 * 1_000)
       )
     ]);
+    const notificationIntentId = randomUUID();
+    await db.insert(notificationIntents).values({
+      id: notificationIntentId,
+      projectId: ids.project,
+      riskSignalId: ids.acknowledged,
+      audienceKind: 'actor',
+      audienceActorId: ids.actor,
+      category: 'stale_task',
+      severity: 'yellow',
+      summary: 'Acknowledged risk',
+      nextAction: 'review_task',
+      evidenceReferences: [{type: 'risk_signal', id: ids.acknowledged}],
+      deduplicationKey: `risk_signal_occurrence:${ids.acknowledged}`
+    });
+    await db.insert(notificationDeliveryReceipts).values({
+      projectId: ids.project,
+      notificationIntentId,
+      commandId: randomUUID(),
+      correlationId: randomUUID(),
+      status: 'failed',
+      failureCode: 'transport_unavailable',
+      version: 1,
+      occurredAt: now
+    });
 
     const previousDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = testDatabaseUrl;
@@ -174,5 +200,32 @@ describePostgres('operator risk disposition projection', () => {
     expect(canonical.find(({riskSignalId}) =>
       riskSignalId === ids.expired)?.dispositionVersion).toBe(1);
     expect(loaded.data.projects[0]?.unresolvedRiskCount).toBe(3);
+    expect(loaded.data.attention).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: `notification:${notificationIntentId}`,
+        reason: 'Notification delivery failed: transport_unavailable',
+        signalClass: 'fact'
+      })
+    ]));
+
+    await db.insert(notificationDeliveryReceipts).values({
+      projectId: ids.project,
+      notificationIntentId,
+      commandId: randomUUID(),
+      correlationId: randomUUID(),
+      status: 'delivered',
+      failureCode: null,
+      version: 2,
+      occurredAt: new Date(now.getTime() + 60_000)
+    });
+    process.env.DATABASE_URL = testDatabaseUrl;
+    const recovered = await loadPortfolioData();
+    if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousDatabaseUrl;
+    expect(recovered.state).toBe('ready');
+    if (recovered.state === 'ready') {
+      expect(recovered.data.attention.map(({id}) => id))
+        .not.toContain(`notification:${notificationIntentId}`);
+    }
   });
 });

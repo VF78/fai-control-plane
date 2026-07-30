@@ -32,6 +32,8 @@ const requiredTables = [
   schema.artifacts,
   schema.riskSignals,
   schema.riskSignalDispositionEvents,
+  schema.notificationIntents,
+  schema.notificationDeliveryReceipts,
   schema.secretRefs,
   schema.projectTrackerRepositoryScopes,
   schema.auditEvents,
@@ -70,6 +72,8 @@ describe('canonical schema foundation', () => {
       'artifacts',
       'risk_signals',
       'risk_signal_disposition_events',
+      'notification_intents',
+      'notification_delivery_receipts',
       'secret_refs',
       'project_tracker_repository_scopes',
       'audit_events',
@@ -176,6 +180,31 @@ describe('canonical schema foundation', () => {
       'reason',
       'expires_at',
       'reentry_condition',
+      'version',
+      'occurred_at'
+    ]));
+    expect(Object.values(getTableColumns(schema.notificationIntents))
+      .map(({name}) => name)).toEqual(expect.arrayContaining([
+      'project_id',
+      'risk_signal_id',
+      'audience_kind',
+      'audience_actor_id',
+      'category',
+      'severity',
+      'summary',
+      'next_action',
+      'evidence_references',
+      'deduplication_key'
+    ]));
+    expect(Object.values(getTableColumns(
+      schema.notificationDeliveryReceipts
+    )).map(({name}) => name)).toEqual(expect.arrayContaining([
+      'project_id',
+      'notification_intent_id',
+      'command_id',
+      'correlation_id',
+      'status',
+      'failure_code',
       'version',
       'occurred_at'
     ]));

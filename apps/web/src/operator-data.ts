@@ -39,6 +39,7 @@ import {
   VALUE_LEDGER_COMMAND,
   workItems,
   ledgerRoi,
+  loadFailedNotificationDeliveryFacts,
   parseLedgerRecord,
   type LedgerCost,
   type LedgerRecord,
@@ -312,7 +313,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
     .where(inArray(riskSignalDispositionEvents.projectId, projectIds))
     .groupBy(riskSignalDispositionEvents.riskSignalId)
     .as('latest_risk_disposition_versions');
-  const [snapshots, operations, signals, dispositions, failedOutbox, unhealthyJobs, items, bindings, metricItems, pendingApprovals, projectMilestones, projectDeadlines, transitions] = await Promise.all([
+  const [snapshots, operations, signals, dispositions, failedNotifications, failedOutbox, unhealthyJobs, items, bindings, metricItems, pendingApprovals, projectMilestones, projectDeadlines, transitions] = await Promise.all([
     db.select({projectId: dashboardSnapshots.projectId, health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(inArray(dashboardSnapshots.projectId, projectIds)).orderBy(desc(dashboardSnapshots.capturedAt)),
     db.select({projectId: trackerSnapshotOperations.projectId, createdAt: trackerSnapshotOperations.createdAt})
@@ -350,6 +351,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
           riskSignalDispositionEvents.version
         )
       )),
+    loadFailedNotificationDeliveryFacts(db, projectIds),
     db.select({
       id: outboxEvents.id, projectId: outboxEvents.projectId, payload: outboxEvents.payload,
       attemptCount: outboxEvents.attemptCount, failureCode: outboxEvents.failureCode, updatedAt: outboxEvents.updatedAt
@@ -390,6 +392,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       }
     ])
   );
+  const signalById = new Map(signals.map((signal) => [signal.id, signal]));
   const now = Date.now();
   const attention = rankAttentionQueue([
     ...signals.flatMap((signal): AttentionQueueItem[] => {
@@ -414,6 +417,39 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         action: {label: url === null ? 'No external record' : 'Open source', href: url},
         dispositionVersion: recordedDisposition?.version ?? 0,
         disposition
+      }];
+    }),
+    ...failedNotifications.flatMap((failure): AttentionQueueItem[] => {
+      const project = projectById.get(failure.projectId);
+      const signal = signalById.get(failure.riskSignalId);
+      if (project === undefined || signal === undefined) return [];
+      const url = signal.workItemId === null
+        ? null
+        : urlByItemId.get(signal.workItemId) ?? null;
+      return [{
+        id: `notification:${failure.notificationIntentId}`,
+        riskSignalId: null,
+        projectId: failure.projectId,
+        workItemId: signal.workItemId,
+        severity: failure.severity,
+        project: project.name,
+        object: signal.workItemTitle ?? failure.summary,
+        reason: `Notification delivery failed: ${failure.failureCode}`,
+        stage: signal.stage,
+        signalClass: 'fact',
+        impact: failure.summary,
+        freshness: failure.failedAt,
+        owner: signal.owner,
+        evidenceReferences: failure.evidenceReferences,
+        nextAction: failure.nextAction,
+        sourceUrl: url,
+        evidence: `Notification receipt v${failure.receiptVersion} failed: ${failure.failureCode}`,
+        action: {
+          label: url === null ? 'No external record' : 'Open source',
+          href: url
+        },
+        dispositionVersion: 0,
+        disposition: null
       }];
     }),
     ...failedOutbox.flatMap((event): AttentionQueueItem[] => {
