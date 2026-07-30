@@ -453,7 +453,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
     .where(inArray(riskSignalDispositionEvents.projectId, projectIds))
     .groupBy(riskSignalDispositionEvents.riskSignalId)
     .as('latest_risk_disposition_versions');
-  const [snapshots, operations, signals, dispositions, failedNotifications, failedOutbox, unhealthyJobs, items, bindings, metricItems, pendingApprovals, projectMilestones, projectDeadlines, transitions] = await Promise.all([
+  const [snapshots, operations, signals, dispositions, failedNotifications, failedOutbox, unhealthyJobs, items, bindings, metricItems, pendingApprovals, projectMilestones, projectDeadlines, transitions, projectOwners] = await Promise.all([
     db.select({projectId: dashboardSnapshots.projectId, health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(inArray(dashboardSnapshots.projectId, projectIds)).orderBy(desc(dashboardSnapshots.capturedAt)),
     db.select({projectId: trackerSnapshotOperations.projectId, createdAt: trackerSnapshotOperations.createdAt})
@@ -517,9 +517,21 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
       .where(and(inArray(workItems.projectId, projectIds), isNull(workItems.deletedAt))),
     db.select({workItemId: statusTransitions.workItemId, projectId: workItems.projectId, toStatus: statusTransitions.toStatus, createdAt: statusTransitions.createdAt})
       .from(statusTransitions).innerJoin(workItems, eq(statusTransitions.workItemId, workItems.id))
-      .where(and(inArray(workItems.projectId, projectIds), isNull(workItems.deletedAt)))
+      .where(and(inArray(workItems.projectId, projectIds), isNull(workItems.deletedAt))),
+    db.select({projectId: projectMemberships.projectId, owner: actors.displayName})
+      .from(projectMemberships).innerJoin(actors, eq(projectMemberships.actorId, actors.id))
+      .where(and(
+        inArray(projectMemberships.projectId, projectIds),
+        eq(projectMemberships.role, 'project_owner'),
+        eq(projectMemberships.active, true),
+        isNull(actors.disabledAt)
+      )).orderBy(projectMemberships.projectId, actors.id)
   ]);
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));
+  const ownerByProjectId = new Map<string, string>();
+  for (const owner of projectOwners) {
+    if (!ownerByProjectId.has(owner.projectId)) ownerByProjectId.set(owner.projectId, owner.owner);
+  }
   const itemById = new Map(items.map((item) => [item.id, item]));
   const urlByItemId = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const dispositionByRiskSignalId = new Map(
@@ -551,7 +563,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         workItemId: signal.workItemId,
         object: signal.workItemTitle ?? 'Project risk signal', reason: signal.summary,
         stage: signal.stage, signalClass: signal.signalClass, impact: signal.impact,
-        freshness: signal.observedAt, owner: signal.owner, evidenceReferences: signal.evidenceReferences,
+        freshness: signal.observedAt, owner: signal.owner ?? ownerByProjectId.get(signal.projectId) ?? null, evidenceReferences: signal.evidenceReferences,
         nextAction: signal.nextAction, sourceUrl: url,
         evidence: signal.evidenceReferences.length === 0 ? 'No evidence references recorded' : signal.evidenceReferences.map((reference) => `${reference.type}: ${reference.id}`).join(' · '),
         action: {label: url === null ? 'No external record' : 'Open source', href: url},
@@ -579,7 +591,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         signalClass: 'fact',
         impact: failure.summary,
         freshness: failure.failedAt,
-        owner: signal.owner,
+        owner: signal.owner ?? ownerByProjectId.get(failure.projectId) ?? null,
         evidenceReferences: failure.evidenceReferences,
         nextAction: failure.nextAction,
         sourceUrl: url,
@@ -605,7 +617,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         object: item?.title ?? 'GitHub project status write', reason: event.failureCode ?? 'GitHub status write failed',
         stage: null, signalClass: 'fact',
         impact: 'Canonical delivery status was not published to the tracker.',
-        freshness: event.updatedAt, owner: null,
+        freshness: event.updatedAt, owner: ownerByProjectId.get(event.projectId) ?? null,
         evidenceReferences: [{type: 'outbox_event', id: event.id}],
         nextAction: 'inspect_failed_status_writeback', sourceUrl: url,
         evidence: `Outbox failed after ${event.attemptCount} attempts`, action: {label: url === null ? 'No external record' : 'Open source', href: url},
@@ -622,7 +634,7 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
         workItemId: null,
         reason: 'Scheduled job is unhealthy', stage: null, signalClass: 'fact',
         impact: 'Required recurring control-plane work is not healthy.',
-        freshness: job.heartbeatAt ?? job.updatedAt, owner: null,
+        freshness: job.heartbeatAt ?? job.updatedAt, owner: ownerByProjectId.get(job.projectId) ?? null,
         evidenceReferences: [{type: 'scheduled_job', id: job.id}],
         nextAction: 'inspect_or_recover_scheduled_job',
         sourceUrl: null, evidence: 'Scheduled job status', action: {label: 'No external record', href: null},

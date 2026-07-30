@@ -179,6 +179,7 @@ try {
     await reconcileLaunchProjectMemberships(
       db,
       persistedProject.id,
+      repository.slug,
       launchHumanRoster.members,
       hermesActor.id
     );

@@ -7,14 +7,21 @@ import {
 } from './delivery-protocol';
 
 describe('delivery protocol', () => {
-  it('provides the ordered default five-stage protocol', () => {
+  it('provides the launch-safe five-stage protocol without an automatic production step', () => {
     const definition = defaultDeliveryProtocolDefinition();
     expect(definition.stages.map((stage) => stage.key)).toEqual([
-      'intake', 'development', 'qa', 'staging', 'production'
+      'intake', 'development', 'qa', 'staging', 'acceptance'
     ]);
     expect(definition.stages.map((stage) => stage.taskStatus)).toEqual([
       'ready', 'in_dev', 'qa', 'acceptance', 'done'
     ]);
+    expect(definition.stages.find(({key}) => key === 'qa')?.responsibility)
+      .toEqual({kind: 'project_role', role: 'project_owner'});
+    expect(definition.stages.every(({responsibility}) =>
+      responsibility.kind === 'project_role' && responsibility.role === 'project_owner'
+    )).toBe(true);
+    expect(definition.stages.some(({key}) => key === 'production')).toBe(false);
+    expect(definition.stages.at(-1)?.requiredEvidence).toEqual(['Product Owner acceptance']);
     expect(validateDeliveryProtocolDefinition(definition)).toMatchObject({ok: true});
   });
 

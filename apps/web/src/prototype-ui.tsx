@@ -21,6 +21,11 @@ export type WorkspaceRoute = Readonly<{
   screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'people' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
   project: OperatorProjectSlug | null;
   globalProject?: 'all' | OperatorProjectSlug;
+  taskFilters?: Readonly<{
+    status: 'active' | 'all' | 'backlog' | 'ready' | 'in_dev' | 'qa' | 'acceptance' | 'done';
+    attention: boolean;
+    owner: string | null;
+  }>;
   taskId: string | null;
   runId: string | null;
   agentId: string | null;
@@ -210,13 +215,67 @@ function StageStrip({items, current}: {items: readonly string[]; current: string
 function Overview({route, project, runs}: {route: PrototypeRoute; project: ProjectData; runs: RunsData | null}) {
   const counts = project.workItems.reduce<Record<string, number>>((result, item) => ({...result, [item.status]: (result[item.status] ?? 0) + 1}), {});
   const current = project.workItems.find((item) => item.status !== 'done')?.status ?? null;
-  return <><ProjectHeader route={route} project={project}/><Summary items={Object.entries(counts).slice(0, 4).map(([label, value]) => ({label: statusLabel(label), value}))}/><section className="fcp-section"><div className="fcp-section-head"><h2>Task lifecycle</h2><span>{current === null ? 'No active task' : `Current task: ${statusLabel(current)}`}</span></div><StageStrip items={['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done']} current={current}/></section><section className="fcp-section"><div className="fcp-section-head"><h2>Current work</h2><Link href={projectUrl(project.project.slug, 'tasks', route.scope)}>View tasks</Link></div>{project.workItems.length === 0 ? <p className="fcp-empty-line">No tasks observed.</p> : <div className="fcp-list">{project.workItems.slice(0, 5).map((task) => <TaskRow project={project.project.slug} route={route} task={task} key={task.id}/>)}</div>}</section>{runs === null ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Recent runs</h2><Link href={projectUrl(project.project.slug, 'runs', route.scope)}>View runs</Link></div>{runs.runs.length === 0 ? <p className="fcp-empty-line">No runs observed.</p> : <div className="fcp-list">{runs.runs.slice(0, 4).map((run) => <RunRow project={project.project.slug} route={route} run={run} key={run.id}/>)}</div>}</section>}</>;
+  const active = project.workItems.filter(({status}) => status !== 'backlog' && status !== 'done');
+  return <><ProjectHeader route={route} project={project}/><Summary items={Object.entries(counts).slice(0, 4).map(([label, value]) => ({label: statusLabel(label), value}))}/><section className="fcp-section"><div className="fcp-section-head"><h2>Task lifecycle</h2><span>{current === null ? 'No active task' : `Current task: ${statusLabel(current)}`}</span></div><StageStrip items={['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done']} current={current}/></section><section className="fcp-section"><div className="fcp-section-head"><h2>Current work</h2><Link href={projectUrl(project.project.slug, 'tasks', route.scope)}>View tasks</Link></div>{active.length === 0 ? <p className="fcp-empty-line">No active tasks observed.</p> : <div className="fcp-list">{active.slice(0, 5).map((task) => <TaskRow project={project.project.slug} route={route} task={task} key={task.id}/>)}</div>}</section>{runs === null ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Recent runs</h2><Link href={projectUrl(project.project.slug, 'runs', route.scope)}>View runs</Link></div>{runs.runs.length === 0 ? <p className="fcp-empty-line">No runs observed.</p> : <div className="fcp-list">{runs.runs.slice(0, 4).map((run) => <RunRow project={project.project.slug} route={route} run={run} key={run.id}/>)}</div>}</section>}</>;
 }
+const effectiveTaskOwner = (task: ProjectData['workItems'][number]) =>
+  task.journey?.stage?.actor?.displayName ?? task.owner;
+const taskNextAction = (task: ProjectData['workItems'][number]): string | null => {
+  if (task.blocked) return 'Resolve blocker';
+  if (task.handoff !== null) return task.handoff.label;
+  const nextStage = task.journey?.stage?.nextStage;
+  return nextStage === undefined || nextStage === null
+    ? task.status === 'done' ? 'Complete' : null
+    : `Advance to ${nextStage}`;
+};
+const taskNeedsAttention = (task: ProjectData['workItems'][number]) =>
+  task.blocked || effectiveTaskOwner(task) === null || taskNextAction(task) === null;
 function TaskRow({project, route, task}: {project: OperatorProjectSlug; route: PrototypeRoute; task: ProjectData['workItems'][number]}) {
-  return <Link className="fcp-row fcp-task-row" href={taskUrl(project, task.id, route.scope)}><Status value={task.blocked ? 'blocked' : task.status}/><div><strong>{task.title}</strong><small>{task.owner ?? 'Responsible person unknown'}</small></div><span>{task.handoff?.label ?? 'Next action unknown'}</span><time>{date(task.updatedAt)}</time><ChevronRight aria-hidden="true" size={16}/></Link>;
+  return <Link className="fcp-row fcp-task-row" href={taskUrl(project, task.id, route.scope)}><Status value={task.blocked ? 'blocked' : task.status}/><div><strong>{task.title}</strong><small>{effectiveTaskOwner(task) ?? 'Responsible person unknown'}</small></div><span>{taskNextAction(task) ?? 'Next action unknown'}</span><time>{date(task.updatedAt)}</time><ChevronRight aria-hidden="true" size={16}/></Link>;
+}
+type TaskEntry = Readonly<{project: OperatorProjectSlug; projectName: string; task: ProjectData['workItems'][number]}>;
+const selectedTaskFilters = (route: PrototypeRoute) => route.taskFilters ?? {status: 'active' as const, attention: false, owner: null};
+const filteredTaskEntries = (route: PrototypeRoute, entries: readonly TaskEntry[]) => {
+  const filters = selectedTaskFilters(route);
+  return entries.filter(({task}) => {
+    const statusMatches = filters.status === 'all'
+      || (filters.status === 'active'
+        ? ['ready', 'in_dev', 'qa', 'acceptance'].includes(task.status)
+        : task.status === filters.status);
+    return statusMatches
+      && (!filters.attention || taskNeedsAttention(task))
+      && (filters.owner === null || effectiveTaskOwner(task) === filters.owner);
+  });
+};
+function TaskFilters({route, entries, projects, action}: {
+  route: PrototypeRoute;
+  entries: readonly TaskEntry[];
+  projects: readonly Readonly<{name: string; slug: OperatorProjectSlug}>[];
+  action: string;
+}) {
+  const filters = selectedTaskFilters(route);
+  const owners = [...new Set(entries.flatMap(({task}) => effectiveTaskOwner(task) ?? []))].sort();
+  const resetQuery = new URLSearchParams();
+  if (route.globalProject !== undefined) resetQuery.set('project', route.globalProject);
+  if (route.scope.environment !== null) resetQuery.set('environment', route.scope.environment);
+  if (route.scope.from !== null) resetQuery.set('from', route.scope.from);
+  if (route.scope.to !== null) resetQuery.set('to', route.scope.to);
+  const reset = `${action}${resetQuery.size === 0 ? '' : `?${resetQuery.toString()}`}`;
+  return <form action={action} className="fcp-task-filters" method="get">
+    {route.globalProject === undefined ? null : <label><span>Project</span><select defaultValue={route.globalProject} name="project"><option value="all">All projects</option>{projects.map((project) => <option value={project.slug} key={project.slug}>{project.name}</option>)}</select></label>}
+    <label><span>Status</span><select defaultValue={filters.status} name="status"><option value="active">Active work</option><option value="backlog">Backlog</option><option value="ready">Ready</option><option value="in_dev">In development</option><option value="qa">QA</option><option value="acceptance">Acceptance</option><option value="done">Completed</option><option value="all">All statuses</option></select></label>
+    <label><span>Attention</span><select defaultValue={filters.attention ? 'only' : 'all'} name="attention"><option value="all">All</option><option value="only">Needs attention</option></select></label>
+    <label><span>Responsible</span><select defaultValue={filters.owner ?? ''} name="owner"><option value="">All responsible</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
+    {route.scope.environment === null ? null : <input name="environment" type="hidden" value={route.scope.environment}/>}
+    {route.scope.from === null ? null : <input name="from" type="hidden" value={route.scope.from}/>}
+    {route.scope.to === null ? null : <input name="to" type="hidden" value={route.scope.to}/>}
+    <button type="submit">Apply</button><Link href={reset}>Reset</Link>
+  </form>;
 }
 function Tasks({route, project}: {route: PrototypeRoute; project: ProjectData}) {
-  return <><ProjectHeader route={route} project={project}/><div className="fcp-section-head fcp-page-actions"><span>Provider-synchronized work items</span><DeferredAction label="New task" detail="task creation is not configured in this workspace."/></div><div className="fcp-list">{project.workItems.length === 0 ? <p className="fcp-empty-line">No tasks observed.</p> : project.workItems.map((task) => <TaskRow project={project.project.slug} route={route} task={task} key={task.id}/>)}</div></>;
+  const entries = project.workItems.map((task) => ({project: project.project.slug, projectName: project.project.name, task}));
+  const visible = filteredTaskEntries(route, entries);
+  return <><ProjectHeader route={route} project={project}/><div className="fcp-section-head fcp-page-actions"><span>Provider-synchronized work items</span><DeferredAction label="New task" detail="task creation is not configured in this workspace."/></div><TaskFilters action={`/projects/${project.project.slug}/tasks`} entries={entries} projects={[project.project]} route={route}/><div className="fcp-list">{visible.length === 0 ? <p className="fcp-empty-line">No tasks match the current filters.</p> : visible.map(({task}) => <TaskRow project={project.project.slug} route={route} task={task} key={task.id}/>)}</div></>;
 }
 function DetailFacts({items}: {items: readonly Readonly<{label: string; value: string}>[]}) {
   return <dl className="fcp-details">{items.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>;
@@ -315,9 +374,24 @@ function ResourceGrant({grant, membership}: {
   const provider = grant.observedProvider ?? 'provider';
   return <article><div><strong>{resourceLabel(grant.resourceType)}</strong><small>Canonical desired: {grant.desiredLevel} · grant v{grant.version}</small></div><dl><div><dt>Membership baseline</dt><dd>{membership.active ? roleLabel(membership.role) : 'Inactive membership'}</dd></div><div><dt>Provider observation</dt><dd>{grant.observedLevel === null ? 'Not observed' : `${grant.observedLevel} · ${grant.observedProvider ?? 'Unknown provider'}`}</dd></div><div><dt>Confirmation</dt><dd>{confirmation}</dd></div><div><dt>External change</dt><dd>{grant.providerAccessUrl == null ? 'Not configured' : <a href={grant.providerAccessUrl} target="_blank" rel="noreferrer" aria-label={`Manage ${resourceLabel(grant.resourceType)} access in ${provider} (opens in a new tab)`}>Manage in provider <ExternalLink aria-hidden="true" size={13}/></a>}</dd></div></dl><small className="fcp-access-observed">Observed {date(grant.observedAt)}</small></article>;
 }
+const providerAccessConfirmed = (
+  access: AccessData,
+  membership: AccessData['memberships'][number]
+) => access.resourceGrants.some((grant) =>
+  grant.projectId === membership.projectId
+  && grant.actorId === membership.actorId
+  && grant.observedLevel !== null
+  && grant.observedAt !== null);
+const accessState = (
+  access: AccessData,
+  membership: AccessData['memberships'][number],
+  actor: AccessData['actors'][number]
+) => !membership.active || actor.disabledAt !== null
+  ? 'blocked'
+  : providerAccessConfirmed(access, membership) ? 'ready' : 'unknown';
 function Access({route, project, access}: {route: PrototypeRoute; project: ProjectData; access: AccessData | null}) {
   if (access === null) return <><ProjectHeader route={route} project={project}/><Blank title="Access is unavailable">The canonical access read model could not be loaded.</Blank></>;
-  const memberships = access.memberships.filter((item) => item.projectId === project.project.id);
+  const memberships = access.memberships.filter((item) => item.projectId === project.project.id && item.active);
   const actors = memberships.flatMap((item) => access.actors.find((actor) => actor.id === item.actorId) ?? []);
   const selected = actors.find((actor) => actor.id === route.accessActorId) ?? actors[0] ?? null;
   const membership = selected === null ? null : memberships.find((item) => item.actorId === selected.id) ?? null;
@@ -326,9 +400,9 @@ function Access({route, project, access}: {route: PrototypeRoute; project: Proje
   const profiles = selected === null ? [] : access.agentSystems.find((item) => item.actorId === selected.id)?.profiles ?? [];
   const actorUrl = (actorId: string) => `/projects/${project.project.slug}/access/${actorId}${scopeQuery(route.scope)}`;
   return <><ProjectHeader route={route} project={project}/><div className={`fcp-access-layout${route.accessActorId === undefined || route.accessActorId === null ? '' : ' has-selection'}`}>
-    <aside className="fcp-access-master"><div className="fcp-section-head"><div><h2>People &amp; agents</h2><span>Project memberships</span></div></div>{actors.length === 0 ? <p className="fcp-empty-line">No project memberships observed.</p> : <div className="fcp-list">{actors.map((actor) => { const row = memberships.find((item) => item.actorId === actor.id)!; return <Link className="fcp-access-person" href={actorUrl(actor.id)} key={actor.id} aria-current={selected?.id === actor.id ? 'page' : undefined}><UsersRound aria-hidden="true" size={17}/><div><strong>{actor.displayName}</strong><small>{roleLabel(row.role)} · {actor.type}</small></div><Status value={row.active && actor.disabledAt === null ? 'ready' : 'blocked'}/><ChevronRight aria-hidden="true" size={16}/></Link>; })}</div>}</aside>
+    <aside className="fcp-access-master"><div className="fcp-section-head"><div><h2>People &amp; agents</h2><span>Current project memberships</span></div></div>{actors.length === 0 ? <p className="fcp-empty-line">No active project memberships observed.</p> : <div className="fcp-list">{actors.map((actor) => { const row = memberships.find((item) => item.actorId === actor.id)!; return <Link className="fcp-access-person" href={actorUrl(actor.id)} key={actor.id} aria-current={selected?.id === actor.id ? 'page' : undefined}><UsersRound aria-hidden="true" size={17}/><div><strong>{actor.displayName}</strong><small>{roleLabel(row.role)} · {actor.type}</small></div><Status value={accessState(access, row, actor)}/><ChevronRight aria-hidden="true" size={16}/></Link>; })}</div>}</aside>
     <main className="fcp-access-detail"><Link className="fcp-access-back" href={projectUrl(project.project.slug, 'access', route.scope)}><ChevronLeft aria-hidden="true" size={16}/>People &amp; agents</Link>{selected === null || membership === null ? <Blank title="Access not configured">No persisted membership connects a person or agent to this project.</Blank> : <>
-      <div className="fcp-page-title fcp-access-title"><div><h1>{selected.displayName}</h1><p>Access explanation from persisted membership, grant, and provider-observation records.</p></div><Status value={membership.active && selected.disabledAt === null ? 'ready' : 'blocked'}/></div>
+      <div className="fcp-page-title fcp-access-title"><div><h1>{selected.displayName}</h1><p>Access explanation from persisted membership, grant, and provider-observation records.</p></div><Status value={accessState(access, membership, selected)}/></div>
       <section className="fcp-section"><div className="fcp-section-head"><h2>Why this actor can access the project</h2><ShieldCheck aria-hidden="true" size={17}/></div><Summary items={[{label: 'Membership', value: membership.active ? roleLabel(membership.role) : 'Inactive'}, {label: 'Actor', value: selected.disabledAt === null ? 'Enabled' : 'Disabled'}, {label: 'External identity', value: identities.length === 0 ? 'Not observed' : `${identities.filter((item) => item.active).length} active`}, {label: 'Explicit grants', value: grants.length}]}/></section>
       <section className="fcp-section"><div className="fcp-section-head"><h2>Resource grants</h2><span>Desired vs provider-confirmed access</span></div>{grants.length === 0 ? <p className="fcp-empty-line">No explicit resource grants observed. Membership is recorded, but connected resource access is Not configured.</p> : <div className="fcp-access-grants">{grants.map((grant) => <ResourceGrant grant={grant} key={grant.id} membership={membership}/>)}</div>}</section>
       <section className="fcp-section"><div className="fcp-section-head"><h2>External identities</h2><span>Provider binding metadata only</span></div>{identities.length === 0 ? <p className="fcp-empty-line">Not observed. No provider identity binding is recorded.</p> : <div className="fcp-identity-list">{identities.map((identity) => <span key={identity.provider}>{identity.provider} · {identity.active ? 'Active binding' : 'Inactive binding'}</span>)}</div>}</section>
@@ -394,18 +468,19 @@ function AgentDetail({route, access, csrfToken}: {route: PrototypeRoute; access:
 }
 function GlobalTasks({route, projects}: {route: PrototypeRoute; projects: readonly ProjectData[]}) {
   const visibleProjects = route.globalProject === undefined || route.globalProject === 'all' ? projects : projects.filter((project) => project.project.slug === route.globalProject);
-  const rows = visibleProjects.flatMap((project) => project.workItems.map((task) => <TaskRow key={task.id} project={project.project.slug} route={route} task={task}/>));
-  return <><div className="fcp-page-title"><div><h1>Delivery tasks</h1><p>Canonical work items across configured projects.</p></div><Scope route={route}/></div><div className="fcp-page-actions"><DeferredAction label="New task" detail="task creation is not configured in this workspace."/></div><div className="fcp-list">{rows.length === 0 ? <p className="fcp-empty-line">No tasks observed for this project filter.</p> : rows}</div></>;
+  const entries = visibleProjects.flatMap((project) => project.workItems.map((task) => ({project: project.project.slug, projectName: project.project.name, task})));
+  const rows = filteredTaskEntries(route, entries);
+  return <><div className="fcp-page-title"><div><h1>Delivery tasks</h1><p>Canonical work items across configured projects.</p></div><Scope route={route}/></div><div className="fcp-page-actions"><DeferredAction label="New task" detail="task creation is not configured in this workspace."/></div><TaskFilters action="/tasks" entries={entries} projects={projects.map(({project}) => project)} route={route}/><div className="fcp-list">{rows.length === 0 ? <p className="fcp-empty-line">No tasks match the current filters.</p> : rows.map(({project, task}) => <TaskRow key={task.id} project={project} route={route} task={task}/>)}</div></>;
 }
 function GlobalChats({route, conversations}: {route: PrototypeRoute; conversations: ConversationsData | null}) { return <><div className="fcp-page-title"><div><h1>Conversations</h1><p>Read-only internal and client timelines from verified bindings.</p></div><Scope route={route}/></div><div className="fcp-page-actions"><DeferredAction label="Manage chat membership" detail="chat administration is not configured."/></div>{conversations === null ? <Blank title="Conversations unavailable">The canonical conversation read model could not be loaded.</Blank> : conversations.projects.length === 0 ? <Blank title="No projects observed">No configured projects are available for this filter.</Blank> : <Conversations projects={conversations.projects}/>}</>; }
 function People({route, access}: {route: PrototypeRoute; access: AccessData | null}) {
   if (access === null) return <><div className="fcp-page-title"><div><h1>People &amp; Access</h1><p>Persisted memberships, identities, and effective access.</p></div><Scope route={route}/></div><Blank title="People and access are unavailable">The canonical access read model could not be loaded.</Blank></>;
-  const membershipRows = access.memberships.flatMap((membership) => {
+  const membershipRows = access.memberships.filter(({active}) => active).flatMap((membership) => {
     const actor = access.actors.find((candidate) => candidate.id === membership.actorId);
     if (actor === undefined) return [];
     return [{membership, actor}];
   });
-  return <><div className="fcp-page-title"><div><h1>People &amp; Access</h1><p>Confirmed project memberships and provider-access evidence.</p></div><Scope route={route}/></div><section className="fcp-section"><div className="fcp-section-head"><h2>Project memberships</h2><span>Read-only canonical records</span></div>{membershipRows.length === 0 ? <p className="fcp-empty-line">No persisted project memberships are recorded.</p> : <div className="fcp-list">{membershipRows.map(({membership, actor}) => <Link className="fcp-row fcp-people-row" href={`/projects/${membership.projectSlug}/access/${actor.id}${scopeQuery(route.scope)}`} key={`${membership.projectId}:${actor.id}`}><UsersRound aria-hidden="true" size={18}/><div><strong>{actor.displayName}</strong><small>{membership.project} · {roleLabel(membership.role)} · {actor.type}</small></div><Status value={membership.active && actor.disabledAt === null ? 'ready' : 'blocked'}/><span>{actor.disabledAt === null ? 'Actor enabled' : 'Actor disabled'}</span><ChevronRight aria-hidden="true" size={16}/></Link>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Access posture</h2><span>Provider grants remain project-specific</span></div><Summary items={[{label: 'People & agents', value: access.actors.length}, {label: 'Active memberships', value: access.memberships.filter((membership) => membership.active).length}, {label: 'External identities', value: access.externalIdentities.filter((identity) => identity.active).length}, {label: 'Explicit grants', value: access.resourceGrants.length}]}/></section></>;
+  return <><div className="fcp-page-title"><div><h1>People &amp; Access</h1><p>Current project memberships and provider-access evidence.</p></div><Scope route={route}/></div><section className="fcp-section"><div className="fcp-section-head"><h2>Project memberships</h2><span>Membership is not provider confirmation</span></div>{membershipRows.length === 0 ? <p className="fcp-empty-line">No active project memberships are recorded.</p> : <div className="fcp-list">{membershipRows.map(({membership, actor}) => { const confirmed = providerAccessConfirmed(access, membership); return <Link className="fcp-row fcp-people-row" href={`/projects/${membership.projectSlug}/access/${actor.id}${scopeQuery(route.scope)}`} key={`${membership.projectId}:${actor.id}`}><UsersRound aria-hidden="true" size={18}/><div><strong>{actor.displayName}</strong><small>{membership.project} · {roleLabel(membership.role)} · {actor.type}</small></div><Status value={accessState(access, membership, actor)}/><span>{actor.disabledAt !== null ? 'Actor disabled' : confirmed ? 'Provider access confirmed' : 'Membership recorded'}</span><ChevronRight aria-hidden="true" size={16}/></Link>; })}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Access posture</h2><span>Provider grants remain project-specific</span></div><Summary items={[{label: 'People & agents', value: access.actors.length}, {label: 'Active memberships', value: access.memberships.filter((membership) => membership.active).length}, {label: 'External identities', value: access.externalIdentities.filter((identity) => identity.active).length}, {label: 'Provider-confirmed grants', value: access.resourceGrants.filter((grant) => grant.observedLevel !== null && grant.observedAt !== null).length}]}/></section></>;
 }
 function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const project = ready(data.project);

@@ -18,6 +18,8 @@ export type LaunchHumanRoster = Readonly<{
   members: readonly LaunchHumanMember[];
 }>;
 
+export type LaunchProjectSlug = 'msa' | 'ascon';
+
 const parseOperatorGitHubUserIds = (value: string): readonly string[] => {
   const ids = value.split(',');
   if (ids.length !== 2) {
@@ -116,25 +118,33 @@ export const reconcileLaunchHumanRoster = async (
 export const reconcileLaunchProjectMemberships = async (
   db: Database,
   projectId: string,
+  projectSlug: LaunchProjectSlug,
   humanMembers: readonly LaunchHumanMember[],
   hermesActorId: string
 ): Promise<void> => {
-  const members = [
+  const projectOwner = humanMembers.find(({role}) => role === 'project_owner');
+  if (projectOwner === undefined) {
+    throw new Error('launch project membership seed requires a project owner');
+  }
+  const fixedMembers = [
     ...humanMembers,
     {actorId: hermesActorId, role: 'agent' as const}
   ];
-  for (const member of members) {
+  const members = projectSlug === 'msa' ? fixedMembers : [projectOwner];
+  const desiredActorIds = new Set(members.map(({actorId}) => actorId));
+  for (const member of fixedMembers) {
+    const active = desiredActorIds.has(member.actorId);
     await db.insert(projectMemberships).values({
       projectId,
       actorId: member.actorId,
       role: member.role,
-      active: true
+      active
     }).onConflictDoUpdate({
       target: [
         projectMemberships.projectId,
         projectMemberships.actorId
       ],
-      set: {role: member.role, active: true}
+      set: {role: member.role, active}
     });
   }
 };

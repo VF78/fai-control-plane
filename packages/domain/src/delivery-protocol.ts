@@ -411,7 +411,7 @@ export const defaultDeliveryProtocolDefinition = (): DeliveryProtocolDefinition 
       name: 'Development',
       enabled: true,
       taskStatus: 'in_dev',
-      responsibility: {kind: 'project_role', role: 'contributor'},
+      responsibility: {kind: 'project_role', role: 'project_owner'},
       executionMode: 'manual',
       entryCriteria: ['Task is ready for implementation'],
       requiredEvidence: ['Implementation change', 'Relevant checks'],
@@ -422,7 +422,7 @@ export const defaultDeliveryProtocolDefinition = (): DeliveryProtocolDefinition 
       name: 'QA',
       enabled: true,
       taskStatus: 'qa',
-      responsibility: {kind: 'project_role', role: 'reviewer'},
+      responsibility: {kind: 'project_role', role: 'project_owner'},
       executionMode: 'human_approval',
       entryCriteria: ['Development evidence is complete'],
       requiredEvidence: ['QA result'],
@@ -437,17 +437,17 @@ export const defaultDeliveryProtocolDefinition = (): DeliveryProtocolDefinition 
       executionMode: 'human_approval',
       entryCriteria: ['QA passed'],
       requiredEvidence: ['Staging verification'],
-      allowedNextStageKey: 'production'
+      allowedNextStageKey: 'acceptance'
     },
     {
-      key: 'production',
-      name: 'Production',
+      key: 'acceptance',
+      name: 'Acceptance',
       enabled: true,
       taskStatus: 'done',
       responsibility: {kind: 'project_role', role: 'project_owner'},
       executionMode: 'human_approval',
       entryCriteria: ['Staging verification passed'],
-      requiredEvidence: ['Production release receipt'],
+      requiredEvidence: ['Product Owner acceptance'],
       allowedNextStageKey: null
     }
   ]

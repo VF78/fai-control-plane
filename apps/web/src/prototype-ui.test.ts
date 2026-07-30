@@ -14,6 +14,10 @@ it('maps only canonical workspace routes and preserves scope on deep links', () 
   expect(workspaceRoute(['projects', 'unknown', 'overview'], {})).toBeNull();
   expect(workspaceRoute(['projects', 'msa', 'runs', ''], {})).toBeNull();
   expect(workspaceRoute(['tasks'], {project: 'unknown'})).toBeNull();
+  expect(workspaceRoute(['tasks'], {project: 'msa', status: 'qa', attention: 'only', owner: 'Hermes'}))
+    .toMatchObject({screen: 'global_tasks', globalProject: 'msa', taskFilters: {status: 'qa', attention: true, owner: 'Hermes'}});
+  expect(workspaceRoute(['projects', 'msa', 'tasks'], {}))
+    .toMatchObject({screen: 'tasks', taskFilters: {status: 'active', attention: false, owner: null}});
   expect(workspaceRoute(['people'], {})).toMatchObject({screen: 'people', project: null});
 });
 
@@ -134,8 +138,8 @@ it('renders only the fixed MSA and ASCON roster memberships in People & Access',
         {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', role: 'contributor', active: true, version: 1},
         {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'hermes', role: 'agent', active: true, version: 1},
         {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', role: 'project_owner', active: true, version: 1},
-        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vitaliy', role: 'contributor', active: true, version: 1},
-        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'hermes', role: 'agent', active: true, version: 1}
+        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vitaliy', role: 'contributor', active: false, version: 2},
+        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'hermes', role: 'agent', active: false, version: 2}
       ], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}
     }}
   } as unknown as WorkspaceData;
@@ -143,10 +147,54 @@ it('renders only the fixed MSA and ASCON roster memberships in People & Access',
     route: {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data
   }));
   expect(markup).toContain('Vladimir</strong><small>MSA · project owner · human');
-  expect(markup).toContain('Vitaliy</strong><small>ASCON · contributor · human');
-  expect(markup).toContain('Hermes</strong><small>ASCON · agent · agent');
-  expect(markup).toContain('href="/projects/ascon/access/hermes"');
+  expect(markup).toContain('Vitaliy</strong><small>MSA · contributor · human');
+  expect(markup).toContain('Hermes</strong><small>MSA · agent · agent');
+  expect(markup).toContain('Vladimir</strong><small>ASCON · project owner · human');
+  expect(markup).not.toContain('Vitaliy</strong><small>ASCON');
+  expect(markup).not.toContain('Hermes</strong><small>ASCON');
+  expect(markup).not.toContain('href="/projects/ascon/access/hermes"');
+  expect(markup).toContain('Membership recorded');
+  expect(markup).toContain('Unknown');
   expect(markup).not.toContain('Add person');
+});
+
+it('defaults task lists to active work and projects journey responsibility and next action', () => {
+  const observedAt = new Date('2026-07-30T12:00:00.000Z');
+  const baseProject = {workspaceId: 'workspace-1', description: null, defaultBranch: 'main', updatedAt: observedAt};
+  const activeTask = {
+    id: 'task-active', title: 'MSA active task', summary: null, status: 'qa' as const,
+    blocked: false, owner: null, updatedAt: observedAt, externalUrl: null, version: 2,
+    journey: {
+      protocolId: 'protocol-1', protocolVersion: 1, stageKey: 'qa', version: 2, deadlineAt: null,
+      stage: {name: 'QA', taskStatus: 'qa' as const, executionMode: 'autonomous', responsibility: 'agent', nextStage: 'Staging', actor: {displayName: 'Hermes', type: 'agent' as const}},
+      evidence: [], requiredEvidence: ['QA result']
+    },
+    canBuildPacket: false, handoff: null
+  };
+  const projectIndex = [
+    {project: {id: 'msa', name: 'MSA', slug: 'msa' as const, ...baseProject}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [
+      activeTask,
+      {id: 'task-backlog', title: 'MSA backlog task', summary: null, status: 'backlog' as const, blocked: false, owner: null, updatedAt: observedAt, externalUrl: null, canBuildPacket: false, handoff: null}
+    ]},
+    {project: {id: 'ascon', name: 'ASCON', slug: 'ascon' as const, ...baseProject}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [
+      {id: 'task-done', title: 'ASCON completed task', summary: null, status: 'done' as const, blocked: false, owner: 'Vladimir', updatedAt: observedAt, externalUrl: null, canBuildPacket: false, handoff: null}
+    ]}
+  ];
+  const data = {
+    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null,
+    runs: null, health: null, projectIndex
+  } as unknown as WorkspaceData;
+  const route = workspaceRoute(['tasks'], {project: 'all'})!;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route, data}));
+
+  expect(markup).toContain('MSA active task');
+  expect(markup).toContain('Hermes');
+  expect(markup).toContain('Advance to Staging');
+  expect(markup).not.toContain('MSA backlog task');
+  expect(markup).not.toContain('ASCON completed task');
+  expect(markup).toContain('Active work');
+  expect(markup).toContain('Needs attention');
+  expect(markup).toContain('All responsible');
 });
 
 it('renders isolated internal/client conversation states and current access facts', () => {
