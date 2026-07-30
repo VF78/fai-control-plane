@@ -8,6 +8,7 @@ import {
   accessRequests,
   actors,
   agentProfiles,
+  agentProfileInstructionVersions,
   agentRunReceipts,
   agentRuns,
   approvalRequests,
@@ -27,6 +28,7 @@ import {
   projectTrackerRepositoryScopes,
   projects,
   projectMemberships,
+  runtimeRegistrations,
   runbooks,
   riskSignalDispositionEvents,
   riskSignals,
@@ -35,6 +37,7 @@ import {
   taskPackets,
   trackerBindings,
   trackerSnapshotOperations,
+  workspaceInstructionVersions,
   statusTransitions,
   VALUE_LEDGER_COMMAND,
   workItems,
@@ -52,6 +55,7 @@ import {
   actionCategories,
   actorTypes,
   canonicalJson,
+  effectiveInstructions,
   environments,
   policyDecisionFor,
   policyMatrix,
@@ -1053,11 +1057,24 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
 
 export type AccessData = Readonly<{
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
+  agentSystems: readonly Readonly<{
+    actorId: string;
+    profiles: readonly Readonly<{
+      id: string;
+      runtimeId: string;
+      runtimeProfile: string;
+      enabled: boolean;
+      configHash: string;
+      registrations: readonly Readonly<{project: string; projectSlug: OperatorProjectSlug; provider: string; runtimeKey: string; enabled: boolean}>[];
+      instruction: Readonly<{workspaceVersion: number; profileVersion: number | null; hash: string; provenance: string}> | null;
+      latestRun: Readonly<{id: string; status: string; updatedAt: Date; completedAt: Date | null; receipt: Readonly<{terminal: string; completedAt: Date}> | null}> | null;
+    }>[];
+  }>[];
   requests: readonly Readonly<{id: string; requester: string; targetSurface: string; requestedScope: readonly string[]; status: string; expiresAt: Date | null; decidedAt: Date | null}>[];
   secretRefs: readonly Readonly<{id: string; provider: string; scope: readonly string[]; lastRotatedAt: Date | null}>[];
   policy: readonly Readonly<{actorType: string; allow: number; ask: number; deny: number}>[];
   hermes: Readonly<{
-    id: string;
+    id: string; actorId: string;
     runtimeProfile: string;
     allowedTools: readonly string[];
     forbiddenSurfaces: readonly string[];
@@ -1109,6 +1126,7 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
   if (workspaceIds.length === 0) {
     return {
       actors: [],
+      agentSystems: [],
       requests: [],
       secretRefs: [],
       policy: policySummary(),
@@ -1117,7 +1135,7 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
     };
   }
   const projectIds = configuredProjects.map(({id}) => id);
-  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, hermesProfiles] = await Promise.all([
+  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, hermesProfiles, persistedProfiles, registrations, workspaceInstructions, profileInstructions, profileRuns] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
     db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt})
@@ -1144,7 +1162,7 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
       .where(inArray(projectShareGrants.projectId, projectIds))
       .orderBy(desc(projectShareGrants.createdAt), projectShareGrants.id),
     db.select({
-      id: agentProfiles.id,
+      id: agentProfiles.id, actorId: agentProfiles.actorId,
       runtimeProfile: agentProfiles.runtimeProfile,
       allowedTools: agentProfiles.allowedTools,
       forbiddenSurfaces: agentProfiles.forbiddenSurfaces,
@@ -1157,7 +1175,30 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
       inArray(agentProfiles.workspaceId, workspaceIds),
       eq(agentProfiles.runtimeId, 'hermes'),
       eq(agentProfiles.runtimeProfile, 'read_safe')
-    )).limit(2)
+    )).limit(2),
+    db.select({
+      id: agentProfiles.id, actorId: agentProfiles.actorId, workspaceId: agentProfiles.workspaceId,
+      runtimeId: agentProfiles.runtimeId, runtimeProfile: agentProfiles.runtimeProfile,
+      enabled: agentProfiles.enabled, configHash: agentProfiles.configHash
+    }).from(agentProfiles).where(inArray(agentProfiles.workspaceId, workspaceIds)),
+    db.select({
+      agentProfileId: runtimeRegistrations.agentProfileId, actorId: runtimeRegistrations.actorId,
+      projectId: runtimeRegistrations.projectId, provider: runtimeRegistrations.provider,
+      runtimeKey: runtimeRegistrations.runtimeKey, enabled: runtimeRegistrations.enabled
+    }).from(runtimeRegistrations).where(inArray(runtimeRegistrations.projectId, projectIds)),
+    db.select({workspaceId: workspaceInstructionVersions.workspaceId, version: workspaceInstructionVersions.version, instructions: workspaceInstructionVersions.instructions, settings: workspaceInstructionVersions.settings})
+      .from(workspaceInstructionVersions).where(inArray(workspaceInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(workspaceInstructionVersions.version)),
+    db.select({agentProfileId: agentProfileInstructionVersions.agentProfileId, version: agentProfileInstructionVersions.version, instructions: agentProfileInstructionVersions.instructions, settings: agentProfileInstructionVersions.settings})
+      .from(agentProfileInstructionVersions).where(inArray(agentProfileInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(agentProfileInstructionVersions.version)),
+    db.select({
+      id: agentRuns.id, agentProfileId: agentRuns.agentProfileId, status: agentRuns.status,
+      updatedAt: agentRuns.updatedAt, completedAt: agentRuns.completedAt,
+      receiptTerminal: agentRunReceipts.terminal, receiptCompletedAt: agentRunReceipts.completedAt
+    }).from(agentRuns).innerJoin(agentProfiles, eq(agentProfiles.id, agentRuns.agentProfileId))
+      .innerJoin(taskPackets, eq(taskPackets.id, agentRuns.taskPacketId))
+      .leftJoin(agentRunReceipts, eq(agentRunReceipts.agentRunId, agentRuns.id))
+      .where(and(inArray(agentProfiles.workspaceId, workspaceIds), inArray(taskPackets.projectId, projectIds)))
+      .orderBy(desc(agentRuns.updatedAt), agentRuns.id)
   ]);
   const grantIds = grants.map(({shareId}) => shareId);
   const scopeRows = grantIds.length === 0
@@ -1175,8 +1216,52 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
   const projectById = new Map(
     configuredProjects.map((project) => [project.id, project])
   );
+  const latestWorkspaceInstruction = new Map<string, (typeof workspaceInstructions)[number]>();
+  for (const instruction of workspaceInstructions) if (!latestWorkspaceInstruction.has(instruction.workspaceId)) latestWorkspaceInstruction.set(instruction.workspaceId, instruction);
+  const latestProfileInstruction = new Map<string, (typeof profileInstructions)[number]>();
+  for (const instruction of profileInstructions) if (!latestProfileInstruction.has(instruction.agentProfileId)) latestProfileInstruction.set(instruction.agentProfileId, instruction);
+  const latestRunByProfile = new Map<string, (typeof profileRuns)[number]>();
+  for (const run of profileRuns) if (!latestRunByProfile.has(run.agentProfileId)) latestRunByProfile.set(run.agentProfileId, run);
+  const profilesByActor = new Map<string, AccessData['agentSystems'][number]['profiles'][number][]>();
+  for (const profile of persistedProfiles) {
+    const baseline = latestWorkspaceInstruction.get(profile.workspaceId);
+    const override = latestProfileInstruction.get(profile.id);
+    const effective = baseline === undefined ? null : effectiveInstructions(
+      {instructions: baseline.instructions, settings: baseline.settings as Record<string, CanonicalJson>},
+      override === undefined ? null : {instructions: override.instructions, settings: override.settings as Record<string, CanonicalJson>}
+    );
+    const run = latestRunByProfile.get(profile.id) ?? null;
+    const projected = {
+        id: profile.id, runtimeId: profile.runtimeId, runtimeProfile: profile.runtimeProfile,
+        enabled: profile.enabled, configHash: profile.configHash,
+        registrations: registrations.flatMap((registration) => {
+          const project = projectById.get(registration.projectId);
+          return registration.agentProfileId !== profile.id || registration.actorId !== profile.actorId || project === undefined ? [] : [{
+            project: project.name, projectSlug: project.slug, provider: registration.provider,
+            runtimeKey: registration.runtimeKey, enabled: registration.enabled
+          }];
+        }),
+        instruction: effective === null ? null : {
+          workspaceVersion: baseline!.version, profileVersion: override?.version ?? null,
+          hash: effective.hash,
+          provenance: override === undefined ? `workspace v${baseline!.version}` : `workspace v${baseline!.version} + profile v${override.version}`
+        },
+        latestRun: run === null ? null : {
+          id: run.id, status: run.status, updatedAt: run.updatedAt, completedAt: run.completedAt,
+          receipt: run.receiptTerminal === null || run.receiptCompletedAt === null ? null : {terminal: run.receiptTerminal, completedAt: run.receiptCompletedAt}
+        }
+      };
+    const profiles = profilesByActor.get(profile.actorId) ?? [];
+    profiles.push(projected);
+    profilesByActor.set(profile.actorId, profiles);
+  }
+  const agentSystems = [...profilesByActor.entries()].map(([actorId, profiles]) => ({
+    actorId,
+    profiles
+  }));
   return {
     actors: persistedActors,
+    agentSystems,
     requests: requests.map((request) => ({...request, requester: request.requester ?? 'No recorded requester'})),
     secretRefs: persistedSecretRefs,
     policy: policySummary(),

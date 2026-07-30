@@ -96,6 +96,22 @@ it('keeps the web-first workspace IA and honest unavailable state', () => {
   expect(markup).not.toContain('Provider ID');
 });
 
+it('renders persisted agent registrations and systems facts without inferring runtime liveness', () => {
+  const data = {
+    portfolio: {state: 'unconfigured'}, project: null, runs: null, projectIndex: [], csrfToken: 'csrf',
+    health: {state: 'ready', data: {jobs: [{id: 'job-1', project: 'MSA', projectSlug: 'msa', name: 'recovery', status: 'unhealthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null}], integrations: [], risks: [], audit: [], costLedger: []}},
+    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', enabled: true, configHash: 'a'.repeat(64), registrations: [{project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null}]}], requests: [], secretRefs: [], policy: [], hermes: {id: 'profile-1', actorId: 'agent-1', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64)}, sharing: {enabled: false, projects: [], grants: []}}}
+  } as unknown as WorkspaceData;
+  const list = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agents', project: null, globalProject: 'all', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
+  const detail = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data}));
+  expect(list).toContain('Agents &amp; Systems');
+  expect(list).toContain('heartbeat Not observed');
+  expect(detail).toContain('provider_neutral/hermes');
+  expect(detail).toContain('Runtime liveness: Unknown (not observed)');
+  expect(detail).toContain('effective hash');
+  expect(detail).toContain('action="/api/agent-profiles/hermes"');
+});
+
 it('preserves scope and keeps the run handoff separate from an absent approval', () => {
   const data = {
     portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null,
