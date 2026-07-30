@@ -600,6 +600,101 @@ describe('canonical command service', () => {
     }
   });
 
+  it('recovers only an exact enabled registration binding for a running agent run', async () => {
+    const subjectActorId = id();
+    const profileId = id();
+    const registrationId = id();
+    const run = {
+      id: id(),
+      taskPacketId: id(),
+      agentProfileId: profileId,
+      confirmedPacketHash: 'a'.repeat(64),
+      baseCommit: 'a'.repeat(40),
+      status: 'running' as const,
+      idempotencyKey: 'run',
+      version: 3
+    };
+    const uow = new FakeUnitOfWork();
+    uow.agentRuns.set(run.id, {aggregate: run, projectId});
+    uow.runtimeRegistrations.set(registrationId, {
+      id: registrationId,
+      projectId,
+      actorId: subjectActorId,
+      agentProfileId: profileId,
+      provider: 'provider_neutral',
+      runtimeKey: 'runtime',
+      enabled: true,
+      version: 2
+    });
+    const recovery = command('agent_run.transition', {
+      agentRunId: run.id,
+      status: 'failed',
+      expectedVersion: 3,
+      failureCode: 'operator_recovered_expired_lease',
+      registrationId,
+      expectedRegistrationVersion: 2,
+      expectedProjectId: projectId,
+      expectedActorId: subjectActorId,
+      expectedAgentProfileId: profileId
+    });
+
+    await expect(serviceFor(uow).execute(recovery)).resolves.toMatchObject({
+      receipt: {
+        result: {
+          ok: true,
+          value: {
+            status: 'failed',
+            failureCode: 'operator_recovered_expired_lease',
+            version: 4
+          }
+        }
+      }
+    });
+    expect(uow.mutations).toHaveLength(1);
+    expect(uow.mutations[0]).toMatchObject({
+      mutation: {
+        recoveryBinding: {
+          registrationId,
+          registrationVersion: 2,
+          projectId,
+          actorId: subjectActorId,
+          agentProfileId: profileId
+        }
+      }
+    });
+
+    const staleBinding = new FakeUnitOfWork();
+    staleBinding.agentRuns.set(run.id, {aggregate: run, projectId});
+    staleBinding.runtimeRegistrations.set(registrationId, {
+      ...uow.runtimeRegistrations.get(registrationId)!,
+      enabled: false
+    });
+    await expect(serviceFor(staleBinding).execute({
+      ...recovery,
+      commandId: id(),
+      idempotencyKey: `key-${id()}`
+    })).resolves.toMatchObject({
+      receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}
+    });
+    expect(staleBinding.mutations).toHaveLength(0);
+
+    const unauthorized = new FakeUnitOfWork();
+    unauthorized.accessAdmin = false;
+    unauthorized.agentRuns.set(run.id, {aggregate: run, projectId});
+    unauthorized.runtimeRegistrations.set(
+      registrationId,
+      uow.runtimeRegistrations.get(registrationId)!
+    );
+    await expect(serviceFor(unauthorized).execute({
+      ...recovery,
+      commandId: id(),
+      idempotencyKey: `key-${id()}`
+    })).resolves.toMatchObject({
+      receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}
+    });
+    expect(unauthorized.mutations).toHaveLength(0);
+  });
+
   it('does not create approvals for allowed actions and audits routine capability denial', async () => {
     const uow = new FakeUnitOfWork();
     const aggregate = item(); uow.workItems.set(aggregate.id, aggregate);

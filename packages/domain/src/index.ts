@@ -21,6 +21,7 @@ export type WorkItemStatus = (typeof workItemStatuses)[number];
 export const agentRunStatuses = ['queued', 'running', 'waiting_approval', 'done', 'failed'] as const;
 export type AgentRunStatus = (typeof agentRunStatuses)[number];
 export const OPERATOR_CANCELLED_BEFORE_CLAIM = 'operator_cancelled_before_claim';
+export const OPERATOR_RECOVERED_EXPIRED_LEASE = 'operator_recovered_expired_lease';
 
 export const approvalStatuses = ['pending', 'approved', 'rejected', 'expired'] as const;
 export type ApprovalStatus = (typeof approvalStatuses)[number];
@@ -716,12 +717,23 @@ export type RetryAgentRunCommand = CanonicalCommandEnvelope<
 >;
 export type TransitionAgentRunCommand = CanonicalCommandEnvelope<
   'agent_run.transition',
-  Readonly<{
-    agentRunId: string;
-    status: AgentRunStatus;
-    expectedVersion: number;
-    failureCode?: typeof OPERATOR_CANCELLED_BEFORE_CLAIM;
-  }>
+  | Readonly<{
+      agentRunId: string;
+      status: AgentRunStatus;
+      expectedVersion: number;
+      failureCode?: typeof OPERATOR_CANCELLED_BEFORE_CLAIM;
+    }>
+  | Readonly<{
+      agentRunId: string;
+      status: 'failed';
+      expectedVersion: number;
+      failureCode: typeof OPERATOR_RECOVERED_EXPIRED_LEASE;
+      registrationId: string;
+      expectedRegistrationVersion: number;
+      expectedProjectId: string;
+      expectedActorId: string;
+      expectedAgentProfileId: string;
+    }>
 >;
 export type RequestApprovalCommand = CanonicalCommandEnvelope<
   'approval.request',
@@ -2266,6 +2278,13 @@ export type AgentRunMutation = Readonly<{
   aggregateId: string;
   expectedPersistedVersion: number | null;
   aggregate: AgentRun;
+  recoveryBinding?: Readonly<{
+    registrationId: string;
+    registrationVersion: number;
+    projectId: string;
+    actorId: string;
+    agentProfileId: string;
+  }>;
 }>;
 export type ApprovalInsertMutation = Readonly<{
   aggregateType: 'approval';

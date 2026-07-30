@@ -1119,5 +1119,153 @@ describePostgres(
       expect(await testDb.select().from(auditEvents)
         .where(eq(auditEvents.targetId, registrationId))).toHaveLength(4);
     });
+
+    it('atomically recovers only an exact expired run lease and preserves its history', async () => {
+      const registrationId = randomUUID();
+      await expect(service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'runtime_registration.create',
+        {
+          registrationId,
+          projectId: fixture.projectId,
+          subjectActorId: fixture.runtimeActorId,
+          agentProfileId: fixture.runtimeProfileId,
+          provider: 'provider_neutral',
+          runtimeKey: 'operator-recovery',
+          enabled: true
+        }
+      ))).resolves.toMatchObject({receipt: {result: {ok: true}}});
+
+      const createRunningRun = async (leaseExpiresAt: Date): Promise<string> => {
+        const workItemId = randomUUID();
+        await testDb.insert(workItems).values({
+          id: workItemId,
+          projectId: fixture.projectId,
+          title: 'Operator recovery integration',
+          status: 'ready',
+          version: 1
+        });
+        const packetId = randomUUID();
+        const content = packetContent('primary', {
+          workItemId,
+          workItemVersion: 1
+        });
+        const packet = createTaskPacket(packetId, content);
+        if (!packet.ok) throw new Error('Recovery packet did not initialize.');
+        await service().execute(command(
+          fixture.workspaceId,
+          primaryActor,
+          'task_packet.create',
+          {packetId, content}
+        ));
+        const runId = randomUUID();
+        await service().execute(command(
+          fixture.workspaceId,
+          primaryActor,
+          'agent_run.queue',
+          {
+            agentRunId: runId,
+            taskPacketId: packetId,
+            agentProfileId: fixture.runtimeProfileId,
+            confirmedPacketHash: packet.value.contentHash,
+            baseCommit: 'e'.repeat(40)
+          }
+        ));
+        await testDb.update(agentRuns).set({
+          status: 'running',
+          runnerId: 'integration-runner',
+          leaseTokenHash: 'f'.repeat(64),
+          leaseExpiresAt,
+          heartbeatAt: new Date(leaseExpiresAt.getTime() - 30_000),
+          startedAt: new Date(leaseExpiresAt.getTime() - 60_000),
+          attempt: 1
+        }).where(eq(agentRuns.id, runId));
+        return runId;
+      };
+      const recoveryPayload = (runId: string) => ({
+        agentRunId: runId,
+        status: 'failed' as const,
+        expectedVersion: 1,
+        failureCode: 'operator_recovered_expired_lease' as const,
+        registrationId,
+        expectedRegistrationVersion: 1,
+        expectedProjectId: fixture.projectId,
+        expectedActorId: fixture.runtimeActorId,
+        expectedAgentProfileId: fixture.runtimeProfileId
+      });
+
+      const expiredRunId = await createRunningRun(
+        new Date(Date.now() - 60_000)
+      );
+      await expect(service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'agent_run.transition',
+        recoveryPayload(expiredRunId)
+      ))).resolves.toMatchObject({
+        receipt: {
+          result: {
+            ok: true,
+            value: {
+              status: 'failed',
+              failureCode: 'operator_recovered_expired_lease',
+              version: 2
+            }
+          }
+        }
+      });
+      await expect(testDb.select({
+        status: agentRuns.status,
+        failureCode: agentRuns.failureCode,
+        completedAt: agentRuns.completedAt,
+        runnerId: agentRuns.runnerId,
+        leaseTokenHash: agentRuns.leaseTokenHash,
+        leaseExpiresAt: agentRuns.leaseExpiresAt,
+        version: agentRuns.version
+      }).from(agentRuns).where(eq(agentRuns.id, expiredRunId)))
+        .resolves.toMatchObject([{
+          status: 'failed',
+          failureCode: 'operator_recovered_expired_lease',
+          completedAt: expect.any(Date),
+          runnerId: null,
+          leaseTokenHash: null,
+          leaseExpiresAt: null,
+          version: 2
+        }]);
+
+      const liveRunId = await createRunningRun(
+        new Date(Date.now() + 60_000)
+      );
+      const liveRecovery = await service().execute(command(
+        fixture.workspaceId,
+        primaryActor,
+        'agent_run.transition',
+        recoveryPayload(liveRunId)
+      ));
+      expect(receiptErrorCode(liveRecovery)).toBe('VERSION_CONFLICT');
+      await expect(testDb.select({
+        status: agentRuns.status,
+        failureCode: agentRuns.failureCode,
+        leaseExpiresAt: agentRuns.leaseExpiresAt,
+        version: agentRuns.version
+      }).from(agentRuns).where(eq(agentRuns.id, liveRunId)))
+        .resolves.toMatchObject([{
+          status: 'running',
+          failureCode: null,
+          leaseExpiresAt: expect.any(Date),
+          version: 1
+        }]);
+      await expect(testDb.select({
+        action: auditEvents.action,
+        outcome: auditEvents.outcome,
+        reasonCode: auditEvents.reasonCode
+      }).from(auditEvents).where(eq(auditEvents.targetId, expiredRunId)))
+        .resolves.toEqual(expect.arrayContaining([{
+          action: 'agent_run.transition',
+          outcome: 'succeeded',
+          reasonCode: null
+        }]));
+    });
   }
 );

@@ -1,7 +1,7 @@
 'use client';
 
 import {useState} from 'react';
-import {Power, PowerOff} from 'lucide-react';
+import {Power, PowerOff, RotateCcw} from 'lucide-react';
 
 type RegistrationResponse = Readonly<{
   message?: string;
@@ -10,15 +10,18 @@ type RegistrationResponse = Readonly<{
 
 export function RuntimeRegistrationControls({
   agentId,
+  agentProfileId,
   canManage,
   csrfToken,
   enabled,
   expectedVersion,
   projectId,
   projectName,
-  registrationId
+  registrationId,
+  staleRun
 }: Readonly<{
   agentId: string;
+  agentProfileId: string;
   canManage: boolean;
   csrfToken: string | null;
   enabled: boolean;
@@ -26,6 +29,7 @@ export function RuntimeRegistrationControls({
   projectId: string;
   projectName: string;
   registrationId: string;
+  staleRun: Readonly<{id: string; version: number}> | null;
 }>) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Readonly<{
@@ -34,8 +38,8 @@ export function RuntimeRegistrationControls({
   }> | null>(null);
   if (!canManage || csrfToken === null) return null;
 
-  const action = enabled ? 'disable' : 'enable';
-  const submit = async () => {
+  const submit = async (action: 'enable' | 'disable' | 'recover') => {
+    if (action === 'recover' && staleRun === null) return;
     setBusy(true);
     setNotice(null);
     try {
@@ -48,6 +52,13 @@ export function RuntimeRegistrationControls({
             _csrf: csrfToken,
             action,
             agentId,
+            ...(action === 'recover'
+              ? {
+                  agentProfileId,
+                  expectedRunVersion: staleRun?.version,
+                  runId: staleRun?.id
+                }
+              : {}),
             expectedVersion,
             projectId
           })
@@ -63,7 +74,7 @@ export function RuntimeRegistrationControls({
       }
       setNotice({
         tone: 'success',
-        text: `${enabled ? 'Disabled' : 'Enabled'} · receipt ${result.receipt.commandId.slice(0, 8)}`
+        text: `${action === 'recover' ? 'Recovery' : action === 'disable' ? 'Disabled' : 'Enabled'} · receipt ${result.receipt.commandId.slice(0, 8)}`
       });
       window.setTimeout(() => window.location.reload(), 450);
     } catch {
@@ -73,18 +84,27 @@ export function RuntimeRegistrationControls({
     }
   };
 
-  const Icon = enabled ? PowerOff : Power;
   return <div className="fcp-registration-control">
     <button
       aria-label={`${enabled ? 'Disable' : 'Enable'} ${projectName} runtime registration for new claims`}
       disabled={busy}
-      onClick={() => void submit()}
+      onClick={() => void submit(enabled ? 'disable' : 'enable')}
       type="button"
     >
-      <Icon aria-hidden="true" size={15}/>
+      {enabled ? <PowerOff aria-hidden="true" size={15}/> : <Power aria-hidden="true" size={15}/>}
       {busy ? 'Saving…' : enabled ? 'Disable' : 'Enable'}
     </button>
     <small>{enabled ? 'Stops new claims' : 'Allows new claims'}</small>
+    {!enabled || staleRun === null ? null : <button
+      aria-label={`Recover ${projectName} stale runtime registration for new claims`}
+      disabled={busy}
+      onClick={() => void submit('recover')}
+      type="button"
+    >
+      <RotateCcw aria-hidden="true" size={15}/>
+      {busy ? 'Saving…' : 'Recover'}
+    </button>}
+    {!enabled || staleRun === null ? null : <small>Ends expired lease · preserves history</small>}
     {notice === null ? null : <p
       aria-live="polite"
       className={`fcp-command-notice ${notice.tone}`}

@@ -10,11 +10,13 @@ import {
 } from '@fai-control-plane/db';
 import {
   createActorContextIssuer,
-  type Capability
+  OPERATOR_RECOVERED_EXPIRED_LEASE,
+  type Capability,
+  type TrustedUserActorContext
 } from '@fai-control-plane/domain';
 
 type Database = ReturnType<typeof createDatabase>['db'];
-type MutationStatus =
+type RegistrationMutationStatus =
   | Readonly<{
       status: 'updated' | 'replayed';
       commandId: string;
@@ -23,10 +25,44 @@ type MutationStatus =
       version: number;
     }>
   | Readonly<{status: 'forbidden' | 'not_found' | 'stale' | 'invalid'}>;
+type RecoveryMutationStatus =
+  | Readonly<{
+      status: 'updated' | 'replayed';
+      commandId: string;
+      commandType: 'agent_run.transition';
+      failureCode: typeof OPERATOR_RECOVERED_EXPIRED_LEASE;
+      version: number;
+    }>
+  | Readonly<{status: 'forbidden' | 'not_found' | 'stale' | 'invalid'}>;
 
 const enabledCapabilities = (capabilities: Record<string, boolean>): Capability[] =>
   Object.entries(capabilities).flatMap(([capability, enabled]) =>
     enabled ? [capability as Capability] : []);
+const operatorActor = async (
+  db: Database,
+  workspaceId: string,
+  actorId: string
+): Promise<TrustedUserActorContext | null> => {
+  const [operator] = await db.select({capabilities: actors.capabilities})
+    .from(actors)
+    .where(and(
+      eq(actors.id, actorId),
+      eq(actors.workspaceId, workspaceId),
+      eq(actors.type, 'human'),
+      eq(actors.authMode, 'user'),
+      isNull(actors.disabledAt)
+    ))
+    .limit(1);
+  if (operator === undefined) return null;
+  const issuer = createActorContextIssuer({
+    users: [{actorId, capabilities: enabledCapabilities(operator.capabilities)}],
+    agents: [],
+    systems: []
+  });
+  if (!issuer.ok) return null;
+  const actor = issuer.value.issueUser(actorId);
+  return actor.ok ? actor.value : null;
+};
 
 export type RuntimeRegistrationRuntime = Readonly<{
   setEnabled(input: Readonly<{
@@ -37,22 +73,26 @@ export type RuntimeRegistrationRuntime = Readonly<{
     expectedAgentId: string;
     expectedVersion: number;
     enabled: boolean;
-  }>): Promise<MutationStatus>;
+  }>): Promise<RegistrationMutationStatus>;
+  recoverExpiredRun(input: Readonly<{
+    workspaceId: string;
+    operatorActorId: string;
+    registrationId: string;
+    expectedRegistrationVersion: number;
+    expectedProjectId: string;
+    expectedAgentId: string;
+    expectedAgentProfileId: string;
+    agentRunId: string;
+    expectedRunVersion: number;
+  }>): Promise<RecoveryMutationStatus>;
 }>;
 
 export const createRuntimeRegistrationRuntime = (db: Database): RuntimeRegistrationRuntime => ({
   async setEnabled(input) {
-    const [operator] = await db.select({capabilities: actors.capabilities})
-      .from(actors)
-      .where(and(
-        eq(actors.id, input.operatorActorId),
-        eq(actors.workspaceId, input.workspaceId),
-        eq(actors.type, 'human'),
-        eq(actors.authMode, 'user'),
-        isNull(actors.disabledAt)
-      ))
-      .limit(1);
-    if (operator === undefined) return {status: 'forbidden'};
+    const actor = await operatorActor(
+      db, input.workspaceId, input.operatorActorId
+    );
+    if (actor === null) return {status: 'forbidden'};
 
     const [registration] = await db.select({
       projectId: runtimeRegistrations.projectId,
@@ -72,18 +112,6 @@ export const createRuntimeRegistrationRuntime = (db: Database): RuntimeRegistrat
       return {status: 'not_found'};
     }
 
-    const issuer = createActorContextIssuer({
-      users: [{
-        actorId: input.operatorActorId,
-        capabilities: enabledCapabilities(operator.capabilities)
-      }],
-      agents: [],
-      systems: []
-    });
-    if (!issuer.ok) return {status: 'forbidden'};
-    const actor = issuer.value.issueUser(input.operatorActorId);
-    if (!actor.ok) return {status: 'forbidden'};
-
     const commandType: 'runtime_registration.update' | 'runtime_registration.disable' =
       input.enabled ? 'runtime_registration.update' : 'runtime_registration.disable';
     const inputHash = createHash('sha256')
@@ -95,7 +123,7 @@ export const createRuntimeRegistrationRuntime = (db: Database): RuntimeRegistrat
       correlationId: randomUUID(),
       idempotencyKey: `runtime_registration.state.v1:${input.registrationId}:${input.expectedVersion}:${inputHash}`,
       issuedAt: new Date().toISOString(),
-      actor: actor.value
+      actor
     };
     const service = createCanonicalCommandService({
       unitOfWork: createPostgresUnitOfWork(db)
@@ -152,6 +180,86 @@ export const createRuntimeRegistrationRuntime = (db: Database): RuntimeRegistrat
       commandType,
       enabled: registrationValue.enabled,
       version: registrationValue.version
+    };
+  },
+  async recoverExpiredRun(input) {
+    const actor = await operatorActor(
+      db, input.workspaceId, input.operatorActorId
+    );
+    if (actor === null) return {status: 'forbidden'};
+    const commandId = randomUUID();
+    const inputHash = createHash('sha256').update([
+      input.agentRunId,
+      input.expectedRunVersion,
+      input.registrationId,
+      input.expectedRegistrationVersion,
+      input.expectedProjectId,
+      input.expectedAgentId,
+      input.expectedAgentProfileId
+    ].join('\0')).digest('hex');
+    const result = await createCanonicalCommandService({
+      unitOfWork: createPostgresUnitOfWork(db)
+    }).execute({
+      commandId,
+      workspaceId: input.workspaceId,
+      correlationId: randomUUID(),
+      idempotencyKey: [
+        'agent_run.recover_expired_lease.v1',
+        input.agentRunId,
+        input.expectedRunVersion,
+        inputHash
+      ].join(':'),
+      issuedAt: new Date().toISOString(),
+      actor,
+      type: 'agent_run.transition',
+      payload: {
+        agentRunId: input.agentRunId,
+        status: 'failed',
+        expectedVersion: input.expectedRunVersion,
+        failureCode: OPERATOR_RECOVERED_EXPIRED_LEASE,
+        registrationId: input.registrationId,
+        expectedRegistrationVersion: input.expectedRegistrationVersion,
+        expectedProjectId: input.expectedProjectId,
+        expectedActorId: input.expectedAgentId,
+        expectedAgentProfileId: input.expectedAgentProfileId
+      }
+    });
+    if (!('receipt' in result)) return {status: 'invalid'};
+    if (!result.receipt.result.ok) {
+      switch (result.receipt.result.error.code) {
+        case 'CAPABILITY_DENIED':
+        case 'POLICY_DENIED':
+        case 'INVALID_ACTOR_CONTEXT':
+          return {status: 'forbidden'};
+        case 'NOT_FOUND':
+          return {status: 'not_found'};
+        case 'INVALID_TRANSITION':
+        case 'VERSION_CONFLICT':
+          return {status: 'stale'};
+        default:
+          return {status: 'invalid'};
+      }
+    }
+    const value = result.receipt.result.value;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return {status: 'invalid'};
+    }
+    const run = value as Readonly<{
+      failureCode?: unknown;
+      status?: unknown;
+      version?: unknown;
+    }>;
+    if (
+      run.status !== 'failed' ||
+      run.failureCode !== OPERATOR_RECOVERED_EXPIRED_LEASE ||
+      typeof run.version !== 'number'
+    ) return {status: 'invalid'};
+    return {
+      status: result.status === 'replayed' ? 'replayed' : 'updated',
+      commandId: result.receipt.commandId,
+      commandType: 'agent_run.transition',
+      failureCode: OPERATOR_RECOVERED_EXPIRED_LEASE,
+      version: run.version
     };
   }
 });
