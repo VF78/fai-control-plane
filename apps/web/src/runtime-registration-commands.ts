@@ -57,29 +57,55 @@ export async function runtimeRegistrationStateCommand(
   if (
     !UUID.test(registrationId) ||
     !isRecord(body) ||
-    !exact(body, ['_csrf', 'action', 'agentId', 'expectedVersion', 'projectId']) ||
-    (body.action !== 'enable' && body.action !== 'disable') ||
+    (body.action !== 'enable' && body.action !== 'disable' && body.action !== 'recover') ||
     typeof body.agentId !== 'string' || !UUID.test(body.agentId) ||
     typeof body.projectId !== 'string' || !UUID.test(body.projectId) ||
-    !Number.isInteger(body.expectedVersion) || (body.expectedVersion as number) < 1
+    !Number.isInteger(body.expectedVersion) || (body.expectedVersion as number) < 1 ||
+    (body.action === 'recover'
+      ? (
+          !exact(body, [
+            '_csrf', 'action', 'agentId', 'agentProfileId', 'expectedRunVersion',
+            'expectedVersion', 'projectId', 'runId'
+          ]) ||
+          typeof body.agentProfileId !== 'string' || !UUID.test(body.agentProfileId) ||
+          typeof body.runId !== 'string' || !UUID.test(body.runId) ||
+          !Number.isInteger(body.expectedRunVersion) ||
+          (body.expectedRunVersion as number) < 1
+        )
+      : !exact(body, ['_csrf', 'action', 'agentId', 'expectedVersion', 'projectId']))
   ) {
     return response('invalid_request', 'The registration request is malformed.', 400);
   }
 
   try {
-    const result = await (await overrides.getRuntime()).setEnabled({
-      workspaceId: authorization.runtime.config.workspaceId,
-      operatorActorId: authorization.session.actorId,
-      registrationId,
-      expectedProjectId: body.projectId,
-      expectedAgentId: body.agentId,
-      expectedVersion: body.expectedVersion as number,
-      enabled: body.action === 'enable'
-    });
+    const runtime = await overrides.getRuntime();
+    const result = body.action === 'recover'
+      ? await runtime.recoverExpiredRun({
+          workspaceId: authorization.runtime.config.workspaceId,
+          operatorActorId: authorization.session.actorId,
+          registrationId,
+          expectedRegistrationVersion: body.expectedVersion as number,
+          expectedProjectId: body.projectId,
+          expectedAgentId: body.agentId,
+          expectedAgentProfileId: body.agentProfileId as string,
+          agentRunId: body.runId as string,
+          expectedRunVersion: body.expectedRunVersion as number
+        })
+      : await runtime.setEnabled({
+          workspaceId: authorization.runtime.config.workspaceId,
+          operatorActorId: authorization.session.actorId,
+          registrationId,
+          expectedProjectId: body.projectId,
+          expectedAgentId: body.agentId,
+          expectedVersion: body.expectedVersion as number,
+          enabled: body.action === 'enable'
+        });
     if (result.status === 'updated' || result.status === 'replayed') {
       return Response.json({
         status: result.status,
-        registration: {enabled: result.enabled, version: result.version},
+        ...('failureCode' in result
+          ? {run: {failureCode: result.failureCode, version: result.version}}
+          : {registration: {enabled: result.enabled, version: result.version}}),
         receipt: {
           commandId: result.commandId,
           commandType: result.commandType
@@ -93,7 +119,13 @@ export async function runtimeRegistrationStateCommand(
       return response('not_found', 'The project registration was not found.', 404);
     }
     if (result.status === 'stale') {
-      return response('version_conflict', 'Registration changed. Refresh and retry.', 409);
+      return response(
+        'version_conflict',
+        body.action === 'recover'
+          ? 'The run is no longer recoverable. Refresh and retry.'
+          : 'Registration changed. Refresh and retry.',
+        409
+      );
     }
     return response('invalid', 'The canonical command was not accepted.', 400);
   } catch {

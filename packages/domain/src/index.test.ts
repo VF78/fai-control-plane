@@ -9,6 +9,7 @@ import {
   createTaskPacket,
   effectiveCapabilities,
   isTrustedActorContext,
+  OPERATOR_RECOVERED_EXPIRED_LEASE,
   policyDecisionFor,
   policySurfaces,
   providerEvidenceStates,
@@ -80,6 +81,14 @@ describe('provider evidence lifecycle', () => {
       'conflict',
       'missing'
     ]);
+  });
+});
+
+it('uses a provider-neutral terminal reason for operator recovery of an expired lease', () => {
+  expect(OPERATOR_RECOVERED_EXPIRED_LEASE).toBe('operator_recovered_expired_lease');
+  expect(transitionAgentRun(agentRun('running'), 'failed')).toMatchObject({
+    ok: true,
+    value: {status: 'failed', version: 5}
   });
 });
 

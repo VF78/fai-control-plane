@@ -127,6 +127,31 @@ it('renders persisted agent registrations and authorized new-claim controls with
   expect(detail).toContain('aria-label="Disable MSA runtime registration for new claims"');
   expect(detail).toContain('Stops new claims');
   if (data.access.state !== 'ready') throw new Error('Expected ready access fixture.');
+  const staleData: WorkspaceData = {...data, access: {state: 'ready', data: {
+    ...data.access.data,
+    agentSystems: data.access.data.agentSystems.map((system) => ({
+      ...system,
+      profiles: system.profiles.map((profile) => ({
+        ...profile,
+        fleet: {
+          ...profile.fleet,
+          health: 'stale' as const,
+          currentWork: {
+            id: 'run-1',
+            version: 4,
+            status: 'running',
+            title: 'Recover runtime',
+            project: 'MSA',
+            projectSlug: 'msa' as const,
+            startedAt: new Date('2026-07-30T08:00:00.000Z')
+          }
+        }
+      }))
+    }))
+  }}};
+  const stale = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data: staleData}));
+  expect(stale).toContain('aria-label="Recover MSA stale runtime registration for new claims"');
+  expect(stale).toContain('Ends expired lease · preserves history');
   const readOnlyData: WorkspaceData = {...data, access: {state: 'ready', data: {
     ...data.access.data,
     agentSystems: data.access.data.agentSystems.map((system) => ({

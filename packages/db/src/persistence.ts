@@ -1,7 +1,8 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {
   computeApprovalActionHash,
-  OPERATOR_CANCELLED_BEFORE_CLAIM
+  OPERATOR_CANCELLED_BEFORE_CLAIM,
+  OPERATOR_RECOVERED_EXPIRED_LEASE
 } from '@fai-control-plane/domain';
 import type {
   AccessRequest,
@@ -38,7 +39,7 @@ import type {
   UnitOfWork,
   WorkItem
 } from '@fai-control-plane/domain';
-import {and, eq, isNull, sql} from 'drizzle-orm';
+import {and, eq, exists, isNull, lte, sql} from 'drizzle-orm';
 import type {ExtractTablesWithRelations, SQL} from 'drizzle-orm';
 import type {
   NodePgDatabase,
@@ -225,6 +226,26 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
         'agentRun.confirmedPacketHash must be a lowercase SHA-256 digest.'
       );
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
+      if (mutation.recoveryBinding !== undefined) {
+        invariant(
+          mutation.aggregate.failureCode === OPERATOR_RECOVERED_EXPIRED_LEASE,
+          'agentRun.recoveryBinding requires the recovery failure code.'
+        );
+        uuid(mutation.recoveryBinding.registrationId, 'agentRun.recoveryBinding.registrationId');
+        uuid(mutation.recoveryBinding.projectId, 'agentRun.recoveryBinding.projectId');
+        uuid(mutation.recoveryBinding.actorId, 'agentRun.recoveryBinding.actorId');
+        uuid(mutation.recoveryBinding.agentProfileId, 'agentRun.recoveryBinding.agentProfileId');
+        invariant(
+          Number.isSafeInteger(mutation.recoveryBinding.registrationVersion) &&
+            mutation.recoveryBinding.registrationVersion > 0,
+          'agentRun.recoveryBinding.registrationVersion must be a positive safe integer.'
+        );
+      }
+      invariant(
+        mutation.aggregate.failureCode !== OPERATOR_RECOVERED_EXPIRED_LEASE ||
+          mutation.recoveryBinding !== undefined,
+        'Recovered AgentRun requires an exact recovery binding.'
+      );
       break;
     case 'approval':
       uuid(mutation.aggregate.id, 'approval.id');
@@ -1026,6 +1047,10 @@ const persistAgentRun = async (
           projectId
         };
   }
+  const persistedAt = new Date();
+  const recovery = aggregate.failureCode === OPERATOR_RECOVERED_EXPIRED_LEASE
+    ? mutation.recoveryBinding
+    : undefined;
   const [row] = await tx
     .update(schema.agentRuns)
     .set({
@@ -1033,11 +1058,20 @@ const persistAgentRun = async (
       ...(aggregate.failureCode === OPERATOR_CANCELLED_BEFORE_CLAIM
         ? {
             failureCode: OPERATOR_CANCELLED_BEFORE_CLAIM,
-            completedAt: new Date()
+            completedAt: persistedAt
           }
         : {}),
+      ...(recovery === undefined
+        ? {}
+        : {
+            failureCode: OPERATOR_RECOVERED_EXPIRED_LEASE,
+            completedAt: persistedAt,
+            runnerId: null,
+            leaseTokenHash: null,
+            leaseExpiresAt: null
+          }),
       version: sql`${schema.agentRuns.version} + 1`,
-      updatedAt: new Date()
+      updatedAt: persistedAt
     })
     .where(
       and(
@@ -1047,7 +1081,25 @@ const persistAgentRun = async (
         eq(schema.agentRuns.baseCommit, aggregate.baseCommit),
         eq(schema.agentRuns.idempotencyKey, aggregate.idempotencyKey),
         eq(schema.agentRuns.version, mutation.expectedPersistedVersion),
-        agentRunScope(workspaceId)
+        agentRunScope(workspaceId),
+        ...(recovery === undefined
+          ? []
+          : [
+              eq(schema.agentRuns.status, 'running'),
+              lte(schema.agentRuns.leaseExpiresAt, persistedAt),
+              exists(
+                tx.select({id: schema.runtimeRegistrations.id})
+                  .from(schema.runtimeRegistrations)
+                  .where(and(
+                    eq(schema.runtimeRegistrations.id, recovery.registrationId),
+                    eq(schema.runtimeRegistrations.projectId, recovery.projectId),
+                    eq(schema.runtimeRegistrations.actorId, recovery.actorId),
+                    eq(schema.runtimeRegistrations.agentProfileId, recovery.agentProfileId),
+                    eq(schema.runtimeRegistrations.version, recovery.registrationVersion),
+                    eq(schema.runtimeRegistrations.enabled, true)
+                  ))
+              )
+            ])
       )
     )
     .returning({version: schema.agentRuns.version});

@@ -1158,7 +1158,7 @@ export type AccessData = Readonly<{
       fleet: Readonly<{
         health: 'healthy' | 'stale' | 'unknown' | 'disabled';
         freshnessAt: Date | null;
-        currentWork: Readonly<{id: string; status: string; title: string; project: string; projectSlug: OperatorProjectSlug; startedAt: Date | null}> | null;
+        currentWork: Readonly<{id: string; version: number; status: string; title: string; project: string; projectSlug: OperatorProjectSlug; startedAt: Date | null}> | null;
         lastReceipt: Readonly<{terminal: string; completedAt: Date; title: string; project: string; projectSlug: OperatorProjectSlug}> | null;
       }>;
     }>[];
@@ -1313,6 +1313,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       .from(agentProfileInstructionVersions).where(inArray(agentProfileInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(agentProfileInstructionVersions.version)),
     db.select({
       id: agentRuns.id, agentProfileId: agentRuns.agentProfileId, status: agentRuns.status,
+      version: agentRuns.version,
       updatedAt: agentRuns.updatedAt, completedAt: agentRuns.completedAt, startedAt: agentRuns.startedAt,
       heartbeatAt: agentRuns.heartbeatAt, leaseExpiresAt: agentRuns.leaseExpiresAt,
       workItemId: workItems.id, workItemTitle: workItems.title, projectId: taskPackets.projectId,
@@ -1425,7 +1426,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
           }),
           freshnessAt: currentRun?.heartbeatAt ?? null,
           currentWork: currentRun === null || currentProject === undefined ? null : {
-            id: currentRun.id, status: currentRun.status, title: currentRun.workItemTitle,
+            id: currentRun.id, version: currentRun.version, status: currentRun.status, title: currentRun.workItemTitle,
             project: currentProject.name, projectSlug: currentProject.slug, startedAt: currentRun.startedAt
           },
           lastReceipt: receiptRun === null || receiptRun.receiptTerminal === null || receiptRun.receiptCompletedAt === null || receiptProject === undefined ? null : {

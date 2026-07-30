@@ -56,6 +56,45 @@ it('returns the canonical receipt only after a governed registration mutation', 
   }));
 });
 
+it('maps manual recovery to the exact expired run transition and returns its receipt', async () => {
+  const agentProfileId = '77777777-7777-4777-8777-777777777777';
+  const runId = '88888888-8888-4888-8888-888888888888';
+  const recoverExpiredRun = vi.fn().mockResolvedValue({
+    status: 'updated',
+    commandId: '99999999-9999-4999-8999-999999999999',
+    commandType: 'agent_run.transition',
+    failureCode: 'operator_recovered_expired_lease',
+    version: 4
+  });
+  const response = await runtimeRegistrationStateCommand(request({
+    ...body,
+    action: 'recover',
+    agentProfileId,
+    expectedRunVersion: 3,
+    runId
+  }), registrationId, {
+    requireSession: vi.fn().mockResolvedValue(authorization) as never,
+    getRuntime: vi.fn().mockResolvedValue({recoverExpiredRun})
+  });
+
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toMatchObject({
+    status: 'updated',
+    run: {failureCode: 'operator_recovered_expired_lease', version: 4},
+    receipt: {commandType: 'agent_run.transition'}
+  });
+  expect(recoverExpiredRun).toHaveBeenCalledWith(expect.objectContaining({
+    operatorActorId: actorId,
+    registrationId,
+    expectedProjectId: projectId,
+    expectedAgentId: agentId,
+    expectedRegistrationVersion: 3,
+    expectedAgentProfileId: agentProfileId,
+    agentRunId: runId,
+    expectedRunVersion: 3
+  }));
+});
+
 it('fails closed for malformed, cross-scope, unauthorized, and stale requests', async () => {
   const requireSession = vi.fn().mockResolvedValue(authorization) as never;
   const getRuntime = (status: string) => vi.fn().mockResolvedValue({

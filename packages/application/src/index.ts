@@ -60,6 +60,7 @@ import {
   environments,
   isTrustedActorContext,
   OPERATOR_CANCELLED_BEFORE_CLAIM,
+  OPERATOR_RECOVERED_EXPIRED_LEASE,
   policySurfaces,
   projectMembershipRoles,
   setWorkItemBlocked,
@@ -1672,6 +1673,22 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         isUuid(payload.agentRunId) && isUuid(payload.retryOfAgentRunId) &&
         payload.agentRunId !== payload.retryOfAgentRunId;
     case 'agent_run.transition':
+      if (
+        hasExactKeys(payload, [
+          'agentRunId', 'status', 'expectedVersion', 'failureCode',
+          'registrationId', 'expectedRegistrationVersion', 'expectedProjectId',
+          'expectedActorId', 'expectedAgentProfileId'
+        ])
+      ) {
+        return isUuid(payload.agentRunId) && payload.status === 'failed' &&
+          isVersion(payload.expectedVersion) &&
+          payload.failureCode === OPERATOR_RECOVERED_EXPIRED_LEASE &&
+          isUuid(payload.registrationId) &&
+          isVersion(payload.expectedRegistrationVersion) &&
+          isUuid(payload.expectedProjectId) &&
+          isUuid(payload.expectedActorId) &&
+          isUuid(payload.expectedAgentProfileId);
+      }
       return (
         hasExactKeys(payload, ['agentRunId', 'status', 'expectedVersion']) ||
         hasExactKeys(payload, ['agentRunId', 'status', 'expectedVersion', 'failureCode'])
@@ -2236,6 +2253,59 @@ export const createCanonicalCommandService = (
     ) {
       return completeNoMutation(transaction, token, claim, command, target, failed('INVALID_TRANSITION', 'Only a queued agent run can be cancelled before claim.'));
     }
+    let recoveryBinding:
+      | Readonly<{
+          registrationId: string;
+          registrationVersion: number;
+          projectId: string;
+          actorId: string;
+          agentProfileId: string;
+        }>
+      | undefined;
+    if (command.payload.failureCode === OPERATOR_RECOVERED_EXPIRED_LEASE) {
+      const authorization = await accessAuthority(
+        transaction,
+        token,
+        command,
+        command.payload.expectedProjectId
+      );
+      if (!authorization.ok) {
+        return completeNoMutation(
+          transaction, token, claim, command, target, authorization, 'write'
+        );
+      }
+      const registration = await transaction.loadRuntimeRegistration(
+        token,
+        command.payload.registrationId
+      );
+      if (
+        view.aggregate.status !== 'running' ||
+        view.projectId !== command.payload.expectedProjectId ||
+        view.aggregate.agentProfileId !== command.payload.expectedAgentProfileId ||
+        registration === null ||
+        registration.version !== command.payload.expectedRegistrationVersion ||
+        !registration.enabled ||
+        registration.projectId !== command.payload.expectedProjectId ||
+        registration.actorId !== command.payload.expectedActorId ||
+        registration.agentProfileId !== command.payload.expectedAgentProfileId
+      ) {
+        return completeNoMutation(
+          transaction,
+          token,
+          claim,
+          command,
+          target,
+          failed('VERSION_CONFLICT', 'Expired run recovery binding is no longer current.')
+        );
+      }
+      recoveryBinding = {
+        registrationId: registration.id,
+        registrationVersion: registration.version,
+        projectId: registration.projectId,
+        actorId: registration.actorId,
+        agentProfileId: registration.agentProfileId
+      };
+    }
     const updated = transitionAgentRun(view.aggregate, command.payload.status);
     if (!updated.ok) return completeNoMutation(transaction, token, claim, command, target, updated);
     const transitioned = command.payload.failureCode === undefined
@@ -2244,7 +2314,13 @@ export const createCanonicalCommandService = (
     const resultTarget = targetFor('agent_run', transitioned.id, view.aggregate.version, transitioned.version);
     const value = succeeded(compactAgentRun(transitioned));
     return completeMutation(transaction, token, claim, command, {
-      kind: 'non_approval', mutation: {aggregateType: 'agent_run', aggregateId: transitioned.id, expectedPersistedVersion: view.aggregate.version, aggregate: transitioned},
+      kind: 'non_approval', mutation: {
+        aggregateType: 'agent_run',
+        aggregateId: transitioned.id,
+        expectedPersistedVersion: view.aggregate.version,
+        aggregate: transitioned,
+        ...(recoveryBinding === undefined ? {} : {recoveryBinding})
+      },
       audit: audit(claim, ids, clock, resultTarget, command.actor.actorId, command.type, 'write', value)
     }, resultTarget, value);
   }
