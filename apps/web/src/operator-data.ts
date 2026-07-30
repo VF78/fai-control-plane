@@ -211,8 +211,11 @@ const latestByProject = <T extends Readonly<{projectId: string}>>(rows: readonly
   for (const row of rows) if (!result.has(row.projectId)) result.set(row.projectId, row);
   return result;
 };
-const outboxWorkItemId = (payload: Record<string, unknown>): string | null =>
-  typeof payload.workItemId === 'string' ? payload.workItemId : null;
+const outboxWorkItemId = (payload: unknown): string | null => {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null;
+  const workItemId = (payload as Record<string, unknown>).workItemId;
+  return typeof workItemId === 'string' ? workItemId : null;
+};
 
 export type PortfolioData = Readonly<{
   projects: readonly Readonly<{
@@ -561,6 +564,75 @@ export type ProjectData = Readonly<{
     }> | null;
   }>[];
 }>;
+
+export type DeliveryLifecycleData = Readonly<{
+  packet: Readonly<{id: string; contentHash: string; createdAt: Date}> | null;
+  approval: Readonly<{status: string; policyVersion: number; environment: string; decidedAt: Date | null; createdAt: Date}> | null;
+  run: Readonly<{id: string; status: string; createdAt: Date; startedAt: Date | null; completedAt: Date | null}> | null;
+  receipt: Readonly<{terminal: string; completedAt: Date}> | null;
+  artifactCount: number;
+  journeyEvidenceCount: number;
+  writeBack: Readonly<{destination: string; eventType: string; status: string; updatedAt: Date; failureCode: string | null}> | null;
+  audit: Readonly<{action: string; outcome: string; occurredAt: Date}> | null;
+}>;
+
+/** A deliberately small, task-scoped read model for the delivery-detail lifecycle rail. */
+export const loadDeliveryLifecycleData = (
+  slug: OperatorProjectSlug,
+  workItemId: string
+): Promise<OperatorLoad<DeliveryLifecycleData | null>> => readDatabase(async (db) => {
+  const [project] = await scopedProjects(db, slug);
+  if (project === undefined) return null;
+  const [task] = await db.select({id: workItems.id}).from(workItems).where(and(
+    eq(workItems.id, workItemId), eq(workItems.projectId, project.id), isNull(workItems.deletedAt)
+  )).limit(1);
+  if (task === undefined) return null;
+
+  const [packets, runs, approvals, evidence, writeBackEvents, audits] = await Promise.all([
+    db.select({id: taskPackets.id, contentHash: taskPackets.contentHash, createdAt: taskPackets.createdAt})
+      .from(taskPackets).where(and(eq(taskPackets.projectId, project.id), eq(taskPackets.workItemId, task.id)))
+      .orderBy(desc(taskPackets.createdAt), taskPackets.id),
+    db.select({id: agentRuns.id, status: agentRuns.status, createdAt: agentRuns.createdAt, startedAt: agentRuns.startedAt, completedAt: agentRuns.completedAt, updatedAt: agentRuns.updatedAt})
+      .from(agentRuns).where(eq(agentRuns.workItemId, task.id)).orderBy(desc(agentRuns.updatedAt), agentRuns.id),
+    db.select({workItemId: approvalRequests.workItemId, agentRunId: approvalRequests.agentRunId, status: approvalRequests.status, policyVersion: approvalRequests.policyVersion, environment: approvalRequests.environment, decidedAt: approvalRequests.decidedAt, createdAt: approvalRequests.createdAt, updatedAt: approvalRequests.updatedAt})
+      .from(approvalRequests).where(eq(approvalRequests.projectId, project.id)).orderBy(desc(approvalRequests.updatedAt), approvalRequests.id),
+    db.select({id: deliveryJourneyEvidence.id}).from(deliveryJourneyEvidence)
+      .where(eq(deliveryJourneyEvidence.workItemId, task.id)),
+    db.select({destination: outboxEvents.destination, eventType: outboxEvents.eventType, payload: outboxEvents.payload, status: outboxEvents.status, updatedAt: outboxEvents.updatedAt, failureCode: outboxEvents.failureCode})
+      .from(outboxEvents).where(and(
+        eq(outboxEvents.projectId, project.id), eq(outboxEvents.destination, 'github'),
+        eq(outboxEvents.eventType, 'github.project_status.write.v1')
+      )).orderBy(desc(outboxEvents.updatedAt), outboxEvents.id),
+    db.select({targetId: auditEvents.targetId, action: auditEvents.action, outcome: auditEvents.outcome, occurredAt: auditEvents.occurredAt})
+      .from(auditEvents).where(eq(auditEvents.projectId, project.id)).orderBy(desc(auditEvents.occurredAt), auditEvents.id)
+  ]);
+  const run = runs[0] ?? null;
+  const runIds = new Set(runs.map((entry) => entry.id));
+  const [receipts, runArtifacts] = runIds.size === 0
+    ? [[], []] as const
+    : await Promise.all([
+      db.select({agentRunId: agentRunReceipts.agentRunId, terminal: agentRunReceipts.terminal, completedAt: agentRunReceipts.completedAt})
+        .from(agentRunReceipts).where(inArray(agentRunReceipts.agentRunId, [...runIds])),
+      db.select({agentRunId: artifacts.agentRunId}).from(artifacts).where(inArray(artifacts.agentRunId, [...runIds]))
+    ]);
+  const approval = approvals.find((entry) => entry.workItemId === task.id || (entry.agentRunId !== null && runIds.has(entry.agentRunId))) ?? null;
+  const receipt = run === null ? null : receipts.find((entry) => entry.agentRunId === run.id) ?? null;
+  const writeBack = writeBackEvents.find((entry) => outboxWorkItemId(entry.payload) === task.id) ?? null;
+  const audited = audits.find((entry) => entry.targetId === task.id || (entry.targetId !== null && runIds.has(entry.targetId))) ?? null;
+  const audit: DeliveryLifecycleData['audit'] = audited === null || audited.outcome === null ? null : {
+    action: audited.action, outcome: audited.outcome, occurredAt: audited.occurredAt
+  };
+  return {
+    packet: packets[0] ?? null,
+    approval,
+    run,
+    receipt,
+    artifactCount: run === null ? 0 : runArtifacts.filter((entry) => entry.agentRunId === run.id).length,
+    journeyEvidenceCount: evidence.length,
+    writeBack,
+    audit
+  };
+});
 
 export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
   const [project] = await scopedProjects(db, slug);

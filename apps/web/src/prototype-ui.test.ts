@@ -150,6 +150,36 @@ it('preserves scope and keeps the run handoff separate from an absent approval',
   expect(markup).toContain('href="/projects/ascon/overview?environment=staging&amp;from=2026-07-01&amp;to=2026-07-31"');
 });
 
+it('renders the task lifecycle rail from recorded packet, approval, run, receipt, evidence, and write-back facts', () => {
+  const observedAt = new Date('2026-07-30T12:00:00.000Z');
+  const data = {
+    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, projectIndex: [],
+    project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: observedAt}, hermesAgentProfileId: null, snapshot: null, synchronizedAt: null, workItems: [{id: 'task-1', title: 'Lifecycle task', summary: null, status: 'in_dev', blocked: false, owner: null, updatedAt: observedAt, externalUrl: null, canBuildPacket: false, handoff: {label: 'Run completed', state: 'done', kind: 'run', targetId: 'run-1', href: '/runs?project=msa#run-run-1'}}]}},
+    runs: {state: 'ready', data: {runs: [], approvals: [], packets: []}},
+    lifecycle: {state: 'ready', data: {packet: {id: 'packet-1', contentHash: 'a'.repeat(64), createdAt: observedAt}, approval: {status: 'approved', policyVersion: 3, environment: 'staging', decidedAt: observedAt, createdAt: observedAt}, run: {id: 'run-1', status: 'done', createdAt: observedAt, startedAt: observedAt, completedAt: observedAt}, receipt: {terminal: 'done', completedAt: observedAt}, artifactCount: 2, journeyEvidenceCount: 1, writeBack: {destination: 'github', eventType: 'github.project_status.write.v1', status: 'published', updatedAt: observedAt, failureCode: null}, audit: {action: 'work_item.transition', outcome: 'succeeded', occurredAt: observedAt}}}
+  } as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
+
+  expect(markup).toContain('aria-label="Delivery lifecycle"');
+  expect(markup).toContain('Event / task');
+  expect(markup).toContain('Immutable packet');
+  expect(markup).toContain('Policy / approval');
+  expect(markup).toContain('Execution / run');
+  expect(markup).toContain('Receipt / evidence');
+  expect(markup).toContain('Write-back / next');
+  expect(markup).toContain('Hash aaaaaaaaaaaa');
+  expect(markup).toContain('Policy v3 · staging');
+  expect(markup).toContain('2 artifacts · 1 evidence');
+  expect(markup).toContain('github · published');
+
+  const unavailable = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
+    data: {...data, lifecycle: {state: 'unavailable'}}
+  }));
+  expect(unavailable).toContain('Unavailable');
+  expect(unavailable).toContain('PostgreSQL read unavailable');
+});
+
 it('renders immutable protocol stages and persisted journey responsibility/evidence as facts', () => {
   const data = {
     portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf',
