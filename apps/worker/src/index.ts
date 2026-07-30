@@ -1,7 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {isAbsolute} from 'node:path';
-import {PgBoss} from 'pg-boss';
+import {PgBoss, type SendOptions} from 'pg-boss';
 import {
   createCanonicalCommandService,
   createIncomingEventQueueConsumer
@@ -34,8 +34,10 @@ import {
   githubProjectsOAuthScope
 } from '@fai-control-plane/integrations/runtime';
 import {
+  recordDurableJobEnqueue,
   startTelemetry,
-  stopTelemetry
+  stopTelemetry,
+  traceDurableJobExecution
 } from '@fai-control-plane/observability';
 import {configureIncomingEventQueue} from './incoming-event-queue';
 import {configureHealthcheckQueue} from './healthcheck-queue';
@@ -66,6 +68,18 @@ const telegramIdentitySecretScope = Object.freeze(['telegram:identity:keying']);
 const telegramBotSecretScope = Object.freeze(['telegram:bot:send']);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const positiveIntegerPattern = /^[1-9][0-9]{0,19}$/;
+
+type DurableQueueJob = Readonly<{id: string; retryCount: number}>;
+
+const executeDurableJob = <Result>(
+  queueName: string,
+  job: DurableQueueJob,
+  execute: () => Promise<Result>
+): Promise<Result> => traceDurableJobExecution({
+  queueName,
+  jobId: job.id,
+  retryCount: job.retryCount
+}, execute);
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -150,6 +164,15 @@ const boss = new PgBoss(databaseUrl);
 boss.on('error', () => {
   console.error('pg-boss error', {code: 'PG_BOSS_ERROR'});
 });
+const telemetryQueueSender: Readonly<{
+  send(name: string, data: object | null, options?: SendOptions): Promise<string | null>;
+}> = {
+  async send(name, data, options) {
+    const jobId = await boss.send(name, data, options);
+    if (jobId !== null) recordDurableJobEnqueue({queueName: name, jobId});
+    return jobId;
+  }
+};
 const {db, pool} = createDatabase(databaseUrl);
 const incomingEventProcessor = createPostgresIncomingEventProcessor(db);
 const incomingEventConsumer = createIncomingEventQueueConsumer({
@@ -172,7 +195,7 @@ const healthcheckProducer = createPostgresHealthcheckProducer(db, {
     );
   }
 });
-const recoveryScanProducer = createPostgresRecoveryScanProducer(db, boss);
+const recoveryScanProducer = createPostgresRecoveryScanProducer(db, telemetryQueueSender);
 const dailyPmReportProducer = createPostgresDailyPmReportProducer(db);
 const pmReportCheckProducer = createPostgresPmReportCheckProducer(db);
 const qaIntakeProducer = createPostgresQaIntakeProducer(db);
@@ -270,39 +293,59 @@ await configureQaIntakeQueue(boss);
 if (githubReconciliation !== undefined) {
   await configureGitHubReconciliationQueue(boss);
 }
-await boss.work(INCOMING_EVENT_QUEUE, async ([job]) => {
+await boss.work(INCOMING_EVENT_QUEUE, {includeMetadata: true}, async ([job]) => {
   if (job === undefined) return;
-  const result = await incomingEventConsumer.consume(job.data);
-  if (telegramStatusResponder !== undefined && publishTelegramStatusResponses !== undefined) {
-    await telegramStatusResponder.prepare(result.eventId);
-    await publishTelegramStatusResponses();
-  }
-  return result;
-});
-await boss.work(HEALTHCHECK_QUEUE, async () => healthcheckProducer.run());
-await boss.work(RECOVERY_SCAN_QUEUE, async () => recoveryScanProducer.run());
-await boss.work(DAILY_PM_REPORT_QUEUE, async () => dailyPmReportProducer.run());
-await boss.work(PM_REPORT_CHECK_QUEUE, async () => pmReportCheckProducer.run());
-await boss.work(QA_INTAKE_QUEUE, async () => {
-  const eventIds = await qaIntakeProducer.run();
-  return Promise.all(eventIds.map(async (eventId) => {
-    const packetResult = await qaIntakeTaskPacketConsumer.consume(eventId);
-    if (packetResult.status !== 'created' && packetResult.status !== 'replayed') {
-      return {packetResult};
+  return executeDurableJob(INCOMING_EVENT_QUEUE, job, async () => {
+    const result = await incomingEventConsumer.consume(job.data);
+    if (telegramStatusResponder !== undefined && publishTelegramStatusResponses !== undefined) {
+      await telegramStatusResponder.prepare(result.eventId);
+      await publishTelegramStatusResponses();
     }
-    const botResult = await pmQaBotRunner.run(eventId);
-    return {packetResult, botResult};
-  }));
+    return result;
+  });
+});
+await boss.work(HEALTHCHECK_QUEUE, {includeMetadata: true}, async ([job]) => {
+  if (job === undefined) return;
+  return executeDurableJob(HEALTHCHECK_QUEUE, job, () => healthcheckProducer.run());
+});
+await boss.work(RECOVERY_SCAN_QUEUE, {includeMetadata: true}, async ([job]) => {
+  if (job === undefined) return;
+  return executeDurableJob(RECOVERY_SCAN_QUEUE, job, () => recoveryScanProducer.run());
+});
+await boss.work(DAILY_PM_REPORT_QUEUE, {includeMetadata: true}, async ([job]) => {
+  if (job === undefined) return;
+  return executeDurableJob(DAILY_PM_REPORT_QUEUE, job, () => dailyPmReportProducer.run());
+});
+await boss.work(PM_REPORT_CHECK_QUEUE, {includeMetadata: true}, async ([job]) => {
+  if (job === undefined) return;
+  return executeDurableJob(PM_REPORT_CHECK_QUEUE, job, () => pmReportCheckProducer.run());
+});
+await boss.work(QA_INTAKE_QUEUE, {includeMetadata: true}, async ([job]) => {
+  if (job === undefined) return;
+  return executeDurableJob(QA_INTAKE_QUEUE, job, async () => {
+    const eventIds = await qaIntakeProducer.run();
+    return Promise.all(eventIds.map(async (eventId) => {
+      const packetResult = await qaIntakeTaskPacketConsumer.consume(eventId);
+      if (packetResult.status !== 'created' && packetResult.status !== 'replayed') {
+        return {packetResult};
+      }
+      const botResult = await pmQaBotRunner.run(eventId);
+      return {packetResult, botResult};
+    }));
+  });
 });
 if (githubReconciliation !== undefined) {
-  await boss.work(GITHUB_RECONCILIATION_QUEUE, async () => {
-    try {
-      await githubReconciliation.reconcile();
-    } catch (error) {
-      const failure = githubReconciliationFailure(error);
-      console.error('github reconciliation failed', failure);
-      throw error;
-    }
+  await boss.work(GITHUB_RECONCILIATION_QUEUE, {includeMetadata: true}, async ([job]) => {
+    if (job === undefined) return;
+    return executeDurableJob(GITHUB_RECONCILIATION_QUEUE, job, async () => {
+      try {
+        await githubReconciliation.reconcile();
+      } catch (error) {
+        const failure = githubReconciliationFailure(error);
+        console.error('github reconciliation failed', failure);
+        throw error;
+      }
+    });
   });
 }
 await recoveryScanProducer.run();

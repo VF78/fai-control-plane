@@ -7,7 +7,8 @@ import {
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
 import {createTelegramWebhookConfig} from '@fai-control-plane/integrations';
 import {
-  createPgBossProducer
+  createPgBossProducer,
+  createTelemetryQueueSender
 } from './github-webhook-runtime';
 import {
   createTelegramWebhookHandler,
@@ -113,7 +114,10 @@ const createDependencies = async (): Promise<TelegramWebhookHandlerDependencies>
     config,
     secrets: createTelegramFileSecretsProvider(webhookSecretRef, identitySecretRef),
     ingestion: createIncomingEventIngestionService({
-      inbox: createPostgresIncomingEventInbox(db, createPgBossProducer(pool))
+      inbox: createPostgresIncomingEventInbox(
+        db,
+        createTelemetryQueueSender(createPgBossProducer(pool))
+      )
     })
   };
 };

@@ -10,7 +10,8 @@ import type {
   SecretsProvider
 } from '@fai-control-plane/domain';
 import {createGitHubAppWebhookConfig} from '@fai-control-plane/integrations';
-import {PgBoss} from 'pg-boss';
+import {recordDurableJobEnqueue} from '@fai-control-plane/observability';
+import {PgBoss, type SendOptions} from 'pg-boss';
 import {
   createGitHubWebhookHandler,
   type GitHubWebhookHandlerDependencies
@@ -94,6 +95,18 @@ export const createPgBossProducer = (
   createSchema: false
 });
 
+export const createTelemetryQueueSender = (
+  boss: Pick<PgBoss, 'send'>
+): Readonly<{
+  send(name: string, data: object | null, options?: SendOptions): Promise<string | null>;
+}> => ({
+  async send(name, data, options) {
+    const jobId = await boss.send(name, data, options);
+    if (jobId !== null) recordDurableJobEnqueue({queueName: name, jobId});
+    return jobId;
+  }
+});
+
 const createDependencies = async (): Promise<
   GitHubWebhookHandlerDependencies
 > => {
@@ -146,7 +159,7 @@ const createDependencies = async (): Promise<
     config,
     secrets: createFileSecretsProvider(webhookSecretRef),
     ingestion: createIncomingEventIngestionService({
-      inbox: createPostgresIncomingEventInbox(db, boss)
+      inbox: createPostgresIncomingEventInbox(db, createTelemetryQueueSender(boss))
     })
   };
 };

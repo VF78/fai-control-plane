@@ -1,4 +1,5 @@
 import type {PgBoss, QueueOptions} from 'pg-boss';
+import {recordDeadLetterQueueVisibility} from '@fai-control-plane/observability';
 
 export const CONTROL_PLANE_DEAD_LETTER_QUEUE = 'control-plane-dead-letter';
 
@@ -34,5 +35,9 @@ export const loadQueueFailureCounts = async (
     [sourceQueueNames, CONTROL_PLANE_DEAD_LETTER_QUEUE]
   );
   const failures = new Map(result.rows.map((row) => [row.queue_name, row.failed_count] as const));
-  return sourceQueueNames.map((queueName) => ({queueName, failedCount: failures.get(queueName) ?? 0}));
+  return sourceQueueNames.map((queueName) => {
+    const failedCount = failures.get(queueName) ?? 0;
+    if (failedCount > 0) recordDeadLetterQueueVisibility(queueName);
+    return {queueName, failedCount};
+  });
 };

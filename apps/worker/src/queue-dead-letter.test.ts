@@ -1,4 +1,11 @@
 import {describe, expect, it, vi} from 'vitest';
+
+const telemetry = vi.hoisted(() => ({
+  recordDeadLetterQueueVisibility: vi.fn()
+}));
+
+vi.mock('@fai-control-plane/observability', () => telemetry);
+
 import {
   configureControlPlaneDeadLetterQueue,
   CONTROL_PLANE_DEAD_LETTER_QUEUE,
@@ -28,5 +35,7 @@ describe('control-plane dead-letter queue', () => {
     expect(statement).toContain('coalesce(source_name, name)');
     expect(statement).not.toMatch(/\bdata\b|payload/i);
     expect(values).toEqual([['source-a', 'source-b'], CONTROL_PLANE_DEAD_LETTER_QUEUE]);
+    expect(telemetry.recordDeadLetterQueueVisibility).toHaveBeenCalledWith('source-a');
+    expect(telemetry.recordDeadLetterQueueVisibility).toHaveBeenCalledTimes(1);
   });
 });
