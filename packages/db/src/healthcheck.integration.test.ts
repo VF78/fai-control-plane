@@ -44,13 +44,22 @@ const ids = {
   failedOutbox: randomUUID(),
   overdueMilestone: randomUUID(),
   boundaryMilestone: randomUUID(),
+  atRiskMilestone: randomUUID(),
+  horizonBoundaryMilestone: randomUUID(),
+  beyondHorizonMilestone: randomUUID(),
   otherMilestone: randomUUID(),
+  otherAtRiskMilestone: randomUUID(),
   protocol: randomUUID(),
   overdueJourneyWork: randomUUID(),
   staleWork: randomUUID(),
   boundaryWork: randomUUID(),
   blockedWork: randomUUID(),
+  atRiskWork: randomUUID(),
+  atRiskSecondWork: randomUUID(),
+  horizonBoundaryWork: randomUUID(),
+  beyondHorizonWork: randomUUID(),
   otherRiskWork: randomUUID(),
+  otherAtRiskWork: randomUUID(),
   staleApproval: randomUUID(),
   boundaryApproval: randomUUID(),
   otherApproval: randomUUID(),
@@ -159,10 +168,34 @@ describePostgres('PostgreSQL healthcheck producer', () => {
         targetAt: current
       },
       {
+        id: ids.atRiskMilestone,
+        projectId: ids.project,
+        title: 'At-risk milestone',
+        targetAt: new Date(current.getTime() + 24 * 60 * 60 * 1_000)
+      },
+      {
+        id: ids.horizonBoundaryMilestone,
+        projectId: ids.project,
+        title: 'At-risk horizon boundary milestone',
+        targetAt: new Date(current.getTime() + 7 * 24 * 60 * 60 * 1_000)
+      },
+      {
+        id: ids.beyondHorizonMilestone,
+        projectId: ids.project,
+        title: 'Beyond at-risk horizon milestone',
+        targetAt: new Date(current.getTime() + 7 * 24 * 60 * 60 * 1_000 + 1)
+      },
+      {
         id: ids.otherMilestone,
         projectId: ids.otherProject,
         title: 'Other project overdue milestone',
         targetAt: new Date(current.getTime() - 1)
+      },
+      {
+        id: ids.otherAtRiskMilestone,
+        projectId: ids.otherProject,
+        title: 'Other project at-risk milestone',
+        targetAt: new Date(current.getTime() + 24 * 60 * 60 * 1_000)
       }
     ]);
     await db.insert(runbooks).values({
@@ -205,12 +238,61 @@ describePostgres('PostgreSQL healthcheck producer', () => {
         updatedAt: current
       },
       {
+        id: ids.atRiskWork,
+        projectId: ids.project,
+        milestoneId: ids.atRiskMilestone,
+        title: 'At-risk blocked work',
+        status: 'in_dev',
+        blocked: true,
+        ownerActorId: ids.actor,
+        updatedAt: current
+      },
+      {
+        id: ids.atRiskSecondWork,
+        projectId: ids.project,
+        milestoneId: ids.atRiskMilestone,
+        title: 'Second at-risk blocked work',
+        status: 'qa',
+        blocked: true,
+        ownerActorId: ids.actor,
+        updatedAt: current
+      },
+      {
+        id: ids.horizonBoundaryWork,
+        projectId: ids.project,
+        milestoneId: ids.horizonBoundaryMilestone,
+        title: 'Horizon-boundary blocked work',
+        status: 'ready',
+        blocked: true,
+        updatedAt: current
+      },
+      {
+        id: ids.beyondHorizonWork,
+        projectId: ids.project,
+        milestoneId: ids.beyondHorizonMilestone,
+        title: 'Beyond-horizon blocked work',
+        status: 'ready',
+        blocked: true,
+        ownerActorId: ids.actor,
+        updatedAt: current
+      },
+      {
         id: ids.otherRiskWork,
         projectId: ids.otherProject,
         title: 'Other project risky work',
         status: 'in_dev',
         blocked: true,
         updatedAt: new Date(current.getTime() - activeWorkItemStaleAfterMs - 1)
+      },
+      {
+        id: ids.otherAtRiskWork,
+        projectId: ids.otherProject,
+        milestoneId: ids.otherAtRiskMilestone,
+        title: 'Other project at-risk blocked work',
+        status: 'ready',
+        blocked: true,
+        ownerActorId: ids.actor,
+        updatedAt: current
       }
     ]);
     await db.insert(deliveryJourneys).values({
@@ -419,10 +501,13 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       'active_work_item_stale',
       'agent_run_stuck',
       'blocked_work_item_unowned',
+      'blocked_work_item_unowned',
       'build_check_failed',
       'delivery_deadline_overdue',
       'delivery_deadline_overdue',
       'github_status_writeback_failed',
+      'milestone_at_risk',
+      'milestone_at_risk',
       'pending_approval_stale',
       'queue_work_failed',
       'scheduled_job_stuck',
@@ -477,6 +562,36 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       nextAction: 'review_stale_work_item'
     }));
     expect(active.find((signal) =>
+      signal.deduplicationKey === `milestone_at_risk:milestone:${ids.atRiskMilestone}`
+    )).toEqual(expect.objectContaining({
+      workItemId: null,
+      ruleId: 'milestone_at_risk',
+      ruleVersion: '1',
+      signalClass: 'inference',
+      severity: 'yellow',
+      details: {
+        milestoneId: ids.atRiskMilestone,
+        targetAt: new Date(current.getTime() + 24 * 60 * 60 * 1_000).toISOString(),
+        blockedWorkItems: [
+          {workItemId: ids.atRiskWork, status: 'in_dev', ownerActorId: ids.actor},
+          {workItemId: ids.atRiskSecondWork, status: 'qa', ownerActorId: ids.actor}
+        ].sort((left, right) => left.workItemId.localeCompare(right.workItemId)),
+        riskHorizonDays: 7
+      },
+      evidenceReferences: [
+        {type: 'milestone', id: ids.atRiskMilestone},
+        ...[
+          {type: 'work_item', id: ids.atRiskWork},
+          {type: 'work_item', id: ids.atRiskSecondWork}
+        ].sort((left, right) => left.id.localeCompare(right.id))
+      ],
+      ownerActorId: ids.actor,
+      nextAction: 'review_blocked_work_for_at_risk_milestone'
+    }));
+    expect(active.find((signal) =>
+      signal.deduplicationKey === `milestone_at_risk:milestone:${ids.horizonBoundaryMilestone}`
+    )).toEqual(expect.objectContaining({ownerActorId: null}));
+    expect(active.find((signal) =>
       signal.deduplicationKey === `pending_approval_stale:approval:${ids.staleApproval}`
     )).toEqual(expect.objectContaining({
       workItemId: ids.staleWork,
@@ -520,6 +635,7 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     }));
     expect(active.some((signal) =>
       signal.deduplicationKey.includes(ids.boundaryMilestone) ||
+      signal.deduplicationKey.includes(ids.beyondHorizonMilestone) ||
       signal.deduplicationKey.includes(ids.boundaryWork) ||
       signal.deduplicationKey.includes(ids.boundaryApproval) ||
       signal.deduplicationKey.includes(ids.boundaryRun) ||
@@ -531,6 +647,7 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       isNull(riskSignals.resolvedAt)
     ))).filter((signal) => [
       'delivery_deadline_overdue',
+      'milestone_at_risk',
       'active_work_item_stale',
       'pending_approval_stale',
       'blocked_work_item_unowned',
@@ -542,12 +659,14 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       'active_work_item_stale',
       'blocked_work_item_unowned',
       'delivery_deadline_overdue',
+      'milestone_at_risk',
       'pending_approval_stale',
       'scheduled_job_stuck'
     ]);
     expect(otherProjectRules.every((signal) =>
       signal.deduplicationKey.includes(ids.otherRiskWork) ||
       signal.deduplicationKey.includes(ids.otherMilestone) ||
+      signal.deduplicationKey.includes(ids.otherAtRiskMilestone) ||
       signal.deduplicationKey.includes(ids.otherApproval) ||
       signal.deduplicationKey.includes(ids.otherScheduledJob)
     )).toBe(true);
@@ -573,7 +692,13 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       createdAt: current
     });
     await db.update(milestones).set({closedAt: current, updatedAt: current})
-      .where(inArray(milestones.id, [ids.overdueMilestone, ids.boundaryMilestone]));
+      .where(inArray(milestones.id, [
+        ids.overdueMilestone,
+        ids.boundaryMilestone,
+        ids.atRiskMilestone,
+        ids.horizonBoundaryMilestone,
+        ids.beyondHorizonMilestone
+      ]));
     await db.update(deliveryJourneys).set({
       deadlineAt: new Date(current.getTime() + 60_000),
       updatedAt: current
@@ -582,6 +707,8 @@ describePostgres('PostgreSQL healthcheck producer', () => {
       .where(inArray(workItems.id, [ids.staleWork, ids.boundaryWork]));
     await db.update(workItems).set({ownerActorId: ids.actor, updatedAt: current})
       .where(eq(workItems.id, ids.blockedWork));
+    await db.update(workItems).set({status: 'done', updatedAt: current})
+      .where(eq(workItems.id, ids.horizonBoundaryWork));
     await db.update(approvalRequests).set({
       status: 'approved',
       decidedByActorId: ids.actor,
@@ -616,6 +743,6 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     ))).toHaveLength(0);
     expect(await db.select().from(riskSignals).where(eq(
       riskSignals.projectId, ids.project
-    ))).toHaveLength(11);
+    ))).toHaveLength(14);
   });
 });
