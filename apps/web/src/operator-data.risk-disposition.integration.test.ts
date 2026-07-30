@@ -9,9 +9,11 @@ import {
   createDatabase,
   notificationDeliveryReceipts,
   notificationIntents,
+  outboxEvents,
   projects,
   riskSignalDispositionEvents,
   riskSignals,
+  scheduledJobs,
   workspaces
 } from '@fai-control-plane/db';
 import {dropDatabaseWhenDisconnected} from '../../../packages/db/src/integration-test-utils';
@@ -69,7 +71,9 @@ describePostgres('operator risk disposition projection', () => {
       actor: randomUUID(),
       acknowledged: randomUUID(),
       snoozed: randomUUID(),
-      expired: randomUUID()
+      expired: randomUUID(),
+      failedOutbox: randomUUID(),
+      unhealthyJob: randomUUID()
     };
     await db.insert(workspaces).values({
       id: ids.workspace,
@@ -172,6 +176,26 @@ describePostgres('operator risk disposition projection', () => {
       version: 1,
       occurredAt: now
     });
+    await db.insert(outboxEvents).values({
+      id: ids.failedOutbox,
+      workspaceId: ids.workspace,
+      projectId: ids.project,
+      destination: 'github',
+      eventType: 'github.project_status.write.v1',
+      idempotencyKey: `operator-risk-${randomUUID()}`,
+      payload: {},
+      status: 'failed',
+      failureCode: 'write_retry_exhausted'
+    });
+    await db.insert(scheduledJobs).values({
+      id: ids.unhealthyJob,
+      projectId: ids.project,
+      name: 'healthcheck',
+      cron: '*/5 * * * *',
+      queueName: 'healthcheck',
+      status: 'unhealthy',
+      heartbeatAt: now
+    });
 
     const previousDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = testDatabaseUrl;
@@ -205,6 +229,22 @@ describePostgres('operator risk disposition projection', () => {
         id: `notification:${notificationIntentId}`,
         reason: 'Notification delivery failed: transport_unavailable',
         signalClass: 'fact'
+      })
+    ]));
+    expect(loaded.data.attention).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: `outbox:${ids.failedOutbox}`,
+        signalClass: 'fact',
+        impact: 'Canonical delivery status was not published to the tracker.',
+        evidenceReferences: [{type: 'outbox_event', id: ids.failedOutbox}],
+        nextAction: 'inspect_failed_status_writeback'
+      }),
+      expect.objectContaining({
+        id: `job:${ids.unhealthyJob}`,
+        signalClass: 'fact',
+        impact: 'Required recurring control-plane work is not healthy.',
+        evidenceReferences: [{type: 'scheduled_job', id: ids.unhealthyJob}],
+        nextAction: 'inspect_or_recover_scheduled_job'
       })
     ]));
 
