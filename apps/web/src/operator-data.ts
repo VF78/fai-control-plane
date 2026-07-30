@@ -1145,6 +1145,12 @@ export type AccessData = Readonly<{
       registrations: readonly Readonly<{project: string; projectSlug: OperatorProjectSlug; provider: string; runtimeKey: string; enabled: boolean}>[];
       instruction: Readonly<{workspaceVersion: number; profileVersion: number | null; hash: string; provenance: string}> | null;
       latestRun: Readonly<{id: string; status: string; updatedAt: Date; completedAt: Date | null; receipt: Readonly<{terminal: string; completedAt: Date}> | null}> | null;
+      fleet: Readonly<{
+        health: 'healthy' | 'stale' | 'unknown' | 'disabled';
+        freshnessAt: Date | null;
+        currentWork: Readonly<{id: string; status: string; title: string; project: string; projectSlug: OperatorProjectSlug; startedAt: Date | null}> | null;
+        lastReceipt: Readonly<{terminal: string; completedAt: Date; title: string; project: string; projectSlug: OperatorProjectSlug}> | null;
+      }>;
     }>[];
   }>[];
   requests: readonly Readonly<{id: string; requester: string; targetSurface: string; requestedScope: readonly string[]; status: string; expiresAt: Date | null; decidedAt: Date | null}>[];
@@ -1195,6 +1201,30 @@ const policySummary = () => actorTypes.map((actorType) => {
 });
 
 export {CURRENT_POLICY_VERSION};
+
+type FleetRunFact = Readonly<{
+  status: string;
+  heartbeatAt: Date | null;
+  leaseExpiresAt: Date | null;
+}>;
+
+/** A runtime is healthy only while its current run has an observed, unexpired lease. */
+export const deriveFleetHealth = (input: Readonly<{
+  actorDisabled: boolean;
+  profileEnabled: boolean;
+  registrations: readonly Readonly<{enabled: boolean}>[];
+  currentRun: FleetRunFact | null;
+  asOf: Date;
+}>): 'healthy' | 'stale' | 'unknown' | 'disabled' => {
+  if (input.actorDisabled || !input.profileEnabled ||
+    (input.registrations.length > 0 && input.registrations.every((registration) => !registration.enabled))) {
+    return 'disabled';
+  }
+  if (input.currentRun?.status !== 'running' || input.currentRun.heartbeatAt === null || input.currentRun.leaseExpiresAt === null) {
+    return 'unknown';
+  }
+  return input.currentRun.leaseExpiresAt.getTime() > input.asOf.getTime() ? 'healthy' : 'stale';
+};
 
 export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatabase(async (db) => {
   const configuredProjects = await scopedProjects(db);
@@ -1272,10 +1302,13 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
       .from(agentProfileInstructionVersions).where(inArray(agentProfileInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(agentProfileInstructionVersions.version)),
     db.select({
       id: agentRuns.id, agentProfileId: agentRuns.agentProfileId, status: agentRuns.status,
-      updatedAt: agentRuns.updatedAt, completedAt: agentRuns.completedAt,
+      updatedAt: agentRuns.updatedAt, completedAt: agentRuns.completedAt, startedAt: agentRuns.startedAt,
+      heartbeatAt: agentRuns.heartbeatAt, leaseExpiresAt: agentRuns.leaseExpiresAt,
+      workItemId: workItems.id, workItemTitle: workItems.title, projectId: taskPackets.projectId,
       receiptTerminal: agentRunReceipts.terminal, receiptCompletedAt: agentRunReceipts.completedAt
     }).from(agentRuns).innerJoin(agentProfiles, eq(agentProfiles.id, agentRuns.agentProfileId))
       .innerJoin(taskPackets, eq(taskPackets.id, agentRuns.taskPacketId))
+      .innerJoin(workItems, eq(workItems.id, agentRuns.workItemId))
       .leftJoin(agentRunReceipts, eq(agentRunReceipts.agentRunId, agentRuns.id))
       .where(and(inArray(agentProfiles.workspaceId, workspaceIds), inArray(taskPackets.projectId, projectIds)))
       .orderBy(desc(agentRuns.updatedAt), agentRuns.id),
@@ -1312,6 +1345,19 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
   for (const instruction of profileInstructions) if (!latestProfileInstruction.has(instruction.agentProfileId)) latestProfileInstruction.set(instruction.agentProfileId, instruction);
   const latestRunByProfile = new Map<string, (typeof profileRuns)[number]>();
   for (const run of profileRuns) if (!latestRunByProfile.has(run.agentProfileId)) latestRunByProfile.set(run.agentProfileId, run);
+  const currentRunByProfile = new Map<string, (typeof profileRuns)[number]>();
+  const latestReceiptByProfile = new Map<string, (typeof profileRuns)[number]>();
+  for (const run of profileRuns) {
+    if (!currentRunByProfile.has(run.agentProfileId) && ['queued', 'running', 'waiting_approval'].includes(run.status)) {
+      currentRunByProfile.set(run.agentProfileId, run);
+    }
+    const priorReceipt = latestReceiptByProfile.get(run.agentProfileId);
+    if (run.receiptCompletedAt !== null && (priorReceipt === undefined ||
+      priorReceipt.receiptCompletedAt === null || priorReceipt.receiptCompletedAt < run.receiptCompletedAt)) {
+      latestReceiptByProfile.set(run.agentProfileId, run);
+    }
+  }
+  const actorById = new Map(persistedActors.map((actor) => [actor.id, actor]));
   const profilesByActor = new Map<string, AccessData['agentSystems'][number]['profiles'][number][]>();
   for (const profile of persistedProfiles) {
     const baseline = latestWorkspaceInstruction.get(profile.workspaceId);
@@ -1321,16 +1367,21 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
       override === undefined ? null : {instructions: override.instructions, settings: override.settings as Record<string, CanonicalJson>}
     );
     const run = latestRunByProfile.get(profile.id) ?? null;
+    const currentRun = currentRunByProfile.get(profile.id) ?? null;
+    const receiptRun = latestReceiptByProfile.get(profile.id) ?? null;
+    const profileRegistrations = registrations.flatMap((registration) => {
+      const project = projectById.get(registration.projectId);
+      return registration.agentProfileId !== profile.id || registration.actorId !== profile.actorId || project === undefined ? [] : [{
+        project: project.name, projectSlug: project.slug, provider: registration.provider,
+        runtimeKey: registration.runtimeKey, enabled: registration.enabled
+      }];
+    });
+    const currentProject = currentRun === null ? undefined : projectById.get(currentRun.projectId);
+    const receiptProject = receiptRun === null ? undefined : projectById.get(receiptRun.projectId);
     const projected = {
         id: profile.id, runtimeId: profile.runtimeId, runtimeProfile: profile.runtimeProfile,
         enabled: profile.enabled, configHash: profile.configHash,
-        registrations: registrations.flatMap((registration) => {
-          const project = projectById.get(registration.projectId);
-          return registration.agentProfileId !== profile.id || registration.actorId !== profile.actorId || project === undefined ? [] : [{
-            project: project.name, projectSlug: project.slug, provider: registration.provider,
-            runtimeKey: registration.runtimeKey, enabled: registration.enabled
-          }];
-        }),
+        registrations: profileRegistrations,
         instruction: effective === null ? null : {
           workspaceVersion: baseline!.version, profileVersion: override?.version ?? null,
           hash: effective.hash,
@@ -1339,6 +1390,24 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
         latestRun: run === null ? null : {
           id: run.id, status: run.status, updatedAt: run.updatedAt, completedAt: run.completedAt,
           receipt: run.receiptTerminal === null || run.receiptCompletedAt === null ? null : {terminal: run.receiptTerminal, completedAt: run.receiptCompletedAt}
+        },
+        fleet: {
+          health: deriveFleetHealth({
+            actorDisabled: (actorById.get(profile.actorId)?.disabledAt ?? null) !== null,
+            profileEnabled: profile.enabled,
+            registrations: profileRegistrations,
+            currentRun,
+            asOf: new Date()
+          }),
+          freshnessAt: currentRun?.heartbeatAt ?? null,
+          currentWork: currentRun === null || currentProject === undefined ? null : {
+            id: currentRun.id, status: currentRun.status, title: currentRun.workItemTitle,
+            project: currentProject.name, projectSlug: currentProject.slug, startedAt: currentRun.startedAt
+          },
+          lastReceipt: receiptRun === null || receiptRun.receiptTerminal === null || receiptRun.receiptCompletedAt === null || receiptProject === undefined ? null : {
+            terminal: receiptRun.receiptTerminal, completedAt: receiptRun.receiptCompletedAt,
+            title: receiptRun.workItemTitle, project: receiptProject.name, projectSlug: receiptProject.slug
+          }
         }
       };
     const profiles = profilesByActor.get(profile.actorId) ?? [];
