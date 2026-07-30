@@ -4,7 +4,7 @@ import type {
   RunnerClaimRecord,
   RunnerTransportStore
 } from '@fai-control-plane/domain';
-import {and, asc, eq, inArray, or, sql} from 'drizzle-orm';
+import {and, asc, eq, exists, inArray, or, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -219,6 +219,28 @@ export const createPostgresRunnerClaimStore = (
             eq(schema.agentProfiles.workspaceId, input.workspaceId),
             eq(schema.actors.workspaceId, input.workspaceId),
             eq(schema.agentProfiles.enabled, true),
+            exists(
+              tx
+                .select({id: schema.runtimeRegistrations.id})
+                .from(schema.runtimeRegistrations)
+                .where(
+                  and(
+                    eq(
+                      schema.runtimeRegistrations.projectId,
+                      schema.taskPackets.projectId
+                    ),
+                    eq(
+                      schema.runtimeRegistrations.actorId,
+                      schema.actors.id
+                    ),
+                    eq(
+                      schema.runtimeRegistrations.agentProfileId,
+                      schema.agentProfiles.id
+                    ),
+                    eq(schema.runtimeRegistrations.enabled, true)
+                  )
+                )
+            ),
             inArray(schema.agentProfiles.runtimeId, [...input.runtimeIds]),
             eq(
               schema.agentProfiles.runtimeProfile,

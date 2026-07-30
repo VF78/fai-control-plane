@@ -13,6 +13,7 @@ import {
   createPostgresRunnerClaimStore,
   projectTrackerRepositoryScopes,
   projects,
+  runtimeRegistrations,
   secretRefs,
   taskPackets,
   workItems,
@@ -83,6 +84,8 @@ describePostgres(
       const eligibleRunId = randomUUID();
       const disabledRunId = randomUUID();
       const disallowedRunId = randomUUID();
+      const eligibleRegistrationId = randomUUID();
+      const disabledRegistrationId = randomUUID();
       const secretReference = 'file:///customer/webhook-token';
       const runnerId = 'operator-workstation';
 
@@ -170,8 +173,7 @@ describePostgres(
           workspaceId,
           actorId,
           runtimeId: 'disabled-runner',
-          runtimeProfile: 'codex-safe',
-          enabled: false
+          runtimeProfile: 'codex-safe'
         },
         {
           id: disallowedProfileId,
@@ -179,6 +181,26 @@ describePostgres(
           actorId,
           runtimeId: 'pm-qa-bot-runner',
           runtimeProfile: 'codex-safe'
+        }
+      ]);
+      await testDb.insert(runtimeRegistrations).values([
+        {
+          id: eligibleRegistrationId,
+          projectId,
+          actorId,
+          agentProfileId: eligibleProfileId,
+          provider: 'provider_neutral',
+          runtimeKey: 'coding-runner',
+          enabled: true
+        },
+        {
+          id: disabledRegistrationId,
+          projectId,
+          actorId,
+          agentProfileId: disabledProfileId,
+          provider: 'provider_neutral',
+          runtimeKey: 'disabled-runner',
+          enabled: false
         }
       ]);
 
@@ -295,7 +317,7 @@ describePostgres(
         runnerId,
         projectIds: [projectId],
         repositories: [{owner: 'VF78', name: 'fai-control-plane'}],
-        runtimeIds: ['coding-runner']
+        runtimeIds: ['coding-runner', 'disabled-runner']
       };
       const claims = await Promise.all([
         service.claim(authorization),
@@ -321,7 +343,9 @@ describePostgres(
         workspaceId,
         projectId,
         workItemId,
-        eligibleProfileId
+        eligibleProfileId,
+        eligibleRegistrationId,
+        disabledRegistrationId
       ]) {
         expect(serializedEnvelope).not.toContain(excluded);
       }
