@@ -1,12 +1,9 @@
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import type {OpaqueSecretRef} from '@fai-control-plane/domain';
-import {
-  createCodexAgentRuntime,
-  readCodexStructuredSummary,
-  type CodexStructuredSummary
-} from './codex-agent-runtime';
+import {createCodexAgentRuntime} from './codex-agent-runtime';
 import {createGitHubRepositoryHostPublisher} from './github-repository-host-publisher';
+import {createLocalFilesystemArtifactStore} from './artifact-store';
 import {
   createLocalAgentRunOrchestrator,
   type LocalAgentRunOrchestrator,
@@ -330,56 +327,11 @@ const safeReference = (value: string): boolean =>
   !value.includes('//') &&
   !value.split('/').some((part) => part === '.' || part === '..');
 
-const completionSummary = async (
-  result: LocalAgentRunResult
-): Promise<Readonly<{
-  changedFiles: readonly string[];
-  checks: readonly Readonly<{name: string; status: 'passed' | 'failed' | 'not_run'}>[];
-  riskCount: number;
-}>> => {
-  if (result.receipt.finalStatus !== 'succeeded') {
-    return {changedFiles: [], checks: [], riskCount: 0};
-  }
-  const artifact = result.receipt.summaryArtifact;
-  if (
-    artifact === undefined ||
-    path.basename(artifact.name) !== artifact.name ||
-    !safeReference(artifact.name)
-  ) {
-    fail('invalid_summary_artifact');
-  }
-  const summaryArtifact = artifact as NonNullable<typeof artifact>;
-  const summary = await readCodexStructuredSummary(
-    path.join(path.dirname(result.receiptRef), summaryArtifact.name)
-  );
-  if (
-    summary.sha256 !== summaryArtifact.sha256 ||
-    summary.sizeBytes !== summaryArtifact.sizeBytes
-  ) {
-    fail('summary_artifact_mismatch');
-  }
-  const values: CodexStructuredSummary = summary.summary;
-  if (
-    values.changedFiles.length > 100 ||
-    values.checks.length > 24 ||
-    values.risks.length > 100 ||
-    values.changedFiles.some((value) => !safeReference(value)) ||
-    values.checks.some((check) => !SAFE_CHECK_NAME_PATTERN.test(check.name))
-  ) {
-    fail('invalid_completion_summary');
-  }
-  return {
-    changedFiles: values.changedFiles,
-    checks: values.checks.map(({name, status}) => ({name, status})),
-    riskCount: values.risks.length
-  };
-};
-
 const completionFor = async (
   claim: RunnerClaimEnvelope,
   result: LocalAgentRunResult
 ): Promise<Record<string, unknown>> => {
-  const summary = await completionSummary(result);
+  const summary = result.completionEvidence;
   return {
     runId: claim.runId,
     attempt: claim.attempt,
@@ -397,7 +349,29 @@ const completionFor = async (
     },
     ...(result.receipt.summaryArtifact === undefined
       ? {}
-      : {summaryArtifact: result.receipt.summaryArtifact}),
+      : {summaryArtifact: {
+        name: result.receipt.summaryArtifact.name,
+        reference: result.receipt.summaryArtifact.reference,
+        sha256: result.receipt.summaryArtifact.sha256,
+        sizeBytes: result.receipt.summaryArtifact.sizeBytes
+      }}),
+    artifactStore: {
+      provider: result.receipt.artifacts.provider,
+      reference: result.receipt.artifacts.storeRef,
+      correlationId: result.receipt.artifacts.correlationId
+    },
+    receiptArtifact: {
+      name: result.receiptArtifact.name,
+      reference: result.receiptArtifact.reference,
+      sha256: result.receiptArtifact.sha256,
+      sizeBytes: result.receiptArtifact.sizeBytes
+    },
+    pathManifest: {
+      name: result.receipt.artifacts.pathManifest.name,
+      reference: result.receipt.artifacts.pathManifest.reference,
+      sha256: result.receipt.artifacts.pathManifest.sha256,
+      sizeBytes: result.receipt.artifacts.pathManifest.sizeBytes
+    },
     changedFiles: summary.changedFiles,
     checks: summary.checks,
     riskCount: summary.riskCount,
@@ -524,7 +498,7 @@ export const runWorkstationRunnerFromEnvironment = async (
     runtimeEnvironment
   );
   const runtimes = new Map<string, LocalAgentRunOrchestrator>([['codex-cli', createLocalAgentRunOrchestrator({
-    artifactRoot,
+    artifactStore: createLocalFilesystemArtifactStore({root: artifactRoot}),
     worktrees: createWorktreeManager({repositoryRoot, worktreeRoot}),
     runtime: createCodexAgentRuntime({codexHome, environment: runtimeEnvironment}),
     ...(publication === undefined ? {} : {publication})

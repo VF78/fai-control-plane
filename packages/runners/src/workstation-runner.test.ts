@@ -24,7 +24,7 @@ describe('workstation runner', () => {
       risks: ['Operator review required.'],
       nextAction: 'Review receipt.'
     }));
-    const summaryName = 'summary.json';
+    const summaryName = 'structured-summary.json';
     await writeFile(path.join(artifactRoot, summaryName), summaryBody);
     const receiptResult: LocalAgentRunResult = {
       receipt: {
@@ -55,8 +55,29 @@ describe('workstation runner', () => {
           tools: ['codex_cli'],
           deniedRuleIds: []
         },
+        artifacts: {
+          provider: 'workstation-local',
+          storeRef: `runs/${runId}`,
+          correlationId: `artifact-run-${runId}`,
+          pathManifest: {
+            provider: 'workstation-local',
+            name: 'observed-path-manifest.json',
+            reference: `runs/${runId}/observed-path-manifest.json`,
+            sha256: 'f'.repeat(64),
+            sizeBytes: 256
+          },
+          summary: {
+            provider: 'workstation-local',
+            name: summaryName,
+            reference: `runs/${runId}/${summaryName}`,
+            sha256: createHash('sha256').update(summaryBody).digest('hex'),
+            sizeBytes: summaryBody.byteLength
+          }
+        },
         summaryArtifact: {
+          provider: 'workstation-local',
           name: summaryName,
+          reference: `runs/${runId}/${summaryName}`,
           sha256: createHash('sha256').update(summaryBody).digest('hex'),
           sizeBytes: summaryBody.byteLength
         },
@@ -67,6 +88,19 @@ describe('workstation runner', () => {
           state: 'not_attempted',
           reason: 'repository_host_publication_disabled'
         }
+      },
+      completionEvidence: {
+        changedFiles: ['packages/runners/src/workstation-runner.ts'],
+        checks: [{name: 'runner typecheck', status: 'passed'}],
+        riskCount: 1
+      },
+      receiptArtifact: {
+        provider: 'workstation-local',
+        name: 'agent-run-receipt.json',
+        reference: `runs/${runId}/agent-run-receipt.json`,
+        sha256: 'e'.repeat(64),
+        sizeBytes: 512,
+        contentType: 'application/json'
       },
       receiptRef: path.join(artifactRoot, 'agent-run-receipt.json'),
       receiptSha256: 'e'.repeat(64),
@@ -130,8 +164,26 @@ describe('workstation runner', () => {
       usage: {state: 'unknown', reason: 'runtime_usage_not_available'},
       summaryArtifact: {
         name: summaryName,
+        reference: `runs/${runId}/${summaryName}`,
         sha256: createHash('sha256').update(summaryBody).digest('hex'),
         sizeBytes: summaryBody.byteLength
+      },
+      artifactStore: {
+        provider: 'workstation-local',
+        reference: `runs/${runId}`,
+        correlationId: `artifact-run-${runId}`
+      },
+      receiptArtifact: {
+        name: 'agent-run-receipt.json',
+        reference: `runs/${runId}/agent-run-receipt.json`,
+        sha256: 'e'.repeat(64),
+        sizeBytes: 512
+      },
+      pathManifest: {
+        name: 'observed-path-manifest.json',
+        reference: `runs/${runId}/observed-path-manifest.json`,
+        sha256: 'f'.repeat(64),
+        sizeBytes: 256
       },
       changedFiles: ['packages/runners/src/workstation-runner.ts'],
       checks: [{name: 'runner typecheck', status: 'passed'}],

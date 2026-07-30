@@ -14,45 +14,94 @@ const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const runtimeIdPattern = /^[A-Za-z0-9._:-]{1,128}$/;
-const artifactFilenamePattern = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$/;
+const artifactReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$/;
+const artifactProviderPattern = /^[a-z][a-z0-9-]{0,63}$/;
 const MAX_LEASE_MS = 2 * 60 * 1_000;
 const MAX_RECEIPT_BYTES = 1_024 * 1_024;
-const WORKSTATION_LOCAL_STORAGE_PROVIDER = 'workstation-local';
-const RECEIPT_ARTIFACT_FILENAME = 'agent-run-receipt.json';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const workstationArtifactStorageKey = (
-  runnerId: string,
-  runId: string,
-  filename: string
-): string => [
-  encodeURIComponent(runnerId),
-  runId,
-  encodeURIComponent(filename)
-].join('/');
+type RetainedArtifact = Readonly<{
+  kind: 'receipt' | 'summary' | 'path_manifest';
+  storageProvider: string;
+  storageKey: string;
+  contentType: 'application/json';
+  sha256: string;
+  sizeBytes: number;
+}>;
 
-const summaryArtifactFromMetadata = (metadata: CanonicalJson):
-  | {name: string; sha256: string; sizeBytes: number}
-  | undefined => {
-  if (!isRecord(metadata)) return undefined;
-  const summaryArtifact = metadata.summaryArtifact;
+const safeArtifactReference = (value: unknown): value is string =>
+  typeof value === 'string' && artifactReferencePattern.test(value) &&
+  !value.includes('//') && !value.split('/').some((part) => part === '.' || part === '..');
+
+const artifactFromMetadata = (
+  value: unknown,
+  input: Readonly<{name: string; reference: string}>
+): Readonly<{sha256: string; sizeBytes: number}> | undefined => {
   if (
-    !isRecord(summaryArtifact) ||
-    typeof summaryArtifact.name !== 'string' ||
-    !artifactFilenamePattern.test(summaryArtifact.name) ||
-    typeof summaryArtifact.sha256 !== 'string' ||
-    !sha256Pattern.test(summaryArtifact.sha256) ||
-    typeof summaryArtifact.sizeBytes !== 'number' ||
-    !Number.isSafeInteger(summaryArtifact.sizeBytes) ||
-    summaryArtifact.sizeBytes < 1 || summaryArtifact.sizeBytes > MAX_RECEIPT_BYTES
+    !isRecord(value) ||
+    value.name !== input.name ||
+    value.reference !== input.reference ||
+    typeof value.sha256 !== 'string' || !sha256Pattern.test(value.sha256) ||
+    typeof value.sizeBytes !== 'number' || !Number.isSafeInteger(value.sizeBytes) ||
+    value.sizeBytes < 1 || value.sizeBytes > MAX_RECEIPT_BYTES
   ) return undefined;
   return {
-    name: summaryArtifact.name,
-    sha256: summaryArtifact.sha256,
-    sizeBytes: summaryArtifact.sizeBytes
+    sha256: value.sha256,
+    sizeBytes: value.sizeBytes
   };
+};
+
+const retainedArtifactsFromMetadata = (
+  metadata: CanonicalJson,
+  runId: string,
+  receiptSha256: string,
+  receiptSizeBytes: number
+): readonly RetainedArtifact[] | undefined => {
+  if (!isRecord(metadata) || !isRecord(metadata.artifactStore)) return undefined;
+  const store = metadata.artifactStore;
+  const provider = store.provider;
+  const reference = store.reference;
+  if (
+    typeof provider !== 'string' || !artifactProviderPattern.test(provider) ||
+    !safeArtifactReference(reference) || reference !== `runs/${runId}` ||
+    store.correlationId !== `artifact-run-${runId}`
+  ) return undefined;
+  const receipt = artifactFromMetadata(metadata.receiptArtifact, {
+    name: 'agent-run-receipt.json',
+    reference: `${reference}/agent-run-receipt.json`
+  });
+  const pathManifest = artifactFromMetadata(metadata.pathManifest, {
+    name: 'observed-path-manifest.json',
+    reference: `${reference}/observed-path-manifest.json`
+  });
+  if (
+    receipt === undefined || pathManifest === undefined ||
+    receipt.sha256 !== receiptSha256 || receipt.sizeBytes !== receiptSizeBytes
+  ) return undefined;
+  const values: RetainedArtifact[] = [
+    {
+      kind: 'receipt', storageProvider: provider, storageKey: `${reference}/agent-run-receipt.json`,
+      contentType: 'application/json', ...receipt
+    },
+    {
+      kind: 'path_manifest', storageProvider: provider,
+      storageKey: `${reference}/observed-path-manifest.json`,
+      contentType: 'application/json', ...pathManifest
+    }
+  ];
+  if ('summaryArtifact' in metadata) {
+    const summary = artifactFromMetadata(metadata.summaryArtifact, {
+      name: 'structured-summary.json', reference: `${reference}/structured-summary.json`
+    });
+    if (summary === undefined) return undefined;
+    values.push({
+      kind: 'summary', storageProvider: provider, storageKey: `${reference}/structured-summary.json`,
+      contentType: 'application/json', ...summary
+    });
+  }
+  return values;
 };
 
 const validAuthorization = (input: {
@@ -367,6 +416,13 @@ export const createPostgresRunnerClaimStore = (
     ) return {status: 'denied'};
     const repositoryAuthorization = repositoryAuthorizationFor(input.repositories);
     if (repositoryAuthorization === undefined) return {status: 'denied'};
+    const retainedArtifacts = retainedArtifactsFromMetadata(
+      input.metadata,
+      input.runId,
+      input.receiptSha256,
+      input.receiptSizeBytes
+    );
+    if (retainedArtifacts === undefined) return {status: 'denied'};
     return db.transaction(async (tx) => {
       const [candidate] = await tx
         .select({
@@ -459,37 +515,11 @@ export const createPostgresRunnerClaimStore = (
         metadata: input.metadata as Record<string, unknown>,
         completedAt: input.at
       });
-      const summaryArtifact = summaryArtifactFromMetadata(input.metadata);
-      await tx.insert(schema.artifacts).values([
-        {
-          id: randomUUID(),
-          agentRunId: input.runId,
-          kind: 'receipt',
-          storageProvider: WORKSTATION_LOCAL_STORAGE_PROVIDER,
-          storageKey: workstationArtifactStorageKey(
-            input.runnerId,
-            input.runId,
-            RECEIPT_ARTIFACT_FILENAME
-          ),
-          contentType: 'application/json',
-          sha256: input.receiptSha256,
-          sizeBytes: input.receiptSizeBytes
-        },
-        ...(summaryArtifact === undefined ? [] : [{
-          id: randomUUID(),
-          agentRunId: input.runId,
-          kind: 'summary',
-          storageProvider: WORKSTATION_LOCAL_STORAGE_PROVIDER,
-          storageKey: workstationArtifactStorageKey(
-            input.runnerId,
-            input.runId,
-            summaryArtifact.name
-          ),
-          contentType: 'application/json',
-          sha256: summaryArtifact.sha256,
-          sizeBytes: summaryArtifact.sizeBytes
-        }])
-      ]);
+      await tx.insert(schema.artifacts).values(retainedArtifacts.map((artifact) => ({
+        id: randomUUID(),
+        agentRunId: input.runId,
+        ...artifact
+      })));
       const auditIdentity = `runner.complete:${input.runId}:attempt:${input.attempt}`;
       await tx.insert(schema.auditEvents).values({
         id: randomUUID(),

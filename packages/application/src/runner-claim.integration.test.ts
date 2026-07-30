@@ -383,8 +383,26 @@ describePostgres(
         durationMs: 60_000,
         cost: {state: 'unknown' as const, reason: 'runtime_usage_not_available' as const},
         usage: {state: 'unknown' as const, reason: 'runtime_usage_not_available' as const},
+        artifactStore: {
+          provider: 'workstation-local',
+          reference: `runs/${eligibleRunId}`,
+          correlationId: `artifact-run-${eligibleRunId}`
+        },
+        receiptArtifact: {
+          name: 'agent-run-receipt.json',
+          reference: `runs/${eligibleRunId}/agent-run-receipt.json`,
+          sha256: 'b'.repeat(64),
+          sizeBytes: 512
+        },
+        pathManifest: {
+          name: 'observed-path-manifest.json',
+          reference: `runs/${eligibleRunId}/observed-path-manifest.json`,
+          sha256: 'e'.repeat(64),
+          sizeBytes: 256
+        },
         summaryArtifact: {
-          name: 'codex-summary.json',
+          name: 'structured-summary.json',
+          reference: `runs/${eligibleRunId}/structured-summary.json`,
           sha256: 'c'.repeat(64),
           sizeBytes: 128
         },
@@ -459,17 +477,25 @@ describePostgres(
         .where(eq(artifacts.agentRunId, eligibleRunId))
         .orderBy(asc(artifacts.kind))).toEqual([
         {
+          kind: 'path_manifest',
+          storageProvider: completionPayload.artifactStore.provider,
+          storageKey: completionPayload.pathManifest.reference,
+          contentType: 'application/json',
+          sha256: completionPayload.pathManifest.sha256,
+          sizeBytes: completionPayload.pathManifest.sizeBytes
+        },
+        {
           kind: 'receipt',
-          storageProvider: 'workstation-local',
-          storageKey: `${runnerId}/${eligibleRunId}/agent-run-receipt.json`,
+          storageProvider: completionPayload.artifactStore.provider,
+          storageKey: completionPayload.receiptArtifact.reference,
           contentType: 'application/json',
           sha256: completionPayload.receiptSha256,
           sizeBytes: completionPayload.receiptSizeBytes
         },
         {
           kind: 'summary',
-          storageProvider: 'workstation-local',
-          storageKey: `${runnerId}/${eligibleRunId}/codex-summary.json`,
+          storageProvider: completionPayload.artifactStore.provider,
+          storageKey: completionPayload.summaryArtifact!.reference,
           contentType: 'application/json',
           sha256: completionPayload.summaryArtifact!.sha256,
           sizeBytes: completionPayload.summaryArtifact!.sizeBytes

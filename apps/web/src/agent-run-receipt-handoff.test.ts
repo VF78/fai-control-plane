@@ -43,6 +43,23 @@ const candidate = (
     durationMs: 1200,
     cost: {state: 'unknown', reason: 'runtime_usage_not_available'},
     usage: {state: 'unknown', reason: 'runtime_usage_not_available'},
+    artifactStore: {
+      provider: 'workstation-local',
+      reference: `runs/${runId}`,
+      correlationId: `artifact-run-${runId}`
+    },
+    receiptArtifact: {
+      name: 'agent-run-receipt.json',
+      reference: `runs/${runId}/agent-run-receipt.json`,
+      sha256: receiptSha256,
+      sizeBytes: 512
+    },
+    pathManifest: {
+      name: 'observed-path-manifest.json',
+      reference: `runs/${runId}/observed-path-manifest.json`,
+      sha256: 'd'.repeat(64),
+      sizeBytes: 128
+    },
     changedFiles: ['apps/web/src/example.ts'],
     checks: [{name: 'focused test', status: 'passed'}],
     riskCount: 0,
@@ -134,6 +151,55 @@ it('fails closed when the persisted receipt is missing', async () => {
   );
 
   expect(response.status).toBe(303);
+  expect(response.headers.get('location')).toContain('handoff=stale');
+  expect(transition).not.toHaveBeenCalled();
+});
+
+it('fails closed when artifact evidence is not bound to the run correlation', async () => {
+  const transition = vi.fn();
+  const dependencies: ReceiptHandoffCommandDependencies = {
+    requireSession: authenticated,
+    getRuntime: async () => ({
+      load: async () => candidate({
+        receiptMetadata: {
+          ...candidate().receiptMetadata!,
+          artifactStore: {
+            provider: 'workstation-local',
+            reference: `runs/${runId}`,
+            correlationId: 'artifact-run-other-run'
+          }
+        }
+      }),
+      transition
+    })
+  };
+
+  const response = await acceptAgentRunReceiptCommand(request(), runId, dependencies);
+
+  expect(response.headers.get('location')).toContain('handoff=stale');
+  expect(transition).not.toHaveBeenCalled();
+});
+
+it('fails closed when an artifact reference does not match its store', async () => {
+  const transition = vi.fn();
+  const dependencies: ReceiptHandoffCommandDependencies = {
+    requireSession: authenticated,
+    getRuntime: async () => ({
+      load: async () => candidate({
+        receiptMetadata: {
+          ...candidate().receiptMetadata!,
+          receiptArtifact: {
+            ...((candidate().receiptMetadata! as Record<string, unknown>).receiptArtifact as Record<string, unknown>),
+            reference: `runs/${runId}/other.json`
+          }
+        }
+      }),
+      transition
+    })
+  };
+
+  const response = await acceptAgentRunReceiptCommand(request(), runId, dependencies);
+
   expect(response.headers.get('location')).toContain('handoff=stale');
   expect(transition).not.toHaveBeenCalled();
 });
