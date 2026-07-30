@@ -1611,6 +1611,17 @@ export type ProjectionAvailability<T> =
   | Readonly<{availability: 'unknown'}>
   | Readonly<{availability: 'not_configured'}>;
 
+export {
+  deriveRuntimeAvailability,
+  runtimeAvailabilityComponents,
+  type RuntimeAvailabilityComponent,
+  type RuntimeAvailabilityHealth,
+  type RuntimeAvailabilityObservation,
+  type RuntimeAvailabilityProjection,
+  type RuntimeAvailabilityThresholds,
+  type RuntimeComponentAvailability
+} from './runtime-monitoring';
+
 export type ProjectTaskProjectionInput = Readonly<{
   workspaceId: string;
   projectId: string;

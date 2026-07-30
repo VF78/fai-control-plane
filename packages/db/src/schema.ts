@@ -153,6 +153,14 @@ export const conversationClassEnum = pgEnum('conversation_class', [
   'internal',
   'client'
 ]);
+export const runtimeAvailabilityComponentEnum = pgEnum(
+  'runtime_availability_component',
+  ['service', 'scheduler', 'delivery']
+);
+export const runtimeAvailabilityStateEnum = pgEnum(
+  'runtime_availability_state',
+  ['available', 'unavailable']
+);
 
 export const workspaces = pgTable(
   'workspaces',
@@ -652,6 +660,9 @@ export const runtimeRegistrations = pgTable(
     provider: text('provider').notNull(),
     runtimeKey: text('runtime_key').notNull(),
     enabled: boolean('enabled').default(true).notNull(),
+    serviceMaxAgeSeconds: integer('service_max_age_seconds'),
+    schedulerMaxAgeSeconds: integer('scheduler_max_age_seconds'),
+    deliveryMaxAgeSeconds: integer('delivery_max_age_seconds'),
     version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
@@ -677,7 +688,51 @@ export const runtimeRegistrations = pgTable(
       sql`length(${table.runtimeKey}) between 1 and 256
         and ${table.runtimeKey} !~ '[[:cntrl:]]'`
     ),
+    check(
+      'runtime_registrations_service_max_age_bounded',
+      sql`${table.serviceMaxAgeSeconds} is null or ${table.serviceMaxAgeSeconds} between 30 and 604800`
+    ),
+    check(
+      'runtime_registrations_scheduler_max_age_bounded',
+      sql`${table.schedulerMaxAgeSeconds} is null or ${table.schedulerMaxAgeSeconds} between 30 and 604800`
+    ),
+    check(
+      'runtime_registrations_delivery_max_age_bounded',
+      sql`${table.deliveryMaxAgeSeconds} is null or ${table.deliveryMaxAgeSeconds} between 30 and 604800`
+    ),
     check('runtime_registrations_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const runtimeAvailabilityObservations = pgTable(
+  'runtime_availability_observations',
+  {
+    id: id(),
+    runtimeRegistrationId: uuid('runtime_registration_id')
+      .notNull()
+      .references(() => runtimeRegistrations.id, {onDelete: 'cascade'}),
+    component: runtimeAvailabilityComponentEnum('component').notNull(),
+    state: runtimeAvailabilityStateEnum('state').notNull(),
+    observedAt: timestamp('observed_at', {withTimezone: true}).notNull(),
+    evidenceReference: text('evidence_reference').notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('runtime_availability_observations_fact_unique').on(
+      table.runtimeRegistrationId,
+      table.component,
+      table.observedAt
+    ),
+    index('runtime_availability_observations_latest_idx').on(
+      table.runtimeRegistrationId,
+      table.component,
+      table.observedAt
+    ),
+    check(
+      'runtime_availability_observations_evidence_bounded',
+      sql`length(${table.evidenceReference}) between 1 and 500
+        and ${table.evidenceReference} !~ '[[:cntrl:]]'`
+    )
   ]
 );
 
