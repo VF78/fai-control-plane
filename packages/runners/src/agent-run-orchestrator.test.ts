@@ -19,6 +19,7 @@ import {
   type LocalAgentRunEnvelope,
   type RedactedProcessOutputMetadata,
   type RepositoryHostPublicationReceipt,
+  type RepositoryHostPublishDraftChangeInput,
   type WorktreeManager
 } from './index';
 
@@ -313,7 +314,9 @@ describe('local AgentRun orchestrator', () => {
       .resolves.toContain('"finalStatus": "cancelled"');
 
     const publisher = {
-      publishDraftChange: vi.fn(async (): Promise<RepositoryHostPublicationReceipt> => ({
+      publishDraftChange: vi.fn(async (
+        _input: RepositoryHostPublishDraftChangeInput
+      ): Promise<RepositoryHostPublicationReceipt> => ({
         status: 'published' as const,
         externalChangeRef: '17',
         externalChangeUrl: 'https://github.com/VF78/fai-control-plane/pull/17',
@@ -374,7 +377,10 @@ describe('local AgentRun orchestrator', () => {
     });
     expect(publisher.publishDraftChange).not.toHaveBeenCalled();
 
-    const publishable = envelope('write_scoped');
+    const publishable = {
+      ...envelope('write_scoped'),
+      packetId: 'opaque-packet-not-for-publication'
+    };
     publishRuns.add(publishable.runId);
     const published = await publishingOrchestrator.run(publishable);
     expect(published.receipt.writeBack).toEqual({
@@ -393,6 +399,10 @@ describe('local AgentRun orchestrator', () => {
         branch: `fai/run/${publishable.runId}`
       })
     );
+    const publicationInput = publisher.publishDraftChange.mock.calls[0]?.[0];
+    expect(publicationInput?.body).toContain(`Run: ${publishable.runId}`);
+    expect(publicationInput?.body).toContain(`Head commit: ${'d'.repeat(40)}`);
+    expect(publicationInput?.body).not.toContain(publishable.packetId);
     expect(manager.cleanup).toHaveBeenCalledTimes(3);
 
     const unsatisfied = envelope('write_scoped');
