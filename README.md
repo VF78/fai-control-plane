@@ -92,11 +92,15 @@ docker compose up --build -d
 
 This local tracker-snapshot bootstrap is separate from login OAuth. Set
 `FCP_OPERATOR_GITHUB_USER_IDS` to exactly two unique canonical positive GitHub
-user IDs and set `FCP_BOOTSTRAP_HUMAN_SUBJECT` to `github:user:<id>` for one of
-them. The seed idempotently creates both human user Actors, keeps the bootstrap
-operator as `workspace_admin`, and attaches its enabled `pm-qa-bot` /
-`read_safe` profile for QA intake packet creation. Mount the GitHub App private
-key at `GITHUB_APP_PRIVATE_KEY_FILE`, and mount the exact-scope
+user IDs and set `FCP_BOOTSTRAP_HUMAN_SUBJECT` to `github:user:<id>` for
+Vladimir. The seed idempotently reconciles Vladimir as the Product Owner,
+Vitaliy as the Developer, and their canonical GitHub identities. Both MSA and
+ASCON receive active memberships for Vladimir (`project_owner`), Vitaliy
+(`contributor`), and Hermes (`agent`). Codex CLI remains a governed execution
+runtime without a fabricated project membership. The bootstrap operator keeps
+the enabled `pm-qa-bot` / `read_safe` profile for QA intake packet creation.
+The seed creates no provider access grants. Mount the GitHub App private key at
+`GITHUB_APP_PRIVATE_KEY_FILE`, and mount the exact-scope
 Projects OAuth token at `GITHUB_PROJECTS_OAUTH_TOKEN_FILE`. The App mints an
 installation token in memory for repository, issue, pull-request, check, and
 PR-link reads. The OAuth token is used only for the two allowlisted ProjectV2
