@@ -3,6 +3,7 @@ import {
   configureIncomingEventQueue,
   incomingEventQueueOptions
 } from './incoming-event-queue';
+import {CONTROL_PLANE_DEAD_LETTER_QUEUE} from './queue-dead-letter';
 
 describe('incoming event queue policy', () => {
   it('keeps retries bounded and updates an existing queue', async () => {
@@ -18,7 +19,8 @@ describe('incoming event queue policy', () => {
       retryDelay: 5,
       retryBackoff: true,
       retryDelayMax: 60,
-      expireInSeconds: 600
+      expireInSeconds: 600,
+      deadLetter: CONTROL_PLANE_DEAD_LETTER_QUEUE
     });
     expect(boss.createQueue).toHaveBeenCalledWith(
       'incoming-event.process.v1',

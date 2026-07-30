@@ -51,6 +51,10 @@ import {
   configureGitHubReconciliationQueue,
   GITHUB_RECONCILIATION_QUEUE
 } from './github-reconciliation-queue';
+import {
+  configureControlPlaneDeadLetterQueue,
+  loadQueueFailureCounts
+} from './queue-dead-letter';
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
@@ -162,20 +166,10 @@ const healthcheckQueueNames = [
 ];
 const healthcheckProducer = createPostgresHealthcheckProducer(db, {
   queueFailures: async () => {
-    const result = await pool.query<{queue_name: string; failed_count: number}>(
-      `select name as queue_name, count(*)::integer as failed_count
-       from pgboss.job
-       where state = 'failed' and name = any($1::text[])
-       group by name`,
-      [healthcheckQueueNames]
+    return loadQueueFailureCounts(
+      (statement, values) => pool.query<{queue_name: string; failed_count: number}>(statement, values),
+      healthcheckQueueNames
     );
-    const failures = new Map(
-      result.rows.map((row) => [row.queue_name, row.failed_count] as const)
-    );
-    return healthcheckQueueNames.map((queueName) => ({
-      queueName,
-      failedCount: failures.get(queueName) ?? 0
-    }));
   }
 });
 const recoveryScanProducer = createPostgresRecoveryScanProducer(db, boss);
@@ -266,6 +260,7 @@ const server = createServer((request, response) => {
 
 server.listen(port, '0.0.0.0');
 await boss.start();
+await configureControlPlaneDeadLetterQueue(boss);
 await configureIncomingEventQueue(boss, INCOMING_EVENT_QUEUE);
 await configureHealthcheckQueue(boss);
 await configureRecoveryScanQueue(boss);

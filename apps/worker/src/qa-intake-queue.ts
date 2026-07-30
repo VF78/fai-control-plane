@@ -1,7 +1,8 @@
 import type {PgBoss, QueueOptions} from 'pg-boss';
 import {QA_INTAKE_QUEUE, qaIntakeCron} from '@fai-control-plane/db/runtime';
+import {withControlPlaneDeadLetter} from './queue-dead-letter';
 
-export const qaIntakeQueueOptions = Object.freeze({
+export const qaIntakeQueueOptions = withControlPlaneDeadLetter({
   retryLimit: 3,
   retryDelay: 300,
   retryBackoff: true,

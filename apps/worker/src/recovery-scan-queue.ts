@@ -1,7 +1,8 @@
 import type {PgBoss, QueueOptions} from 'pg-boss';
 import {RECOVERY_SCAN_QUEUE, recoveryScanCron} from '@fai-control-plane/db/runtime';
+import {withControlPlaneDeadLetter} from './queue-dead-letter';
 
-export const recoveryScanQueueOptions = Object.freeze({
+export const recoveryScanQueueOptions = withControlPlaneDeadLetter({
   retryLimit: 3,
   retryDelay: 30,
   retryBackoff: true,
