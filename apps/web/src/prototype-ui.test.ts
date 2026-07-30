@@ -101,10 +101,39 @@ it('keeps the web-first workspace IA and honest unavailable state', () => {
   expect(markup).toContain('aria-label="Dashboard"');
   expect(markup).toContain('aria-label="Projects"');
   expect(markup).toContain('aria-label="Tasks"');
-  expect(markup).toContain('aria-label="Chats"');
+  expect(markup).toContain('aria-label="Conversations"');
   expect(markup).toContain('aria-label="Agents"');
   expect(markup).toContain('Control plane data is unavailable');
   expect(markup).not.toContain('Provider ID');
+});
+
+it('renders isolated internal/client conversation states and current access facts', () => {
+  const data = {
+    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null,
+    runs: null, health: null, projectIndex: [],
+    conversations: {state: 'ready', data: {projects: [{
+      id: 'msa-id', name: 'MSA', slug: 'msa', channels: [
+        {
+          conversationClass: 'internal', state: 'ready',
+          freshnessAt: new Date('2026-07-30T12:00:00.000Z'), failure: null,
+          participants: [{id: 'p1', displayName: 'Vladimir', resolution: 'resolved', controlPlaneAccess: 'project owner', lastObservedAt: new Date('2026-07-30T12:00:00.000Z')}],
+          messages: [{id: 'm1', participantId: 'p1', author: 'Vladimir', sentAt: new Date('2026-07-30T12:00:00.000Z'), text: '<unsafe>', attachmentSummary: null, reply: false, threaded: false}]
+        },
+        {
+          conversationClass: 'client', state: 'not_configured',
+          freshnessAt: null, failure: null, participants: [], messages: []
+        }
+      ]
+    }]}}
+  } as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {screen: 'global_chats', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
+    data
+  }));
+  expect(markup).toContain('Read-only internal and client timelines');
+  expect(markup).toContain('Resolved identity · project owner');
+  expect(markup).toContain('&lt;unsafe&gt;');
+  expect(markup).toContain('Not configured. No verified chat binding');
 });
 
 it('renders persisted agent registrations and authorized new-claim controls without inferring liveness', () => {

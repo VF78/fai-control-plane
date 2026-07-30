@@ -149,6 +149,10 @@ export const auditOutcomeEnum = pgEnum('audit_outcome', [
   'rejected',
   'approval_required'
 ]);
+export const conversationClassEnum = pgEnum('conversation_class', [
+  'internal',
+  'client'
+]);
 
 export const workspaces = pgTable(
   'workspaces',
@@ -322,6 +326,137 @@ export const actorExternalIdentities = pgTable(
       sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
     ),
     check('actor_external_identities_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export type ConversationAttachmentMetadata = Readonly<{
+  kind: 'document' | 'photo' | 'video' | 'audio' | 'voice' | 'sticker' | 'animation';
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}>;
+
+export const conversationBindings = pgTable(
+  'conversation_bindings',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    conversationClass: conversationClassEnum('conversation_class').notNull(),
+    provider: text('provider').notNull(),
+    externalRef: text('external_ref').notNull(),
+    activatedAt: timestamp('activated_at', {withTimezone: true}).notNull(),
+    active: boolean('active').default(true).notNull(),
+    lastObservedAt: timestamp('last_observed_at', {withTimezone: true}),
+    lastFailureAt: timestamp('last_failure_at', {withTimezone: true}),
+    lastFailureCode: text('last_failure_code'),
+    failureCount: integer('failure_count').default(0).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('conversation_bindings_project_class_unique').on(
+      table.projectId,
+      table.conversationClass
+    ).where(sql`${table.active} = true`),
+    uniqueIndex('conversation_bindings_provider_external_unique').on(
+      table.provider,
+      table.externalRef
+    ),
+    check(
+      'conversation_bindings_provider_key',
+      sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
+    ),
+    check(
+      'conversation_bindings_external_ref_bounded',
+      sql`length(${table.externalRef}) between 1 and 128`
+    ),
+    check(
+      'conversation_bindings_failure_complete',
+      sql`(${table.lastFailureAt} is null and ${table.lastFailureCode} is null)
+        or (${table.lastFailureAt} is not null
+          and length(${table.lastFailureCode}) between 1 and 64)`
+    ),
+    check('conversation_bindings_failure_count_nonnegative', sql`${table.failureCount} >= 0`)
+  ]
+);
+
+export const conversationParticipants = pgTable(
+  'conversation_participants',
+  {
+    id: id(),
+    bindingId: uuid('binding_id')
+      .notNull()
+      .references(() => conversationBindings.id, {onDelete: 'cascade'}),
+    externalSubject: text('external_subject').notNull(),
+    actorId: uuid('actor_id').references(() => actors.id, {onDelete: 'restrict'}),
+    displayName: text('display_name').notNull(),
+    firstObservedAt: timestamp('first_observed_at', {withTimezone: true}).notNull(),
+    lastObservedAt: timestamp('last_observed_at', {withTimezone: true}).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('conversation_participants_binding_subject_unique').on(
+      table.bindingId,
+      table.externalSubject
+    ),
+    index('conversation_participants_actor_idx').on(table.actorId),
+    check(
+      'conversation_participants_subject_bounded',
+      sql`length(${table.externalSubject}) between 1 and 128`
+    ),
+    check(
+      'conversation_participants_display_name_bounded',
+      sql`length(${table.displayName}) between 1 and 120`
+    ),
+    check(
+      'conversation_participants_observation_order',
+      sql`${table.lastObservedAt} >= ${table.firstObservedAt}`
+    )
+  ]
+);
+
+export const conversationMessages = pgTable(
+  'conversation_messages',
+  {
+    id: id(),
+    bindingId: uuid('binding_id')
+      .notNull()
+      .references(() => conversationBindings.id, {onDelete: 'cascade'}),
+    participantId: uuid('participant_id')
+      .notNull()
+      .references(() => conversationParticipants.id, {onDelete: 'restrict'}),
+    deliveryRef: text('delivery_ref').notNull(),
+    messageRef: text('message_ref').notNull(),
+    replyToMessageRef: text('reply_to_message_ref'),
+    threadRef: text('thread_ref'),
+    sentAt: timestamp('sent_at', {withTimezone: true}).notNull(),
+    text: text('text'),
+    attachments: jsonb('attachments')
+      .$type<readonly ConversationAttachmentMetadata[]>()
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
+    observedAt: timestamp('observed_at', {withTimezone: true}).defaultNow().notNull()
+  },
+  (table) => [
+    uniqueIndex('conversation_messages_binding_delivery_unique').on(
+      table.bindingId,
+      table.deliveryRef
+    ),
+    uniqueIndex('conversation_messages_binding_message_unique').on(
+      table.bindingId,
+      table.messageRef
+    ),
+    index('conversation_messages_binding_sent_idx').on(table.bindingId, table.sentAt),
+    check('conversation_messages_delivery_ref_bounded', sql`length(${table.deliveryRef}) between 1 and 128`),
+    check('conversation_messages_message_ref_bounded', sql`length(${table.messageRef}) between 1 and 128`),
+    check('conversation_messages_reply_ref_bounded', sql`${table.replyToMessageRef} is null or length(${table.replyToMessageRef}) between 1 and 128`),
+    check('conversation_messages_thread_ref_bounded', sql`${table.threadRef} is null or length(${table.threadRef}) between 1 and 128`),
+    check('conversation_messages_text_bounded', sql`${table.text} is null or length(${table.text}) between 1 and 4000`),
+    check('conversation_messages_attachments_array', sql`jsonb_typeof(${table.attachments}) = 'array'`),
+    check('conversation_messages_has_content', sql`${table.text} is not null or jsonb_array_length(${table.attachments}) > 0`)
   ]
 );
 

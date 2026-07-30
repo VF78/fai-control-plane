@@ -7,6 +7,9 @@ const requiredTables = [
   schema.projects,
   schema.projectMemberships,
   schema.actorExternalIdentities,
+  schema.conversationBindings,
+  schema.conversationParticipants,
+  schema.conversationMessages,
   schema.resourceAccessGrants,
   schema.milestones,
   schema.workItems,
@@ -47,6 +50,9 @@ describe('canonical schema foundation', () => {
       'projects',
       'project_memberships',
       'actor_external_identities',
+      'conversation_bindings',
+      'conversation_participants',
+      'conversation_messages',
       'resource_access_grants',
       'milestones',
       'work_items',
@@ -106,6 +112,28 @@ describe('canonical schema foundation', () => {
     expect(incomingEventColumns).not.toContain('payload');
     expect(incomingEventColumns).toContain('verification');
     expect(incomingEventColumns).toContain('sanitized_payload');
+  });
+
+  it('persists only bounded conversation observations, never raw provider payloads or bodies', () => {
+    expect(Object.values(getTableColumns(schema.conversationBindings)).map(({name}) => name))
+      .toContain('active');
+    const messageColumns = Object.values(
+      getTableColumns(schema.conversationMessages)
+    ).map((column) => column.name);
+    expect(messageColumns).toEqual(expect.arrayContaining([
+      'participant_id',
+      'sent_at',
+      'reply_to_message_ref',
+      'thread_ref',
+      'text',
+      'attachments'
+    ]));
+    for (const forbidden of [
+      'raw_payload',
+      'attachment_body',
+      'provider_token',
+      'webhook_secret'
+    ]) expect(messageColumns).not.toContain(forbidden);
   });
 
   it('models optimistic versions and atomic command receipt state', () => {

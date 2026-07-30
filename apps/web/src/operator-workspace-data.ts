@@ -1,12 +1,12 @@
 import {
-  loadAccessData, loadDeliveryLifecycleData, loadHealthData, loadPortfolioData, loadProjectData, loadRunsData,
+  loadAccessData, loadConversationsData, loadDeliveryLifecycleData, loadHealthData, loadPortfolioData, loadProjectData, loadRunsData,
   operatorProjectSlugs
 } from './operator-data';
 import type {WorkspaceRoute} from './prototype-ui';
 
 export async function loadWorkspaceData(route: WorkspaceRoute, operatorActorId?: string) {
   const requiresProject = route.project !== null;
-  const [portfolio, access, project, runs, health, projectIndex, lifecycle] = await Promise.all([
+  const [portfolio, access, project, runs, health, projectIndex, lifecycle, conversations] = await Promise.all([
     loadPortfolioData(),
     loadAccessData(operatorActorId),
     requiresProject ? loadProjectData(route.project) : Promise.resolve(null),
@@ -18,7 +18,16 @@ export async function loadWorkspaceData(route: WorkspaceRoute, operatorActorId?:
       : Promise.resolve([]),
     route.screen === 'task' && route.project !== null && route.taskId !== null
       ? loadDeliveryLifecycleData(route.project, route.taskId)
+      : Promise.resolve(null),
+    route.screen === 'global_chats' || route.screen === 'chats'
+      ? loadConversationsData(
+        route.screen === 'chats'
+          ? route.project ?? undefined
+          : route.globalProject === undefined || route.globalProject === 'all'
+            ? undefined
+            : route.globalProject
+      )
       : Promise.resolve(null)
   ]);
-  return {portfolio, access, project, runs, health, projectIndex, lifecycle};
+  return {portfolio, access, project, runs, health, projectIndex, lifecycle, conversations};
 }

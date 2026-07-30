@@ -1,43 +1,36 @@
-import type {IncomingEventIngestionService} from '@fai-control-plane/application';
+import type {ConversationObservation} from '@fai-control-plane/db';
 import type {SecretsProvider} from '@fai-control-plane/domain';
 import {
   readTelegramWebhookBody,
   verifyAndProjectTelegramWebhook,
   type TelegramWebhookConfig,
-  type TelegramWebhookRejectionCode,
-  type TelegramStatusProject
+  type TelegramWebhookRejectionCode
 } from '@fai-control-plane/integrations';
 
+export type TelegramConversationStore = Readonly<{
+  ingest(observation: ConversationObservation): Promise<'accepted' | 'duplicate' | 'before_activation'>;
+  recordFailure(provider: string, externalRef: string, code: string): Promise<void>;
+}>;
+
 export type TelegramWebhookHandlerDependencies = Readonly<{
-  workspaceId: string;
-  projectIds: Readonly<Record<TelegramStatusProject, string>>;
   config: TelegramWebhookConfig;
   secrets: SecretsProvider;
-  ingestion: IncomingEventIngestionService;
+  conversations: TelegramConversationStore;
 }>;
 
 const response = (status: number, outcome: string): Response =>
-  Response.json({status: outcome}, {
-    status,
-    headers: {'Cache-Control': 'no-store'}
-  });
+  Response.json({status: outcome}, {status, headers: {'Cache-Control': 'no-store'}});
 
 const rejectionStatus = (code: TelegramWebhookRejectionCode): number => {
   if (code === 'telegram_body_too_large') return 413;
   if (code === 'telegram_media_type_invalid') return 415;
-  if (
-    code === 'telegram_secret_unavailable' ||
-    code === 'telegram_secret_config_invalid'
-  ) return 503;
+  if (code === 'telegram_secret_unavailable' || code === 'telegram_secret_config_invalid') return 503;
   if (code === 'telegram_secret_missing' || code === 'telegram_secret_invalid') return 401;
   if (
     code === 'telegram_update_unsupported' ||
     code === 'telegram_chat_unauthorized' ||
-    code === 'telegram_actor_unauthorized' ||
     code === 'telegram_command_unsupported'
-  ) {
-    return 204;
-  }
+  ) return 204;
   return 400;
 };
 
@@ -49,9 +42,7 @@ export const createTelegramWebhookHandler = (
     request.body,
     request.headers.get('content-length') ?? undefined
   );
-  if (!body.ok) {
-    return response(body.code === 'telegram_body_too_large' ? 413 : 400, 'rejected');
-  }
+  if (!body.ok) return response(body.code === 'telegram_body_too_large' ? 413 : 400, 'rejected');
   const verified = await verifyAndProjectTelegramWebhook({
     config: dependencies.config,
     secrets: dependencies.secrets,
@@ -60,16 +51,19 @@ export const createTelegramWebhookHandler = (
   });
   if (verified.outcome === 'rejected') {
     const status = rejectionStatus(verified.code);
-    if (status === 204) {
-      return new Response(null, {status, headers: {'Cache-Control': 'no-store'}});
-    }
-    return response(status, 'rejected');
+    return status === 204
+      ? new Response(null, {status, headers: {'Cache-Control': 'no-store'}})
+      : response(status, 'rejected');
   }
-  const accepted = await dependencies.ingestion.ingest({
-    workspaceId: dependencies.workspaceId,
-    projectId: dependencies.projectIds[verified.project],
-    verification: {outcome: 'verified', method: 'shared-token'},
-    ...verified.projection
-  });
-  return response(202, accepted.status);
+  try {
+    const accepted = await dependencies.conversations.ingest(verified.observation);
+    return response(accepted === 'accepted' ? 202 : 200, accepted);
+  } catch {
+    await dependencies.conversations.recordFailure(
+      verified.observation.provider,
+      verified.observation.externalBindingRef,
+      'persistence_failed'
+    ).catch(() => undefined);
+    return response(503, 'unavailable');
+  }
 };

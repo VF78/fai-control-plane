@@ -2,22 +2,33 @@ import {createHmac, timingSafeEqual} from 'node:crypto';
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
 
 export const MAX_TELEGRAM_WEBHOOK_BODY_BYTES = 256 * 1024;
+export const MAX_TELEGRAM_MESSAGE_TEXT = 4000;
 
 const telegramJsonMediaTypePattern =
   /^[ \t]*application\/json(?:[ \t]*;[ \t]*charset[ \t]*=[ \t]*utf-8)?[ \t]*$/i;
 const identityPattern = /^tgid:v1:[0-9a-f]{64}$/;
 
+export type TelegramStatusProject = 'msa' | 'ascon';
+export type TelegramConversationClass = 'internal' | 'client';
+export type TelegramConversationBinding = Readonly<{
+  chatId: number;
+  project: TelegramStatusProject;
+  conversationClass: TelegramConversationClass;
+  activatedAt: Date;
+}>;
 export type TelegramWebhookConfig = Readonly<{
   webhookSecretRef: OpaqueSecretRef;
   identitySecretRef: OpaqueSecretRef;
-  allowedUserIds: readonly number[];
-  allowedPrivateChatIds: readonly number[];
+  bindings: readonly TelegramConversationBinding[];
+}>;
+export type TelegramAttachmentMetadata = Readonly<{
+  kind: 'document' | 'photo' | 'video' | 'audio' | 'voice' | 'sticker' | 'animation';
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
 }>;
 
-export type TelegramStatusProject = 'msa' | 'ascon';
-
 export type TelegramWebhookRejectionCode =
-  | 'telegram_headers_invalid'
   | 'telegram_media_type_invalid'
   | 'telegram_secret_missing'
   | 'telegram_secret_invalid'
@@ -29,147 +40,106 @@ export type TelegramWebhookRejectionCode =
   | 'telegram_update_unsupported'
   | 'telegram_payload_invalid'
   | 'telegram_chat_unauthorized'
-  | 'telegram_actor_unauthorized'
   | 'telegram_command_unsupported';
 
 export type TelegramWebhookResult =
   | Readonly<{
       outcome: 'accepted';
       project: TelegramStatusProject;
-      projection: Readonly<{
+      conversationClass: TelegramConversationClass;
+      observation: Readonly<{
         provider: 'telegram';
-        deliveryId: string;
-        eventType: 'chat_command';
-        action: 'status';
-        payloadSha256: string;
-        source: Readonly<{
-          kind: 'telegram';
-          messageId: string;
-          chatId: string;
-          userId: string;
-        }>;
-        projection: Readonly<{command: Readonly<{name: 'status'}>}>;
+        externalBindingRef: string;
+        deliveryRef: string;
+        messageRef: string;
+        authorExternalSubject: string;
+        authorDisplayName: string;
+        sentAt: Date;
+        replyToMessageRef: string | null;
+        threadRef: string | null;
+        text: string | null;
+        attachments: readonly TelegramAttachmentMetadata[];
       }>;
     }>
   | Readonly<{outcome: 'rejected'; code: TelegramWebhookRejectionCode}>;
 
 export type TelegramWebhookBodyReadResult =
   | Readonly<{ok: true; body: Uint8Array}>
-  | Readonly<{
-      ok: false;
-      code: 'telegram_body_too_large' | 'telegram_body_stream_invalid';
-    }>;
+  | Readonly<{ok: false; code: 'telegram_body_too_large' | 'telegram_body_stream_invalid'}>;
 
-const snapshotObject = (value: unknown): Record<string, unknown> | null => {
-  try {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return null;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const snapshot: Record<string, unknown> = Object.create(null);
-    for (const key of Reflect.ownKeys(descriptors)) {
-      if (typeof key !== 'string') return null;
-      const descriptor = descriptors[key];
-      if (descriptor === undefined || !('value' in descriptor)) return null;
-      snapshot[key] = descriptor.value;
-    }
-    return snapshot;
-  } catch {
-    return null;
-  }
-};
-
-const snapshotArray = (value: unknown, maximumLength: number): unknown[] | null => {
-  try {
-    if (!Array.isArray(value) || value.length > maximumLength) return null;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    if (Reflect.ownKeys(descriptors).length !== value.length + 1) return null;
-    return value.map((item) => item);
-  } catch {
-    return null;
-  }
-};
-
-const exactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
-};
-
-const positiveSafeInteger = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
-
+const object = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+const safeInteger = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value);
+const positiveInteger = (value: unknown): value is number => safeInteger(value) && value > 0;
+const boundedString = (value: unknown, maximum: number): string | undefined =>
+  typeof value === 'string' && value.length > 0 && value.length <= maximum ? value : undefined;
 const reject = (code: TelegramWebhookRejectionCode): TelegramWebhookResult => ({
   outcome: 'rejected', code
 });
 
-const snapshotSecretRef = (value: unknown): OpaqueSecretRef | null => {
-  const reference = snapshotObject(value);
-  if (reference === null || !exactKeys(reference, ['provider', 'reference', 'scope'])) {
-    return null;
-  }
-  const scope = snapshotArray(reference.scope, 8);
+const secretRef = (value: unknown): OpaqueSecretRef | null => {
+  const candidate = object(value);
   if (
-    typeof reference.provider !== 'string' || reference.provider.length === 0 ||
-    typeof reference.reference !== 'string' || reference.reference.length === 0 ||
-    scope === null || !scope.every((entry) => typeof entry === 'string' && entry.length > 0)
-  ) {
-    return null;
-  }
-  return {provider: reference.provider, reference: reference.reference, scope: scope as string[]};
-};
-
-const parseAllowlist = (value: unknown): number[] | null => {
-  const entries = snapshotArray(value, 256);
-  if (entries === null || entries.length === 0 || !entries.every(positiveSafeInteger)) {
-    return null;
-  }
-  const ids = entries as number[];
-  return new Set(ids).size === ids.length ? [...ids] : null;
+    candidate === null ||
+    typeof candidate.provider !== 'string' ||
+    typeof candidate.reference !== 'string' ||
+    !Array.isArray(candidate.scope) ||
+    !candidate.scope.every((entry) => typeof entry === 'string' && entry.length > 0)
+  ) return null;
+  return {
+    provider: candidate.provider,
+    reference: candidate.reference,
+    scope: candidate.scope as string[]
+  };
 };
 
 export const createTelegramWebhookConfig = (input: unknown): TelegramWebhookConfig => {
-  const value = snapshotObject(input);
-  if (value === null || !exactKeys(value, [
-    'allowedPrivateChatIds', 'allowedUserIds', 'identitySecretRef', 'webhookSecretRef'
-  ])) {
-    throw new Error('Telegram webhook configuration is invalid.');
-  }
-  const webhookSecretRef = snapshotSecretRef(value.webhookSecretRef);
-  const identitySecretRef = snapshotSecretRef(value.identitySecretRef);
-  const allowedUserIds = parseAllowlist(value.allowedUserIds);
-  const allowedPrivateChatIds = parseAllowlist(value.allowedPrivateChatIds);
+  const candidate = object(input);
+  const webhookSecretRef = secretRef(candidate?.webhookSecretRef);
+  const identitySecretRef = secretRef(candidate?.identitySecretRef);
   if (
-    webhookSecretRef === null || identitySecretRef === null ||
-    allowedUserIds === null || allowedPrivateChatIds === null
-  ) {
-    throw new Error('Telegram webhook configuration is invalid.');
-  }
-  if (
-    webhookSecretRef.provider === identitySecretRef.provider &&
-    webhookSecretRef.reference === identitySecretRef.reference
-  ) {
-    throw new Error('Telegram webhook and identity secret references must differ.');
-  }
-  return Object.freeze({
-    webhookSecretRef: Object.freeze({
-      provider: webhookSecretRef.provider,
-      reference: webhookSecretRef.reference,
-      scope: Object.freeze([...webhookSecretRef.scope])
-    }),
-    identitySecretRef: Object.freeze({
-      provider: identitySecretRef.provider,
-      reference: identitySecretRef.reference,
-      scope: Object.freeze([...identitySecretRef.scope])
-    }),
-    allowedUserIds: Object.freeze(allowedUserIds),
-    allowedPrivateChatIds: Object.freeze(allowedPrivateChatIds)
+    candidate === null ||
+    webhookSecretRef === null ||
+    identitySecretRef === null ||
+    !Array.isArray(candidate.bindings) ||
+    candidate.bindings.length === 0 ||
+    candidate.bindings.length > 4
+  ) throw new Error('Telegram webhook configuration is invalid.');
+  const bindings = candidate.bindings.map((value): TelegramConversationBinding => {
+    const binding = object(value);
+    const activatedAt = binding?.activatedAt instanceof Date
+      ? binding.activatedAt
+      : new Date(typeof binding?.activatedAt === 'string' ? binding.activatedAt : Number.NaN);
+    if (
+      binding === null ||
+      !safeInteger(binding.chatId) ||
+      binding.chatId === 0 ||
+      (binding.project !== 'msa' && binding.project !== 'ascon') ||
+      (binding.conversationClass !== 'internal' && binding.conversationClass !== 'client') ||
+      Number.isNaN(activatedAt.getTime())
+    ) throw new Error('Telegram webhook configuration is invalid.');
+    return {
+      chatId: binding.chatId,
+      project: binding.project,
+      conversationClass: binding.conversationClass,
+      activatedAt
+    };
   });
-};
-
-const header = (headers: Headers, name: string): string | undefined => {
-  const value = headers.get(name);
-  return value === null ? undefined : value;
+  if (
+    new Set(bindings.map(({chatId}) => chatId)).size !== bindings.length ||
+    new Set(bindings.map(({project, conversationClass}) => `${project}:${conversationClass}`)).size !==
+      bindings.length ||
+    (webhookSecretRef.provider === identitySecretRef.provider &&
+      webhookSecretRef.reference === identitySecretRef.reference)
+  ) throw new Error('Telegram webhook configuration is ambiguous.');
+  return Object.freeze({
+    webhookSecretRef,
+    identitySecretRef,
+    bindings: Object.freeze(bindings)
+  });
 };
 
 const declaredLengthTooLarge = (value: string | undefined): boolean =>
@@ -179,9 +149,7 @@ export const readTelegramWebhookBody = async (
   stream: ReadableStream<Uint8Array>,
   declaredContentLength?: string
 ): Promise<TelegramWebhookBodyReadResult> => {
-  if (declaredLengthTooLarge(declaredContentLength)) {
-    return {ok: false, code: 'telegram_body_too_large'};
-  }
+  if (declaredLengthTooLarge(declaredContentLength)) return {ok: false, code: 'telegram_body_too_large'};
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
     reader = stream.getReader();
@@ -194,16 +162,10 @@ export const readTelegramWebhookBody = async (
     for (;;) {
       const next = await reader.read();
       if (next.done) break;
-      if (!(next.value instanceof Uint8Array)) {
-        return {ok: false, code: 'telegram_body_stream_invalid'};
-      }
+      if (!(next.value instanceof Uint8Array)) return {ok: false, code: 'telegram_body_stream_invalid'};
       size += next.value.byteLength;
-      if (size > MAX_TELEGRAM_WEBHOOK_BODY_BYTES) {
-        return {ok: false, code: 'telegram_body_too_large'};
-      }
-      const copy = new Uint8Array(next.value.byteLength);
-      copy.set(next.value);
-      chunks.push(copy);
+      if (size > MAX_TELEGRAM_WEBHOOK_BODY_BYTES) return {ok: false, code: 'telegram_body_too_large'};
+      chunks.push(next.value.slice());
     }
   } catch {
     return {ok: false, code: 'telegram_body_stream_invalid'};
@@ -220,13 +182,57 @@ export const readTelegramWebhookBody = async (
 };
 
 export const telegramKeyedIdentifier = (secret: string, kind: string, value: number): string =>
-  `tgid:v1:${createHmac('sha256', secret)
-    .update(`telegram:${kind}:${value}`)
-    .digest('hex')}`;
+  `tgid:v1:${createHmac('sha256', secret).update(`telegram:${kind}:${value}`).digest('hex')}`;
 
-const parsesUpdate = (body: Uint8Array): Record<string, unknown> | null => {
+const sanitizedText = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const sanitized = value
+    .replace(/<[^>]*>/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .normalize('NFC')
+    .trim()
+    .slice(0, MAX_TELEGRAM_MESSAGE_TEXT);
+  return sanitized.length === 0 ? null : sanitized;
+};
+
+const sanitizedDisplayName = (actor: Record<string, unknown>): string => {
+  const joined = [actor.first_name, actor.last_name]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  return sanitizedText(joined)?.slice(0, 120) ?? 'Unresolved';
+};
+
+const attachment = (
+  kind: TelegramAttachmentMetadata['kind'],
+  value: unknown
+): TelegramAttachmentMetadata | null => {
+  const item = object(value);
+  if (item === null) return null;
+  const fileName = sanitizedText(item.file_name)?.slice(0, 180);
+  const mimeType = boundedString(item.mime_type, 120);
+  const sizeBytes = positiveInteger(item.file_size) ? item.file_size : undefined;
+  return {
+    kind,
+    ...(fileName === undefined || fileName === null ? {} : {fileName}),
+    ...(mimeType === undefined ? {} : {mimeType}),
+    ...(sizeBytes === undefined ? {} : {sizeBytes})
+  };
+};
+
+const attachmentMetadata = (message: Record<string, unknown>): TelegramAttachmentMetadata[] => {
+  const result: TelegramAttachmentMetadata[] = [];
+  const photo = Array.isArray(message.photo) ? message.photo.at(-1) : undefined;
+  if (photo !== undefined && object(photo) !== null) result.push({kind: 'photo'});
+  for (const kind of ['document', 'video', 'audio', 'voice', 'sticker', 'animation'] as const) {
+    const metadata = attachment(kind, message[kind]);
+    if (metadata !== null) result.push(metadata);
+  }
+  return result.slice(0, 10);
+};
+
+const parseUpdate = (body: Uint8Array): Record<string, unknown> | null => {
   try {
-    return snapshotObject(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(body)));
+    return object(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(body)));
   } catch {
     return null;
   }
@@ -237,52 +243,49 @@ const projectUpdate = (
   identitySecret: string,
   body: Uint8Array
 ): TelegramWebhookResult => {
-  const update = parsesUpdate(body);
+  const update = parseUpdate(body);
   if (update === null) return reject('telegram_json_invalid');
-  if (!exactKeys(update, ['message', 'update_id'])) return reject('telegram_update_unsupported');
-  if (!positiveSafeInteger(update.update_id)) return reject('telegram_payload_invalid');
-  const message = snapshotObject(update.message);
-  if (message === null) return reject('telegram_payload_invalid');
-  const messageId = message.message_id;
-  const text = message.text;
-  const chat = snapshotObject(message.chat);
-  const actor = snapshotObject(message.from);
+  if (!positiveInteger(update.update_id)) return reject('telegram_payload_invalid');
+  const message = object(update.message);
+  if (message === null) return reject('telegram_update_unsupported');
+  const chat = object(message.chat);
+  const actor = object(message.from);
   if (
-    !positiveSafeInteger(messageId) || typeof text !== 'string' ||
-    chat === null || actor === null ||
-    !positiveSafeInteger(chat.id) || chat.type !== 'private' ||
-    !positiveSafeInteger(actor.id)
-  ) {
-    return reject('telegram_payload_invalid');
-  }
-  if (!config.allowedPrivateChatIds.includes(chat.id)) return reject('telegram_chat_unauthorized');
-  if (!config.allowedUserIds.includes(actor.id)) return reject('telegram_actor_unauthorized');
-  const project: TelegramStatusProject | undefined = text === '/status msa'
-    ? 'msa'
-    : text === '/status ascon'
-      ? 'ascon'
-      : undefined;
-  if (project === undefined) return reject('telegram_command_unsupported');
+    !positiveInteger(message.message_id) ||
+    !positiveInteger(message.date) ||
+    chat === null ||
+    actor === null ||
+    !safeInteger(chat.id) ||
+    chat.id === 0 ||
+    (chat.type !== 'group' && chat.type !== 'supergroup') ||
+    !positiveInteger(actor.id)
+  ) return reject('telegram_payload_invalid');
+  const binding = config.bindings.find(({chatId}) => chatId === chat.id);
+  if (binding === undefined) return reject('telegram_chat_unauthorized');
 
+  const text = sanitizedText(message.text ?? message.caption);
+  if (text?.startsWith('/') === true) return reject('telegram_command_unsupported');
+  const attachments = attachmentMetadata(message);
+  if (text === null && attachments.length === 0) return reject('telegram_update_unsupported');
+  const reply = object(message.reply_to_message);
+  const replyId = positiveInteger(reply?.message_id) ? reply.message_id : null;
+  const threadId = positiveInteger(message.message_thread_id) ? message.message_thread_id : null;
   return {
     outcome: 'accepted',
-    project,
-    projection: {
+    project: binding.project,
+    conversationClass: binding.conversationClass,
+    observation: {
       provider: 'telegram',
-      deliveryId: telegramKeyedIdentifier(identitySecret, 'update', update.update_id),
-      eventType: 'chat_command',
-      action: 'status',
-      payloadSha256: createHmac('sha256', identitySecret)
-        .update('telegram:payload:v1\0')
-        .update(body)
-        .digest('hex'),
-      source: {
-        kind: 'telegram',
-        messageId: telegramKeyedIdentifier(identitySecret, 'message', messageId),
-        chatId: telegramKeyedIdentifier(identitySecret, 'chat', chat.id),
-        userId: telegramKeyedIdentifier(identitySecret, 'user', actor.id)
-      },
-      projection: {command: {name: 'status'}}
+      externalBindingRef: telegramKeyedIdentifier(identitySecret, 'chat', chat.id),
+      deliveryRef: telegramKeyedIdentifier(identitySecret, 'update', update.update_id),
+      messageRef: telegramKeyedIdentifier(identitySecret, 'message', message.message_id),
+      authorExternalSubject: telegramKeyedIdentifier(identitySecret, 'user', actor.id),
+      authorDisplayName: sanitizedDisplayName(actor),
+      sentAt: new Date(message.date * 1000),
+      replyToMessageRef: replyId === null ? null : telegramKeyedIdentifier(identitySecret, 'message', replyId),
+      threadRef: threadId === null ? null : telegramKeyedIdentifier(identitySecret, 'thread', threadId),
+      text,
+      attachments
     }
   };
 };
@@ -293,51 +296,35 @@ export const verifyAndProjectTelegramWebhook = async (input: Readonly<{
   headers: Headers;
   body: Uint8Array;
 }>): Promise<TelegramWebhookResult> => {
-  const contentType = header(input.headers, 'content-type');
-  const suppliedSecret = header(input.headers, 'x-telegram-bot-api-secret-token');
+  const contentType = input.headers.get('content-type') ?? undefined;
+  const suppliedSecret = input.headers.get('x-telegram-bot-api-secret-token') ?? undefined;
   if (contentType === undefined || !telegramJsonMediaTypePattern.test(contentType)) {
     return reject('telegram_media_type_invalid');
   }
   if (suppliedSecret === undefined || suppliedSecret.length === 0 || suppliedSecret.length > 256) {
     return reject('telegram_secret_missing');
   }
-  if (!(input.body instanceof Uint8Array) || input.body.byteLength > MAX_TELEGRAM_WEBHOOK_BODY_BYTES) {
-    return reject('telegram_body_too_large');
-  }
+  if (input.body.byteLength > MAX_TELEGRAM_WEBHOOK_BODY_BYTES) return reject('telegram_body_too_large');
   let expectedSecret: string;
-  try {
-    expectedSecret = (await input.secrets.resolve(
-      input.config.webhookSecretRef,
-      'telegram.webhook.verify'
-    )).value;
-  } catch {
-    return reject('telegram_secret_unavailable');
-  }
-  if (
-    typeof expectedSecret !== 'string' ||
-    !/^[A-Za-z0-9_-]{1,256}$/.test(expectedSecret)
-  ) {
-    return reject('telegram_secret_config_invalid');
-  }
-  const expected = Buffer.from(expectedSecret, 'utf8');
-  const supplied = Buffer.from(suppliedSecret, 'utf8');
-  if (
-    expected.length === 0 || expected.length !== supplied.length ||
-    !timingSafeEqual(expected, supplied)
-  ) {
-    return reject('telegram_secret_invalid');
-  }
   let identitySecret: string;
   try {
+    expectedSecret = (await input.secrets.resolve(
+      input.config.webhookSecretRef, 'telegram.webhook.verify'
+    )).value;
     identitySecret = (await input.secrets.resolve(
-      input.config.identitySecretRef,
-      'telegram.identity.keying'
+      input.config.identitySecretRef, 'telegram.identity.keying'
     )).value;
   } catch {
     return reject('telegram_secret_unavailable');
   }
-  if (typeof identitySecret !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(identitySecret)) {
-    return reject('telegram_secret_config_invalid');
+  if (
+    !/^[A-Za-z0-9_-]{1,256}$/.test(expectedSecret) ||
+    !/^[A-Za-z0-9_-]{32,256}$/.test(identitySecret)
+  ) return reject('telegram_secret_config_invalid');
+  const expected = Buffer.from(expectedSecret);
+  const supplied = Buffer.from(suppliedSecret);
+  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) {
+    return reject('telegram_secret_invalid');
   }
   return projectUpdate(input.config, identitySecret, input.body);
 };

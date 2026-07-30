@@ -1,23 +1,23 @@
 import {readFile} from 'node:fs/promises';
-import {createIncomingEventIngestionService} from '@fai-control-plane/application';
 import {
   createDatabase,
-  createPostgresIncomingEventInbox
+  createPostgresConversationStore
 } from '@fai-control-plane/db';
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
-import {createTelegramWebhookConfig} from '@fai-control-plane/integrations';
 import {
-  createPgBossProducer,
-  createTelemetryQueueSender
-} from './github-webhook-runtime';
+  createTelegramWebhookConfig,
+  telegramKeyedIdentifier,
+  type TelegramConversationBinding
+} from '@fai-control-plane/integrations';
 import {
   createTelegramWebhookHandler,
   type TelegramWebhookHandlerDependencies
 } from './telegram-webhook-handler';
 
+const integerPattern = /^-?[1-9][0-9]{0,19}$/;
+const positiveIntegerPattern = /^[1-9][0-9]{0,15}$/;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const positiveIntegerPattern = /^[1-9][0-9]{0,19}$/;
 const secretScope = Object.freeze(['telegram:webhook:verify']);
 const identitySecretScope = Object.freeze(['telegram:identity:keying']);
 
@@ -28,27 +28,56 @@ const required = (name: string): string => {
   }
   return value;
 };
-
 const requiredUuid = (name: string): string => {
   const value = required(name);
   if (!uuidPattern.test(value)) throw new Error(`Invalid UUID configuration: ${name}`);
   return value;
 };
-
-const requiredAllowlist = (name: string): number[] => {
-  const value = required(name);
-  const entries = value.split(',');
+const optionalTelegramUserId = (name: string): number | null => {
+  const value = process.env[name] || undefined;
+  if (value === undefined) return null;
+  if (!positiveIntegerPattern.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new Error(`Invalid Telegram user identity configuration: ${name}`);
+  }
+  return Number(value);
+};
+const launchHumanSubjects = (): Readonly<{vladimir: string; vitaliy: string}> => {
+  const bootstrap = required('FCP_BOOTSTRAP_HUMAN_SUBJECT');
+  const bootstrapId = bootstrap.match(/^github:user:([1-9][0-9]{0,15})$/)?.[1];
+  const operatorIds = required('FCP_OPERATOR_GITHUB_USER_IDS').split(',');
   if (
-    entries.length === 0 ||
-    entries.some((entry) => !positiveIntegerPattern.test(entry))
-  ) {
-    throw new Error(`Invalid Telegram allowlist configuration: ${name}`);
+    bootstrapId === undefined ||
+    operatorIds.length !== 2 ||
+    operatorIds.some((id) =>
+      !positiveIntegerPattern.test(id) || !Number.isSafeInteger(Number(id))) ||
+    new Set(operatorIds).size !== 2 ||
+    !operatorIds.includes(bootstrapId)
+  ) throw new Error('Launch human identity configuration is invalid.');
+  return {
+    vladimir: bootstrap,
+    vitaliy: `github:user:${operatorIds.find((id) => id !== bootstrapId)!}`
+  };
+};
+
+const optionalBinding = (
+  project: 'msa' | 'ascon',
+  conversationClass: 'internal' | 'client'
+): TelegramConversationBinding | null => {
+  const prefix = `TELEGRAM_${project.toUpperCase()}_${conversationClass.toUpperCase()}`;
+  const chatIdValue = process.env[`${prefix}_CHAT_ID`] || undefined;
+  const activatedAtValue = process.env[`${prefix}_ACTIVATED_AT`] || undefined;
+  if (chatIdValue === undefined && activatedAtValue === undefined) return null;
+  if (
+    chatIdValue === undefined ||
+    activatedAtValue === undefined ||
+    !integerPattern.test(chatIdValue)
+  ) throw new Error(`Invalid Telegram conversation binding: ${prefix}`);
+  const chatId = Number(chatIdValue);
+  const activatedAt = new Date(activatedAtValue);
+  if (!Number.isSafeInteger(chatId) || chatId === 0 || Number.isNaN(activatedAt.getTime())) {
+    throw new Error(`Invalid Telegram conversation binding: ${prefix}`);
   }
-  const ids = entries.map(Number);
-  if (ids.some((id) => !Number.isSafeInteger(id)) || new Set(ids).size !== ids.length) {
-    throw new Error(`Invalid Telegram allowlist configuration: ${name}`);
-  }
-  return ids;
+  return {project, conversationClass, chatId, activatedAt};
 };
 
 const createTelegramFileSecretsProvider = (
@@ -93,7 +122,6 @@ const createDependencies = async (): Promise<TelegramWebhookHandlerDependencies>
     reference: identitySecretFile,
     scope: identitySecretScope
   });
-  const workspaceId = requiredUuid('FCP_WORKSPACE_ID');
   const projectIds = Object.freeze({
     msa: requiredUuid('TELEGRAM_MSA_PROJECT_ID'),
     ascon: requiredUuid('TELEGRAM_ASCON_PROJECT_ID')
@@ -101,24 +129,57 @@ const createDependencies = async (): Promise<TelegramWebhookHandlerDependencies>
   if (projectIds.msa === projectIds.ascon) {
     throw new Error('Telegram project configuration must contain distinct projects.');
   }
+  const bindings = [
+    optionalBinding('msa', 'internal'),
+    optionalBinding('msa', 'client'),
+    optionalBinding('ascon', 'internal'),
+    optionalBinding('ascon', 'client')
+  ].filter((binding): binding is TelegramConversationBinding => binding !== null);
+  if (bindings.length === 0) throw new Error('No Telegram conversation binding is configured.');
   const config = createTelegramWebhookConfig({
     webhookSecretRef,
     identitySecretRef,
-    allowedUserIds: requiredAllowlist('TELEGRAM_ALLOWED_USER_IDS'),
-    allowedPrivateChatIds: requiredAllowlist('TELEGRAM_ALLOWED_PRIVATE_CHAT_IDS')
+    bindings
   });
-  const {db, pool} = createDatabase(required('DATABASE_URL'));
+  const {db} = createDatabase(required('DATABASE_URL'));
+  const secrets = createTelegramFileSecretsProvider(webhookSecretRef, identitySecretRef);
+  const identitySecret = (await secrets.resolve(
+    identitySecretRef, 'telegram.identity.keying'
+  )).value;
+  const conversations = createPostgresConversationStore(db);
+  const rosterSubjects = launchHumanSubjects();
+  const workspaceId = requiredUuid('FCP_WORKSPACE_ID');
+  const identityInputs = [
+    {
+      actorExternalSubject: rosterSubjects.vladimir,
+      userId: optionalTelegramUserId('TELEGRAM_VLADIMIR_USER_ID')
+    },
+    {
+      actorExternalSubject: rosterSubjects.vitaliy,
+      userId: optionalTelegramUserId('TELEGRAM_VITALIY_USER_ID')
+    },
+    {
+      actorExternalSubject: 'agent:hermes:v1',
+      userId: optionalTelegramUserId('TELEGRAM_HERMES_USER_ID')
+    }
+  ];
+  await conversations.reconcileIdentities(workspaceId, 'telegram', identityInputs.map((identity) => ({
+    actorExternalSubject: identity.actorExternalSubject,
+    externalSubject: identity.userId === null
+      ? null
+      : telegramKeyedIdentifier(identitySecret, 'user', identity.userId)
+  })));
+  await conversations.reconcileBindings('telegram', Object.values(projectIds), bindings.map((binding) => ({
+    projectId: projectIds[binding.project],
+    conversationClass: binding.conversationClass,
+    provider: 'telegram',
+    externalRef: telegramKeyedIdentifier(identitySecret, 'chat', binding.chatId),
+    activatedAt: binding.activatedAt
+  })));
   return {
-    workspaceId,
-    projectIds,
     config,
-    secrets: createTelegramFileSecretsProvider(webhookSecretRef, identitySecretRef),
-    ingestion: createIncomingEventIngestionService({
-      inbox: createPostgresIncomingEventInbox(
-        db,
-        createTelemetryQueueSender(createPgBossProducer(pool))
-      )
-    })
+    secrets,
+    conversations
   };
 };
 
