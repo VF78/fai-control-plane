@@ -12,6 +12,7 @@ import type {
   RuntimePolicyRuleId,
   RuntimeProfile
 } from './index';
+import type {RuntimeSettingsAdapter} from './runtime-adapter';
 
 const MAX_TIMEBOX_MINUTES = 120;
 const MAX_PROMPT_BYTES = 256 * 1024;
@@ -139,6 +140,11 @@ export type CodexAgentRuntimeOptions = Readonly<{
   executor?: ProcessExecutor;
 }>;
 
+export type CodexRuntimeSettings = Readonly<{
+  codexHome: string;
+  environment: CodexProcessEnvironment;
+}>;
+
 export class CodexRuntimeInputError extends Error {
   readonly code: string;
 
@@ -261,6 +267,29 @@ const validateEnvironment = (
     }
   }
   return supplied;
+};
+
+export const codexRuntimeSettingsAdapter: RuntimeSettingsAdapter<CodexRuntimeSettings> = {
+  runtimeId: 'codex-cli',
+  validateSettings(value) {
+    try {
+      if (
+        typeof value !== 'object' || value === null || Array.isArray(value) ||
+        Object.keys(value).length !== 2 ||
+        !Object.hasOwn(value, 'codexHome') ||
+        !Object.hasOwn(value, 'environment')
+      ) return null;
+      const settings = value as Readonly<Record<string, unknown>>;
+      validateAbsoluteNormalizedPath(settings.codexHome, 'codex_home');
+      const environment = validateEnvironment(settings.environment);
+      return {
+        codexHome: settings.codexHome as string,
+        environment: environment as CodexProcessEnvironment
+      };
+    } catch {
+      return null;
+    }
+  }
 };
 
 const validateInput = (input: AgentRuntimeInput): void => {
