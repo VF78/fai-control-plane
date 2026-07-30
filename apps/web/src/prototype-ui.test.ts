@@ -112,6 +112,21 @@ it('renders persisted agent registrations and systems facts without inferring ru
   expect(detail).toContain('action="/api/agent-profiles/hermes"');
 });
 
+it('renders project membership and provider-confirmed grant facts in the access detail', () => {
+  const data = {
+    portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
+    project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()}, hermesAgentProfileId: null, snapshot: null, synchronizedAt: null, workItems: []}},
+    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', role: 'project_owner', active: true, version: 2}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], resourceGrants: [{id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), version: 3}], agentSystems: [], requests: [], secretRefs: [], policy: [], hermes: null, sharing: {enabled: false, projects: [], grants: []}}}
+  } as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'access', project: 'msa', taskId: null, runId: null, agentId: null, accessActorId: 'actor-1', scope: {environment: null, from: null, to: null}}, data}));
+
+  expect(markup).toContain('People &amp; agents');
+  expect(markup).toContain('project owner');
+  expect(markup).toContain('Desired vs provider-confirmed access');
+  expect(markup).toContain('github');
+  expect(markup).toContain('href="/projects/msa/access/actor-1"');
+});
+
 it('preserves scope and keeps the run handoff separate from an absent approval', () => {
   const data = {
     portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null,

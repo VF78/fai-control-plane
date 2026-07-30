@@ -6,6 +6,7 @@ import {
 } from '@fai-control-plane/application';
 import {
   accessRequests,
+  actorExternalIdentities,
   actors,
   agentProfiles,
   agentProfileInstructionVersions,
@@ -28,6 +29,7 @@ import {
   projectTrackerRepositoryScopes,
   projects,
   projectMemberships,
+  resourceAccessGrants,
   runtimeRegistrations,
   runbooks,
   riskSignalDispositionEvents,
@@ -1057,6 +1059,9 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
 
 export type AccessData = Readonly<{
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
+  memberships: readonly Readonly<{projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; role: string; active: boolean; version: number}>[];
+  externalIdentities: readonly Readonly<{actorId: string; provider: string; active: boolean}>[];
+  resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; desiredLevel: string; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; version: number}>[];
   agentSystems: readonly Readonly<{
     actorId: string;
     profiles: readonly Readonly<{
@@ -1126,6 +1131,9 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
   if (workspaceIds.length === 0) {
     return {
       actors: [],
+      memberships: [],
+      externalIdentities: [],
+      resourceGrants: [],
       agentSystems: [],
       requests: [],
       secretRefs: [],
@@ -1135,7 +1143,7 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
     };
   }
   const projectIds = configuredProjects.map(({id}) => id);
-  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, hermesProfiles, persistedProfiles, registrations, workspaceInstructions, profileInstructions, profileRuns] = await Promise.all([
+  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, hermesProfiles, persistedProfiles, registrations, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
     db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt})
@@ -1198,7 +1206,17 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
       .innerJoin(taskPackets, eq(taskPackets.id, agentRuns.taskPacketId))
       .leftJoin(agentRunReceipts, eq(agentRunReceipts.agentRunId, agentRuns.id))
       .where(and(inArray(agentProfiles.workspaceId, workspaceIds), inArray(taskPackets.projectId, projectIds)))
-      .orderBy(desc(agentRuns.updatedAt), agentRuns.id)
+      .orderBy(desc(agentRuns.updatedAt), agentRuns.id),
+    db.select({projectId: projectMemberships.projectId, actorId: projectMemberships.actorId, role: projectMemberships.role, active: projectMemberships.active, version: projectMemberships.version})
+      .from(projectMemberships).where(inArray(projectMemberships.projectId, projectIds))
+      .orderBy(projectMemberships.projectId, projectMemberships.actorId),
+    db.select({actorId: actorExternalIdentities.actorId, provider: actorExternalIdentities.provider, active: actorExternalIdentities.active})
+      .from(actorExternalIdentities).innerJoin(actors, eq(actors.id, actorExternalIdentities.actorId))
+      .where(inArray(actors.workspaceId, workspaceIds))
+      .orderBy(actorExternalIdentities.actorId, actorExternalIdentities.provider),
+    db.select({id: resourceAccessGrants.id, projectId: resourceAccessGrants.projectId, actorId: resourceAccessGrants.actorId, resourceType: resourceAccessGrants.resourceType, desiredLevel: resourceAccessGrants.desiredLevel, observedProvider: resourceAccessGrants.observedProvider, observedLevel: resourceAccessGrants.observedLevel, observedAt: resourceAccessGrants.observedAt, version: resourceAccessGrants.version})
+      .from(resourceAccessGrants).where(inArray(resourceAccessGrants.projectId, projectIds))
+      .orderBy(resourceAccessGrants.projectId, resourceAccessGrants.actorId, resourceAccessGrants.resourceType)
   ]);
   const grantIds = grants.map(({shareId}) => shareId);
   const scopeRows = grantIds.length === 0
@@ -1261,6 +1279,16 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
   }));
   return {
     actors: persistedActors,
+    memberships: memberships.flatMap((membership) => {
+      const project = projectById.get(membership.projectId);
+      return project === undefined ? [] : [{...membership, project: project.name, projectSlug: project.slug}];
+    }),
+    // Provider subjects are deliberately omitted: they are locators, not operator-facing access facts.
+    externalIdentities,
+    resourceGrants: resourceGrants.flatMap((grant) => {
+      const project = projectById.get(grant.projectId);
+      return project === undefined ? [] : [{...grant, project: project.name, projectSlug: project.slug}];
+    }),
     agentSystems,
     requests: requests.map((request) => ({...request, requester: request.requester ?? 'No recorded requester'})),
     secretRefs: persistedSecretRefs,

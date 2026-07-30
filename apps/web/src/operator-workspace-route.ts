@@ -31,5 +31,6 @@ export function workspaceRoute(path: readonly string[], query: WorkspaceQuery): 
   if (tab === 'runs' && path.length === 4 && exact(path[3]) !== null) return {screen: 'run', project: slug, taskId: null, runId: path[3]!, agentId: null, scope};
   if (tab === 'chats' && path.length === 3) return {screen: 'chats', project: slug, taskId: null, runId: null, agentId: null, scope};
   if (tab === 'access' && path.length === 3) return {screen: 'access', project: slug, taskId: null, runId: null, agentId: null, scope};
+  if (tab === 'access' && path.length === 4 && exact(path[3]) !== null) return {screen: 'access', project: slug, taskId: null, runId: null, agentId: null, accessActorId: path[3]!, scope};
   return null;
 }
