@@ -34,7 +34,9 @@ it('requires an exact CSRF form and sends only the authenticated operator and se
     request(`_csrf=${csrfToken}`), workItemId, dependencies
   );
   expect(exact.status).toBe(303);
-  expect(exact.headers.get('location')).toBe('https://control.example.test/runs?project=msa');
+  expect(exact.headers.get('location')).toBe(
+    `https://control.example.test/projects/msa/tasks/${workItemId}`
+  );
   expect(create).toHaveBeenCalledWith({workspaceId, actorId, workItemId});
 
   const inexact = await createCodingTaskPacketCommand(

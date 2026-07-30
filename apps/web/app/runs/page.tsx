@@ -1,36 +1,29 @@
-import {cookies} from 'next/headers';
-import {isOperatorProjectSlug, loadRunsData, type OperatorProjectSlug} from '../../src/operator-data';
-import {currentOperatorSession} from '../../src/operator-auth-runtime';
-import {OPERATOR_SESSION_COOKIE} from '../../src/operator-auth';
-import {LoadState, OperatorLogin, OperatorShell, PageHeader, RunsView, State} from '../../src/operator-ui';
+import {redirect} from 'next/navigation';
+import {isOperatorProjectSlug} from '../../src/operator-data';
 
 export const dynamic = 'force-dynamic';
-
-const scopeFrom = (value: string | string[] | undefined): OperatorProjectSlug | null | undefined =>
-  value === undefined ? undefined : typeof value === 'string' && isOperatorProjectSlug(value) ? value : null;
-
-const handoffFrom = (
-  value: string | string[] | undefined
-): 'accepted' | 'stale' | 'forbidden' | 'not_found' | 'unavailable' | null =>
-  typeof value === 'string' &&
-  ['accepted', 'stale', 'forbidden', 'not_found', 'unavailable'].includes(value)
-    ? value as 'accepted' | 'stale' | 'forbidden' | 'not_found' | 'unavailable'
-    : null;
 
 export default async function RunsPage({searchParams}: {
   searchParams: Promise<{
     project?: string | string[];
     handoff?: string | string[];
+    run?: string | string[];
   }>;
 }) {
   const query = await searchParams;
-  const scope = scopeFrom(query.project);
-  const handoffResult = handoffFrom(query.handoff);
-  const cookieStore = await cookies();
-  const auth = await currentOperatorSession(cookieStore.get(OPERATOR_SESSION_COOKIE)?.value);
-  if (auth.enabled && auth.session === null) return <OperatorLogin />;
-  return <OperatorShell active="runs" scope={scope ?? undefined} session={auth.session}>
-    <PageHeader eyebrow="Execution ledger" title="Runs & Approvals" detail={scope === undefined ? 'MSA and ASCON canonical scope' : scope === null ? 'Unsupported project scope' : `${scope.toUpperCase()} canonical scope`} />
-    {scope === null ? <State title="Project scope is unavailable">Only MSA and ASCON are available in this operator view.</State> : <LoadState load={await loadRunsData(scope)}>{(data) => <RunsView data={data} csrfToken={auth.session?.csrfToken ?? null} handoffResult={handoffResult} operatorActorId={auth.session?.actorId ?? null} />}</LoadState>}
-  </OperatorShell>;
+  const project = typeof query.project === 'string' && isOperatorProjectSlug(query.project)
+    ? query.project
+    : null;
+  if (project === null) redirect('/dashboard');
+  const run = typeof query.run === 'string' && query.run.length > 0 && query.run.length <= 200
+    ? query.run
+    : null;
+  const handoff = typeof query.handoff === 'string' &&
+    ['accepted', 'stale', 'forbidden', 'not_found', 'unavailable'].includes(query.handoff)
+    ? query.handoff
+    : null;
+  const destination = run === null
+    ? `/projects/${project}/runs`
+    : `/projects/${project}/runs/${encodeURIComponent(run)}`;
+  redirect(handoff === null ? destination : `${destination}?handoff=${handoff}`);
 }

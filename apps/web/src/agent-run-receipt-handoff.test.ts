@@ -114,7 +114,7 @@ it('accepts a valid bound successful receipt and derives the fixed QA transition
 
   expect(response.status).toBe(303);
   expect(response.headers.get('location')).toBe(
-    `https://control.example.test/runs?project=msa&handoff=accepted&run=${runId}#run-${runId}`
+    `https://control.example.test/projects/msa/runs/${runId}?handoff=accepted`
   );
   expect(transition).toHaveBeenCalledWith({
     workspaceId,

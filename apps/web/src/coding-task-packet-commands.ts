@@ -91,7 +91,10 @@ export async function createCodingTaskPacketCommand(
       ...selection
     });
     if (result.status === 'created' || result.status === 'replayed') {
-      const location = new URL(`/runs?project=${result.projectSlug}`, request.url).toString();
+      const location = new URL(
+        `/projects/${result.projectSlug}/tasks/${workItemId}`,
+        request.url
+      ).toString();
       return new Response(null, {status: 303, headers: {...noStore, location}});
     }
     return result.status === 'forbidden'

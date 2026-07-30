@@ -935,7 +935,7 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       const failedRun = latestRun?.status === 'failed' ? latestRun : undefined;
       const packet = unconfirmedPacketByItem.get(item.id);
       const handoff = approval !== undefined
-        ? {label: 'Approval pending', state: 'pending' as const, kind: 'approval' as const, targetId: approval.id, href: `/runs?project=${slug}#approval-${approval.id}`}
+        ? {label: 'Approval pending', state: 'pending' as const, kind: 'approval' as const, targetId: approval.id, href: `/projects/${slug}/tasks/${item.id}`}
         : activeRun !== undefined
           ? {
               label: activeRun.status === 'waiting_approval'
@@ -946,14 +946,14 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
                 : activeRun.status === 'running' ? 'running' as const : 'queued' as const,
               kind: 'run' as const,
               targetId: activeRun.id,
-              href: `/runs?project=${slug}#run-${activeRun.id}`
+              href: `/projects/${slug}/runs/${activeRun.id}`
             }
           : completedRun !== undefined
-            ? {label: 'Run completed', state: 'done' as const, kind: 'run' as const, targetId: completedRun.id, href: `/runs?project=${slug}#run-${completedRun.id}`}
+            ? {label: 'Run completed', state: 'done' as const, kind: 'run' as const, targetId: completedRun.id, href: `/projects/${slug}/runs/${completedRun.id}`}
           : failedRun !== undefined && (packet === undefined || failedRun.updatedAt >= packet.createdAt)
-            ? {label: 'Run failed', state: 'failed' as const, kind: 'run' as const, targetId: failedRun.id, href: `/runs?project=${slug}#run-${failedRun.id}`}
+            ? {label: 'Run failed', state: 'failed' as const, kind: 'run' as const, targetId: failedRun.id, href: `/projects/${slug}/runs/${failedRun.id}`}
             : packet !== undefined
-              ? {label: 'Packet needs confirmation', state: 'queued' as const, kind: 'packet' as const, targetId: packet.id, href: `/runs?project=${slug}#packet-${packet.id}`}
+              ? {label: 'Packet needs confirmation', state: 'queued' as const, kind: 'packet' as const, targetId: packet.id, href: `/projects/${slug}/tasks/${item.id}#packet-${packet.id}`}
               : null;
       return [{
         ...item,
@@ -993,7 +993,7 @@ export type RunsData = Readonly<{
     environment: string; status: string; policyVersion: number; expiresAt: Date; decidedAt: Date | null;
   }>[];
   packets: readonly Readonly<{
-    id: string; project: string; projectSlug: OperatorProjectSlug; workItemTitle: string;
+    id: string; project: string; projectSlug: OperatorProjectSlug; workItemId: string; workItemTitle: string;
     frozenWorkItemVersion: number; currentWorkItemVersion: number; goal: string;
     acceptanceCriteria: readonly string[]; inScope: readonly string[]; outOfScope: readonly string[];
     relevantLinks: readonly string[]; relevantFiles: readonly string[]; allowedTools: readonly string[];

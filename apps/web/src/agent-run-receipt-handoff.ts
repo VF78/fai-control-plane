@@ -272,13 +272,13 @@ const redirectResult = (
   result: ReceiptHandoffResult
 ): Response => {
   const requestedScope = new URL(request.url).searchParams.get('project');
-  const location = new URL('/runs', request.url);
-  if (requestedScope === 'msa' || requestedScope === 'ascon') {
-    location.searchParams.set('project', requestedScope);
-  }
+  const location = new URL(
+    requestedScope === 'msa' || requestedScope === 'ascon'
+      ? `/projects/${requestedScope}/runs/${runId}`
+      : '/dashboard',
+    request.url
+  );
   location.searchParams.set('handoff', result);
-  location.searchParams.set('run', runId);
-  location.hash = `run-${runId}`;
   return new Response(null, {
     status: 303,
     headers: {...noStore, location: location.toString()}
