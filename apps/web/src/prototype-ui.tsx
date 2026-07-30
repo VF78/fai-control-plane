@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import type {CSSProperties, ReactNode} from 'react';
 import {
-  AlertTriangle, Bot, ChevronLeft, ChevronRight, CircleDot, FileCheck2, History,
-  FolderKanban, GitPullRequest, LayoutDashboard, ListChecks,
+  AlertTriangle, Bot, ChevronLeft, ChevronRight, CircleDot, ClipboardList, FileCheck2, History,
+  FolderKanban, GitPullRequest, LayoutDashboard, Link2, ListChecks,
   ServerCog, ShieldAlert, ShieldCheck, UsersRound, Workflow
 } from 'lucide-react';
 import {DeliveryJourneyAction, DeliveryProtocolEditor} from './delivery-controls';
@@ -13,6 +13,7 @@ import type {
   ProjectData, RunsData
 } from './operator-data';
 import {RiskDispositionControls} from './risk-disposition-controls';
+import {ProjectShareControls} from './project-share-controls';
 
 export type WorkspaceRoute = Readonly<{
   screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
@@ -211,6 +212,21 @@ function Access({route, project, access}: {route: PrototypeRoute; project: Proje
   const actorUrl = (actorId: string) => `/projects/${project.project.slug}/access/${actorId}${scopeQuery(route.scope)}`;
   return <><ProjectHeader route={route} project={project}/><div className={`fcp-access-layout${route.accessActorId === undefined || route.accessActorId === null ? '' : ' has-selection'}`}><aside className="fcp-access-master"><div className="fcp-section-head"><div><h2>People &amp; agents</h2><span>Project memberships</span></div></div>{actors.length === 0 ? <p className="fcp-empty-line">No project memberships observed.</p> : <div className="fcp-list">{actors.map((actor) => { const row = memberships.find((item) => item.actorId === actor.id)!; return <Link className="fcp-access-person" href={actorUrl(actor.id)} key={actor.id} aria-current={selected?.id === actor.id ? 'page' : undefined}><UsersRound aria-hidden="true" size={17}/><div><strong>{actor.displayName}</strong><small>{roleLabel(row.role)} · {actor.type}</small></div><Status value={row.active && actor.disabledAt === null ? 'ready' : 'blocked'}/><ChevronRight aria-hidden="true" size={16}/></Link>; })}</div>}</aside><main className="fcp-access-detail"><Link className="fcp-access-back" href={projectUrl(project.project.slug, 'access', route.scope)}><ChevronLeft aria-hidden="true" size={16}/>People &amp; agents</Link>{selected === null || membership === null ? <Blank title="Access not configured">No persisted membership connects a person or agent to this project.</Blank> : <><div className="fcp-page-title fcp-access-title"><div><h1>{selected.displayName}</h1><p>Access explanation from persisted membership, grant, and provider-observation records.</p></div><Status value={membership.active && selected.disabledAt === null ? 'ready' : 'blocked'}/></div><section className="fcp-section"><div className="fcp-section-head"><h2>Why this actor can access the project</h2><ShieldCheck aria-hidden="true" size={17}/></div><Summary items={[{label: 'Membership', value: membership.active ? roleLabel(membership.role) : 'Inactive'}, {label: 'Actor', value: selected.disabledAt === null ? 'Enabled' : 'Disabled'}, {label: 'External identity', value: identities.length === 0 ? 'Not observed' : `${identities.filter((item) => item.active).length} active`}, {label: 'Explicit grants', value: grants.length}]}/></section><section className="fcp-section"><div className="fcp-section-head"><h2>Resource grants</h2><span>Desired vs provider-confirmed access</span></div>{grants.length === 0 ? <p className="fcp-empty-line">No explicit resource grants observed. Membership is recorded, but connected resource access is Not configured.</p> : <div className="fcp-access-grants">{grants.map((grant) => <article key={grant.id}><div><strong>{resourceLabel(grant.resourceType)}</strong><small>Canonical desired: {grant.desiredLevel} · grant v{grant.version}</small></div><dl><div><dt>Membership baseline</dt><dd>{membership.active ? roleLabel(membership.role) : 'Inactive membership'}</dd></div><div><dt>Provider confirmation</dt><dd>{grant.observedLevel === null ? 'Not observed' : `${grant.observedLevel} · ${grant.observedProvider ?? 'Unknown provider'}`}</dd></div><div><dt>Observed</dt><dd>{date(grant.observedAt)}</dd></div></dl></article>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>External identities</h2><span>Provider binding metadata only</span></div>{identities.length === 0 ? <p className="fcp-empty-line">Not observed. No provider identity binding is recorded.</p> : <div className="fcp-identity-list">{identities.map((identity) => <span key={identity.provider}>{identity.provider} · {identity.active ? 'Active binding' : 'Inactive binding'}</span>)}</div>}</section>{selected.type !== 'agent' ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Agent registrations</h2><Bot aria-hidden="true" size={17}/></div>{profiles.length === 0 ? <p className="fcp-empty-line">Not observed. This agent has no persisted runtime profile.</p> : <div className="fcp-access-grants">{profiles.map((profile) => <article key={profile.id}><div><strong>{profile.runtimeId} · {profile.runtimeProfile}</strong><small>{profile.enabled ? 'Enabled profile' : 'Disabled profile'} · {profile.registrations.length} recorded project registration{profile.registrations.length === 1 ? '' : 's'}</small></div><dl><div><dt>Current work</dt><dd>{profile.latestRun === null ? 'Not observed' : profile.latestRun.status}</dd></div><div><dt>Last receipt</dt><dd>{profile.latestRun?.receipt === null || profile.latestRun?.receipt === undefined ? 'Not observed' : profile.latestRun.receipt.terminal}</dd></div><div><dt>Runtime liveness</dt><dd>Unknown (not observed)</dd></div></dl></article>)}</div>}</section>}</>}</main></div></>;
 }
+function AccessOperations({project, access, csrfToken}: {project: ProjectData; access: AccessData | null; csrfToken: string | null}) {
+  if (access === null) return null;
+  const shareProject = access.sharing.projects.find((item) => item.slug === project.project.slug);
+  const projectShares = access.sharing.grants.filter((grant) => grant.projectSlug === project.project.slug);
+  return <section className="fcp-access-operations" aria-label="Governed access operations">
+    <details className="fcp-access-operation">
+      <summary><Link2 aria-hidden="true" size={18}/><span><strong>Client sharing</strong><small>Scoped, expiring task-list links</small></span><b>{projectShares.filter((grant) => grant.active).length}</b><ChevronRight aria-hidden="true" size={16}/></summary>
+      <div>{shareProject === undefined ? <p className="fcp-empty-line">Sharing is Not configured for this project.</p> : <ProjectShareControls csrfToken={csrfToken} enabled={access.sharing.enabled} grants={projectShares} projects={[shareProject]} project={shareProject}/>}</div>
+    </details>
+    <details className="fcp-access-operation">
+      <summary><ClipboardList aria-hidden="true" size={18}/><span><strong>Access requests</strong><small>Workspace records; project binding is not recorded</small></span><b>{access.requests.length}</b><ChevronRight aria-hidden="true" size={16}/></summary>
+      <div>{access.requests.length === 0 ? <p className="fcp-empty-line">No persisted access requests are recorded.</p> : <div className="fcp-access-request-list">{access.requests.map((request) => <article key={request.id}><div><strong>{request.requester}</strong><small>{resourceLabel(request.targetSurface)} · {request.requestedScope.length === 0 ? 'Scope not observed' : request.requestedScope.join(', ')}</small></div><Status value={request.status}/><time>{request.expiresAt === null ? 'No expiry recorded' : `Expires ${date(request.expiresAt)}`}</time></article>)}</div>}</div>
+    </details>
+  </section>;
+}
 function SystemsSummary({health}: {health: HealthData | null}) {
   if (health === null) return <Blank title="Systems data is unavailable">Persisted operational facts could not be loaded.</Blank>;
   const unhealthy = health.jobs.filter((job) => job.status === 'unhealthy').length;
@@ -238,7 +254,7 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
     case 'runs': return <Runs route={route} project={project} runs={runs}/>;
     case 'run': return <RunDetail route={route} project={project} runs={runs}/>;
     case 'chats': return <Chats route={route} project={project}/>;
-    case 'access': return <Access route={route} project={project} access={access}/>;
+    case 'access': return <><Access route={route} project={project} access={access}/><AccessOperations project={project} access={access} csrfToken={data.csrfToken ?? null}/></>;
     default: return null;
   }
 }
