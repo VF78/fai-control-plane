@@ -18,16 +18,20 @@ export function ProjectShareControls({
   csrfToken,
   enabled,
   grants,
-  projects
+  projects,
+  project: fixedProject
 }: Readonly<{
   csrfToken: string | null;
   enabled: boolean;
   grants: Sharing['grants'];
   projects: Sharing['projects'];
+  /** Project surfaces must not select or revoke a share in another project. */
+  project?: Sharing['projects'][number] | undefined;
 }>) {
   const router = useRouter();
+  const availableProjects = fixedProject === undefined ? projects : [fixedProject];
   const [projectSlug, setProjectSlug] = useState<OperatorProjectSlug>(
-    projects[0]?.slug ?? 'msa'
+    availableProjects[0]?.slug ?? 'msa'
   );
   const [selectedIds, setSelectedIds] = useState<readonly string[]>([]);
   const [expiresAt, setExpiresAt] = useState('');
@@ -42,7 +46,10 @@ export function ProjectShareControls({
       max: localDateTime(new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000))
     };
   });
-  const project = projects.find(({slug}) => slug === projectSlug);
+  const project = fixedProject ?? availableProjects.find(({slug}) => slug === projectSlug);
+  const visibleGrants = fixedProject === undefined
+    ? grants
+    : grants.filter((grant) => grant.projectSlug === fixedProject.slug);
   const canMutate = enabled && csrfToken !== null;
 
   const selectProject = (slug: OperatorProjectSlug) => {
@@ -70,7 +77,7 @@ export function ProjectShareControls({
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           _csrf: csrfToken,
-          projectSlug,
+          projectSlug: project?.slug ?? projectSlug,
           workItemIds: selectedIds,
           expiresAt: new Date(expiresAt).toISOString()
         })
@@ -139,9 +146,9 @@ export function ProjectShareControls({
     </header>
     {!enabled ? <p className="muted">Public sharing is unavailable.</p>
       : csrfToken === null ? <p className="muted">An authenticated operator session is required.</p>
-      : projects.length === 0 ? <p className="muted">No configured project is available for sharing.</p>
+      : availableProjects.length === 0 ? <p className="muted">No configured project is available for sharing.</p>
       : <form className="share-form" onSubmit={createShare}>
-          <label className="share-field">
+          {fixedProject === undefined ? <label className="share-field">
             <span>Project</span>
             <select
               disabled={pending}
@@ -149,10 +156,10 @@ export function ProjectShareControls({
                 selectProject(event.target.value as OperatorProjectSlug)}
               value={projectSlug}
             >
-              {projects.map((item) =>
+              {availableProjects.map((item) =>
                 <option key={item.slug} value={item.slug}>{item.name}</option>)}
             </select>
-          </label>
+          </label> : <p className="share-project-scope">Sharing applies only to {fixedProject.name}.</p>}
           <label className="share-field">
             <span>Expires</span>
             <input
@@ -197,10 +204,10 @@ export function ProjectShareControls({
       {copyMessage === null ? null : <p aria-live="polite" className={copyMessage === 'Share URL copied.' ? 'share-copy-message' : 'share-copy-message failed'}>{copyMessage}</p>}
     </div>}
     {message === null ? null : <p aria-live="polite" className="share-message">{message}</p>}
-    {grants.length === 0 ? <p className="muted share-empty">No share grants are recorded.</p>
-      : <div className="share-grant-list">{grants.map((grant) => {
+    {visibleGrants.length === 0 ? <p className="muted share-empty">No share grants are recorded for this project.</p>
+      : <div className="share-grant-list">{visibleGrants.map((grant) => {
           return <article className="share-grant-row" key={grant.shareId}>
-            <strong>{grant.project}</strong>
+            <strong>{fixedProject === undefined ? grant.project : 'Share link'}</strong>
             <span>{grant.scopedItemCount} scoped tasks</span>
             <span>Created: {stamp(grant.createdAt)}</span>
             <span>Expires: {stamp(grant.expiresAt)}</span>

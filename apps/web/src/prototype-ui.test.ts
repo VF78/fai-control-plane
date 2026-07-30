@@ -1,9 +1,11 @@
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {derivePortfolioProjectMetrics} from './operator-data';
 import {workspaceRoute} from './operator-workspace-route';
 import {WorkspaceShell, type WorkspaceData} from './prototype-ui';
+
+vi.mock('next/navigation', () => ({useRouter: () => ({refresh: vi.fn()})}));
 
 it('maps only canonical workspace routes and preserves scope on deep links', () => {
   expect(workspaceRoute(['projects', 'msa', 'tasks', 'task-1'], {
@@ -114,9 +116,9 @@ it('renders persisted agent registrations and systems facts without inferring ru
 
 it('renders project membership and provider-confirmed grant facts in the access detail', () => {
   const data = {
-    portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
+    portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf',
     project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()}, hermesAgentProfileId: null, snapshot: null, synchronizedAt: null, workItems: []}},
-    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', role: 'project_owner', active: true, version: 2}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], resourceGrants: [{id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), version: 3}], agentSystems: [], requests: [], secretRefs: [], policy: [], hermes: null, sharing: {enabled: false, projects: [], grants: []}}}
+    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', role: 'project_owner', active: true, version: 2}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], resourceGrants: [{id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), version: 3}], agentSystems: [], requests: [{id: 'request-1', requester: 'Vladimir', targetSurface: 'repository', requestedScope: ['msa'], status: 'pending', expiresAt: null, decidedAt: null}], secretRefs: [], policy: [], hermes: null, sharing: {enabled: true, projects: [{name: 'MSA', slug: 'msa', workItems: []}], grants: []}}}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'access', project: 'msa', taskId: null, runId: null, agentId: null, accessActorId: 'actor-1', scope: {environment: null, from: null, to: null}}, data}));
 
@@ -125,6 +127,11 @@ it('renders project membership and provider-confirmed grant facts in the access 
   expect(markup).toContain('Desired vs provider-confirmed access');
   expect(markup).toContain('github');
   expect(markup).toContain('href="/projects/msa/access/actor-1"');
+  expect(markup).toContain('Client sharing');
+  expect(markup).toContain('Sharing applies only to MSA');
+  expect(markup).toContain('Access requests');
+  expect(markup).toContain('Workspace records; project binding is not recorded');
+  expect(markup).not.toContain('Secret refs');
 });
 
 it('preserves scope and keeps the run handoff separate from an absent approval', () => {
