@@ -39,7 +39,7 @@ import type {
   UnitOfWork,
   WorkItem
 } from '@fai-control-plane/domain';
-import {and, eq, exists, isNull, lte, sql} from 'drizzle-orm';
+import {and, eq, exists, inArray, isNull, lte, sql} from 'drizzle-orm';
 import type {ExtractTablesWithRelations, SQL} from 'drizzle-orm';
 import type {
   NodePgDatabase,
@@ -386,6 +386,36 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
         'Runtime registration key must be a bounded external reference.'
       );
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
+      if (mutation.replacementTarget !== undefined) {
+        const target = mutation.replacementTarget.aggregate;
+        uuid(target.id, 'runtimeRegistration.replacementTarget.id');
+        uuid(target.projectId, 'runtimeRegistration.replacementTarget.projectId');
+        uuid(target.actorId, 'runtimeRegistration.replacementTarget.actorId');
+        uuid(target.agentProfileId, 'runtimeRegistration.replacementTarget.agentProfileId');
+        invariant(
+          /^[a-z][a-z0-9_-]{0,63}$/.test(target.provider),
+          'Replacement target provider must be a canonical provider key.'
+        );
+        invariant(
+          target.runtimeKey.length > 0 && target.runtimeKey.length <= 256 &&
+            !/[\u0000-\u001f\u007f]/.test(target.runtimeKey),
+          'Replacement target key must be a bounded external reference.'
+        );
+        validateVersionMode(
+          mutation.replacementTarget.expectedPersistedVersion,
+          target.version
+        );
+        invariant(
+          mutation.expectedPersistedVersion !== null &&
+            mutation.aggregate.id !== target.id &&
+            mutation.aggregate.projectId === target.projectId &&
+            mutation.aggregate.actorId !== target.actorId &&
+            mutation.aggregate.agentProfileId !== target.agentProfileId &&
+            !mutation.aggregate.enabled &&
+            target.enabled,
+          'Replacement must atomically switch two registrations for different agents.'
+        );
+      }
       break;
   }
 };
@@ -1490,6 +1520,7 @@ const runtimeRegistrationSubjectIsScoped = async (
   if (!await workspaceHasProject(tx, workspaceId, registration.projectId)) return false;
   const [binding] = await tx.select({
     profileId: schema.agentProfiles.id,
+    profileEnabled: schema.agentProfiles.enabled,
     actorDisabledAt: schema.actors.disabledAt
   })
     .from(schema.actors)
@@ -1508,7 +1539,7 @@ const runtimeRegistrationSubjectIsScoped = async (
     ));
   if (binding === undefined) return false;
   if (!registration.enabled) return true;
-  if (binding.actorDisabledAt !== null) return false;
+  if (binding.actorDisabledAt !== null || !binding.profileEnabled) return false;
   const [membership] = await tx.select({id: schema.projectMemberships.id})
     .from(schema.projectMemberships)
     .where(and(
@@ -1526,9 +1557,14 @@ const persistRuntimeRegistration = async (
   mutation: Extract<CanonicalMutation, {aggregateType: 'runtime_registration'}>
 ): Promise<PersistedAggregate | PersistenceFailure> => {
   const aggregate = mutation.aggregate;
+  const replacement = mutation.replacementTarget;
   if (!await runtimeRegistrationSubjectIsScoped(tx, workspaceId, aggregate)) {
     return {status: 'not_found'};
   }
+  if (
+    replacement !== undefined &&
+    !await runtimeRegistrationSubjectIsScoped(tx, workspaceId, replacement.aggregate)
+  ) return {status: 'not_found'};
   if (mutation.expectedPersistedVersion === null) {
     const [row] = await tx.insert(schema.runtimeRegistrations).values({
       id: aggregate.id,
@@ -1547,6 +1583,76 @@ const persistRuntimeRegistration = async (
           cas: {expectedPersistedVersion: null, persistedVersion: row.version},
           projectId: aggregate.projectId
         };
+  }
+  if (replacement !== undefined) {
+    const rows = await tx.select({
+      id: schema.runtimeRegistrations.id,
+      projectId: schema.runtimeRegistrations.projectId,
+      actorId: schema.runtimeRegistrations.actorId,
+      agentProfileId: schema.runtimeRegistrations.agentProfileId,
+      enabled: schema.runtimeRegistrations.enabled,
+      version: schema.runtimeRegistrations.version
+    }).from(schema.runtimeRegistrations).where(and(
+      inArray(schema.runtimeRegistrations.id, [
+        aggregate.id,
+        replacement.aggregate.id
+      ]),
+      eq(schema.runtimeRegistrations.projectId, aggregate.projectId)
+    )).orderBy(schema.runtimeRegistrations.id).for('update');
+    if (rows.length !== 2) return {status: 'not_found'};
+    const source = rows.find((row) => row.id === aggregate.id);
+    const target = rows.find((row) => row.id === replacement.aggregate.id);
+    if (
+      source === undefined ||
+      target === undefined ||
+      source.actorId !== aggregate.actorId ||
+      source.agentProfileId !== aggregate.agentProfileId ||
+      target.actorId !== replacement.aggregate.actorId ||
+      target.agentProfileId !== replacement.aggregate.agentProfileId ||
+      source.version !== mutation.expectedPersistedVersion ||
+      target.version !== replacement.expectedPersistedVersion ||
+      !source.enabled ||
+      target.enabled
+    ) {
+      return {
+        status: 'version_conflict',
+        expectedPersistedVersion: mutation.expectedPersistedVersion,
+        persistedVersion: source?.version ?? null
+      };
+    }
+    const switchedAt = new Date();
+    const [sourceRow] = await tx.update(schema.runtimeRegistrations).set({
+      enabled: false,
+      version: sql`${schema.runtimeRegistrations.version} + 1`,
+      updatedAt: switchedAt
+    }).where(and(
+      eq(schema.runtimeRegistrations.id, aggregate.id),
+      eq(schema.runtimeRegistrations.version, mutation.expectedPersistedVersion)
+    )).returning({version: schema.runtimeRegistrations.version});
+    const [targetRow] = await tx.update(schema.runtimeRegistrations).set({
+      enabled: true,
+      version: sql`${schema.runtimeRegistrations.version} + 1`,
+      updatedAt: switchedAt
+    }).where(and(
+      eq(schema.runtimeRegistrations.id, replacement.aggregate.id),
+      eq(
+        schema.runtimeRegistrations.version,
+        replacement.expectedPersistedVersion
+      )
+    )).returning({version: schema.runtimeRegistrations.version});
+    invariant(
+      sourceRow?.version === aggregate.version &&
+        targetRow?.version === replacement.aggregate.version,
+      'Locked runtime replacement CAS did not update both registrations.'
+    );
+    return {
+      status: 'persisted',
+      cas: {
+        expectedPersistedVersion: mutation.expectedPersistedVersion,
+        persistedVersion: sourceRow.version
+      },
+      projectId: aggregate.projectId
+    };
   }
   const [row] = await tx.update(schema.runtimeRegistrations).set({
     provider: aggregate.provider,

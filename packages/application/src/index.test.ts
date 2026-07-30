@@ -193,7 +193,15 @@ class FakeUnitOfWork implements UnitOfWork {
         if (mutation.aggregateType === 'project_membership') this.projectMemberships.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'actor_external_identity') this.actorExternalIdentities.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'resource_access_grant') this.resourceAccessGrants.set(mutation.aggregateId, mutation.aggregate);
-        if (mutation.aggregateType === 'runtime_registration') this.runtimeRegistrations.set(mutation.aggregateId, mutation.aggregate);
+        if (mutation.aggregateType === 'runtime_registration') {
+          this.runtimeRegistrations.set(mutation.aggregateId, mutation.aggregate);
+          if (mutation.replacementTarget !== undefined) {
+            this.runtimeRegistrations.set(
+              mutation.replacementTarget.aggregate.id,
+              mutation.replacementTarget.aggregate
+            );
+          }
+        }
         return {status: 'persisted' as const, mutation: {cas: {expectedPersistedVersion: mutation.expectedPersistedVersion, persistedVersion: mutation.aggregateType === 'task_packet' ? 1 : mutation.aggregate.version}, audit: {} as never} as never};
       },
       persistApprovalRequired: async ({outcome}) => {
@@ -1006,6 +1014,98 @@ describe('canonical command service', () => {
       version: 3
     });
     expect(uow.mutations).toHaveLength(3);
+  });
+
+  it('replaces runtime registrations with one canonical mutation and receipt', async () => {
+    const uow = new FakeUnitOfWork();
+    const source = {
+      id: id(),
+      projectId,
+      actorId: id(),
+      agentProfileId: id(),
+      provider: 'provider_neutral',
+      runtimeKey: 'source-runtime',
+      enabled: true,
+      version: 2
+    };
+    const target = {
+      ...source,
+      id: id(),
+      actorId: id(),
+      agentProfileId: id(),
+      runtimeKey: 'target-runtime',
+      enabled: false,
+      version: 4
+    };
+    uow.runtimeRegistrations.set(source.id, source);
+    uow.runtimeRegistrations.set(target.id, target);
+    const replacement = command('runtime_registration.replace', {
+      projectId,
+      sourceRegistrationId: source.id,
+      sourceExpectedVersion: 2,
+      targetRegistrationId: target.id,
+      targetExpectedVersion: 4
+    });
+
+    await expect(serviceFor(uow).execute(replacement)).resolves.toMatchObject({
+      status: 'completed',
+      receipt: {
+        result: {
+          ok: true,
+          value: {
+            source: {id: source.id, enabled: false, version: 3},
+            target: {id: target.id, enabled: true, version: 5}
+          }
+        }
+      }
+    });
+    await expect(serviceFor(uow).execute(replacement)).resolves.toMatchObject({
+      status: 'replayed'
+    });
+    expect(uow.runtimeRegistrations.get(source.id)).toMatchObject({
+      enabled: false,
+      version: 3
+    });
+    expect(uow.runtimeRegistrations.get(target.id)).toMatchObject({
+      enabled: true,
+      version: 5
+    });
+    expect(uow.mutations).toHaveLength(1);
+    expect(uow.mutations[0]).toMatchObject({
+      mutation: {
+        aggregateId: source.id,
+        replacementTarget: {
+          expectedPersistedVersion: 4,
+          aggregate: {id: target.id}
+        }
+      },
+      audit: {action: 'runtime_registration.replace'}
+    });
+
+    const stale = new FakeUnitOfWork();
+    stale.runtimeRegistrations.set(source.id, source);
+    stale.runtimeRegistrations.set(target.id, target);
+    await expect(serviceFor(stale).execute(command(
+      'runtime_registration.replace',
+      {...replacement.payload, targetExpectedVersion: 3}
+    ))).resolves.toMatchObject({
+      receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}
+    });
+    expect(stale.runtimeRegistrations.get(source.id)).toEqual(source);
+    expect(stale.runtimeRegistrations.get(target.id)).toEqual(target);
+    expect(stale.mutations).toHaveLength(0);
+
+    const denied = new FakeUnitOfWork();
+    denied.accessAdmin = false;
+    denied.runtimeRegistrations.set(source.id, source);
+    denied.runtimeRegistrations.set(target.id, target);
+    await expect(serviceFor(denied).execute(command(
+      'runtime_registration.replace',
+      replacement.payload
+    ))).resolves.toMatchObject({
+      receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}
+    });
+    expect(denied.mutations).toHaveLength(0);
   });
 
   it('denies runtime registration without access-owner authority', async () => {

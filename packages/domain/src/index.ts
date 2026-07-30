@@ -836,6 +836,16 @@ export type DisableRuntimeRegistrationCommand = CanonicalCommandEnvelope<
     expectedVersion: number;
   }>
 >;
+export type ReplaceRuntimeRegistrationCommand = CanonicalCommandEnvelope<
+  'runtime_registration.replace',
+  Readonly<{
+    projectId: string;
+    sourceRegistrationId: string;
+    sourceExpectedVersion: number;
+    targetRegistrationId: string;
+    targetExpectedVersion: number;
+  }>
+>;
 export type CanonicalCommand =
   | TransitionWorkItemCommand
   | SetBlockedCommand
@@ -854,7 +864,8 @@ export type CanonicalCommand =
   | ObserveResourceAccessGrantCommand
   | CreateRuntimeRegistrationCommand
   | UpdateRuntimeRegistrationCommand
-  | DisableRuntimeRegistrationCommand;
+  | DisableRuntimeRegistrationCommand
+  | ReplaceRuntimeRegistrationCommand;
 
 export type CanonicalJson =
   | null
@@ -2327,6 +2338,10 @@ export type RuntimeRegistrationMutation = Readonly<{
   aggregateId: string;
   expectedPersistedVersion: number | null;
   aggregate: RuntimeRegistration;
+  replacementTarget?: Readonly<{
+    expectedPersistedVersion: number;
+    aggregate: RuntimeRegistration;
+  }>;
 }>;
 export type CanonicalMutation =
   | WorkItemUpdateMutation

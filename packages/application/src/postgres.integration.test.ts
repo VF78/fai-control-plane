@@ -1120,6 +1120,119 @@ describePostgres(
         .where(eq(auditEvents.targetId, registrationId))).toHaveLength(4);
     });
 
+    it('atomically replaces two persisted runtime registrations with one receipt and audit', async () => {
+      const targetActorId = randomUUID();
+      const targetProfileId = randomUUID();
+      await testPool.query(
+        `INSERT INTO actors (
+           id, workspace_id, type, role, display_name, auth_mode
+         ) VALUES ($1, $2, 'agent', 'agent_operator', 'Replacement target', 'agent')`,
+        [targetActorId, fixture.workspaceId]
+      );
+      await testPool.query(
+        `INSERT INTO agent_profiles (
+           id, workspace_id, actor_id, runtime_id, runtime_profile
+         ) VALUES ($1, $2, $3, 'replacement-target', 'test')`,
+        [targetProfileId, fixture.workspaceId, targetActorId]
+      );
+      await testPool.query(
+        `INSERT INTO project_memberships (
+           id, project_id, actor_id, role, active
+         ) VALUES ($1, $2, $3, 'agent', true)`,
+        [randomUUID(), fixture.projectId, targetActorId]
+      );
+      const sourceRegistrationId = randomUUID();
+      const targetRegistrationId = randomUUID();
+      for (const input of [
+        {
+          registrationId: sourceRegistrationId,
+          subjectActorId: fixture.runtimeActorId,
+          agentProfileId: fixture.runtimeProfileId,
+          runtimeKey: 'replacement-source',
+          enabled: true
+        },
+        {
+          registrationId: targetRegistrationId,
+          subjectActorId: targetActorId,
+          agentProfileId: targetProfileId,
+          runtimeKey: 'replacement-target',
+          enabled: false
+        }
+      ]) {
+        await expect(service().execute(command(
+          fixture.workspaceId,
+          primaryActor,
+          'runtime_registration.create',
+          {
+            ...input,
+            projectId: fixture.projectId,
+            provider: 'provider_neutral'
+          }
+        ))).resolves.toMatchObject({receipt: {result: {ok: true}}});
+      }
+      const replacement = command(
+        fixture.workspaceId,
+        primaryActor,
+        'runtime_registration.replace',
+        {
+          projectId: fixture.projectId,
+          sourceRegistrationId,
+          sourceExpectedVersion: 1,
+          targetRegistrationId,
+          targetExpectedVersion: 1
+        }
+      );
+
+      await expect(service().execute(replacement)).resolves.toMatchObject({
+        status: 'completed',
+        receipt: {
+          result: {
+            ok: true,
+            value: {
+              source: {id: sourceRegistrationId, enabled: false, version: 2},
+              target: {id: targetRegistrationId, enabled: true, version: 2}
+            }
+          }
+        }
+      });
+      await expect(service().execute(replacement)).resolves.toMatchObject({
+        status: 'replayed'
+      });
+      await expect(testDb.select({
+        id: runtimeRegistrations.id,
+        provider: runtimeRegistrations.provider,
+        runtimeKey: runtimeRegistrations.runtimeKey,
+        enabled: runtimeRegistrations.enabled,
+        version: runtimeRegistrations.version
+      }).from(runtimeRegistrations).where(inArray(runtimeRegistrations.id, [
+        sourceRegistrationId,
+        targetRegistrationId
+      ]))).resolves.toEqual(expect.arrayContaining([
+        {
+          id: sourceRegistrationId,
+          provider: 'provider_neutral',
+          runtimeKey: 'replacement-source',
+          enabled: false,
+          version: 2
+        },
+        {
+          id: targetRegistrationId,
+          provider: 'provider_neutral',
+          runtimeKey: 'replacement-target',
+          enabled: true,
+          version: 2
+        }
+      ]));
+      await expect(testDb.select({
+        action: auditEvents.action,
+        outcome: auditEvents.outcome
+      }).from(auditEvents).where(eq(auditEvents.commandId, replacement.commandId)))
+        .resolves.toEqual([{
+          action: 'runtime_registration.replace',
+          outcome: 'succeeded'
+        }]);
+    });
+
     it('atomically recovers only an exact expired run lease and preserves its history', async () => {
       const registrationId = randomUUID();
       await expect(service().execute(command(

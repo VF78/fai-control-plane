@@ -95,6 +95,46 @@ it('maps manual recovery to the exact expired run transition and returns its rec
   }));
 });
 
+it('maps replacement to one exact canonical switch and returns its receipt', async () => {
+  const targetRegistrationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const replace = vi.fn().mockResolvedValue({
+    status: 'updated',
+    commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    commandType: 'runtime_registration.replace',
+    source: {enabled: false, version: 4},
+    target: {enabled: true, version: 6}
+  });
+  const response = await runtimeRegistrationStateCommand(request({
+    _csrf: 'csrf',
+    action: 'replace',
+    expectedVersion: 3,
+    projectId,
+    targetExpectedVersion: 5,
+    targetRegistrationId
+  }), registrationId, {
+    requireSession: vi.fn().mockResolvedValue(authorization) as never,
+    getRuntime: vi.fn().mockResolvedValue({replace})
+  });
+
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toMatchObject({
+    status: 'updated',
+    replacement: {
+      source: {enabled: false, version: 4},
+      target: {enabled: true, version: 6}
+    },
+    receipt: {commandType: 'runtime_registration.replace'}
+  });
+  expect(replace).toHaveBeenCalledWith(expect.objectContaining({
+    operatorActorId: actorId,
+    projectId,
+    sourceRegistrationId: registrationId,
+    sourceExpectedVersion: 3,
+    targetRegistrationId,
+    targetExpectedVersion: 5
+  }));
+});
+
 it('fails closed for malformed, cross-scope, unauthorized, and stale requests', async () => {
   const requireSession = vi.fn().mockResolvedValue(authorization) as never;
   const getRuntime = (status: string) => vi.fn().mockResolvedValue({

@@ -57,8 +57,8 @@ export async function runtimeRegistrationStateCommand(
   if (
     !UUID.test(registrationId) ||
     !isRecord(body) ||
-    (body.action !== 'enable' && body.action !== 'disable' && body.action !== 'recover') ||
-    typeof body.agentId !== 'string' || !UUID.test(body.agentId) ||
+    (body.action !== 'enable' && body.action !== 'disable' &&
+      body.action !== 'recover' && body.action !== 'replace') ||
     typeof body.projectId !== 'string' || !UUID.test(body.projectId) ||
     !Number.isInteger(body.expectedVersion) || (body.expectedVersion as number) < 1 ||
     (body.action === 'recover'
@@ -72,7 +72,24 @@ export async function runtimeRegistrationStateCommand(
           !Number.isInteger(body.expectedRunVersion) ||
           (body.expectedRunVersion as number) < 1
         )
-      : !exact(body, ['_csrf', 'action', 'agentId', 'expectedVersion', 'projectId']))
+      : body.action === 'replace'
+        ? (
+            !exact(body, [
+              '_csrf', 'action', 'expectedVersion', 'projectId',
+              'targetExpectedVersion', 'targetRegistrationId'
+            ]) ||
+            typeof body.targetRegistrationId !== 'string' ||
+            !UUID.test(body.targetRegistrationId) ||
+            body.targetRegistrationId === registrationId ||
+            !Number.isInteger(body.targetExpectedVersion) ||
+            (body.targetExpectedVersion as number) < 1
+          )
+        : (
+            !exact(body, [
+              '_csrf', 'action', 'agentId', 'expectedVersion', 'projectId'
+            ]) ||
+            typeof body.agentId !== 'string' || !UUID.test(body.agentId)
+          ))
   ) {
     return response('invalid_request', 'The registration request is malformed.', 400);
   }
@@ -86,26 +103,38 @@ export async function runtimeRegistrationStateCommand(
           registrationId,
           expectedRegistrationVersion: body.expectedVersion as number,
           expectedProjectId: body.projectId,
-          expectedAgentId: body.agentId,
+          expectedAgentId: body.agentId as string,
           expectedAgentProfileId: body.agentProfileId as string,
           agentRunId: body.runId as string,
           expectedRunVersion: body.expectedRunVersion as number
         })
-      : await runtime.setEnabled({
-          workspaceId: authorization.runtime.config.workspaceId,
-          operatorActorId: authorization.session.actorId,
-          registrationId,
-          expectedProjectId: body.projectId,
-          expectedAgentId: body.agentId,
-          expectedVersion: body.expectedVersion as number,
-          enabled: body.action === 'enable'
-        });
+      : body.action === 'replace'
+        ? await runtime.replace({
+            workspaceId: authorization.runtime.config.workspaceId,
+            operatorActorId: authorization.session.actorId,
+            projectId: body.projectId,
+            sourceRegistrationId: registrationId,
+            sourceExpectedVersion: body.expectedVersion as number,
+            targetRegistrationId: body.targetRegistrationId as string,
+            targetExpectedVersion: body.targetExpectedVersion as number
+          })
+        : await runtime.setEnabled({
+            workspaceId: authorization.runtime.config.workspaceId,
+            operatorActorId: authorization.session.actorId,
+            registrationId,
+            expectedProjectId: body.projectId,
+            expectedAgentId: body.agentId as string,
+            expectedVersion: body.expectedVersion as number,
+            enabled: body.action === 'enable'
+          });
     if (result.status === 'updated' || result.status === 'replayed') {
       return Response.json({
         status: result.status,
         ...('failureCode' in result
           ? {run: {failureCode: result.failureCode, version: result.version}}
-          : {registration: {enabled: result.enabled, version: result.version}}),
+          : 'source' in result
+            ? {replacement: {source: result.source, target: result.target}}
+            : {registration: {enabled: result.enabled, version: result.version}}),
         receipt: {
           commandId: result.commandId,
           commandType: result.commandType
@@ -123,7 +152,9 @@ export async function runtimeRegistrationStateCommand(
         'version_conflict',
         body.action === 'recover'
           ? 'The run is no longer recoverable. Refresh and retry.'
-          : 'Registration changed. Refresh and retry.',
+          : body.action === 'replace'
+            ? 'A replacement registration changed. Refresh and retry.'
+            : 'Registration changed. Refresh and retry.',
         409
       );
     }
