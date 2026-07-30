@@ -46,6 +46,7 @@ import {
   VALUE_LEDGER_COMMAND,
   workItems,
   ledgerRoi,
+  loadConversationRows,
   loadFailedNotificationDeliveryFacts,
   parseLedgerRecord,
   type LedgerCost,
@@ -96,6 +97,37 @@ type Project = Readonly<{
 }>;
 
 export const workItemStatuses = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
+
+export type ConversationsData = Readonly<{
+  projects: readonly Readonly<{
+    id: string;
+    name: string;
+    slug: OperatorProjectSlug;
+    channels: readonly Readonly<{
+      conversationClass: 'internal' | 'client';
+      state: 'not_configured' | 'empty' | 'ready' | 'degraded';
+      freshnessAt: Date | null;
+      failure: Readonly<{code: string; at: Date; count: number}> | null;
+      participants: readonly Readonly<{
+        id: string;
+        displayName: string;
+        resolution: 'resolved' | 'unresolved';
+        controlPlaneAccess: string;
+        lastObservedAt: Date;
+      }>[];
+      messages: readonly Readonly<{
+        id: string;
+        participantId: string;
+        author: string;
+        sentAt: Date;
+        text: string | null;
+        attachmentSummary: string | null;
+        reply: boolean;
+        threaded: boolean;
+      }>[];
+    }>[];
+  }>[];
+}>;
 
 export type AgentRunQueuePolicyPreview = Readonly<{
   actorType: 'human';
@@ -182,6 +214,101 @@ const scopedProjects = async (db: Database, slug?: OperatorProjectSlug): Promise
   return rows.flatMap((project): Project[] =>
     isOperatorProjectSlug(project.slug) ? [{...project, slug: project.slug}] : []);
 };
+
+export const loadConversationsData = (
+  scope?: OperatorProjectSlug
+): Promise<OperatorLoad<ConversationsData>> => readDatabase(async (db) => {
+  const configuredProjects = await scopedProjects(db, scope);
+  const projectIds = configuredProjects.map(({id}) => id);
+  const rows = await loadConversationRows(db, projectIds);
+  const actorIds = [...new Set(rows.participants.flatMap(({actorId}) =>
+    actorId === null ? [] : [actorId]))];
+  const [resolvedActors, memberships] = actorIds.length === 0
+    ? [[], []]
+    : await Promise.all([
+      db.select({id: actors.id, displayName: actors.displayName, disabledAt: actors.disabledAt})
+        .from(actors).where(inArray(actors.id, actorIds)),
+      db.select({
+        projectId: projectMemberships.projectId,
+        actorId: projectMemberships.actorId,
+        role: projectMemberships.role,
+        active: projectMemberships.active
+      }).from(projectMemberships).where(and(
+        inArray(projectMemberships.projectId, projectIds),
+        inArray(projectMemberships.actorId, actorIds)
+      ))
+    ]);
+  const actorById = new Map(resolvedActors.map((actor) => [actor.id, actor]));
+  return {
+    projects: configuredProjects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      slug: project.slug,
+      channels: (['internal', 'client'] as const).map((conversationClass) => {
+        const binding = rows.bindings.find((candidate) =>
+          candidate.projectId === project.id &&
+          candidate.conversationClass === conversationClass);
+        if (binding === undefined) return {
+          conversationClass,
+          state: 'not_configured' as const,
+          freshnessAt: null,
+          failure: null,
+          participants: [],
+          messages: []
+        };
+        const channelParticipants = rows.participants.filter(({bindingId}) => bindingId === binding.id);
+        const channelMessages = rows.messages.filter(({bindingId}) => bindingId === binding.id);
+        const participantViews = channelParticipants.map((participant) => {
+          const actor = participant.actorId === null ? undefined : actorById.get(participant.actorId);
+          const membership = participant.actorId === null ? undefined : memberships.find((candidate) =>
+            candidate.projectId === project.id && candidate.actorId === participant.actorId);
+          const resolved = actor !== undefined;
+          return {
+            id: participant.id,
+            displayName: resolved ? actor.displayName : 'Unresolved',
+            resolution: resolved ? 'resolved' as const : 'unresolved' as const,
+            controlPlaneAccess: actor?.disabledAt === null && membership?.active === true
+              ? membership.role.replaceAll('_', ' ')
+              : 'No current access',
+            lastObservedAt: participant.lastObservedAt
+          };
+        });
+        const participantViewById = new Map(participantViews.map((participant) => [participant.id, participant]));
+        const messages = channelMessages.map((message) => {
+          const attachmentCounts = new Map<string, number>();
+          for (const item of message.attachments) {
+            attachmentCounts.set(item.kind, (attachmentCounts.get(item.kind) ?? 0) + 1);
+          }
+          return {
+            id: message.id,
+            participantId: message.participantId,
+            author: participantViewById.get(message.participantId)?.displayName ?? 'Unresolved',
+            sentAt: message.sentAt,
+            text: message.text,
+            attachmentSummary: attachmentCounts.size === 0 ? null :
+              [...attachmentCounts].map(([kind, count]) => `${count} ${kind}`).join(', '),
+            reply: message.replyToMessageRef !== null,
+            threaded: message.threadRef !== null
+          };
+        });
+        return {
+          conversationClass,
+          state: binding.lastFailureAt !== null
+            ? 'degraded' as const
+            : messages.length === 0 ? 'empty' as const : 'ready' as const,
+          freshnessAt: binding.lastObservedAt,
+          failure: binding.lastFailureAt === null || binding.lastFailureCode === null ? null : {
+            code: binding.lastFailureCode,
+            at: binding.lastFailureAt,
+            count: binding.failureCount
+          },
+          participants: participantViews,
+          messages
+        };
+      })
+    }))
+  };
+});
 
 const safeExternalUrlValue = (candidate: unknown): string | null => {
   if (typeof candidate !== 'string' || candidate.length > 2048) return null;

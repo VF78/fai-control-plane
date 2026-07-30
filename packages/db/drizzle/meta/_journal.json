@@ -225,6 +225,20 @@
       "when": 1785381079073,
       "tag": "0031_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785414290980,
+      "tag": "0032_conversations",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1785415185852,
+      "tag": "0033_conversation_binding_activation",
+      "breakpoints": true
     }
   ]
 }

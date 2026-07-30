@@ -10,7 +10,7 @@ import {type OperatorScreenRef, type OperatorScopeRef} from '@fai/operator-contr
 import {operatorTokens} from '@fai/operator-tokens';
 import type {
   AccessData, HealthData, OperatorLoad, OperatorProjectSlug, PortfolioData,
-  DeliveryLifecycleData, ProjectData, RunsData
+  ConversationsData, DeliveryLifecycleData, ProjectData, RunsData
 } from './operator-data';
 import {RiskDispositionControls} from './risk-disposition-controls';
 import {ProjectShareControls} from './project-share-controls';
@@ -36,6 +36,7 @@ export type WorkspaceData = Readonly<{
   health: OperatorLoad<HealthData> | null;
   projectIndex: readonly ProjectData[];
   lifecycle?: OperatorLoad<DeliveryLifecycleData | null> | null;
+  conversations?: OperatorLoad<ConversationsData> | null;
   csrfToken?: string | null;
 }>;
 
@@ -44,7 +45,7 @@ type PrototypeRoute = WorkspaceRoute;
 
 const projectTabs = ['overview', 'tasks', 'protocol', 'runs', 'chats', 'access'] as const;
 const labels: Record<(typeof projectTabs)[number], string> = {
-  overview: 'Overview', tasks: 'Tasks', protocol: 'Protocol', runs: 'Runs', chats: 'Chats', access: 'Access'
+  overview: 'Overview', tasks: 'Tasks', protocol: 'Protocol', runs: 'Runs', chats: 'Conversations', access: 'Access'
 };
 
 const ready = <T,>(load: OperatorLoad<T> | null): T | null => load?.state === 'ready' ? load.data : null;
@@ -129,8 +130,8 @@ function Scope({route}: {route: PrototypeRoute}) {
   return <div className="fcp-scope" aria-label="Current scope">{selectedProject === null ? null : <span>Project: {selectedProject === 'all' ? 'All projects' : selectedProject.toUpperCase()}</span>}<span>Environment: {scope.environment ?? 'Not configured'}</span><span>Time: {scope.from ?? scope.to ? 'Custom range' : 'All time'}</span></div>;
 }
 function Header({route}: {route: PrototypeRoute}) {
-  const nav = [{label: 'Dashboard', icon: LayoutDashboard, target: {kind: 'dashboard'} as const}, {label: 'Projects', icon: FolderKanban, target: {kind: 'projects'} as const}, {label: 'Tasks', icon: ListChecks, target: {kind: 'tasks', project: 'all'} as const}, {label: 'Chats', icon: UsersRound, target: {kind: 'chats', project: 'all'} as const}, {label: 'Agents', icon: Bot, target: {kind: 'agents'} as const}];
-  const current = route.project !== null ? 'Projects' : route.screen === 'global_tasks' ? 'Tasks' : route.screen === 'global_chats' ? 'Chats' : route.screen === 'agent' ? 'Agents' : route.screen[0]!.toUpperCase() + route.screen.slice(1);
+  const nav = [{label: 'Dashboard', icon: LayoutDashboard, target: {kind: 'dashboard'} as const}, {label: 'Projects', icon: FolderKanban, target: {kind: 'projects'} as const}, {label: 'Tasks', icon: ListChecks, target: {kind: 'tasks', project: 'all'} as const}, {label: 'Conversations', icon: UsersRound, target: {kind: 'chats', project: 'all'} as const}, {label: 'Agents', icon: Bot, target: {kind: 'agents'} as const}];
+  const current = route.project !== null ? 'Projects' : route.screen === 'global_tasks' ? 'Tasks' : route.screen === 'global_chats' ? 'Conversations' : route.screen === 'agent' ? 'Agents' : route.screen[0]!.toUpperCase() + route.screen.slice(1);
   return <header className="fcp-global"><Link href={screenUrl({kind: 'dashboard'}, route.scope)} className="fcp-brand">f(AI)<span>Control</span></Link><nav className="fcp-global-nav" aria-label="Global navigation">{nav.map(({label, icon: Icon, target}) => <Link aria-label={label} href={screenUrl(target, route.scope)} key={label} aria-current={current === label ? 'page' : undefined}><Icon aria-hidden="true" size={16}/><span>{label}</span></Link>)}</nav></header>;
 }
 function Crumbs({route, project, title}: {route: PrototypeRoute; project: ProjectData | null; title?: string}) {
@@ -272,7 +273,20 @@ function RunDetail({route, project, runs}: {route: PrototypeRoute; project: Proj
   const events = [{label: 'Run observed', value: run.startedAt}, {label: 'Policy decision', value: approval?.decidedAt ?? null}, {label: 'Run outcome', value: run.completedAt}, {label: 'Receipt observed', value: run.receipt?.completedAt ?? null}];
   return <><ProjectHeader route={route} project={project} title={run.workItem ?? 'Run receipt'}/><div className="fcp-detail-layout"><main className="fcp-detail-main"><div className="fcp-detail-status"><Status value={run.status}/><span className="fcp-muted">{run.agent ?? 'Agent unknown'}</span></div><section className="fcp-section"><div className="fcp-section-head"><h2>Run receipt</h2><FileCheck2 aria-hidden="true" size={17}/></div><ol className="fcp-timeline">{events.map((event) => <li key={event.label}><span aria-hidden="true" className={event.value === null ? 'missing' : ''}/><div><strong>{event.label}</strong><small>{date(event.value)}</small></div></li>)}</ol></section><section className="fcp-section"><div className="fcp-section-head"><h2>Checks & evidence</h2><GitPullRequest aria-hidden="true" size={17}/></div><p className="fcp-empty-line">{run.artifacts.length === 0 ? 'No artifacts observed.' : `${run.artifacts.length} evidence artifact${run.artifacts.length === 1 ? '' : 's'} recorded.`}</p></section><section className="fcp-section"><div className="fcp-section-head"><h2>Next action</h2><ChevronRight aria-hidden="true" size={17}/></div><p className="fcp-empty-line">{run.canAcceptReceipt ? 'Receipt acceptance is available in the governed record.' : 'Next action is unknown.'}</p></section></main><aside className="fcp-meta"><h2>Receipt details</h2><DetailFacts items={[{label: 'Task', value: run.workItem ?? 'Unknown'}, {label: 'Agent', value: run.agent ?? 'Unknown'}, {label: 'Approval', value: approval === null ? 'Not observed' : statusLabel(approval.status)}, {label: 'Environment', value: approval?.environment ?? 'Unknown'}, {label: 'Outcome', value: statusLabel(run.receipt?.terminal ?? run.status)}, {label: 'Observed', value: date(run.completedAt ?? run.startedAt)}]}/><details><summary>Technical details</summary><p>Runtime profile: {run.runtimeProfile}</p></details></aside></div></>;
 }
-function Chats({route, project}: {route: PrototypeRoute; project: ProjectData}) { return <><ProjectHeader route={route} project={project}/><Blank title="Chats not configured">No canonical conversation or thread records are available for this project.</Blank></>; }
+function ConversationChannel({channel}: {channel: ConversationsData['projects'][number]['channels'][number]}) {
+  const label = channel.conversationClass === 'internal' ? 'Internal' : 'Client';
+  const stateLabel = channel.state === 'not_configured' ? 'Not configured'
+    : channel.state === 'empty' ? 'No messages observed'
+      : channel.state === 'degraded' ? 'Degraded' : 'Observed';
+  return <section className="fcp-conversation"><header><div><h2>{label}</h2><span>{stateLabel} · freshness {date(channel.freshnessAt)}</span></div><Status value={channel.state === 'degraded' ? 'failed' : channel.state === 'ready' ? 'healthy' : 'unknown'}/></header>{channel.failure === null ? null : <p className="fcp-conversation-failure">Ingestion degraded: {channel.failure.code} · {date(channel.failure.at)} · {channel.failure.count} recorded failure{channel.failure.count === 1 ? '' : 's'}</p>}{channel.state === 'not_configured' ? <p className="fcp-empty-line">Not configured. No verified chat binding exists for this project and class.</p> : <div className="fcp-conversation-body"><aside><h3>Participants</h3>{channel.participants.length === 0 ? <p>No participants observed.</p> : <ul>{channel.participants.map((participant) => <li key={participant.id}><strong>{participant.displayName}</strong><span>{participant.resolution === 'resolved' ? 'Resolved identity' : 'Unresolved'} · {participant.controlPlaneAccess}</span></li>)}</ul>}</aside><ol className="fcp-message-list">{channel.messages.length === 0 ? <li className="fcp-empty-line">No messages observed after binding activation.</li> : channel.messages.map((message) => <li key={message.id}><header><strong>{message.author}</strong><time>{date(message.sentAt)}</time></header>{message.text === null ? null : <p>{message.text}</p>}<footer>{message.reply ? <span>Reply</span> : null}{message.threaded ? <span>Thread</span> : null}{message.attachmentSummary === null ? null : <span>Attachments: {message.attachmentSummary}</span>}</footer></li>)}</ol></div>}</section>;
+}
+function Conversations({projects}: {projects: readonly ConversationsData['projects'][number][]}) {
+  return <div className="fcp-conversation-projects">{projects.map((project) => <section key={project.id}><h2 className="fcp-conversation-project-name">{project.name}</h2><div className="fcp-conversation-grid">{project.channels.map((channel) => <ConversationChannel channel={channel} key={channel.conversationClass}/>)}</div></section>)}</div>;
+}
+function Chats({route, project, conversations}: {route: PrototypeRoute; project: ProjectData; conversations: ConversationsData | null}) {
+  const scoped = conversations?.projects.find((item) => item.id === project.project.id);
+  return <><ProjectHeader route={route} project={project}/>{scoped === undefined ? <Blank title="Conversations unavailable">The canonical conversation read model could not be loaded.</Blank> : <Conversations projects={[scoped]}/>}</>;
+}
 const roleLabel = (role: string) => role.replaceAll('_', ' ');
 const resourceLabel = (resource: string) => resource.replaceAll('_', ' ');
 const grantConfirmationState = (grant: AccessData['resourceGrants'][number]) => {
@@ -373,7 +387,7 @@ function GlobalTasks({route, projects}: {route: PrototypeRoute; projects: readon
   const rows = visibleProjects.flatMap((project) => project.workItems.map((task) => <TaskRow key={task.id} project={project.project.slug} route={route} task={task}/>));
   return <><div className="fcp-page-title"><div><h1>Tasks</h1><p>Canonical work items across configured projects.</p></div><Scope route={route}/></div><div className="fcp-list">{rows.length === 0 ? <p className="fcp-empty-line">No tasks observed for this project filter.</p> : rows}</div></>;
 }
-function GlobalChats({route}: {route: PrototypeRoute}) { return <><div className="fcp-page-title"><div><h1>Chats</h1><p>All configured projects.</p></div><Scope route={route}/></div><Blank title="Chats not configured">No canonical conversation or thread records are available.</Blank></>; }
+function GlobalChats({route, conversations}: {route: PrototypeRoute; conversations: ConversationsData | null}) { return <><div className="fcp-page-title"><div><h1>Conversations</h1><p>Read-only internal and client timelines from verified bindings.</p></div><Scope route={route}/></div>{conversations === null ? <Blank title="Conversations unavailable">The canonical conversation read model could not be loaded.</Blank> : conversations.projects.length === 0 ? <Blank title="No projects observed">No configured projects are available for this filter.</Blank> : <Conversations projects={conversations.projects}/>}</>; }
 function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const project = ready(data.project);
   const runs = ready(data.runs);
@@ -386,7 +400,7 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
     case 'protocol': return <Protocol route={route} project={project} csrfToken={data.csrfToken ?? null}/>;
     case 'runs': return <Runs route={route} project={project} runs={runs}/>;
     case 'run': return <RunDetail route={route} project={project} runs={runs}/>;
-    case 'chats': return <Chats route={route} project={project}/>;
+    case 'chats': return <Chats route={route} project={project} conversations={ready(data.conversations ?? null)}/>;
     case 'access': return <><Access route={route} project={project} access={access}/><AccessOperations project={project} access={access} csrfToken={data.csrfToken ?? null}/></>;
     default: return null;
   }
@@ -394,6 +408,7 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
 export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const access = ready(data.access);
   const health = ready(data.health);
+  const conversations = ready(data.conversations ?? null);
   const tokenStyle = {'--fcp-bg': operatorTokens.color.canvas, '--fcp-canvas': operatorTokens.color.surface, '--fcp-ink': operatorTokens.color.ink, '--fcp-muted': operatorTokens.color.muted, '--fcp-rule': operatorTokens.color.border, '--fcp-blue': operatorTokens.color.focus, '--fcp-red': operatorTokens.color.danger, '--fcp-amber': operatorTokens.color.warning, '--fcp-green': operatorTokens.color.success, '--fcp-target': `${operatorTokens.target.minimum}px`} as CSSProperties;
-  return <div className="fcp-workspace" style={tokenStyle}><Header route={route}/><div className="fcp-main">{route.screen === 'dashboard' ? <Dashboard route={route} data={data}/> : route.screen === 'projects' ? <Projects route={route} data={data}/> : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={data.projectIndex}/> : route.screen === 'global_chats' ? <GlobalChats route={route}/> : route.screen === 'agents' ? <Agents route={route} access={access} health={health}/> : route.screen === 'agent' ? <AgentDetail route={route} access={access} csrfToken={data.csrfToken ?? null}/> : <ProjectScreen route={route} data={data}/>}</div></div>;
+  return <div className="fcp-workspace" style={tokenStyle}><Header route={route}/><div className="fcp-main">{route.screen === 'dashboard' ? <Dashboard route={route} data={data}/> : route.screen === 'projects' ? <Projects route={route} data={data}/> : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={data.projectIndex}/> : route.screen === 'global_chats' ? <GlobalChats route={route} conversations={conversations}/> : route.screen === 'agents' ? <Agents route={route} access={access} health={health}/> : route.screen === 'agent' ? <AgentDetail route={route} access={access} csrfToken={data.csrfToken ?? null}/> : <ProjectScreen route={route} data={data}/>}</div></div>;
 }

@@ -216,15 +216,20 @@ real host file with mode `0600`. Keep `GITHUB_INGRESS_ENABLED=false` until the
 incoming-event consumer is deployed; the webhook route returns `404` while
 either synchronization or ingress is disabled.
 
-Telegram ingress and its status response are disabled by default. The webhook
-accepts only `/status msa` and `/status ascon` from the configured private chat
-and user allowlists, then records a sanitized durable command event against the
-corresponding `TELEGRAM_MSA_PROJECT_ID` or `TELEGRAM_ASCON_PROJECT_ID`. Bare
-`/status`, project UUIDs, slugs, and other arguments are not accepted. It does
-not start a runner.
+Telegram ingress is disabled by default. When enabled, the webhook observes
+messages only from the explicitly configured MSA/ASCON internal/client group
+bindings. Each optional binding requires both
+`TELEGRAM_<PROJECT>_<INTERNAL|CLIENT>_CHAT_ID` and the ISO-8601
+`..._ACTIVATED_AT`; messages sent before activation are ignored. Chat commands
+are never executed. PostgreSQL retains only the 500 most recent sanitized
+observations per binding. It stores no raw webhook payload or attachment body.
+Optional `TELEGRAM_VLADIMIR_USER_ID`, `TELEGRAM_VITALIY_USER_ID`, and
+`TELEGRAM_HERMES_USER_ID` values are keyed before canonical identity
+reconciliation; an omitted value remains unresolved. Removing a chat binding
+deactivates it without deleting retained observations.
 `TELEGRAM_WEBHOOK_SECRET_HOST_FILE` verifies the webhook only; use the separate,
 stable `TELEGRAM_IDENTITY_SECRET_HOST_FILE` for keyed delivery/message/chat/user
-identities and payload fingerprints. The worker also requires a mounted
+identities. The legacy response worker also requires a mounted
 `TELEGRAM_BOT_TOKEN_HOST_FILE` before it can send. Keep
 `TELEGRAM_STATUS_RESPONSE_ENABLED=false` until Vladimir explicitly approves the
 exact Telegram response template and policy; this repository never sends while

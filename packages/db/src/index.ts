@@ -30,6 +30,14 @@ export {
   type NotificationDeliveryReceiptResult,
   type NotificationIntentInput
 } from './notification-intent';
+export {
+  CONVERSATION_MESSAGE_LIMIT,
+  createPostgresConversationStore,
+  loadConversationRows,
+  type ConversationBindingConfiguration,
+  type ConversationIdentityConfiguration,
+  type ConversationObservation
+} from './conversations';
 export {createPostgresUnitOfWork} from './persistence';
 export {
   isRuntimeAvailable,
