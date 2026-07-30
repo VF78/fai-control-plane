@@ -302,3 +302,8 @@ code { color: #4f5a4f; }
 @media (max-width: 767px) { .fcp-fleet-profiles header { gap: 10px; }.fcp-fleet-profiles dl { gap: 10px; grid-template-columns: 1fr; }.fcp-fleet-profiles dl > div, .fcp-fleet-profiles dl > div:first-child { border-left: 0; border-top: 1px solid var(--fcp-rule); padding: 10px 0 0; }.fcp-fleet-profiles dl > div:first-child { border-top: 0; padding-top: 0; } }
 @media (max-width: 767px) { .fcp-registration-list > div { align-items: start; grid-template-columns: minmax(0, 1fr) auto; }.fcp-registration-control { align-items: stretch; grid-column: 1 / -1; }.fcp-registration-control > label, .fcp-registration-control button, .fcp-registration-control select { justify-content: center; max-width: none; width: 100%; }.fcp-registration-control .fcp-command-notice { max-width: none; text-align: left; } }
 @media (max-width: 767px) { .fcp-scope { flex-wrap: wrap; gap: 5px 10px; }.fcp-scope > span { font-size: 11px; } }
+.fcp-access-grants dl { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.fcp-access-grants dd a { align-items: center; color: var(--fcp-blue); display: inline-flex; gap: 4px; text-decoration: none; }
+.fcp-access-grants dd a:hover { text-decoration: underline; }
+.fcp-access-observed { grid-column: 2; margin-top: -14px !important; }
+@media (max-width: 767px) { .fcp-access-observed { grid-column: auto; margin-top: 0 !important; } }
