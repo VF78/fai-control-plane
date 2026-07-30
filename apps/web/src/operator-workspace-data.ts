@@ -4,11 +4,11 @@ import {
 } from './operator-data';
 import type {WorkspaceRoute} from './prototype-ui';
 
-export async function loadWorkspaceData(route: WorkspaceRoute) {
+export async function loadWorkspaceData(route: WorkspaceRoute, operatorActorId?: string) {
   const requiresProject = route.project !== null;
   const [portfolio, access, project, runs, health, projectIndex, lifecycle] = await Promise.all([
     loadPortfolioData(),
-    loadAccessData(),
+    loadAccessData(operatorActorId),
     requiresProject ? loadProjectData(route.project) : Promise.resolve(null),
     route.screen === 'dashboard' || requiresProject ? loadRunsData(route.project ?? undefined) : Promise.resolve(null),
     route.screen === 'agents' || route.screen === 'agent' ? loadHealthData(route.globalProject === undefined || route.globalProject === 'all' ? undefined : route.globalProject) : Promise.resolve(null),

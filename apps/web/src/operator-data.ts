@@ -1142,7 +1142,17 @@ export type AccessData = Readonly<{
       runtimeProfile: string;
       enabled: boolean;
       configHash: string;
-      registrations: readonly Readonly<{project: string; projectSlug: OperatorProjectSlug; provider: string; runtimeKey: string; enabled: boolean}>[];
+      registrations: readonly Readonly<{
+        id: string;
+        projectId: string;
+        project: string;
+        projectSlug: OperatorProjectSlug;
+        provider: string;
+        runtimeKey: string;
+        enabled: boolean;
+        version: number;
+        canManage: boolean;
+      }>[];
       instruction: Readonly<{workspaceVersion: number; profileVersion: number | null; hash: string; provenance: string}> | null;
       latestRun: Readonly<{id: string; status: string; updatedAt: Date; completedAt: Date | null; receipt: Readonly<{terminal: string; completedAt: Date}> | null}> | null;
       fleet: Readonly<{
@@ -1226,7 +1236,7 @@ export const deriveFleetHealth = (input: Readonly<{
   return input.currentRun.leaseExpiresAt.getTime() > input.asOf.getTime() ? 'healthy' : 'stale';
 };
 
-export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatabase(async (db) => {
+export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<AccessData>> => readDatabase(async (db) => {
   const configuredProjects = await scopedProjects(db);
   const workspaceIds = [...new Set(configuredProjects.map(({workspaceId}) => workspaceId))];
   const sharingEnabled = process.env.PUBLIC_SHARING_ENABLED === 'true';
@@ -1292,9 +1302,10 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
       enabled: agentProfiles.enabled, configHash: agentProfiles.configHash
     }).from(agentProfiles).where(inArray(agentProfiles.workspaceId, workspaceIds)),
     db.select({
-      agentProfileId: runtimeRegistrations.agentProfileId, actorId: runtimeRegistrations.actorId,
+      id: runtimeRegistrations.id, agentProfileId: runtimeRegistrations.agentProfileId, actorId: runtimeRegistrations.actorId,
       projectId: runtimeRegistrations.projectId, provider: runtimeRegistrations.provider,
-      runtimeKey: runtimeRegistrations.runtimeKey, enabled: runtimeRegistrations.enabled
+      runtimeKey: runtimeRegistrations.runtimeKey, enabled: runtimeRegistrations.enabled,
+      version: runtimeRegistrations.version
     }).from(runtimeRegistrations).where(inArray(runtimeRegistrations.projectId, projectIds)),
     db.select({workspaceId: workspaceInstructionVersions.workspaceId, version: workspaceInstructionVersions.version, instructions: workspaceInstructionVersions.instructions, settings: workspaceInstructionVersions.settings})
       .from(workspaceInstructionVersions).where(inArray(workspaceInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(workspaceInstructionVersions.version)),
@@ -1358,6 +1369,15 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
     }
   }
   const actorById = new Map(persistedActors.map((actor) => [actor.id, actor]));
+  const operator = operatorActorId === undefined ? undefined : actorById.get(operatorActorId);
+  const manageableProjectIds = new Set(
+    memberships.flatMap((membership) =>
+      membership.actorId === operatorActorId &&
+      membership.active &&
+      (membership.role === 'workspace_owner' || membership.role === 'project_owner')
+        ? [membership.projectId]
+        : [])
+  );
   const profilesByActor = new Map<string, AccessData['agentSystems'][number]['profiles'][number][]>();
   for (const profile of persistedProfiles) {
     const baseline = latestWorkspaceInstruction.get(profile.workspaceId);
@@ -1372,8 +1392,12 @@ export const loadAccessData = (): Promise<OperatorLoad<AccessData>> => readDatab
     const profileRegistrations = registrations.flatMap((registration) => {
       const project = projectById.get(registration.projectId);
       return registration.agentProfileId !== profile.id || registration.actorId !== profile.actorId || project === undefined ? [] : [{
+        id: registration.id, projectId: registration.projectId,
         project: project.name, projectSlug: project.slug, provider: registration.provider,
-        runtimeKey: registration.runtimeKey, enabled: registration.enabled
+        runtimeKey: registration.runtimeKey, enabled: registration.enabled,
+        version: registration.version,
+        canManage: operator?.type === 'human' && operator.disabledAt === null &&
+          (operator.role === 'workspace_admin' || manageableProjectIds.has(registration.projectId))
       }];
     });
     const currentProject = currentRun === null ? undefined : projectById.get(currentRun.projectId);
