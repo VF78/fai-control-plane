@@ -124,13 +124,25 @@ it('keeps the web-first workspace IA and honest unavailable state', () => {
   }));
 
   expect(markup).toContain('href="/dashboard"');
-  expect(markup).toContain('aria-label="Portfolio"');
-  expect(markup).toContain('aria-label="Delivery"');
-  expect(markup).toContain('aria-label="Conversations"');
-  expect(markup).toContain('aria-label="People &amp; Access"');
-  expect(markup).toContain('aria-label="Agents &amp; Systems"');
+  expect(markup).toContain('aria-label="Обзор"');
+  expect(markup).toContain('aria-label="Задачи"');
+  expect(markup).toContain('aria-label="Чаты"');
+  expect(markup).toContain('aria-label="Команда и доступы"');
+  expect(markup).toContain('aria-label="Агенты и системы"');
   expect(markup).toContain('Control plane data is unavailable');
   expect(markup).not.toContain('Provider ID');
+});
+
+it('keeps the selected workspace area when changing projects', () => {
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {screen: 'global_tasks', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
+    data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: []}
+  }));
+
+  expect(markup).toContain('href="/tasks?project=all"');
+  expect(markup).toContain('href="/tasks?project=msa"');
+  expect(markup).toContain('href="/tasks?project=ascon"');
+  expect(markup).toContain('>Все</a>');
 });
 
 it('keeps the five workspace areas explicit and deferred actions non-operative', () => {
@@ -138,8 +150,8 @@ it('keeps the five workspace areas explicit and deferred actions non-operative',
     route: {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
     data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: []}
   }));
-  expect(markup).toContain('Primary workspace areas');
-  expect(markup).toContain('People &amp; Access');
+  expect(markup).toContain('Основная навигация');
+  expect(markup).toContain('Команда и доступы');
   expect(markup).toContain('People and access are unavailable');
   expect(markup).not.toContain('Manage members');
 });
