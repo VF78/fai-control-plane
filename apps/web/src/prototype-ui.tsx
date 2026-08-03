@@ -3,7 +3,7 @@ import type {CSSProperties, ReactNode} from 'react';
 import {
   AlertTriangle, Bot, ChevronLeft, ChevronRight, CircleDot, ClipboardList, FileCheck2, History,
   FolderKanban, GitPullRequest, LayoutDashboard, Link2, ListChecks,
-  ExternalLink, ServerCog, ShieldAlert, ShieldCheck, UsersRound, Workflow
+  ExternalLink, Menu, ServerCog, ShieldAlert, ShieldCheck, UsersRound, Workflow
 } from 'lucide-react';
 import {DeliveryJourneyAction, DeliveryProtocolEditor} from './delivery-controls';
 import {RunActionControls, TaskPacketBuildControls, TaskPacketPreview} from './delivery-workspace-controls';
@@ -141,22 +141,54 @@ function DeferredAction({label, detail}: {label: string; detail: string}) {
   return <div className="fcp-deferred-action"><button aria-describedby={hintId} disabled type="button">{label}</button><small id={hintId}>Deferred — {detail}</small></div>;
 }
 function Scope({route}: {route: PrototypeRoute}) {
-  const scope = route.scope;
-  const selectedProject = route.globalProject ?? (route.project === null ? 'all' : null);
-  return <div className="fcp-scope" aria-label="Current scope">{selectedProject === null ? null : <span>Project: {selectedProject === 'all' ? 'All projects' : selectedProject.toUpperCase()}</span>}<span>Environment: {scope.environment ?? 'Not configured'}</span><span>Time: {scope.from ?? scope.to ? 'Custom range' : 'All time'}</span></div>;
+  // Scope remains in each route and link contract, but is not repeated in every page header.
+  void route;
+  return null;
 }
-function Header({route}: {route: PrototypeRoute}) {
+const selectedProject = (route: PrototypeRoute): 'all' | OperatorProjectSlug => route.project ?? route.globalProject ?? 'all';
+const selectorUrl = (route: PrototypeRoute, project: 'all' | OperatorProjectSlug): string => {
+  if (route.screen === 'global_tasks' || route.screen === 'tasks' || route.screen === 'task') {
+    return screenUrl({kind: 'tasks', project}, route.scope);
+  }
+  if (route.screen === 'global_chats' || route.screen === 'chats') {
+    return screenUrl({kind: 'chats', project}, route.scope);
+  }
+  if (route.screen === 'protocol') {
+    return project === 'all' ? screenUrl({kind: 'projects'}, route.scope) : projectUrl(project, 'protocol', route.scope);
+  }
+  if (route.screen === 'runs' || route.screen === 'run') {
+    return project === 'all' ? screenUrl({kind: 'projects'}, route.scope) : projectUrl(project, 'runs', route.scope);
+  }
+  if (route.screen === 'people' || route.screen === 'access') {
+    return project === 'all' ? peopleUrl(route.scope) : projectUrl(project, 'access', route.scope);
+  }
+  return project === 'all' ? screenUrl({kind: 'dashboard'}, route.scope) : projectUrl(project, 'overview', route.scope);
+};
+
+function WorkspaceShellHeader({route}: {route: PrototypeRoute}) {
+  const project = selectedProject(route);
   const nav = [
-    {label: 'Portfolio', icon: LayoutDashboard, href: screenUrl({kind: 'dashboard'}, route.scope), active: route.screen === 'dashboard'},
-    {label: 'Delivery', icon: FolderKanban, href: screenUrl({kind: 'projects'}, route.scope), active: route.project !== null || route.screen === 'projects' || route.screen === 'global_tasks'},
-    {label: 'Conversations', icon: UsersRound, href: screenUrl({kind: 'chats', project: 'all'}, route.scope), active: route.screen === 'global_chats' || route.screen === 'chats'},
-    {label: 'People & Access', icon: ShieldCheck, href: peopleUrl(route.scope), active: route.screen === 'people' || route.screen === 'access'},
-    {label: 'Agents & Systems', icon: Bot, href: screenUrl({kind: 'agents'}, route.scope), active: route.screen === 'agents' || route.screen === 'agent'}
+    {label: 'Обзор', icon: LayoutDashboard, href: screenUrl({kind: 'dashboard'}, route.scope), active: route.screen === 'dashboard'},
+    {label: 'Задачи', icon: ListChecks, href: screenUrl({kind: 'tasks', project}, route.scope), active: route.screen === 'global_tasks' || route.screen === 'tasks' || route.screen === 'task'},
+    {label: 'Процесс', icon: FolderKanban, href: project === 'all' ? screenUrl({kind: 'projects'}, route.scope) : projectUrl(project, 'protocol', route.scope), active: route.screen === 'projects' || route.screen === 'overview' || route.screen === 'protocol' || route.screen === 'runs' || route.screen === 'run'},
+    {label: 'Команда и доступы', icon: ShieldCheck, href: peopleUrl(route.scope), active: route.screen === 'people' || route.screen === 'access'},
+    {label: 'Агенты и системы', icon: Bot, href: screenUrl({kind: 'agents'}, route.scope), active: route.screen === 'agents' || route.screen === 'agent'},
+    {label: 'Чаты', icon: UsersRound, href: screenUrl({kind: 'chats', project}, route.scope), active: route.screen === 'global_chats' || route.screen === 'chats'}
   ];
-  return <header className="fcp-global"><Link href={screenUrl({kind: 'dashboard'}, route.scope)} className="fcp-brand">f(AI)<span>Control</span></Link><nav className="fcp-global-nav" aria-label="Primary workspace areas">{nav.map(({label, icon: Icon, href, active}) => <Link aria-label={label} href={href} key={label} aria-current={active ? 'page' : undefined}><Icon aria-hidden="true" size={16}/><span>{label}</span></Link>)}</nav></header>;
+  return <>
+    <aside className="fcp-sidebar">
+      <Link href={screenUrl({kind: 'dashboard'}, route.scope)} className="fcp-brand"><b>f(AI) Control Panel</b></Link>
+      <nav className="fcp-sidebar-nav" aria-label="Основная навигация">{nav.map(({label, icon: Icon, href, active}) => <Link aria-label={label} href={href} key={label} aria-current={active ? 'page' : undefined}><span className="fcp-nav-icon"><Icon aria-hidden="true" size={17}/></span><span>{label}</span></Link>)}</nav>
+      <div className="fcp-project-selector" aria-label="Проект">
+        <span>Проект</span><div>{(['all', 'msa', 'ascon'] as const).map((item) => <Link aria-current={project === item ? 'page' : undefined} href={selectorUrl(route, item)} key={item}>{item === 'all' ? 'Все' : item.toUpperCase()}</Link>)}</div>
+      </div>
+    </aside>
+    <header className="fcp-topbar"><Link href={screenUrl({kind: 'dashboard'}, route.scope)} className="fcp-mobile-brand">f(AI) Control Panel</Link><strong>{nav.find((item) => item.active)?.label ?? 'Обзор'}</strong><div className="fcp-mobile-projects" aria-label="Проект">{(['all', 'msa', 'ascon'] as const).map((item) => <Link aria-current={project === item ? 'page' : undefined} href={selectorUrl(route, item)} key={item}>{item === 'all' ? 'Все' : item.toUpperCase()}</Link>)}</div><details className="fcp-mobile-menu"><summary aria-label="Открыть навигацию"><Menu aria-hidden="true" size={20}/></summary><nav aria-label="Основная навигация">{nav.map(({label, icon: Icon, href, active}) => <Link href={href} key={label} aria-current={active ? 'page' : undefined}><Icon aria-hidden="true" size={16}/>{label}</Link>)}</nav></details></header>
+  </>;
 }
 function Crumbs({route, project, title}: {route: PrototypeRoute; project: ProjectData | null; title?: string}) {
-  return <div className="fcp-crumbs"><span>Workspace</span><ChevronRight aria-hidden="true" size={14}/><Link href={screenUrl({kind: 'projects'}, route.scope)}>Projects</Link>{project === null ? null : <><ChevronRight aria-hidden="true" size={14}/><Link href={projectUrl(project.project.slug, 'overview', route.scope)}>{project.project.name}</Link></>}{title === undefined ? null : <><ChevronRight aria-hidden="true" size={14}/><strong>{title}</strong></>}</div>;
+  if (project === null) return null;
+  return <div className="fcp-crumbs"><Link href={screenUrl({kind: 'projects'}, route.scope)}>Projects</Link><ChevronRight aria-hidden="true" size={14}/><Link href={projectUrl(project.project.slug, 'overview', route.scope)}>{project.project.name}</Link>{title === undefined ? null : <><ChevronRight aria-hidden="true" size={14}/><strong>{title}</strong></>}</div>;
 }
 function ProjectTabs({route, project}: {route: PrototypeRoute; project: ProjectData}) {
   const active = route.screen === 'task' ? 'tasks' : route.screen === 'run' ? 'runs' : route.screen as (typeof projectTabs)[number];
@@ -533,5 +565,5 @@ export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: Work
   const health = ready(data.health);
   const conversations = ready(data.conversations ?? null);
   const tokenStyle = {'--fcp-bg': operatorTokens.color.canvas, '--fcp-canvas': operatorTokens.color.surface, '--fcp-ink': operatorTokens.color.ink, '--fcp-muted': operatorTokens.color.muted, '--fcp-rule': operatorTokens.color.border, '--fcp-blue': operatorTokens.color.focus, '--fcp-red': operatorTokens.color.danger, '--fcp-amber': operatorTokens.color.warning, '--fcp-green': operatorTokens.color.success, '--fcp-target': `${operatorTokens.target.minimum}px`} as CSSProperties;
-  return <div className="fcp-workspace" style={tokenStyle}><Header route={route}/><div className="fcp-main">{route.screen === 'dashboard' ? <Dashboard route={route} data={data}/> : route.screen === 'projects' ? <Projects route={route} data={data}/> : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={data.projectIndex}/> : route.screen === 'global_chats' ? <GlobalChats route={route} conversations={conversations}/> : route.screen === 'people' ? <People route={route} access={access}/> : route.screen === 'agents' ? <Agents route={route} access={access} health={health}/> : route.screen === 'agent' ? <AgentDetail route={route} access={access} csrfToken={data.csrfToken ?? null}/> : <ProjectScreen route={route} data={data}/>}</div></div>;
+  return <div className="fcp-workspace" style={tokenStyle}><div className="fcp-shell-layout"><WorkspaceShellHeader route={route}/><main className="fcp-main">{route.screen === 'dashboard' ? <Dashboard route={route} data={data}/> : route.screen === 'projects' ? <Projects route={route} data={data}/> : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={data.projectIndex}/> : route.screen === 'global_chats' ? <GlobalChats route={route} conversations={conversations}/> : route.screen === 'people' ? <People route={route} access={access}/> : route.screen === 'agents' ? <Agents route={route} access={access} health={health}/> : route.screen === 'agent' ? <AgentDetail route={route} access={access} csrfToken={data.csrfToken ?? null}/> : <ProjectScreen route={route} data={data}/>}</main></div></div>;
 }
