@@ -59,5 +59,6 @@ implementation. Do not infer completion from an unmerged commit.
 
 Local implementation, PR merge, and production release are separate decisions.
 Nothing in a merged PR authorizes deployment. Read
-`docs/ops/PRODUCTION_HANDOFF.md` and request Vladimir's explicit release
-approval for the exact commit and production diff.
+`docs/ops/PRODUCTION_RUNBOOK.md` and request Vladimir's explicit release
+approval for the exact commit and production diff. Use only
+`scripts/deploy-prod.sh` for an approved production release.

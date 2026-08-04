@@ -2,7 +2,7 @@ import {
   loadAccessData, loadConversationsData, loadDeliveryLifecycleData, loadHealthData, loadPortfolioData, loadProjectData, loadRunsData,
   operatorProjectSlugs
 } from './operator-data';
-import type {WorkspaceRoute} from './prototype-ui';
+import type {WorkspaceRoute} from './workspace-ui';
 
 export async function loadWorkspaceData(route: WorkspaceRoute, operatorActorId?: string) {
   const requiresProject = route.project !== null;
