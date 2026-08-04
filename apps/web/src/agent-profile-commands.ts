@@ -90,7 +90,7 @@ export async function updateAgentProfileCommand(
     if (status === 'updated' || status === 'replayed') {
       return new Response(null, {
         status: 303,
-        headers: {...noStore, location: new URL('/access', request.url).toString()}
+        headers: {...noStore, location: new URL('/agents', request.url).toString()}
       });
     }
     return status === 'forbidden'

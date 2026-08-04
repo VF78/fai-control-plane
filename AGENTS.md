@@ -125,6 +125,8 @@ workspace, not the product's sole navigation or value proposition.
 
 - The internal alpha is deployed separately at `app.f-ai.studio`; local
   development and production authorization remain separate.
-- Read `docs/ops/PRODUCTION_HANDOFF.md` before any production planning.
+- Read `docs/ops/PRODUCTION_RUNBOOK.md` before any production planning. Deploy
+  only through `scripts/deploy-prod.sh` after explicit approval of the exact
+  commit.
 - Never deploy, change VPS/DNS/Nginx/secrets, or touch the protected marketing,
   Hermes, or MSA services without Vladimir's explicit approval of that action.

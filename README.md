@@ -11,11 +11,10 @@ product scope and current delivery plan are maintained in
 Project items.
 
 The internal alpha is deployed separately at `app.f-ai.studio`. Repository
-documentation does not authorize production changes. Read
-[the production handoff](docs/ops/PRODUCTION_HANDOFF.md) before release
-planning; the original
-[activation preparation](docs/ops/APP_F_AI_STUDIO_DEPLOYMENT_PREPARATION.md)
-is retained as historical evidence, not a script to rerun.
+documentation does not authorize production changes. Read the
+[production runbook](docs/ops/PRODUCTION_RUNBOOK.md) before release planning;
+[`scripts/deploy-prod.sh`](scripts/deploy-prod.sh) is the sole supported
+production deployment path.
 
 ## Architecture
 

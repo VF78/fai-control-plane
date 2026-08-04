@@ -1,5 +1,5 @@
 import {isOperatorProjectSlug} from './operator-data';
-import type {WorkspaceRoute} from './prototype-ui';
+import type {WorkspaceRoute} from './workspace-ui';
 
 export type WorkspaceQuery = Readonly<{
   environment?: string | string[];

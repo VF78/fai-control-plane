@@ -4,8 +4,8 @@ import {OPERATOR_SESSION_COOKIE} from '../../src/operator-auth';
 import {currentOperatorSession} from '../../src/operator-auth-runtime';
 import {loadWorkspaceData} from '../../src/operator-workspace-data';
 import {workspaceRoute, type WorkspaceQuery} from '../../src/operator-workspace-route';
-import {OperatorLogin} from '../../src/operator-ui';
-import {WorkspaceShell} from '../../src/prototype-ui';
+import {OperatorLogin} from '../../src/operator-login';
+import {WorkspaceShell} from '../../src/workspace-ui';
 
 export const dynamic = 'force-dynamic';
 
