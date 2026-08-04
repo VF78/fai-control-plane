@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import type {CSSProperties, ReactNode} from 'react';
 import {
-  AlertTriangle, Bot, ChevronLeft, ChevronRight, CircleDot, ClipboardList, FileCheck2, History,
+  AlertTriangle, ArrowRight, Bot, ChevronLeft, ChevronRight, CircleDot, ClipboardList, FileCheck2, History,
   FolderKanban, GitPullRequest, LayoutDashboard, Link2, ListChecks,
   ExternalLink, Menu, ServerCog, ShieldAlert, ShieldCheck, UsersRound, Workflow
 } from 'lucide-react';
@@ -9,22 +9,21 @@ import {DeliveryJourneyAction, DeliveryProtocolEditor} from './delivery-controls
 import {RunActionControls, TaskPacketBuildControls, TaskPacketPreview} from './delivery-workspace-controls';
 import {type OperatorScreenRef, type OperatorScopeRef} from '@fai/operator-contracts';
 import {operatorTokens} from '@fai/operator-tokens';
-import {deriveRuntimeAvailabilityAlerts} from './operator-data';
+import {workItemStatuses} from './operator-data';
 import type {
   AccessData, HealthData, OperatorLoad, OperatorProjectSlug, PortfolioData,
   ConversationsData, DeliveryLifecycleData, ProjectData, RunsData
 } from './operator-data';
-import {RiskDispositionControls} from './risk-disposition-controls';
 import {ProjectShareControls} from './project-share-controls';
 import {RuntimeRegistrationControls} from './runtime-registration-controls';
 import {AgentRetirementControls} from './agent-retirement-controls';
-import {rankAttentionQueue} from './attention-queue';
 
 export type WorkspaceRoute = Readonly<{
   screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'people' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
   project: OperatorProjectSlug | null;
   globalProject?: 'all' | OperatorProjectSlug;
   taskFilters?: Readonly<{
+    view: 'board' | 'mine' | 'blocked';
     status: 'active' | 'all' | 'backlog' | 'ready' | 'in_dev' | 'qa' | 'acceptance' | 'done';
     attention: boolean;
     owner: string | null;
@@ -53,14 +52,10 @@ export type WorkspaceData = Readonly<{
 // Keep the internal component annotations small while public route contracts use WorkspaceRoute.
 type PrototypeRoute = WorkspaceRoute;
 
-const projectTabs = ['overview', 'tasks', 'protocol', 'runs', 'chats', 'access'] as const;
-const labels: Record<(typeof projectTabs)[number], string> = {
-  overview: 'Overview', tasks: 'Tasks', protocol: 'Protocol', runs: 'Runs', chats: 'Conversations', access: 'Access'
-};
+type ProjectTab = 'overview' | 'tasks' | 'protocol' | 'runs' | 'chats' | 'access';
 
 const ready = <T,>(load: OperatorLoad<T> | null): T | null => load?.state === 'ready' ? load.data : null;
 const date = (value: Date | null | undefined) => value === null || value === undefined ? 'Not observed' : new Intl.DateTimeFormat('en', {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}).format(value);
-const compactDate = (value: Date | null | undefined) => value === null || value === undefined ? 'Not observed' : new Intl.DateTimeFormat('en', {month: 'short', day: 'numeric'}).format(value);
 const scopeQuery = (scope: OperatorScopeRef) => {
   const query = new URLSearchParams();
   if (scope.environment !== null) query.set('environment', scope.environment);
@@ -81,10 +76,9 @@ const screenUrl = (screen: OperatorScreenRef, scope: OperatorScopeRef): string =
   const query = scopeQuery(scope);
   return query === '' ? path : `${path}${path.includes('?') ? '&' : '?'}${query.slice(1)}`;
 };
-const projectUrl = (slug: OperatorProjectSlug, tab: (typeof projectTabs)[number], scope: OperatorScopeRef) => screenUrl({kind: 'project', projectSlug: slug, section: tab}, scope);
+const projectUrl = (slug: OperatorProjectSlug, tab: ProjectTab, scope: OperatorScopeRef) => screenUrl({kind: 'project', projectSlug: slug, section: tab}, scope);
 const taskUrl = (slug: OperatorProjectSlug, id: string, scope: OperatorScopeRef) => screenUrl({kind: 'task', projectSlug: slug, taskId: id}, scope);
 const runUrl = (slug: OperatorProjectSlug, id: string, scope: OperatorScopeRef) => screenUrl({kind: 'run', projectSlug: slug, runId: id}, scope);
-const peopleUrl = (scope: OperatorScopeRef) => `/people${scopeQuery(scope)}`;
 const statusTone = (value: string) => value === 'failed' || value === 'blocked' || value === 'red' || value === 'stale' ? 'danger' : value === 'waiting_approval' || value === 'yellow' ? 'warning' : value === 'done' || value === 'green' || value === 'healthy' || value === 'enabled' ? 'success' : 'neutral';
 const statusLabel = (value: string) => ({green: 'On track', yellow: 'Watch', red: 'At risk', done: 'Completed', in_dev: 'In development', backlog: 'Backlog', ready: 'Ready', qa: 'Quality assurance', acceptance: 'Acceptance', running: 'Running', queued: 'Queued', waiting_approval: 'Waiting for approval', failed: 'Failed', blocked: 'Blocked', pending: 'Pending', approved: 'Approved', rejected: 'Rejected', expired: 'Expired', healthy: 'Healthy', stale: 'Stale', enabled: 'Enabled', disabled: 'Disabled', unknown: 'Unknown', not_configured: 'Not configured'}[value] ?? 'Unknown');
 
@@ -145,112 +139,86 @@ function Scope({route}: {route: PrototypeRoute}) {
   void route;
   return null;
 }
-const selectedProject = (route: PrototypeRoute): 'all' | OperatorProjectSlug => route.project ?? route.globalProject ?? 'all';
-const selectorUrl = (route: PrototypeRoute, project: 'all' | OperatorProjectSlug): string => {
-  if (route.screen === 'global_tasks' || route.screen === 'tasks' || route.screen === 'task') {
-    return screenUrl({kind: 'tasks', project}, route.scope);
-  }
-  if (route.screen === 'global_chats' || route.screen === 'chats') {
-    return screenUrl({kind: 'chats', project}, route.scope);
-  }
-  if (route.screen === 'protocol') {
-    return project === 'all' ? screenUrl({kind: 'projects'}, route.scope) : projectUrl(project, 'protocol', route.scope);
-  }
-  if (route.screen === 'runs' || route.screen === 'run') {
-    return project === 'all' ? screenUrl({kind: 'projects'}, route.scope) : projectUrl(project, 'runs', route.scope);
-  }
-  if (route.screen === 'people' || route.screen === 'access') {
-    return project === 'all' ? peopleUrl(route.scope) : projectUrl(project, 'access', route.scope);
-  }
-  return project === 'all' ? screenUrl({kind: 'dashboard'}, route.scope) : projectUrl(project, 'overview', route.scope);
+const selectedProject = (
+  route: PrototypeRoute,
+  projects: readonly Readonly<{slug: OperatorProjectSlug}>[]
+): OperatorProjectSlug | null => {
+  const requested = route.project ?? (route.globalProject === 'all' ? null : route.globalProject);
+  return requested !== null && requested !== undefined && projects.some(({slug}) => slug === requested)
+    ? requested
+    : projects[0]?.slug ?? null;
+};
+const projectAreaUrl = (route: PrototypeRoute, project: OperatorProjectSlug): string => {
+  if (route.screen === 'global_tasks' || route.screen === 'tasks' || route.screen === 'task') return projectUrl(project, 'tasks', route.scope);
+  if (route.screen === 'global_chats' || route.screen === 'chats') return projectUrl(project, 'chats', route.scope);
+  if (route.screen === 'protocol') return projectUrl(project, 'protocol', route.scope);
+  if (route.screen === 'runs' || route.screen === 'run') return projectUrl(project, 'runs', route.scope);
+  if (route.screen === 'people' || route.screen === 'access') return projectUrl(project, 'access', route.scope);
+  if (route.screen === 'agents' || route.screen === 'agent') return `/agents?project=${project}${scopeQuery(route.scope).replace('?', '&')}`;
+  return projectUrl(project, 'overview', route.scope);
 };
 
-function WorkspaceShellHeader({route}: {route: PrototypeRoute}) {
-  const project = selectedProject(route);
-  const nav = [
-    {label: 'Обзор', icon: LayoutDashboard, href: screenUrl({kind: 'dashboard'}, route.scope), active: route.screen === 'dashboard'},
-    {label: 'Задачи', icon: ListChecks, href: screenUrl({kind: 'tasks', project}, route.scope), active: route.screen === 'global_tasks' || route.screen === 'tasks' || route.screen === 'task'},
-    {label: 'Процесс', icon: FolderKanban, href: project === 'all' ? screenUrl({kind: 'projects'}, route.scope) : projectUrl(project, 'protocol', route.scope), active: route.screen === 'projects' || route.screen === 'overview' || route.screen === 'protocol' || route.screen === 'runs' || route.screen === 'run'},
-    {label: 'Команда и доступы', icon: ShieldCheck, href: peopleUrl(route.scope), active: route.screen === 'people' || route.screen === 'access'},
-    {label: 'Агенты и системы', icon: Bot, href: screenUrl({kind: 'agents'}, route.scope), active: route.screen === 'agents' || route.screen === 'agent'},
-    {label: 'Чаты', icon: UsersRound, href: screenUrl({kind: 'chats', project}, route.scope), active: route.screen === 'global_chats' || route.screen === 'chats'}
+function WorkspaceShellHeader({route, projects}: {
+  route: PrototypeRoute;
+  projects: readonly Readonly<{name: string; slug: OperatorProjectSlug}>[];
+}) {
+  const project = selectedProject(route, projects);
+  const nav = project === null ? [] : [
+    {label: 'Обзор', icon: LayoutDashboard, href: projectUrl(project, 'overview', route.scope), active: route.screen === 'dashboard' || route.screen === 'overview'},
+    {label: 'Задачи', icon: ListChecks, href: projectUrl(project, 'tasks', route.scope), active: route.screen === 'global_tasks' || route.screen === 'tasks' || route.screen === 'task'},
+    {label: 'Процесс', icon: Workflow, href: projectUrl(project, 'protocol', route.scope), active: route.screen === 'protocol' || route.screen === 'runs' || route.screen === 'run'},
+    {label: 'Чаты', icon: UsersRound, href: projectUrl(project, 'chats', route.scope), active: route.screen === 'global_chats' || route.screen === 'chats'}
   ];
+  const control = project === null ? [] : [
+    {label: 'Команда и доступы', icon: ShieldCheck, href: projectUrl(project, 'access', route.scope), active: route.screen === 'people' || route.screen === 'access'},
+    {label: 'Агенты и системы', icon: Bot, href: `/agents?project=${project}${scopeQuery(route.scope).replace('?', '&')}`, active: route.screen === 'agents' || route.screen === 'agent'}
+  ];
+  const activeLabel = [...nav, ...control].find((item) => item.active)?.label ?? 'Обзор';
+  const currentProject = projects.find(({slug}) => slug === project) ?? null;
+  const links = (items: typeof nav) => items.map(({label, icon: Icon, href, active}) => <Link aria-label={label} href={href} key={label} aria-current={active ? 'page' : undefined}><span className="fcp-nav-icon"><Icon aria-hidden="true" size={17}/></span><span>{label}</span></Link>);
+  const home = project === null ? screenUrl({kind: 'projects'}, route.scope) : projectUrl(project, 'overview', route.scope);
   return <>
     <aside className="fcp-sidebar">
-      <Link href={screenUrl({kind: 'dashboard'}, route.scope)} className="fcp-brand"><b>f(AI) Control Panel</b></Link>
-      <nav className="fcp-sidebar-nav" aria-label="Основная навигация">{nav.map(({label, icon: Icon, href, active}) => <Link aria-label={label} href={href} key={label} aria-current={active ? 'page' : undefined}><span className="fcp-nav-icon"><Icon aria-hidden="true" size={17}/></span><span>{label}</span></Link>)}</nav>
-      <div className="fcp-project-selector" aria-label="Проект">
-        <span>Проект</span><div>{(['all', 'msa', 'ascon'] as const).map((item) => <Link aria-current={project === item ? 'page' : undefined} href={selectorUrl(route, item)} key={item}>{item === 'all' ? 'Все' : item.toUpperCase()}</Link>)}</div>
-      </div>
+      <Link href={home} className="fcp-brand"><b>f(AI) Control Panel</b></Link>
+      <nav className="fcp-sidebar-section fcp-project-list-nav" aria-label="Доступные проекты"><span>Проекты</span>{projects.map((item) => <Link aria-current={project === item.slug ? 'page' : undefined} href={projectAreaUrl(route, item.slug)} key={item.slug}><FolderKanban aria-hidden="true" size={17}/><b>{item.name}</b></Link>)}</nav>
+      <nav className="fcp-sidebar-section fcp-sidebar-nav" aria-label="Рабочие разделы"><span>Работа</span>{links(nav)}</nav>
+      <nav className="fcp-sidebar-section fcp-sidebar-nav" aria-label="Контроль"><span>Контроль</span>{links(control)}</nav>
+      <div className="fcp-sidebar-settings"><span>Настройки</span><small>Изменение проекта и интеграций — следующий этап</small></div>
     </aside>
-    <header className="fcp-topbar"><Link href={screenUrl({kind: 'dashboard'}, route.scope)} className="fcp-mobile-brand">f(AI) Control Panel</Link><strong>{nav.find((item) => item.active)?.label ?? 'Обзор'}</strong><div className="fcp-mobile-projects" aria-label="Проект">{(['all', 'msa', 'ascon'] as const).map((item) => <Link aria-current={project === item ? 'page' : undefined} href={selectorUrl(route, item)} key={item}>{item === 'all' ? 'Все' : item.toUpperCase()}</Link>)}</div><details className="fcp-mobile-menu"><summary aria-label="Открыть навигацию"><Menu aria-hidden="true" size={20}/></summary><nav aria-label="Основная навигация">{nav.map(({label, icon: Icon, href, active}) => <Link href={href} key={label} aria-current={active ? 'page' : undefined}><Icon aria-hidden="true" size={16}/>{label}</Link>)}</nav></details></header>
+    <header className="fcp-topbar"><Link href={home} className="fcp-mobile-brand">f(AI) Control Panel</Link><strong>{currentProject === null ? activeLabel : `${currentProject.name} · ${activeLabel}`}</strong><details className="fcp-mobile-menu"><summary aria-label="Открыть навигацию"><Menu aria-hidden="true" size={20}/></summary><div className="fcp-mobile-menu-body"><nav aria-label="Доступные проекты"><span>Проекты</span>{projects.map((item) => <Link href={projectAreaUrl(route, item.slug)} key={item.slug} aria-current={project === item.slug ? 'page' : undefined}><FolderKanban aria-hidden="true" size={16}/>{item.name}</Link>)}</nav><nav aria-label="Рабочие разделы"><span>Работа</span>{[...nav, ...control].map(({label, icon: Icon, href, active}) => <Link href={href} key={label} aria-current={active ? 'page' : undefined}><Icon aria-hidden="true" size={16}/>{label}</Link>)}</nav></div></details></header>
   </>;
 }
 function Crumbs({route, project, title}: {route: PrototypeRoute; project: ProjectData | null; title?: string}) {
   if (project === null) return null;
   return <div className="fcp-crumbs"><Link href={screenUrl({kind: 'projects'}, route.scope)}>Projects</Link><ChevronRight aria-hidden="true" size={14}/><Link href={projectUrl(project.project.slug, 'overview', route.scope)}>{project.project.name}</Link>{title === undefined ? null : <><ChevronRight aria-hidden="true" size={14}/><strong>{title}</strong></>}</div>;
 }
-function ProjectTabs({route, project}: {route: PrototypeRoute; project: ProjectData}) {
-  const active = route.screen === 'task' ? 'tasks' : route.screen === 'run' ? 'runs' : route.screen as (typeof projectTabs)[number];
-  return <nav className="fcp-tabs" aria-label={`${project.project.name} sections`}>{projectTabs.map((tab) => <Link href={projectUrl(project.project.slug, tab, route.scope)} key={tab} aria-current={active === tab ? 'page' : undefined}>{labels[tab]}{tab === 'tasks' ? <span>{project.workItems.length}</span> : null}</Link>)}</nav>;
-}
 function ProjectHeader({route, project, title}: {route: PrototypeRoute; project: ProjectData; title?: string}) {
-  return <><Crumbs route={route} project={project} {...(title === undefined ? {} : {title})}/><div className="fcp-project-title"><div><h1>{title ?? project.project.name}</h1><span>Control plane fact {project.synchronizedAt === null ? 'not observed' : `observed ${date(project.synchronizedAt)}`}</span></div>{title === undefined ? <Status value={project.snapshot?.health ?? 'unknown'}/> : null}</div><ProjectTabs route={route} project={project}/></>;
+  return <><Crumbs route={route} project={project} {...(title === undefined ? {} : {title})}/><div className="fcp-project-title"><div><h1>{title ?? project.project.name}</h1><span>Control plane fact {project.synchronizedAt === null ? 'not observed' : `observed ${date(project.synchronizedAt)}`}</span></div>{title === undefined ? <Status value={project.snapshot?.health ?? 'unknown'}/> : null}</div></>;
+}
+function ContextTabs({label, items}: {label: string; items: readonly Readonly<{label: string; href: string; active: boolean; count?: number}>[]}) {
+  return <nav className="fcp-tabs fcp-context-tabs" aria-label={label}>{items.map((item) => <Link href={item.href} key={item.label} aria-current={item.active ? 'page' : undefined}>{item.label}{item.count === undefined ? null : <span>{item.count}</span>}</Link>)}</nav>;
 }
 function Summary({items}: {items: readonly Readonly<{label: string; value: string | number; tone?: string}>[]}) {
   return <dl className="fcp-summary">{items.map((item) => <div key={item.label}><dt>{item.label}</dt><dd className={item.tone ?? ''}>{item.value}</dd></div>)}</dl>;
 }
-function AttentionRow({csrfToken, signal, route, projects}: {csrfToken: string | null; signal: PortfolioData['attention'][number]; route: PrototypeRoute; projects: PortfolioData['projects']}) {
-  const project = projects.find((item) => item.id === signal.projectId);
-  const href = project === undefined ? null : signal.workItemId === null
-    ? projectUrl(project.slug, 'overview', route.scope)
-    : taskUrl(project.slug, signal.workItemId, route.scope);
-  const stage = signal.stage === null ? 'Unknown' : signal.stage.replaceAll('_', ' ');
-  const provenance = signal.signalClass === null ? 'Unavailable' : signal.signalClass === 'fact' ? 'Fact' : 'Inference';
-  const target = signal.workItemId === null ? 'Open project' : 'Open task';
-  const nextAction = signal.nextAction === null ? 'Unavailable' : signal.nextAction.replaceAll('_', ' ');
-  return <article className="fcp-attention" key={signal.id}><header><Status value={signal.severity}/><div><strong>{signal.object}</strong><small>{signal.project} · {signal.reason}</small></div>{href === null ? <span className="fcp-muted">Target unavailable</span> : <Link className="fcp-attention-open" href={href} aria-label={`${target}: ${signal.object}`}>{target}<ChevronRight aria-hidden="true" size={16}/></Link>}</header><dl className="fcp-attention-facts"><div><dt>Delivery stage</dt><dd>{stage}</dd></div><div><dt>Owner</dt><dd>{signal.owner ?? 'Unknown'}</dd></div><div><dt>Observed</dt><dd>{date(signal.freshness)}</dd></div><div><dt>Class</dt><dd>{provenance}</dd></div></dl><div className="fcp-attention-next"><span>Next action</span><strong>{nextAction}</strong></div>{signal.riskSignalId == null ? null : <RiskDispositionControls csrfToken={csrfToken} disposition={signal.disposition == null ? null : {...signal.disposition, expiresAt: signal.disposition.expiresAt.toISOString()}} expectedVersion={signal.dispositionVersion ?? 0} projectId={signal.projectId} riskSignalId={signal.riskSignalId}/>}<details className="fcp-attention-details"><summary><FileCheck2 aria-hidden="true" size={15}/>Evidence &amp; impact</summary><div><p><strong>Impact</strong><span>{signal.impact ?? 'Unavailable'}</span></p><p><strong>Evidence</strong><span>{signal.evidenceReferences.length === 0 ? 'Unavailable' : signal.evidenceReferences.map((reference) => `${reference.type}: ${reference.id}`).join(' · ')}</span></p>{signal.sourceUrl === null ? null : <a href={signal.sourceUrl} target="_blank" rel="noreferrer">Open provider source</a>}</div></details></article>;
+type WorkspaceProjectRef = Readonly<{name: string; slug: OperatorProjectSlug}>;
+const selectedGlobalProject = (route: PrototypeRoute) => route.globalProject === undefined || route.globalProject === 'all' ? null : route.globalProject;
+const projectSelection = (route: PrototypeRoute, projects: readonly WorkspaceProjectRef[]) => {
+  const selected = selectedGlobalProject(route);
+  return selected === null ? projects : projects.filter((project) => project.slug === selected);
+};
+function ProjectChooser({route, projects, title, detail, area}: {route: PrototypeRoute; projects: readonly WorkspaceProjectRef[]; title: string; detail: string; area: 'overview' | 'tasks' | 'chats' | 'agents'}) {
+  const choices = projectSelection(route, projects);
+  const href = (project: WorkspaceProjectRef) => area === 'agents'
+    ? `/agents?project=${project.slug}${scopeQuery(route.scope).replace('?', '&')}`
+    : projectUrl(project.slug, area, route.scope);
+  return <><div className="fcp-page-title"><div><h1>{title}</h1><p>{detail}</p></div><Scope route={route}/></div><section className="fcp-section"><div className="fcp-section-head"><h2>Доступные проекты</h2></div>{choices.length === 0 ? <p className="fcp-empty-line">Нет доступных проектов.</p> : <div className="fcp-list fcp-project-list">{choices.map((project) => <Link className="fcp-row fcp-project-row" href={href(project)} key={project.slug}><FolderKanban aria-hidden="true" size={18}/><div><strong>{project.name}</strong><small>Открыть рабочую область проекта</small></div><ChevronRight aria-hidden="true" size={16}/></Link>)}</div>}</section></>;
 }
-function age(value: Date | null, asOf = new Date()): string {
-  if (value === null) return 'Not observed';
-  const hours = Math.max(0, Math.floor((asOf.getTime() - value.getTime()) / 3_600_000));
-  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+function Dashboard({route, projects}: {route: PrototypeRoute; projects: readonly WorkspaceProjectRef[]}) {
+  return <ProjectChooser route={route} projects={projects} title="Обзор проектов" detail="Операционные факты доступны отдельно внутри каждого проекта." area="overview"/>;
 }
-function PortfolioMetrics({project, route}: {project: PortfolioData['projects'][number]; route: PrototypeRoute}) {
-  const metrics = project.metrics;
-  const outlook = metrics.milestoneOutlook.state === 'unknown'
-    ? 'Unknown — no dated fact'
-    : metrics.milestoneOutlook.overdue > 0
-      ? `${metrics.milestoneOutlook.overdue} overdue · ${metrics.milestoneOutlook.due} upcoming`
-      : `${metrics.milestoneOutlook.due} upcoming`;
-  const throughput = metrics.throughputTrend.state === 'ready'
-    ? `${metrics.throughputTrend.recent} vs ${metrics.throughputTrend.previous} completed`
-    : 'Not enough history';
-  const cycle = metrics.cycleTime.state === 'ready'
-    ? `${metrics.cycleTime.averageHours! < 24 ? `${metrics.cycleTime.averageHours}h` : `${Math.round(metrics.cycleTime.averageHours! / 24)}d`} average`
-    : 'Not enough history';
-  return <article className="fcp-portfolio-metrics"><header><div><FolderKanban aria-hidden="true" size={17}/><Link href={projectUrl(project.slug, 'overview', route.scope)}>{project.name}</Link></div><Status value={project.health}/></header><div className="fcp-metric-core"><div><span>Active WIP</span><strong>{metrics.activeWip}</strong></div><div className={metrics.blockedWork > 0 ? 'danger' : ''}><span>Blocked</span><strong>{metrics.blockedWork}</strong></div><div className={metrics.staleActiveWork > 0 ? 'warning' : ''}><span>Stale active</span><strong>{metrics.staleActiveWork}</strong></div><div><span>Pending approval</span><strong>{metrics.pendingApprovals.count}</strong><small>{metrics.pendingApprovals.count === 0 ? 'None pending' : `Oldest ${age(metrics.pendingApprovals.oldestAt)}`}</small></div></div><ol className="fcp-portfolio-stages" aria-label={`${project.name} work items by delivery stage`}>{Object.entries(metrics.stages).map(([stage, count]) => <li key={stage}><span>{stage === 'in_dev' ? 'In dev' : stage === 'qa' ? 'QA' : stage === 'done' ? 'Done' : statusLabel(stage)}</span><strong>{count}</strong></li>)}</ol><dl className="fcp-portfolio-facts"><div><dt>Integration</dt><dd>{metrics.integrationFreshness === null ? 'Not observed' : `Observed ${compactDate(metrics.integrationFreshness)}`}</dd></div><div><dt>Deadline outlook</dt><dd>{outlook}</dd></div><div><dt>Throughput</dt><dd>{throughput}</dd></div><div><dt>Cycle time</dt><dd>{cycle}</dd></div></dl></article>;
-}
-function Dashboard({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
-  const portfolio = ready(data.portfolio);
-  const allRuns = ready(data.runs);
-  const access = ready(data.access);
-  if (portfolio === null) return <Blank title="Control plane data is unavailable">Connect the configured PostgreSQL source to view portfolio facts.</Blank>;
-  const failed = allRuns?.runs.filter((run) => run.status === 'failed').length;
-  const active = allRuns?.runs.filter((run) => run.status === 'running').length;
-  const attention = rankAttentionQueue([
-    ...portfolio.attention,
-    ...(access === null ? [] : deriveRuntimeAvailabilityAlerts(access))
-  ]);
-  return <><div className="fcp-page-title"><div><h1>Dashboard</h1><p>Delivery attention across configured projects.</p></div><Scope route={route}/></div><Summary items={[
-    {label: 'Projects', value: portfolio.projects.length}, {label: 'Attention', value: attention.length, tone: attention.length > 0 ? 'danger' : ''},
-    ...(active === undefined ? [] : [{label: 'Active runs', value: active}]), ...(failed === undefined ? [] : [{label: 'Failed runs', value: failed, tone: failed > 0 ? 'danger' : ''}])
-  ]}/><section className="fcp-section"><div className="fcp-section-head"><h2>Portfolio</h2><span>Observed facts</span></div><div className="fcp-portfolio-grid">{portfolio.projects.map((project) => <PortfolioMetrics project={project} route={route} key={project.id}/>)}</div></section><section className="fcp-section"><div className="fcp-section-head"><h2>Attention</h2><span>Persisted facts and signals</span></div>{attention.length === 0 ? <p className="fcp-empty-line">No recorded alerts.</p> : <div className="fcp-list">{attention.map((signal) => <AttentionRow csrfToken={data.csrfToken ?? null} signal={signal} route={route} projects={portfolio.projects} key={signal.id}/>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Projects</h2><Link href={screenUrl({kind: 'projects'}, route.scope)}>View all</Link></div><div className="fcp-list fcp-project-list">{portfolio.projects.map((project) => <Link className="fcp-row fcp-project-row" href={projectUrl(project.slug, 'overview', route.scope)} key={project.id}><FolderKanban aria-hidden="true" size={18}/><div><strong>{project.name}</strong><small>{project.unresolvedRiskCount === 0 ? 'No recorded risks' : `${project.unresolvedRiskCount} recorded risks`}</small></div><Status value={project.health}/><span>{project.synchronizedAt === null ? 'Source not observed' : `Observed ${date(project.synchronizedAt)}`}</span><ChevronRight aria-hidden="true" size={16}/></Link>)}</div></section></>;
-}
-function Projects({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
-  const portfolio = ready(data.portfolio);
-  if (portfolio === null) return <Blank title="Projects are unavailable">The PostgreSQL portfolio read model is not available.</Blank>;
-  return <><div className="fcp-page-title"><div><Crumbs route={route} project={null}/><h1>Projects</h1><p>Configured delivery workspaces.</p></div><Scope route={route}/></div><div className="fcp-list fcp-project-list">{portfolio.projects.map((project) => <Link className="fcp-row fcp-project-row" href={projectUrl(project.slug, 'overview', route.scope)} key={project.id}><FolderKanban aria-hidden="true" size={18}/><div><strong>{project.name}</strong><small>{project.unresolvedRiskCount === 0 ? 'No recorded attention' : `${project.unresolvedRiskCount} attention signals`}</small></div><Status value={project.health}/><span>{project.synchronizedAt === null ? 'Not observed' : `Observed ${date(project.synchronizedAt)}`}</span><ChevronRight aria-hidden="true" size={16}/></Link>)}</div></>;
+function Projects({route, projects}: {route: PrototypeRoute; projects: readonly WorkspaceProjectRef[]}) {
+  return <ProjectChooser route={route} projects={projects} title="Проекты" detail="Выберите доступный проект, чтобы открыть его рабочую область." area="overview"/>;
 }
 function StageStrip({items, current}: {items: readonly string[]; current: string | null}) {
   return <ol className="fcp-stages" aria-label="Task lifecycle">{items.map((item) => <li className={item === current ? 'current' : ''} key={item}><span aria-hidden="true"/>{statusLabel(item)}</li>)}</ol>;
@@ -261,51 +229,73 @@ function Overview({route, project, runs}: {route: PrototypeRoute; project: Proje
   const active = project.workItems.filter(({status}) => status !== 'backlog' && status !== 'done');
   return <><ProjectHeader route={route} project={project}/><Summary items={Object.entries(counts).slice(0, 4).map(([label, value]) => ({label: statusLabel(label), value}))}/><section className="fcp-section"><div className="fcp-section-head"><h2>Task lifecycle</h2><span>{current === null ? 'No active task' : `Current task: ${statusLabel(current)}`}</span></div><StageStrip items={['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done']} current={current}/></section><section className="fcp-section"><div className="fcp-section-head"><h2>Current work</h2><Link href={projectUrl(project.project.slug, 'tasks', route.scope)}>View tasks</Link></div>{active.length === 0 ? <p className="fcp-empty-line">No active tasks observed.</p> : <div className="fcp-list">{active.slice(0, 5).map((task) => <TaskRow project={project.project.slug} route={route} task={task} key={task.id}/>)}</div>}</section>{runs === null ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Recent runs</h2><Link href={projectUrl(project.project.slug, 'runs', route.scope)}>View runs</Link></div>{runs.runs.length === 0 ? <p className="fcp-empty-line">No runs observed.</p> : <div className="fcp-list">{runs.runs.slice(0, 4).map((run) => <RunRow project={project.project.slug} route={route} run={run} key={run.id}/>)}</div>}</section>}</>;
 }
-const effectiveTaskOwner = (task: ProjectData['workItems'][number]) =>
-  task.journey?.stage?.actor?.displayName ?? task.owner;
-const taskNextAction = (task: ProjectData['workItems'][number]): string | null => {
+type TaskResponsibility = Readonly<{name: string; source: 'journey' | 'assignment' | 'protocol'}>;
+const protocolStageResponsibility = (
+  project: ProjectData,
+  access: AccessData | null,
+  stage: NonNullable<ProjectData['protocol']>['definition']['stages'][number]
+): TaskResponsibility | null => {
+  if (access === null) return null;
+  const responsibility = stage.responsibility;
+  const actorId = responsibility.kind === 'actor'
+    ? responsibility.actorId
+    : access.memberships.find((membership) =>
+        membership.projectId === project.project.id &&
+        membership.active &&
+        membership.role === responsibility.role)?.actorId;
+  const actor = actorId === undefined ? undefined : access.actors.find((candidate) => candidate.id === actorId && candidate.disabledAt === null);
+  return actor === undefined ? null : {name: actor.displayName, source: 'protocol'};
+};
+const taskResponsibility = (
+  task: ProjectData['workItems'][number],
+  project?: ProjectData,
+  access?: AccessData | null
+): TaskResponsibility | null => {
+  const journeyActor = task.journey?.stage?.actor;
+  if (journeyActor !== null && journeyActor !== undefined) return {name: journeyActor.displayName, source: 'journey'};
+  if (task.owner !== null) return {name: task.owner, source: 'assignment'};
+  const protocolStage = project?.protocol?.active === true
+    ? project.protocol.definition.stages.find((stage) => stage.enabled && stage.taskStatus === task.status)
+    : undefined;
+  return project === undefined || protocolStage === undefined ? null : protocolStageResponsibility(project, access ?? null, protocolStage);
+};
+const effectiveTaskOwner = (task: ProjectData['workItems'][number], project?: ProjectData, access?: AccessData | null) =>
+  taskResponsibility(task, project, access)?.name ?? null;
+const taskNextAction = (task: ProjectData['workItems'][number], project?: ProjectData): string | null => {
   if (task.blocked) return 'Resolve blocker';
   if (task.handoff !== null) return task.handoff.label;
   const nextStage = task.journey?.stage?.nextStage;
-  return nextStage === undefined || nextStage === null
-    ? task.status === 'done' ? 'Complete' : null
-    : `Advance to ${nextStage}`;
+  if (nextStage !== undefined && nextStage !== null) return `Advance to ${nextStage}`;
+  const stage = project?.protocol?.active === true
+    ? project.protocol.definition.stages.find((candidate) => candidate.enabled && candidate.taskStatus === task.status)
+    : undefined;
+  if (stage?.allowedNextStageKey !== null && stage?.allowedNextStageKey !== undefined) {
+    const next = project?.protocol?.definition.stages.find((candidate) => candidate.key === stage.allowedNextStageKey);
+    return `Advance to ${next?.name ?? stage.allowedNextStageKey}`;
+  }
+  return task.status === 'done' ? 'Complete' : stage === undefined ? null : 'Complete this stage';
 };
-const taskNeedsAttention = (task: ProjectData['workItems'][number]) =>
-  task.blocked || effectiveTaskOwner(task) === null || taskNextAction(task) === null;
-function TaskRow({project, route, task}: {project: OperatorProjectSlug; route: PrototypeRoute; task: ProjectData['workItems'][number]}) {
-  return <Link className="fcp-row fcp-task-row" href={taskUrl(project, task.id, route.scope)}><Status value={task.blocked ? 'blocked' : task.status}/><div><strong>{task.title}</strong><small>{effectiveTaskOwner(task) ?? 'Responsible person unknown'}</small></div><span>{taskNextAction(task) ?? 'Next action unknown'}</span><time>{date(task.updatedAt)}</time><ChevronRight aria-hidden="true" size={16}/></Link>;
+const taskNeedsAttention = (task: ProjectData['workItems'][number], project?: ProjectData, access?: AccessData | null) =>
+  task.blocked || effectiveTaskOwner(task, project, access) === null || taskNextAction(task, project) === null;
+function TaskRow({project, route, task, projectData, access}: {project: OperatorProjectSlug; route: PrototypeRoute; task: ProjectData['workItems'][number]; projectData?: ProjectData; access?: AccessData | null}) {
+  const responsibility = taskResponsibility(task, projectData, access);
+  return <Link className="fcp-row fcp-task-row" href={taskUrl(project, task.id, route.scope)}><Status value={task.blocked ? 'blocked' : task.status}/><div><strong>{task.title}</strong><small>{responsibility === null ? 'Responsibility not configured' : `${responsibility.source === 'protocol' ? 'По протоколу · ' : ''}${responsibility.name}`}</small></div><span>{taskNextAction(task, projectData) ?? 'Next action not configured'}</span><time>{date(task.updatedAt)}</time><ChevronRight aria-hidden="true" size={16}/></Link>;
 }
-type TaskEntry = Readonly<{project: OperatorProjectSlug; projectName: string; task: ProjectData['workItems'][number]}>;
-const selectedTaskFilters = (route: PrototypeRoute) => route.taskFilters ?? {status: 'active' as const, attention: false, owner: null};
-const filteredTaskEntries = (route: PrototypeRoute, entries: readonly TaskEntry[]) => {
-  const filters = selectedTaskFilters(route);
-  return entries.filter(({task}) => {
-    const statusMatches = filters.status === 'all'
-      || (filters.status === 'active'
-        ? ['ready', 'in_dev', 'qa', 'acceptance'].includes(task.status)
-        : task.status === filters.status);
-    return statusMatches
-      && (!filters.attention || taskNeedsAttention(task))
-      && (filters.owner === null || effectiveTaskOwner(task) === filters.owner);
-  });
-};
-function TaskFilters({route, entries, projects, action}: {
+const selectedTaskFilters = (route: PrototypeRoute) => route.taskFilters ?? {view: 'board' as const, status: 'all' as const, attention: false, owner: null};
+function TaskFilters({route, owners, action}: {
   route: PrototypeRoute;
-  entries: readonly TaskEntry[];
-  projects: readonly Readonly<{name: string; slug: OperatorProjectSlug}>[];
+  owners: readonly string[];
   action: string;
 }) {
   const filters = selectedTaskFilters(route);
-  const owners = [...new Set(entries.flatMap(({task}) => effectiveTaskOwner(task) ?? []))].sort();
   const resetQuery = new URLSearchParams();
-  if (route.globalProject !== undefined) resetQuery.set('project', route.globalProject);
+  if (filters.view !== 'board') resetQuery.set('view', filters.view);
   if (route.scope.environment !== null) resetQuery.set('environment', route.scope.environment);
   if (route.scope.from !== null) resetQuery.set('from', route.scope.from);
   if (route.scope.to !== null) resetQuery.set('to', route.scope.to);
   const reset = `${action}${resetQuery.size === 0 ? '' : `?${resetQuery.toString()}`}`;
   return <form action={action} className="fcp-task-filters" method="get">
-    {route.globalProject === undefined ? null : <label><span>Project</span><select defaultValue={route.globalProject} name="project"><option value="all">All projects</option>{projects.map((project) => <option value={project.slug} key={project.slug}>{project.name}</option>)}</select></label>}
+    {filters.view === 'board' ? null : <input name="view" type="hidden" value={filters.view}/>}
     <label><span>Status</span><select defaultValue={filters.status} name="status"><option value="active">Active work</option><option value="backlog">Backlog</option><option value="ready">Ready</option><option value="in_dev">In development</option><option value="qa">QA</option><option value="acceptance">Acceptance</option><option value="done">Completed</option><option value="all">All statuses</option></select></label>
     <label><span>Attention</span><select defaultValue={filters.attention ? 'only' : 'all'} name="attention"><option value="all">All</option><option value="only">Needs attention</option></select></label>
     <label><span>Responsible</span><select defaultValue={filters.owner ?? ''} name="owner"><option value="">All responsible</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
@@ -315,10 +305,57 @@ function TaskFilters({route, entries, projects, action}: {
     <button type="submit">Apply</button><Link href={reset}>Reset</Link>
   </form>;
 }
-function Tasks({route, project}: {route: PrototypeRoute; project: ProjectData}) {
+const taskViewUrl = (route: PrototypeRoute, project: OperatorProjectSlug, view: 'board' | 'mine' | 'blocked') => {
+  const query = new URLSearchParams();
+  if (view !== 'board') query.set('view', view);
+  if (route.scope.environment !== null) query.set('environment', route.scope.environment);
+  if (route.scope.from !== null) query.set('from', route.scope.from);
+  if (route.scope.to !== null) query.set('to', route.scope.to);
+  return `/projects/${project}/tasks${query.size === 0 ? '' : `?${query.toString()}`}`;
+};
+const boardDescriptions: Record<ProjectData['workItems'][number]['status'], string> = {
+  backlog: 'Not committed', ready: 'Ready to start', in_dev: 'Implementation', qa: 'Verification', acceptance: 'PO decision', done: 'Accepted scope'
+};
+const boardColumnLabel: Record<ProjectData['workItems'][number]['status'], string> = {
+  backlog: 'Backlog', ready: 'Ready', in_dev: 'In Dev', qa: 'QA', acceptance: 'Acceptance', done: 'Done'
+};
+const providerTaskLabel = (task: ProjectData['workItems'][number]) => {
+  if (task.externalUrl === null) return 'Canonical task';
+  const match = task.externalUrl.match(/\/issues\/(\d+)(?:$|[?#])/);
+  return match?.[1] === undefined ? 'Provider task' : `GitHub #${match[1]}`;
+};
+function TaskBoardCard({route, project, task, access}: {route: PrototypeRoute; project: ProjectData; task: ProjectData['workItems'][number]; access: AccessData | null}) {
+  const responsibility = taskResponsibility(task, project, access);
+  const nextAction = taskNextAction(task, project);
+  const needsAttention = taskNeedsAttention(task, project, access);
+  return <Link className="fcp-board-card" href={taskUrl(project.project.slug, task.id, route.scope)}><header><span>{providerTaskLabel(task)}</span>{needsAttention ? <span className="fcp-board-attention"><AlertTriangle aria-hidden="true" size={13}/>Требует внимания</span> : null}</header><strong>{task.title}</strong><div><span>{responsibility === null ? 'Responsibility not configured' : `${responsibility.source === 'protocol' ? 'По протоколу · ' : ''}${responsibility.name}`}</span><small>{nextAction ?? 'Next action not configured'}</small></div><time>{date(task.updatedAt)}</time></Link>;
+}
+function Tasks({route, project, access, operatorActorId}: {route: PrototypeRoute; project: ProjectData; access: AccessData | null; operatorActorId: string | null}) {
   const entries = project.workItems.map((task) => ({project: project.project.slug, projectName: project.project.name, task}));
-  const visible = filteredTaskEntries(route, entries);
-  return <><ProjectHeader route={route} project={project}/><div className="fcp-section-head fcp-page-actions"><span>Provider-synchronized work items</span><DeferredAction label="New task" detail="task creation is not configured in this workspace."/></div><TaskFilters action={`/projects/${project.project.slug}/tasks`} entries={entries} projects={[project.project]} route={route}/><div className="fcp-list">{visible.length === 0 ? <p className="fcp-empty-line">No tasks match the current filters.</p> : visible.map(({task}) => <TaskRow project={project.project.slug} route={route} task={task} key={task.id}/>)}</div></>;
+  const operator = access?.actors.find((actor) => actor.id === operatorActorId)?.displayName ?? null;
+  const filters = selectedTaskFilters(route);
+  const visible = entries.filter(({task}) => {
+    const responsibility = effectiveTaskOwner(task, project, access);
+    const viewMatches = filters.view === 'board' || (filters.view === 'mine' && operator !== null && responsibility === operator) || (filters.view === 'blocked' && task.blocked);
+    const statusMatches = filters.status === 'all' || filters.status === 'active'
+      ? filters.status === 'all' || ['ready', 'in_dev', 'qa', 'acceptance'].includes(task.status)
+      : task.status === filters.status;
+    return viewMatches && statusMatches && (!filters.attention || taskNeedsAttention(task, project, access)) && (filters.owner === null || responsibility === filters.owner);
+  });
+  const owners = [...new Set(entries.flatMap(({task}) => effectiveTaskOwner(task, project, access) ?? []))].sort();
+  const mineCount = operator === null ? 0 : entries.filter(({task}) => effectiveTaskOwner(task, project, access) === operator).length;
+  const blockedCount = entries.filter(({task}) => task.blocked).length;
+  const statuses = filters.status === 'all' || filters.status === 'active'
+    ? workItemStatuses.filter((status) => filters.status === 'all' || ['ready', 'in_dev', 'qa', 'acceptance'].includes(status))
+    : [filters.status];
+  return <><ProjectHeader route={route} project={project}/><ContextTabs label="Разделы задач" items={[
+    {label: 'Доска', href: taskViewUrl(route, project.project.slug, 'board'), active: filters.view === 'board', count: entries.length},
+    {label: 'Мои задачи', href: taskViewUrl(route, project.project.slug, 'mine'), active: filters.view === 'mine', count: mineCount},
+    {label: 'Заблокировано', href: taskViewUrl(route, project.project.slug, 'blocked'), active: filters.view === 'blocked', count: blockedCount}
+  ]}/><div className="fcp-section-head fcp-page-actions"><span>Read-only · synchronized from the configured tracker</span></div><TaskFilters action={`/projects/${project.project.slug}/tasks`} owners={owners} route={route}/><div className="fcp-board" aria-label={`${project.project.name} task board`}>{statuses.map((status) => {
+    const tasks = visible.filter(({task}) => task.status === status);
+    return <section className="fcp-board-column" key={status}><header><div><h2>{boardColumnLabel[status]}</h2><span>{tasks.length}</span></div><p>{boardDescriptions[status]}</p></header><div>{tasks.length === 0 ? <p className="fcp-board-empty">No matching tasks</p> : tasks.map(({task}) => <TaskBoardCard access={access} project={project} route={route} task={task} key={task.id}/>)}</div></section>;
+  })}</div></>;
 }
 function DetailFacts({items}: {items: readonly Readonly<{label: string; value: string}>[]}) {
   return <dl className="fcp-details">{items.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>;
@@ -377,8 +414,19 @@ function TaskDetail({route, project, runs, lifecycleLoad, csrfToken, operatorAct
             : stage?.nextStage !== null && stage !== null ? `Advance to ${stage.nextStage}.` : 'No further protocol action is available.';
   return <><ProjectHeader route={route} project={project} title={task.title}/><div className="fcp-detail-layout"><main className="fcp-detail-main"><div className="fcp-detail-status"><Status value={task.blocked ? 'blocked' : task.status}/></div>{task.summary === null ? <p className="fcp-empty-line">Task summary not observed.</p> : <p className="fcp-task-summary">{task.summary}</p>}<section className="fcp-section"><div className="fcp-section-head"><h2>Delivery lifecycle</h2><span>PostgreSQL facts only</span></div><DeliveryLifecycleRail lifecycleLoad={lifecycleLoad} task={task}/></section><section className="fcp-section"><div className="fcp-section-head"><h2>Delivery protocol</h2><span>{journey === null ? 'Not configured' : `Protocol v${journey.protocolVersion}`}</span></div>{journey === null ? <p className="fcp-empty-line">Not configured. This legacy task is not bound to a delivery protocol.</p> : <div className="fcp-lifecycle-rail"><span aria-hidden="true"/><div><strong>{stage?.name ?? journey.stageKey}</strong><small>Task status: {statusLabel(stage?.taskStatus ?? task.status)} · {stage?.executionMode ?? 'Unknown mode'}</small></div><div><strong>Deadline</strong><small>{journey.deadlineAt === null ? 'Not set' : date(journey.deadlineAt)}</small></div><div><strong>Responsibility</strong><small>{stage?.actor === null || stage?.actor === undefined ? `${stage?.responsibility ?? 'Unknown'} · unresolved` : `${stage.actor.displayName} · ${stage.actor.type}`}</small></div><div><strong>Next allowed action</strong><small>{executionAction}</small></div></div>}<DeliveryJourneyAction workItemId={task.id} taskVersion={task.version ?? 0} journey={journey} activeProtocolId={project.protocol?.active === true ? project.protocol.id : null} csrfToken={csrfToken}/></section><section className="fcp-section"><div className="fcp-section-head"><h2>Execution</h2><ListChecks aria-hidden="true" size={17}/></div>{packet === null ? <TaskPacketBuildControls task={task} profiles={project.agentProfiles} csrfToken={csrfToken}/> : <TaskPacketPreview packet={packet} csrfToken={csrfToken} operatorActorId={operatorActorId}/>} {packet === null && !task.canBuildPacket && run === null ? <p className="fcp-empty-line">No task packet or run handoff is recorded.</p> : null}{run === null ? null : <div className="fcp-command"><div><strong>{task.handoff?.label ?? 'Run observed'}</strong><p>Execution facts are persisted in the governed run record.</p></div><Link className="fcp-primary" href={runUrl(project.project.slug, run.id, route.scope)}>Open run record</Link></div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Policy & approval</h2><ShieldCheck aria-hidden="true" size={17}/></div><p className="fcp-empty-line">{approval === null ? 'Not observed. Delivery does not create a #6 run or approval.' : `${statusLabel(approval.status)} · ${approval.environment}`}</p></section><section className="fcp-section"><div className="fcp-section-head"><h2>Evidence</h2><FileCheck2 aria-hidden="true" size={17}/></div>{journey === null ? <p className="fcp-empty-line">No protocol evidence requirements are configured.</p> : <div className="fcp-evidence-list">{recordedEvidence.length === 0 ? <p className="fcp-empty-line">No evidence references recorded for this stage.</p> : recordedEvidence.map((entry) => <p key={`${entry.requirement}:${entry.reference}`}><strong>{entry.requirement}</strong><span>{entry.reference}</span></p>)}{nextRequiredEvidence.length === 0 ? null : <p className="fcp-evidence-next"><strong>Next required</strong><span>{nextRequiredEvidence.join(', ')}</span></p>}</div>}</section></main><aside className="fcp-meta"><h2>Details</h2><DetailFacts items={[{label: 'Protocol', value: journey === null ? 'Not configured' : `v${journey.protocolVersion}`}, {label: 'Stage', value: stage?.name ?? 'Not configured'}, {label: 'Responsible human', value: stage?.actor?.type === 'human' ? stage.actor.displayName : task.owner ?? 'Unknown'}, {label: 'Responsible agent', value: stage?.actor?.type === 'agent' ? stage.actor.displayName : 'Unknown'}, {label: 'Approval', value: approval === null ? 'Not observed' : statusLabel(approval.status)}, {label: 'Deadline', value: journey?.deadlineAt === null || journey === null ? 'Not set' : date(journey.deadlineAt)}, {label: 'Source', value: task.externalUrl === null ? 'Not observed' : 'Provider observation'}, {label: 'Updated', value: date(task.updatedAt)}]}/>{task.externalUrl === null ? null : <a href={task.externalUrl} target="_blank" rel="noreferrer">Open provider source</a>}</aside></div></>;
 }
-function Protocol({route, project, csrfToken}: {route: PrototypeRoute; project: ProjectData; csrfToken: string | null}) {
-  return <><ProjectHeader route={route} project={project}/><section className="fcp-section"><div className="fcp-section-head"><h2>Delivery protocol</h2><span>Active workflow</span></div><DeliveryProtocolEditor projectId={project.project.id} protocol={project.protocol ?? null} csrfToken={csrfToken}/></section></>;
+const protocolModeLabel = (mode: NonNullable<ProjectData['protocol']>['definition']['stages'][number]['executionMode']) =>
+  mode === 'autonomous' ? 'Автономно' : mode === 'human_approval' ? 'С подтверждением' : 'Вручную';
+function Protocol({route, project, access, csrfToken}: {route: PrototypeRoute; project: ProjectData; access: AccessData | null; csrfToken: string | null}) {
+  const protocol = project.protocol ?? null;
+  return <><ProjectHeader route={route} project={project}/><ContextTabs label="Разделы процесса" items={[
+    {label: 'Этапы', href: projectUrl(project.project.slug, 'protocol', route.scope), active: true, count: protocol?.definition.stages.filter((stage) => stage.enabled).length ?? 0},
+    {label: 'Запуски', href: projectUrl(project.project.slug, 'runs', route.scope), active: false},
+    {label: 'Правила', href: '#protocol-rules', active: false}
+  ]}/><section className="fcp-section"><div className="fcp-section-head"><div><h2>Как проект проходит разработку</h2><span>Текущая опубликованная последовательность</span></div><span>{protocol === null ? 'Not configured' : `v${protocol.version} · ${protocol.active ? 'active' : 'inactive'}`}</span></div>{protocol === null ? <Blank title="Процесс не настроен">Нет сохранённого протокола разработки для этого проекта.</Blank> : <ol className="fcp-protocol-flow" aria-label={`${project.project.name} delivery protocol`}>{protocol.definition.stages.filter((stage) => stage.enabled).map((stage, index, stages) => {
+    const responsibility = protocolStageResponsibility(project, access, stage);
+    const next = stage.allowedNextStageKey === null ? null : protocol.definition.stages.find((candidate) => candidate.key === stage.allowedNextStageKey);
+    return <li key={stage.key}><header><span>{String(index + 1).padStart(2, '0')}</span><Status value={stage.taskStatus}/></header><h3>{stage.name}</h3><dl><div><dt>Ответственный</dt><dd>{responsibility === null ? 'Responsibility not configured' : `По протоколу · ${responsibility.name}`}</dd></div><div><dt>Режим</dt><dd>{protocolModeLabel(stage.executionMode)}</dd></div><div><dt>Подтверждение</dt><dd>{stage.executionMode === 'human_approval' ? 'Требуется' : 'Не требуется'}</dd></div><div><dt>Evidence</dt><dd>{stage.requiredEvidence.join(', ')}</dd></div></dl><footer>{stage.allowedNextStageKey === null ? <><FileCheck2 aria-hidden="true" size={15}/><span>Завершение процесса</span></> : <><ArrowRight aria-hidden="true" size={15}/><span>Далее: {next?.name ?? stage.allowedNextStageKey}</span></>}</footer>{index === stages.length - 1 ? null : <span className="fcp-protocol-connector" aria-hidden="true"/>}</li>;
+  })}</ol>}</section><section className="fcp-section" id="protocol-rules"><div className="fcp-section-head"><div><h2>Правила и версии</h2><span>Управляемые изменения через canonical commands</span></div></div><details className="fcp-protocol-management"><summary>Открыть управление протоколом</summary><DeliveryProtocolEditor projectId={project.project.id} protocol={protocol} csrfToken={csrfToken}/></details></section></>;
 }
 function RunRow({project, route, run}: {project: OperatorProjectSlug; route: PrototypeRoute; run: RunsData['runs'][number]}) {
   return <Link className="fcp-row fcp-run-row" href={runUrl(project, run.id, route.scope)}><Status value={run.status}/><div><strong>{run.workItem ?? 'Task not observed'}</strong><small>{run.agent ?? 'Agent unknown'} · {run.runtimeProfile}</small></div><span>{run.receipt?.terminal ?? 'Receipt not observed'}</span><time>{date(run.completedAt ?? run.startedAt)}</time><ChevronRight aria-hidden="true" size={16}/></Link>;
@@ -487,7 +535,8 @@ function SystemsSummary({health}: {health: HealthData | null}) {
   return <><Summary items={[{label: 'Scheduled jobs', value: health.jobs.length}, {label: 'Unhealthy jobs', value: unhealthy, tone: unhealthy > 0 ? 'danger' : ''}, {label: 'Integration observations', value: health.integrations.length}, {label: 'Unresolved risks', value: health.risks.length, tone: health.risks.length > 0 ? 'danger' : ''}, {label: 'Audit facts', value: health.audit.length}]}/><div className="fcp-systems-grid"><SystemFacts icon={Workflow} title="Scheduled jobs" empty="No persisted scheduled jobs are recorded." items={health.jobs}>{(job) => <><strong>{job.project} · {job.name}</strong><span>{job.status} · heartbeat {date(job.heartbeatAt)} · last success {date(job.lastSuccessAt)} · next {date(job.nextRunAt)}</span></>}</SystemFacts><SystemFacts icon={ServerCog} title="Integration observations" empty="No persisted tracker snapshot operations are recorded." items={health.integrations}>{(item) => <><strong>{item.project} · {item.provider}</strong><span>{item.mode} · observed {date(item.createdAt)}</span></>}</SystemFacts><SystemFacts icon={ShieldAlert} title="Unresolved risks" empty="No unresolved risk signals are recorded." items={health.risks}>{(item) => <><strong>{item.project} · {item.severity}</strong><span>{item.summary} · updated {date(item.updatedAt)}</span></>}</SystemFacts><SystemFacts icon={History} title="Recovery & audit" empty="No canonical audit events are recorded." items={health.audit}>{(item) => <><strong>{item.project} · {item.action}</strong><span>{item.actor ?? 'No recorded actor'} · {item.outcome ?? 'No recorded outcome'} · {date(item.occurredAt)}</span></>}</SystemFacts></div><details className="fcp-system-details"><summary>All persisted systems facts</summary><div>{health.jobs.map((item) => <p key={item.id}>{item.project} · {item.name} · {item.status} · heartbeat {date(item.heartbeatAt)} · last success {date(item.lastSuccessAt)} · next {date(item.nextRunAt)}</p>)}{health.integrations.map((item) => <p key={item.id}>{item.project} · {item.provider} · {item.mode} · {date(item.createdAt)}</p>)}{health.risks.map((item) => <p key={item.id}>{item.project} · {item.severity} · {item.summary} · {date(item.updatedAt)}</p>)}{health.costLedger.length === 0 ? <p>No AgentRuns cost facts are recorded.</p> : health.costLedger.map((item) => <p key={`${item.runType}:${item.currency}:${item.state}`}>{item.runType} · {item.state} · {item.count} runs · {item.currency ?? 'No currency'}</p>)}{health.audit.map((item) => <p key={item.id}>{item.project} · {item.action} · {item.targetType} · {item.targetId ?? 'No recorded target ID'} · {item.policyDecision ?? 'No recorded policy decision'} · {item.reasonCode ?? 'No recorded reason code'}</p>)}</div></details></>;
 }
 function SystemFacts<T>({icon: Icon, title, empty, items, children}: {icon: typeof Bot; title: string; empty: string; items: readonly T[]; children: (item: T) => ReactNode}) { return <section className="fcp-system-card"><header><Icon aria-hidden="true" size={18}/><h2>{title}</h2><span>{items.length}</span></header>{items.length === 0 ? <p>{empty}</p> : <div>{items.slice(0, 3).map((item, index) => <article key={index}>{children(item)}</article>)}</div>}</section>; }
-function Agents({route, access, health}: {route: PrototypeRoute; access: AccessData | null; health: HealthData | null}) {
+function Agents({route, access, health, projects}: {route: PrototypeRoute; access: AccessData | null; health: HealthData | null; projects: readonly WorkspaceProjectRef[]}) {
+  if (selectedGlobalProject(route) === null) return <ProjectChooser route={route} projects={projects} title="Агенты и системы" detail="Системы и runtime-факты доступны отдельно внутри проекта." area="agents"/>;
   const managedAgentIds = new Set(access?.memberships.flatMap((membership) =>
     membership.active &&
     membership.role === 'agent' &&
@@ -527,13 +576,12 @@ function AgentDetail({route, access, csrfToken}: {route: PrototypeRoute; access:
   const health = agent.disabledAt === null ? fleetHealth(profiles) : 'disabled';
   return <><div className="fcp-page-title"><div><Crumbs route={route} project={null} title={agent.displayName}/><h1>{agent.displayName}</h1><p>Fleet projection from persisted availability and execution facts.</p></div><div className="fcp-agent-title-actions"><Status value={health}/>{agent.disabledAt === null ? <AgentRetirementControls agentId={agent.id} agentName={agent.displayName} canRetire={access.canRetireAgents} csrfToken={csrfToken}/> : null}</div></div><div className="fcp-detail-layout"><main className="fcp-detail-main"><section className="fcp-section"><div className="fcp-section-head"><h2>Runtime fleet</h2><ServerCog aria-hidden="true" size={17}/></div>{profiles.length === 0 ? <p className="fcp-empty-line">No persisted agent profile or project registration is observed.</p> : <div className="fcp-fleet-profiles">{profiles.map((profile) => <article key={profile.id}><header><div><strong>{profile.runtimeId} · {profile.runtimeProfile}</strong><small>{profile.enabled ? 'Profile enabled' : 'Profile disabled'} · {profile.registrations.length} project registration{profile.registrations.length === 1 ? '' : 's'}</small></div><Status value={profile.fleet.health}/></header>{profile.registrations.length === 0 ? <p className="fcp-empty-line">Project scope not observed.</p> : <div className="fcp-registration-list">{profile.registrations.map((registration) => <div key={registration.id}><div><strong>{registration.project}</strong><small>{registration.provider}/{registration.runtimeKey} · registration v{registration.version}</small>{Object.entries(registration.availability.components).map(([component, fact]) => <small key={component}>{component} · {statusLabel(fact.state)} · {date(fact.observedAt)}</small>)}</div><Status value={registration.availability.health}/><RuntimeRegistrationControls agentId={agent.id} agentProfileId={profile.id} canManage={agent.disabledAt === null && registration.canManage} csrfToken={csrfToken} enabled={registration.enabled} expectedVersion={registration.version} projectId={registration.projectId} projectName={registration.project} registrationId={registration.id} replacementTargets={access === null ? [] : replacementTargets(access, agent.id, profile.id, registration.projectId)} staleRun={profile.fleet.health === 'stale' && profile.fleet.currentWork?.projectSlug === registration.projectSlug ? {id: profile.fleet.currentWork.id, version: profile.fleet.currentWork.version} : null}/></div>)}</div>}<dl><div><dt>Service heartbeat</dt><dd>{date(profile.fleet.freshnessAt)}</dd></div><div><dt>Current work</dt><dd>{profile.fleet.currentWork === null ? 'Not observed' : `${profile.fleet.currentWork.project} · ${profile.fleet.currentWork.title} · ${statusLabel(profile.fleet.currentWork.status)}`}</dd></div><div><dt>Last receipt</dt><dd>{profile.fleet.lastReceipt === null ? 'Not observed' : `${profile.fleet.lastReceipt.terminal} · ${profile.fleet.lastReceipt.project} · ${date(profile.fleet.lastReceipt.completedAt)}`}</dd></div></dl></article>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Effective instructions</h2><Bot aria-hidden="true" size={17}/></div>{profiles.length === 0 || profiles.every((profile) => profile.instruction === null) ? <p className="fcp-empty-line">Versioned effective instructions are not observed for this agent.</p> : profiles.map((profile) => profile.instruction === null ? null : <article className="fcp-agent-profile" key={`${profile.id}:instruction`}><strong>{profile.runtimeId} · {profile.runtimeProfile}</strong><p>{profile.instruction.provenance} · effective hash {profile.instruction.hash}</p></article>)}</section>{agent.disabledAt === null ? profiles.map((profile) => <AgentProfileSettings csrfToken={csrfToken} key={`${profile.id}:settings`} profile={profile}/>) : null}</main><aside className="fcp-meta"><h2>Details</h2><DetailFacts items={[{label: 'Type', value: agent.type}, {label: 'Role', value: agent.role}, {label: 'Actor state', value: agent.disabledAt === null ? 'Enabled' : 'Disabled'}, {label: 'Fleet health', value: statusLabel(health)}, {label: 'Profiles', value: String(profiles.length)}]}/></aside></div></>;
 }
-function GlobalTasks({route, projects}: {route: PrototypeRoute; projects: readonly ProjectData[]}) {
-  const visibleProjects = route.globalProject === undefined || route.globalProject === 'all' ? projects : projects.filter((project) => project.project.slug === route.globalProject);
-  const entries = visibleProjects.flatMap((project) => project.workItems.map((task) => ({project: project.project.slug, projectName: project.project.name, task})));
-  const rows = filteredTaskEntries(route, entries);
-  return <><div className="fcp-page-title"><div><h1>Delivery tasks</h1><p>Canonical work items across configured projects.</p></div><Scope route={route}/></div><div className="fcp-page-actions"><DeferredAction label="New task" detail="task creation is not configured in this workspace."/></div><TaskFilters action="/tasks" entries={entries} projects={projects.map(({project}) => project)} route={route}/><div className="fcp-list">{rows.length === 0 ? <p className="fcp-empty-line">No tasks match the current filters.</p> : rows.map(({project, task}) => <TaskRow key={task.id} project={project} route={route} task={task}/>)}</div></>;
+function GlobalTasks({route, projects}: {route: PrototypeRoute; projects: readonly WorkspaceProjectRef[]}) {
+  return <ProjectChooser route={route} projects={projects} title="Задачи проекта" detail="Доски задач доступны внутри проекта — общая смешанная очередь не поддерживается." area="tasks"/>;
 }
-function GlobalChats({route, conversations}: {route: PrototypeRoute; conversations: ConversationsData | null}) { return <><div className="fcp-page-title"><div><h1>Conversations</h1><p>Read-only internal and client timelines from verified bindings.</p></div><Scope route={route}/></div><div className="fcp-page-actions"><DeferredAction label="Manage chat membership" detail="chat administration is not configured."/></div>{conversations === null ? <Blank title="Conversations unavailable">The canonical conversation read model could not be loaded.</Blank> : conversations.projects.length === 0 ? <Blank title="No projects observed">No configured projects are available for this filter.</Blank> : <Conversations projects={conversations.projects}/>}</>; }
+function GlobalChats({route, projects}: {route: PrototypeRoute; projects: readonly WorkspaceProjectRef[]}) {
+  return <ProjectChooser route={route} projects={projects} title="Чаты проекта" detail="Таймлайны доступны отдельно внутри проекта." area="chats"/>;
+}
 function People({route, access}: {route: PrototypeRoute; access: AccessData | null}) {
   if (access === null) return <><div className="fcp-page-title"><div><h1>People &amp; Access</h1><p>Persisted memberships, identities, and effective access.</p></div><Scope route={route}/></div><Blank title="People and access are unavailable">The canonical access read model could not be loaded.</Blank></>;
   const membershipRows = access.memberships.filter(({active}) => active).flatMap((membership) => {
@@ -550,9 +598,9 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
   if (project === null) return <Blank title="Project not observed">This project is not available in the PostgreSQL read model.</Blank>;
   switch (route.screen) {
     case 'overview': return <Overview route={route} project={project} runs={runs}/>;
-    case 'tasks': return <Tasks route={route} project={project}/>;
+    case 'tasks': return <Tasks route={route} project={project} access={access} operatorActorId={data.operatorActorId ?? null}/>;
     case 'task': return <TaskDetail route={route} project={project} runs={runs} lifecycleLoad={data.lifecycle ?? null} csrfToken={data.csrfToken ?? null} operatorActorId={data.operatorActorId ?? null}/>;
-    case 'protocol': return <Protocol route={route} project={project} csrfToken={data.csrfToken ?? null}/>;
+    case 'protocol': return <Protocol route={route} project={project} access={access} csrfToken={data.csrfToken ?? null}/>;
     case 'runs': return <Runs route={route} project={project} runs={runs}/>;
     case 'run': return <RunDetail route={route} project={project} runs={runs} csrfToken={data.csrfToken ?? null}/>;
     case 'chats': return <Chats route={route} project={project} conversations={ready(data.conversations ?? null)}/>;
@@ -564,6 +612,78 @@ export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: Work
   const access = ready(data.access);
   const health = ready(data.health);
   const conversations = ready(data.conversations ?? null);
+  const observedProjects = [
+    ...(ready(data.portfolio)?.projects.map(({name, slug}) => ({name, slug})) ?? []),
+    ...(data.project?.state === 'ready' && data.project.data !== null ? [{name: data.project.data.project.name, slug: data.project.data.project.slug}] : []),
+    ...(data.projectIndex ?? []).map(({project}) => ({name: project.name, slug: project.slug})),
+    ...(access?.memberships.filter((membership) => membership.active).map(({project: name, projectSlug: slug}) => ({name, slug})) ?? [])
+  ].filter((project, index, projects) => projects.findIndex(({slug}) => slug === project.slug) === index);
+  const operatorScoped = data.operatorActorId !== null && data.operatorActorId !== undefined;
+  const authorizedSlugs = !operatorScoped
+    ? new Set(observedProjects.map(({slug}) => slug))
+    : new Set(access?.memberships.flatMap((membership) => membership.actorId === data.operatorActorId && membership.active ? [membership.projectSlug] : []) ?? []);
+  const visibleProjects = observedProjects.filter(({slug}) => authorizedSlugs.has(slug));
+  const requestedProject = route.project ?? selectedGlobalProject(route);
+  const routeAllowed = requestedProject === null || !operatorScoped || authorizedSlugs.has(requestedProject);
+  const selectedProject = selectedGlobalProject(route);
+  const withinProjectScope = (slug: OperatorProjectSlug) => selectedProject === null
+    ? !operatorScoped || authorizedSlugs.has(slug)
+    : slug === selectedProject;
+  const scopedHealth = health === null ? null : {
+    ...health,
+    jobs: health.jobs.filter((item) => withinProjectScope(item.projectSlug)),
+    integrations: health.integrations.filter((item) => withinProjectScope(item.projectSlug)),
+    risks: health.risks.filter((item) => withinProjectScope(item.projectSlug)),
+    audit: health.audit.filter((item) => withinProjectScope(item.projectSlug)),
+    costLedger: operatorScoped ? [] : health.costLedger
+  };
+  const scopedConversations = conversations === null ? null : {...conversations, projects: conversations.projects.filter((item) => withinProjectScope(item.slug))};
+  const scopedAccess = access === null ? null : (() => {
+    const memberships = access.memberships.filter((membership) => withinProjectScope(membership.projectSlug));
+    const actorIds = operatorScoped || selectedProject !== null
+      ? new Set(memberships.map((membership) => membership.actorId))
+      : new Set(access.actors.map((actor) => actor.id));
+    const sharing = access.sharing ?? {enabled: false, projects: [], grants: []};
+    return {
+      ...access,
+      actors: access.actors.filter((actor) => actorIds.has(actor.id)),
+      memberships,
+      externalIdentities: (access.externalIdentities ?? []).filter((identity) => actorIds.has(identity.actorId)),
+      resourceGrants: (access.resourceGrants ?? []).filter((grant) => withinProjectScope(grant.projectSlug) && actorIds.has(grant.actorId)),
+      agentSystems: (access.agentSystems ?? [])
+        .filter((system) => actorIds.has(system.actorId))
+        .map((system) => ({
+          ...system,
+          profiles: system.profiles.map((profile) => ({
+            ...profile,
+            registrations: profile.registrations.filter((registration) => withinProjectScope(registration.projectSlug)),
+            fleet: {
+              ...profile.fleet,
+              currentWork: profile.fleet.currentWork !== null && withinProjectScope(profile.fleet.currentWork.projectSlug) ? profile.fleet.currentWork : null,
+              lastReceipt: profile.fleet.lastReceipt !== null && withinProjectScope(profile.fleet.lastReceipt.projectSlug) ? profile.fleet.lastReceipt : null
+            }
+          }))
+        })),
+      requests: operatorScoped ? [] : access.requests ?? [],
+      secretRefs: operatorScoped ? [] : access.secretRefs ?? [],
+      sharing: {...sharing, projects: sharing.projects.filter((project) => withinProjectScope(project.slug)), grants: sharing.grants.filter((grant) => withinProjectScope(grant.projectSlug))}
+    };
+  })();
   const tokenStyle = {'--fcp-bg': operatorTokens.color.canvas, '--fcp-canvas': operatorTokens.color.surface, '--fcp-ink': operatorTokens.color.ink, '--fcp-muted': operatorTokens.color.muted, '--fcp-rule': operatorTokens.color.border, '--fcp-blue': operatorTokens.color.focus, '--fcp-red': operatorTokens.color.danger, '--fcp-amber': operatorTokens.color.warning, '--fcp-green': operatorTokens.color.success, '--fcp-target': `${operatorTokens.target.minimum}px`} as CSSProperties;
-  return <div className="fcp-workspace" style={tokenStyle}><div className="fcp-shell-layout"><WorkspaceShellHeader route={route}/><main className="fcp-main">{route.screen === 'dashboard' ? <Dashboard route={route} data={data}/> : route.screen === 'projects' ? <Projects route={route} data={data}/> : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={data.projectIndex}/> : route.screen === 'global_chats' ? <GlobalChats route={route} conversations={conversations}/> : route.screen === 'people' ? <People route={route} access={access}/> : route.screen === 'agents' ? <Agents route={route} access={access} health={health}/> : route.screen === 'agent' ? <AgentDetail route={route} access={access} csrfToken={data.csrfToken ?? null}/> : <ProjectScreen route={route} data={data}/>}</main></div></div>;
+  const scopedData = {
+    ...data,
+    ...(scopedAccess === null ? {} : {access: {state: 'ready' as const, data: scopedAccess}}),
+    ...(scopedHealth === null ? {} : {health: {state: 'ready' as const, data: scopedHealth}}),
+    ...(scopedConversations === null ? {} : {conversations: {state: 'ready' as const, data: scopedConversations}})
+  };
+  const content = !routeAllowed ? <Blank title="Проект недоступен">У текущего пользователя нет активного участия в этом проекте.</Blank>
+    : route.screen === 'dashboard' ? <Dashboard route={route} projects={visibleProjects}/>
+      : route.screen === 'projects' ? <Projects route={route} projects={visibleProjects}/>
+        : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={projectSelection(route, visibleProjects)}/>
+          : route.screen === 'global_chats' ? <GlobalChats route={route} projects={projectSelection(route, visibleProjects)}/>
+            : route.screen === 'people' ? <People route={route} access={scopedAccess}/>
+              : route.screen === 'agents' ? <Agents route={route} access={scopedAccess} health={scopedHealth} projects={visibleProjects}/>
+                : route.screen === 'agent' ? <AgentDetail route={route} access={scopedAccess} csrfToken={data.csrfToken ?? null}/>
+                  : <ProjectScreen route={route} data={scopedData}/>;
+  return <div className="fcp-workspace" style={tokenStyle}><div className="fcp-shell-layout"><WorkspaceShellHeader route={route} projects={visibleProjects}/><main className="fcp-main">{content}</main></div></div>;
 }
