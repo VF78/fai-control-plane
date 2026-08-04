@@ -70,7 +70,7 @@ required_path_keys=(
 
 validate_environment() {
   [[ -r "$ENV_FILE" && -f "$COMPOSE_FILE" ]] || die 'production configuration is unavailable'
-  ! grep -q 'REPLACE_' "$ENV_FILE" || die 'production environment still has placeholder values'
+  ! grep -Eq '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=.*REPLACE_' "$ENV_FILE" || die 'production environment still has placeholder values'
   is_hash "$(env_value FCP_IMAGE_TAG)" || die 'FCP_IMAGE_TAG must be an immutable commit hash'
   [[ "$(env_value POSTGRES_IMAGE)" == *@sha256:* ]] || die 'POSTGRES_IMAGE must be an immutable digest'
   [[ "$(env_value WEB_BIND_PORT)" =~ ^[0-9]{2,5}$ ]] || die 'WEB_BIND_PORT is invalid'
