@@ -9,6 +9,7 @@ export type WorkspaceQuery = Readonly<{
   status?: string | string[];
   attention?: string | string[];
   owner?: string | string[];
+  view?: string | string[];
   handoff?: string | string[];
 }>;
 
@@ -21,7 +22,8 @@ export function workspaceRoute(path: readonly string[], query: WorkspaceQuery): 
   const requestedStatus = exact(query.status);
   const statuses = ['active', 'all', 'backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
   const taskFilters = {
-    status: statuses.find((status) => status === requestedStatus) ?? 'active',
+    view: (['board', 'mine', 'blocked'] as const).find((view) => view === exact(query.view)) ?? 'board',
+    status: statuses.find((status) => status === requestedStatus) ?? 'all',
     attention: exact(query.attention) === 'only',
     owner: exact(query.owner)
   };
