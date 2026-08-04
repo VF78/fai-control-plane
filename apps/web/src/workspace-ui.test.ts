@@ -126,6 +126,32 @@ it('keeps the web-first workspace IA and honest unavailable state', () => {
   expect(markup).not.toContain('Provider ID');
 });
 
+it('renders the persisted weighted scope baseline without deriving progress from task counts', () => {
+  const observedAt = new Date('2026-08-04T15:02:00.000Z');
+  const data = {
+    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
+    project: {state: 'ready', data: {
+      project: {id: 'msa-id', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: observedAt},
+      agentProfiles: [], snapshot: {health: 'yellow', capturedAt: observedAt}, synchronizedAt: observedAt, protocol: null, workItems: [],
+      scopeBaseline: {id: 'baseline-1', version: 1, approvedAt: observedAt, updatedAt: observedAt, outcomes: [
+        {key: 'accepted', title: 'Принятый результат', weight: 45, state: 'accepted', acceptedBy: 'Vladimir', acceptedAt: observedAt, evidenceReference: '#91'},
+        {key: 'review', title: 'Результат на проверке', weight: 15, state: 'review', acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
+        {key: 'progress', title: 'Результат в работе', weight: 25, state: 'in_progress', acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
+        {key: 'planned', title: 'Результат не начат', weight: 15, state: 'not_started', acceptedBy: null, acceptedAt: null, evidenceReference: '#91'}
+      ], checkpoint: {title: 'Совместный E2E-сценарий и бизнес-приёмка', status: 'in_dev', owner: 'Vladimir', targetAt: null}, observations: [{acceptedWeight: 12, totalWeight: 80, observedAt: new Date('2026-08-01T15:02:00.000Z')}, {acceptedWeight: 45, totalWeight: 100, observedAt}]}
+    }}
+  } as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {screen: 'overview', project: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data
+  }));
+
+  expect(markup).toContain('45 / 100');
+  expect(markup).toContain('Принято 45');
+  expect(markup).toContain('Совместный E2E-сценарий и бизнес-приёмка');
+  expect(markup).toContain('График принятого скопа: 45 из 100');
+  expect(markup).not.toContain('Task lifecycle');
+});
+
 it('keeps the selected workspace area when changing between authorized projects', () => {
   const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []});
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
@@ -173,15 +199,15 @@ it('renders only the fixed MSA and ASCON roster memberships in People & Access',
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data
   }));
-  expect(markup).toContain('Vladimir</strong><small>MSA · project owner · human');
-  expect(markup).toContain('Vitaliy</strong><small>MSA · contributor · human');
-  expect(markup).toContain('Hermes</strong><small>MSA · agent · agent');
-  expect(markup).toContain('Vladimir</strong><small>ASCON · project owner · human');
+  expect(markup).toContain('Vladimir</strong><small>MSA · Владелец продукта · human');
+  expect(markup).toContain('Vitaliy</strong><small>MSA · Разработчик · human');
+  expect(markup).toContain('Hermes</strong><small>MSA · ИИ-агент · agent');
+  expect(markup).toContain('Vladimir</strong><small>ASCON · Владелец продукта · human');
   expect(markup).not.toContain('Vitaliy</strong><small>ASCON');
   expect(markup).not.toContain('Hermes</strong><small>ASCON');
   expect(markup).not.toContain('href="/projects/ascon/access/hermes"');
   expect(markup).toContain('Membership recorded');
-  expect(markup).toContain('Unknown');
+  expect(markup).toContain('Неизвестно');
   expect(markup).not.toContain('Add person');
 });
 
@@ -216,18 +242,18 @@ it('renders a project-specific board with journey responsibility and no cross-pr
 
   expect(markup).toContain('MSA active task');
   expect(markup).toContain('Hermes');
-  expect(markup).toContain('Advance to Staging');
+  expect(markup).toContain('Перевести: Staging');
   expect(markup).toContain('MSA backlog task');
   expect(markup).not.toContain('ASCON completed task');
   expect(markup).toContain('MSA task board');
   expect(markup).toContain('Доска');
   expect(markup).toContain('Мои задачи');
   expect(markup).toContain('Заблокировано');
-  expect(markup).toContain('All responsible');
-  expect(markup).toContain('Backlog');
-  expect(markup).toContain('In Dev');
-  expect(markup).toContain('Acceptance');
-  expect(markup).toContain('Done');
+  expect(markup).toContain('Ответственный');
+  expect(markup).toContain('Бэклог');
+  expect(markup).toContain('Разработка');
+  expect(markup).toContain('Приёмка');
+  expect(markup).toContain('Завершено');
   expect(markup).toContain('Требует внимания');
   expect(markup).toContain('href="/projects/msa/tasks/task-active"');
   expect(markup).not.toContain('name="project"');
@@ -257,7 +283,7 @@ it('derives unassigned task responsibility from the active protocol without fabr
 
   expect(markup).toContain('GitHub #42');
   expect(markup).toContain('По протоколу · Vitaliy');
-  expect(markup).toContain('Advance to QA');
+  expect(markup).toContain('Перевести: QA');
 });
 
 it('shows only active project memberships and denies a direct cross-project route', () => {
@@ -373,12 +399,12 @@ it('renders persisted agent registrations and authorized new-claim controls with
   } as unknown as WorkspaceData;
   const list = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agents', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
   const detail = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data}));
-  expect(list).toContain('Agents &amp; Systems');
-  expect(list).toContain('heartbeat Not observed');
+  expect(list).toContain('Агенты и системы');
+  expect(list).toContain('Последний heartbeat');
   expect(detail).toContain('provider_neutral/hermes');
   expect(detail).toContain('Fleet projection from persisted availability and execution facts.');
-  expect(list).toContain('Fresh observations can keep an idle runtime Healthy');
-  expect(list).toContain('No active work observed');
+  expect(list).toContain('Работоспособность, текущая работа и последние результаты');
+  expect(list).toContain('Активной задачи нет');
   expect(detail).toContain('effective hash');
   expect(detail).toContain('action="/api/agent-profiles/profile-1"');
   expect(detail).toContain('registration v3');
@@ -576,8 +602,8 @@ it('shows owned Hermes availability attention and treats ASCON no-bot scope as c
     route: {screen: 'agents', project: null, globalProject: 'ascon', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
     data
   }));
-  expect(ascon).toContain('No managed bot configured');
-  expect(ascon).toContain('this is not an outage');
+  expect(ascon).toContain('Управляемого агента нет');
+  expect(ascon).toContain('Владимир работает напрямую через Codex');
   expect(ascon).not.toContain('Hermes</strong>');
 });
 
@@ -589,15 +615,15 @@ it('renders project membership and provider-confirmed grant facts in the access 
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'access', project: 'msa', taskId: null, runId: null, agentId: null, accessActorId: 'actor-1', scope: {environment: null, from: null, to: null}}, data}));
 
-  expect(markup).toContain('People &amp; agents');
-  expect(markup).toContain('project owner');
-  expect(markup).toContain('Desired vs provider-confirmed access');
+  expect(markup).toContain('Карта доступов проекта');
+  expect(markup).toContain('Владелец продукта');
+  expect(markup).toContain('Требуемый и подтверждённый уровень');
   expect(markup).toContain('github');
   expect(markup).toContain('href="/projects/msa/access/actor-1"');
-  expect(markup).toContain('Client sharing');
+  expect(markup).toContain('Доступ клиента');
   expect(markup).toContain('Sharing applies only to MSA');
-  expect(markup).toContain('Access requests');
-  expect(markup).toContain('Workspace records; project binding is not recorded');
+  expect(markup).toContain('Запросы доступа');
+  expect(markup).toContain('Управляемые заявки рабочей области');
   expect(markup).not.toContain('Secret refs');
 });
 
@@ -620,14 +646,14 @@ it('deep-links only a safe provider-confirmed access observation', () => {
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'access', project: 'msa', taskId: null, runId: null, agentId: null, accessActorId: 'actor-1', scope: {environment: null, from: null, to: null}}, data}));
 
-  expect(markup).toContain('Canonical desired: admin');
-  expect(markup).toContain('Confirmed');
-  expect(markup).toContain('Pending confirmation');
-  expect(markup.match(/>Confirmed</g)).toHaveLength(1);
-  expect(markup.match(/>Pending confirmation</g)).toHaveLength(2);
+  expect(markup).toContain('Требуемый уровень: admin');
+  expect(markup).toContain('Подтверждено');
+  expect(markup).toContain('Не подтверждено провайдером');
+  expect(markup.match(/>Подтверждено</g)).toHaveLength(2);
+  expect(markup.match(/>Не подтверждено провайдером</g)).toHaveLength(1);
   expect(markup).toContain('href="https://github.com/VF78/MSA/settings/access"');
-  expect(markup).toContain('Manage in provider');
-  expect(markup).toContain('Not configured');
+  expect(markup).toContain('Открыть у провайдера');
+  expect(markup).toContain('Не настроено');
   expect(markup).not.toContain('javascript:');
 });
 

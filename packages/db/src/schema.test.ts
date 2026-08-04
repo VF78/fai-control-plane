@@ -40,7 +40,9 @@ const requiredTables = [
   schema.secretRefs,
   schema.projectTrackerRepositoryScopes,
   schema.auditEvents,
-  schema.dashboardSnapshots
+  schema.dashboardSnapshots,
+  schema.projectScopeBaselines,
+  schema.projectScopeBaselineObservations
 ];
 
 describe('canonical schema foundation', () => {
@@ -83,7 +85,9 @@ describe('canonical schema foundation', () => {
       'secret_refs',
       'project_tracker_repository_scopes',
       'audit_events',
-      'dashboard_snapshots'
+      'dashboard_snapshots',
+      'project_scope_baselines',
+      'project_scope_baseline_observations'
     ]);
   });
 

@@ -13,11 +13,15 @@ import {
   actors,
   agentProfiles,
   projects,
+  projectScopeBaselineVersions,
+  projectScopeOutcomeObservations,
+  projectScopeOutcomes,
   projectTrackerRepositoryScopes,
   runtimeRegistrations,
   runbooks,
   secretRefs,
   workspaceInstructionVersions,
+  workItems,
   workspaces
 } from './index';
 import {
@@ -46,6 +50,14 @@ const repositorySeeds = [
   {name: 'MSA', slug: 'msa', owner: 'VF78', repository: 'MSA', externalId: 'github:repository:1278325372'},
   {name: 'ASCON', slug: 'ascon', owner: 'VF78', repository: 'ascon', externalId: 'github:repository:1279114011'}
 ] as const;
+type ScopeOutcomeSeed = readonly [string, string, number, 'accepted' | 'review' | 'in_progress' | 'not_started' | 'not_configured'];
+type ScopeObservationSeed = readonly [number, number, string];
+type ScopeSeed = Readonly<{
+  checkpointTitle: string;
+  checkpointStatus: 'ready' | 'in_dev';
+  outcomes: readonly ScopeOutcomeSeed[];
+  observations: readonly ScopeObservationSeed[];
+}>;
 
 const launchDeliveryProtocol = (
   projectSlug: typeof repositorySeeds[number]['slug'],
@@ -291,6 +303,65 @@ try {
         contentHash: deliveryProtocolHash
       });
     }
+    const scopeSeed: ScopeSeed = repository.slug === 'msa'
+      ? {
+          checkpointTitle: 'Совместный E2E-сценарий и бизнес-приёмка',
+          checkpointStatus: 'in_dev' as const,
+          outcomes: [
+            ['catalog_mapping', 'Сопоставление номенклатуры', 25, 'accepted' as const],
+            ['document_intake', 'Приём и разбор документов', 20, 'accepted' as const],
+            ['stock_price_reconciliation', 'Сверка цен и остатков', 15, 'review' as const],
+            ['joint_e2e', 'Совместный E2E-сценарий', 25, 'in_progress' as const],
+            ['business_acceptance', 'Бизнес-приёмка', 15, 'not_started' as const]
+          ],
+          observations: [[10, 80, '2026-08-01T09:00:00.000Z'], [45, 100, '2026-08-04T15:02:00.000Z']]
+        }
+      : {
+          checkpointTitle: 'Подтвердить старт работ',
+          checkpointStatus: 'ready' as const,
+          outcomes: [
+            ['source_inventory', 'Инвентаризация исходных данных', 20, 'not_started' as const],
+            ['integration_outline', 'Контур интеграции', 20, 'not_started' as const],
+            ['business_scenario', 'Бизнес-сценарий', 20, 'not_started' as const],
+            ['pilot_acceptance', 'Приёмка пилота', 20, 'not_started' as const],
+            ['launch_decision', 'Решение о запуске', 20, 'not_started' as const]
+          ],
+          observations: [[0, 100, '2026-08-04T15:02:00.000Z'], [0, 100, '2026-08-05T09:00:00.000Z']]
+        };
+    await db.insert(projectScopeBaselineVersions).values({
+      projectId: persistedProject.id, version: 1, active: true,
+      approvedByActorId: bootstrapActor.id, approvedAt: new Date('2026-08-04T15:02:00.000Z'),
+      checkpointTitle: scopeSeed.checkpointTitle, checkpointStatus: scopeSeed.checkpointStatus,
+      checkpointOwnerActorId: bootstrapActor.id, checkpointTargetAt: null
+    }).onConflictDoUpdate({
+      target: [projectScopeBaselineVersions.projectId, projectScopeBaselineVersions.version],
+      set: {active: true, approvedByActorId: bootstrapActor.id, approvedAt: new Date('2026-08-04T15:02:00.000Z'), checkpointTitle: scopeSeed.checkpointTitle, checkpointStatus: scopeSeed.checkpointStatus, checkpointOwnerActorId: bootstrapActor.id, checkpointTargetAt: null}
+    });
+    const [scopeBaseline] = await db.select({id: projectScopeBaselineVersions.id}).from(projectScopeBaselineVersions).where(and(
+      eq(projectScopeBaselineVersions.projectId, persistedProject.id), eq(projectScopeBaselineVersions.version, 1)
+    ));
+    if (scopeBaseline === undefined) throw new Error(`scope baseline seed failed: ${repository.slug}`);
+    for (const [key, title, weight, state] of scopeSeed.outcomes) {
+      const accepted = state === 'accepted';
+      await db.insert(projectScopeOutcomes).values({
+        baselineId: scopeBaseline.id, key, title, weight, state,
+        acceptedByActorId: accepted ? bootstrapActor.id : null,
+        acceptedAt: accepted ? new Date('2026-08-04T15:02:00.000Z') : null,
+        evidenceReference: 'Решение Product Owner · #91'
+      }).onConflictDoUpdate({
+        target: [projectScopeOutcomes.baselineId, projectScopeOutcomes.key],
+        set: {title, weight, state, acceptedByActorId: accepted ? bootstrapActor.id : null, acceptedAt: accepted ? new Date('2026-08-04T15:02:00.000Z') : null, evidenceReference: 'Решение Product Owner · #91'}
+      });
+    }
+    for (const [acceptedWeight, totalWeight, observedAt] of scopeSeed.observations) {
+      await db.insert(projectScopeOutcomeObservations).values({
+        projectId: persistedProject.id, baselineId: scopeBaseline.id, acceptedWeight, totalWeight,
+        observedAt: new Date(observedAt), evidenceReference: 'Решение Product Owner · #91'
+      }).onConflictDoUpdate({
+        target: [projectScopeOutcomeObservations.projectId, projectScopeOutcomeObservations.observedAt],
+        set: {baselineId: scopeBaseline.id, acceptedWeight, totalWeight, evidenceReference: 'Решение Product Owner · #91'}
+      });
+    }
     if (repository.slug === 'msa') {
       await db.insert(runtimeRegistrations).values({
         projectId: persistedProject.id,
@@ -317,6 +388,21 @@ try {
           deliveryMaxAgeSeconds: 93_600
         }
       });
+      const existingItems = await db.select({id: workItems.id}).from(workItems).where(eq(workItems.projectId, persistedProject.id));
+      if (existingItems.length === 0) {
+        await db.insert(workItems).values([
+          ...Array.from({length: 42}, (_, index) => ({
+            projectId: persistedProject.id,
+            title: `Бэклог · уточнение ${index + 1}`,
+            summary: 'Подтверждённая очередь для локального просмотра доски.',
+            status: 'backlog' as const,
+            ownerActorId: index % 3 === 0 ? bootstrapActor.id : null
+          })),
+          {projectId: persistedProject.id, title: 'Совместный E2E-сценарий', summary: 'Проверка основного бизнес-сценария.', status: 'in_dev' as const, ownerActorId: bootstrapActor.id},
+          {projectId: persistedProject.id, title: 'Сверка цен и остатков', summary: 'Подтверждение расхождений перед приёмкой.', status: 'qa' as const, ownerActorId: hermesActor.id},
+          {projectId: persistedProject.id, title: 'Бизнес-приёмка', summary: 'Подготовить решение владельца продукта.', status: 'acceptance' as const, ownerActorId: bootstrapActor.id}
+        ]);
+      }
     }
     await db.insert(projectTrackerRepositoryScopes).values({
       projectId: persistedProject.id,

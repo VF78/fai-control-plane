@@ -28,6 +28,9 @@ import {
   outboxEvents,
   projectShareGrants,
   projectShareWorkItems,
+  projectScopeBaselineVersions,
+  projectScopeOutcomeObservations,
+  projectScopeOutcomes,
   projectTrackerRepositoryScopes,
   projects,
   projectMemberships,
@@ -684,6 +687,28 @@ export type ProjectData = Readonly<{
   agentProfiles: readonly Readonly<{id: string; runtimeId: string}>[];
   snapshot: Readonly<{health: 'green' | 'yellow' | 'red'; capturedAt: Date}> | null;
   synchronizedAt: Date | null;
+  scopeBaseline?: Readonly<{
+    id: string;
+    version: number;
+    approvedAt: Date | null;
+    updatedAt: Date;
+    outcomes: readonly Readonly<{
+      key: string;
+      title: string;
+      weight: number;
+      state: 'accepted' | 'review' | 'in_progress' | 'not_started' | 'not_configured';
+      acceptedBy: string | null;
+      acceptedAt: Date | null;
+      evidenceReference: string | null;
+    }>[];
+    checkpoint: Readonly<{
+      title: string;
+      status: (typeof workItemStatuses)[number];
+      owner: string | null;
+      targetAt: Date | null;
+    }> | null;
+    observations: readonly Readonly<{acceptedWeight: number; totalWeight: number; observedAt: Date}>[];
+  }> | null;
   protocol?: DeliveryProtocol | null;
   workItems: readonly Readonly<{
     id: string; title: string; summary: string | null; status: (typeof workItemStatuses)[number];
@@ -783,7 +808,7 @@ export const loadDeliveryLifecycleData = (
 export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
   const [project] = await scopedProjects(db, slug);
   if (project === undefined) return null;
-  const [snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members] = await Promise.all([
+  const [snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations] = await Promise.all([
     db.select({health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(eq(dashboardSnapshots.projectId, project.id)).orderBy(desc(dashboardSnapshots.capturedAt)).limit(1),
     db.select({createdAt: trackerSnapshotOperations.createdAt})
@@ -849,7 +874,42 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
       role: projectMemberships.role
     }).from(projectMemberships).innerJoin(actors, eq(actors.id, projectMemberships.actorId))
       .where(and(eq(projectMemberships.projectId, project.id), eq(projectMemberships.active, true), isNull(actors.disabledAt)))
-      .orderBy(actors.id)
+      .orderBy(actors.id),
+    db.select({
+      id: projectScopeBaselineVersions.id,
+      version: projectScopeBaselineVersions.version,
+      approvedAt: projectScopeBaselineVersions.approvedAt,
+      checkpointTitle: projectScopeBaselineVersions.checkpointTitle,
+      checkpointStatus: projectScopeBaselineVersions.checkpointStatus,
+      checkpointTargetAt: projectScopeBaselineVersions.checkpointTargetAt,
+      checkpointOwner: actors.displayName,
+      updatedAt: projectScopeBaselineVersions.updatedAt
+    }).from(projectScopeBaselineVersions)
+      .leftJoin(actors, eq(projectScopeBaselineVersions.checkpointOwnerActorId, actors.id))
+      .where(and(eq(projectScopeBaselineVersions.projectId, project.id), eq(projectScopeBaselineVersions.active, true)))
+      .orderBy(desc(projectScopeBaselineVersions.version)).limit(1),
+    db.select({
+      baselineId: projectScopeOutcomes.baselineId,
+      key: projectScopeOutcomes.key,
+      title: projectScopeOutcomes.title,
+      weight: projectScopeOutcomes.weight,
+      state: projectScopeOutcomes.state,
+      acceptedBy: actors.displayName,
+      acceptedAt: projectScopeOutcomes.acceptedAt,
+      evidenceReference: projectScopeOutcomes.evidenceReference
+    }).from(projectScopeOutcomes)
+      .innerJoin(projectScopeBaselineVersions, eq(projectScopeOutcomes.baselineId, projectScopeBaselineVersions.id))
+      .leftJoin(actors, eq(projectScopeOutcomes.acceptedByActorId, actors.id))
+      .where(and(eq(projectScopeBaselineVersions.projectId, project.id), eq(projectScopeBaselineVersions.active, true)))
+      .orderBy(projectScopeOutcomes.key),
+    db.select({
+      baselineId: projectScopeOutcomeObservations.baselineId,
+      acceptedWeight: projectScopeOutcomeObservations.acceptedWeight,
+      totalWeight: projectScopeOutcomeObservations.totalWeight,
+      observedAt: projectScopeOutcomeObservations.observedAt
+    }).from(projectScopeOutcomeObservations)
+      .where(eq(projectScopeOutcomeObservations.projectId, project.id))
+      .orderBy(projectScopeOutcomeObservations.observedAt, projectScopeOutcomeObservations.id)
   ]);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
@@ -887,6 +947,7 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
     }] : [];
   });
   const protocol = protocols[0] ?? null;
+  const baseline = scopeBaselines[0] ?? null;
   const protocolByJourney = new Map(protocols.map((item) => [`${item.id}:${item.version}`, item]));
   const memberById = new Map(members.flatMap((member) => member.type === 'human' || member.type === 'agent'
     ? [[member.actorId, {displayName: member.displayName, type: member.type}] as const] : []));
@@ -928,6 +989,22 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
     agentProfiles: availableProfiles.filter((profile) => isRuntimeAvailable(profile.runtimeId)),
     snapshot: snapshots[0] ?? null,
     synchronizedAt: operations[0]?.createdAt ?? null,
+    scopeBaseline: baseline === null ? null : {
+      id: baseline.id,
+      version: baseline.version,
+      approvedAt: baseline.approvedAt,
+      updatedAt: baseline.updatedAt,
+      outcomes: scopeOutcomes.filter((outcome) => outcome.baselineId === baseline.id),
+      checkpoint: baseline.checkpointTitle === null || baseline.checkpointStatus === null ? null : {
+        title: baseline.checkpointTitle,
+        status: baseline.checkpointStatus as (typeof workItemStatuses)[number],
+        owner: baseline.checkpointOwner,
+        targetAt: baseline.checkpointTargetAt
+      },
+      observations: scopeObservations
+        .filter((observation) => observation.baselineId === baseline.id)
+        .map((observation) => ({acceptedWeight: observation.acceptedWeight, totalWeight: observation.totalWeight, observedAt: observation.observedAt}))
+    },
     protocol,
     workItems: items.flatMap((item) => {
       if (!workItemStatuses.includes(item.status)) return [];

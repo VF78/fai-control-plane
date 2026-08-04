@@ -55,7 +55,8 @@ type WorkspaceUiRoute = WorkspaceRoute;
 type ProjectTab = 'overview' | 'tasks' | 'protocol' | 'runs' | 'chats' | 'access';
 
 const ready = <T,>(load: OperatorLoad<T> | null): T | null => load?.state === 'ready' ? load.data : null;
-const date = (value: Date | null | undefined) => value === null || value === undefined ? 'Not observed' : new Intl.DateTimeFormat('en', {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}).format(value);
+const date = (value: Date | null | undefined) => value === null || value === undefined ? 'Не зафиксировано' : new Intl.DateTimeFormat('ru-RU', {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}).format(value);
+const ruDate = (value: Date | null | undefined) => value === null || value === undefined ? 'Не зафиксировано' : new Intl.DateTimeFormat('ru-RU', {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}).format(value);
 const scopeQuery = (scope: OperatorScopeRef) => {
   const query = new URLSearchParams();
   if (scope.environment !== null) query.set('environment', scope.environment);
@@ -80,7 +81,7 @@ const projectUrl = (slug: OperatorProjectSlug, tab: ProjectTab, scope: OperatorS
 const taskUrl = (slug: OperatorProjectSlug, id: string, scope: OperatorScopeRef) => screenUrl({kind: 'task', projectSlug: slug, taskId: id}, scope);
 const runUrl = (slug: OperatorProjectSlug, id: string, scope: OperatorScopeRef) => screenUrl({kind: 'run', projectSlug: slug, runId: id}, scope);
 const statusTone = (value: string) => value === 'failed' || value === 'blocked' || value === 'red' || value === 'stale' ? 'danger' : value === 'waiting_approval' || value === 'yellow' ? 'warning' : value === 'done' || value === 'green' || value === 'healthy' || value === 'enabled' ? 'success' : 'neutral';
-const statusLabel = (value: string) => ({green: 'On track', yellow: 'Watch', red: 'At risk', done: 'Completed', in_dev: 'In development', backlog: 'Backlog', ready: 'Ready', qa: 'Quality assurance', acceptance: 'Acceptance', running: 'Running', queued: 'Queued', waiting_approval: 'Waiting for approval', failed: 'Failed', blocked: 'Blocked', pending: 'Pending', approved: 'Approved', rejected: 'Rejected', expired: 'Expired', healthy: 'Healthy', stale: 'Stale', enabled: 'Enabled', disabled: 'Disabled', unknown: 'Unknown', not_configured: 'Not configured'}[value] ?? 'Unknown');
+const statusLabel = (value: string) => ({green: 'В норме', yellow: 'Внимание', red: 'Риск', done: 'Завершено', in_dev: 'В разработке', backlog: 'Бэклог', ready: 'Готово к старту', qa: 'Проверка', acceptance: 'Приёмка', running: 'Выполняется', queued: 'В очереди', waiting_approval: 'Ждёт подтверждения', failed: 'Ошибка', blocked: 'Заблокировано', pending: 'Ожидает', approved: 'Подтверждено', rejected: 'Отклонено', expired: 'Истекло', healthy: 'Работает', stale: 'Нет свежих данных', enabled: 'Включено', disabled: 'Отключено', unknown: 'Неизвестно', not_configured: 'Не настроено', accepted: 'Принято', review: 'Проверка', in_progress: 'В работе', not_started: 'Не начато'}[value] ?? 'Неизвестно');
 
 const fleetHealth = (profiles: AccessData['agentSystems'][number]['profiles']) => {
   const values = profiles.map((profile) => profile.fleet.health);
@@ -132,7 +133,7 @@ function Blank({title, children}: {title: string; children: ReactNode}) {
 }
 function DeferredAction({label, detail}: {label: string; detail: string}) {
   const hintId = `${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')}-deferred`;
-  return <div className="fcp-deferred-action"><button aria-describedby={hintId} disabled type="button">{label}</button><small id={hintId}>Deferred — {detail}</small></div>;
+  return <div className="fcp-deferred-action"><button aria-describedby={hintId} disabled type="button">{label}</button><small id={hintId}>Следующий этап — {detail}</small></div>;
 }
 function Scope({route}: {route: WorkspaceUiRoute}) {
   // Scope remains in each route and link contract, but is not repeated in every page header.
@@ -179,21 +180,21 @@ function WorkspaceShellHeader({route, projects}: {
   const home = project === null ? screenUrl({kind: 'projects'}, route.scope) : projectUrl(project, 'overview', route.scope);
   return <>
     <aside className="fcp-sidebar">
-      <Link href={home} className="fcp-brand"><b>f(AI) Control Panel</b></Link>
-      <nav className="fcp-sidebar-section fcp-project-list-nav" aria-label="Доступные проекты"><span>Проекты</span>{projects.map((item) => <Link aria-current={project === item.slug ? 'page' : undefined} href={projectAreaUrl(route, item.slug)} key={item.slug}><FolderKanban aria-hidden="true" size={17}/><b>{item.name}</b></Link>)}</nav>
+      <Link href={home} className="fcp-brand"><i aria-hidden="true">f</i><b>f(AI) Control</b></Link>
+      <nav className="fcp-sidebar-section fcp-project-list-nav" aria-label="Доступные проекты"><span>Проекты</span>{projects.map((item) => <Link aria-current={project === item.slug ? 'page' : undefined} href={projectAreaUrl(route, item.slug)} key={item.slug}><i className={`fcp-project-initial fcp-project-initial--${item.slug}`}>{item.name[0]}</i><div><b>{item.name}</b><small>{item.slug === 'msa' ? 'Product Owner' : 'PO + Developer'}</small></div><CircleDot aria-label="Данные требуют проверки" size={13}/></Link>)}</nav>
       <nav className="fcp-sidebar-section fcp-sidebar-nav" aria-label="Рабочие разделы"><span>Работа</span>{links(nav)}</nav>
       <nav className="fcp-sidebar-section fcp-sidebar-nav" aria-label="Контроль"><span>Контроль</span>{links(control)}</nav>
       <div className="fcp-sidebar-settings"><span>Настройки</span><small>Изменение проекта и интеграций — следующий этап</small></div>
     </aside>
-    <header className="fcp-topbar"><Link href={home} className="fcp-mobile-brand">f(AI) Control Panel</Link><strong>{currentProject === null ? activeLabel : `${currentProject.name} · ${activeLabel}`}</strong><details className="fcp-mobile-menu"><summary aria-label="Открыть навигацию"><Menu aria-hidden="true" size={20}/></summary><div className="fcp-mobile-menu-body"><nav aria-label="Доступные проекты"><span>Проекты</span>{projects.map((item) => <Link href={projectAreaUrl(route, item.slug)} key={item.slug} aria-current={project === item.slug ? 'page' : undefined}><FolderKanban aria-hidden="true" size={16}/>{item.name}</Link>)}</nav><nav aria-label="Рабочие разделы"><span>Работа</span>{[...nav, ...control].map(({label, icon: Icon, href, active}) => <Link href={href} key={label} aria-current={active ? 'page' : undefined}><Icon aria-hidden="true" size={16}/>{label}</Link>)}</nav></div></details></header>
+    <header className="fcp-topbar"><Link href={home} className="fcp-mobile-brand">f(AI) Control</Link><strong>{currentProject === null ? activeLabel : `${currentProject.name} · ${activeLabel}`}</strong><span className="fcp-access-count"><ShieldCheck aria-hidden="true" size={15}/>Доступ: {projects.length} проекта</span><span className="fcp-user-avatar" aria-label="Владимир">ВФ</span><details className="fcp-mobile-menu"><summary aria-label="Открыть навигацию"><Menu aria-hidden="true" size={20}/></summary><div className="fcp-mobile-menu-body"><nav aria-label="Доступные проекты"><span>Проекты</span>{projects.map((item) => <Link href={projectAreaUrl(route, item.slug)} key={item.slug} aria-current={project === item.slug ? 'page' : undefined}><FolderKanban aria-hidden="true" size={16}/>{item.name}</Link>)}</nav><nav aria-label="Рабочие разделы"><span>Работа</span>{[...nav, ...control].map(({label, icon: Icon, href, active}) => <Link href={href} key={label} aria-current={active ? 'page' : undefined}><Icon aria-hidden="true" size={16}/>{label}</Link>)}</nav></div></details></header>
   </>;
 }
 function Crumbs({route, project, title}: {route: WorkspaceUiRoute; project: ProjectData | null; title?: string}) {
   if (project === null) return null;
-  return <div className="fcp-crumbs"><Link href={screenUrl({kind: 'projects'}, route.scope)}>Projects</Link><ChevronRight aria-hidden="true" size={14}/><Link href={projectUrl(project.project.slug, 'overview', route.scope)}>{project.project.name}</Link>{title === undefined ? null : <><ChevronRight aria-hidden="true" size={14}/><strong>{title}</strong></>}</div>;
+  return <div className="fcp-crumbs"><Link href={screenUrl({kind: 'projects'}, route.scope)}>Проекты</Link><ChevronRight aria-hidden="true" size={14}/><Link href={projectUrl(project.project.slug, 'overview', route.scope)}>{project.project.name}</Link>{title === undefined ? null : <><ChevronRight aria-hidden="true" size={14}/><strong>{title}</strong></>}</div>;
 }
 function ProjectHeader({route, project, title}: {route: WorkspaceUiRoute; project: ProjectData; title?: string}) {
-  return <><Crumbs route={route} project={project} {...(title === undefined ? {} : {title})}/><div className="fcp-project-title"><div><h1>{title ?? project.project.name}</h1><span>Control plane fact {project.synchronizedAt === null ? 'not observed' : `observed ${date(project.synchronizedAt)}`}</span></div>{title === undefined ? <Status value={project.snapshot?.health ?? 'unknown'}/> : null}</div></>;
+  return <><Crumbs route={route} project={project} {...(title === undefined ? {} : {title})}/><div className="fcp-project-title"><div><h1>{title ?? project.project.name}</h1><span>{project.synchronizedAt === null ? 'Свежесть данных не зафиксирована' : `Обновлено: ${ruDate(project.synchronizedAt)}`}</span></div>{title === undefined ? <Status value={project.snapshot?.health ?? 'unknown'}/> : null}</div></>;
 }
 function ContextTabs({label, items}: {label: string; items: readonly Readonly<{label: string; href: string; active: boolean; count?: number}>[]}) {
   return <nav className="fcp-tabs fcp-context-tabs" aria-label={label}>{items.map((item) => <Link href={item.href} key={item.label} aria-current={item.active ? 'page' : undefined}>{item.label}{item.count === undefined ? null : <span>{item.count}</span>}</Link>)}</nav>;
@@ -220,14 +221,31 @@ function Dashboard({route, projects}: {route: WorkspaceUiRoute; projects: readon
 function Projects({route, projects}: {route: WorkspaceUiRoute; projects: readonly WorkspaceProjectRef[]}) {
   return <ProjectChooser route={route} projects={projects} title="Проекты" detail="Выберите доступный проект, чтобы открыть его рабочую область." area="overview"/>;
 }
-function StageStrip({items, current}: {items: readonly string[]; current: string | null}) {
-  return <ol className="fcp-stages" aria-label="Task lifecycle">{items.map((item) => <li className={item === current ? 'current' : ''} key={item}><span aria-hidden="true"/>{statusLabel(item)}</li>)}</ol>;
+function ScopeBurnUp({baseline}: {baseline: NonNullable<ProjectData['scopeBaseline']>}) {
+  if (baseline.observations.length < 2) return <p className="fcp-burnup-empty">История принятого скопа ещё не зафиксирована — график появится после двух подтверждённых наблюдений.</p>;
+  const totalWeight = baseline.outcomes.filter((outcome) => outcome.state !== 'not_configured').reduce((total, outcome) => total + outcome.weight, 0);
+  const acceptedWeight = baseline.outcomes.filter((outcome) => outcome.state === 'accepted').reduce((total, outcome) => total + outcome.weight, 0);
+  const points = baseline.observations.map((item, index, all) => {
+    const x = 18 + (index * 464 / Math.max(1, all.length - 1));
+    const y = 118 - Math.min(item.totalWeight, item.acceptedWeight) / item.totalWeight * 92;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return <figure className="fcp-burnup"><figcaption>Принятый скоп по подтверждённым наблюдениям</figcaption><svg viewBox="0 0 500 140" role="img" aria-label={`График принятого скопа: ${acceptedWeight} из ${totalWeight}`}><line className="fcp-burnup-total" x1="18" x2="482" y1="26" y2="26"/><text x="18" y="18">Текущий скоп {totalWeight}</text><polyline className="fcp-burnup-line" points={points}/><text x="482" y="132" textAnchor="end">Принято {acceptedWeight}</text></svg></figure>;
+}
+function ScopeBaseline({project}: {project: ProjectData}) {
+  const baseline = project.scopeBaseline ?? null;
+  if (baseline === null) return <section className="fcp-scope-baseline" id="scope"><div className="fcp-section-head"><div><h2>Принятый скоп</h2><span>Взвешенная база результатов</span></div></div><p className="fcp-empty-line">Скоп ещё не утверждён. Прогресс по количеству задач не показывается.</p></section>;
+  const configured = baseline.outcomes.filter((outcome) => outcome.state !== 'not_configured');
+  const totalWeight = configured.reduce((total, outcome) => total + outcome.weight, 0);
+  const states = [{key: 'accepted', label: 'Принято', state: 'accepted'}, {key: 'review', label: 'Проверка', state: 'review'}, {key: 'in-progress', label: 'В работе', state: 'in_progress'}, {key: 'not-started', label: 'Не начато', state: 'not_started'}] as const;
+  const outcomes = states.map((item) => ({...item, value: configured.filter((outcome) => outcome.state === item.state).reduce((total, outcome) => total + outcome.weight, 0)}));
+  const acceptedWeight = outcomes[0]?.value ?? 0;
+  return <section className="fcp-scope-baseline" id="scope"><header><div><span>Принятый скоп · версия {baseline.version}</span><strong>{totalWeight === 0 ? 'Не настроено' : `${acceptedWeight} / ${totalWeight}`}</strong><small>вес результатов, а не количество задач · обновлено {ruDate(baseline.updatedAt)}</small></div><Link href="#scope-checkpoint">Контрольная точка <ChevronRight aria-hidden="true" size={16}/></Link></header><div className="fcp-scope-outcomes"><ul aria-label="Состав принятого скопа">{outcomes.map((outcome) => <li key={outcome.key} className={`fcp-scope-${outcome.key}`}><span aria-hidden="true"/><b>{outcome.label} {outcome.value}</b></li>)}</ul>{totalWeight === 0 ? <p className="fcp-empty-line">Не настроено: результатам не назначено подтверждённое состояние.</p> : <div className="fcp-scope-bar" aria-label={outcomes.map((outcome) => `${outcome.label}: ${outcome.value}`).join(', ')}>{outcomes.map((outcome) => <span className={`fcp-scope-${outcome.key}`} key={outcome.key} style={{width: `${outcome.value / totalWeight * 100}%`}}/>)}</div>}<ScopeBurnUp baseline={baseline}/></div><div className="fcp-scope-records">{baseline.outcomes.map((outcome) => <article key={outcome.key}><strong>{outcome.title}</strong><span>{outcome.weight} · {outcome.state === 'not_configured' ? 'Не настроено' : statusLabel(outcome.state)}</span><small>{outcome.evidenceReference === null ? 'Подтверждение не зафиксировано' : `${outcome.evidenceReference}${outcome.acceptedBy === null ? '' : ` · ${outcome.acceptedBy}`}`}</small></article>)}</div><section className="fcp-checkpoint" id="scope-checkpoint"><header><h2>Ближайшая контрольная точка</h2><span>{baseline.checkpoint?.targetAt === null || baseline.checkpoint === null ? 'Срок не задан' : ruDate(baseline.checkpoint.targetAt)}</span></header>{baseline.checkpoint === null ? <p>Контрольная точка ещё не зафиксирована.</p> : <><strong>{baseline.checkpoint.title}</strong><div><Status value={baseline.checkpoint.status}/><span>{baseline.checkpoint.owner === null ? 'Ответственный не назначен' : `Ответственный: ${baseline.checkpoint.owner}`}</span></div></>}</section></section>;
 }
 function Overview({route, project, runs}: {route: WorkspaceUiRoute; project: ProjectData; runs: RunsData | null}) {
-  const counts = project.workItems.reduce<Record<string, number>>((result, item) => ({...result, [item.status]: (result[item.status] ?? 0) + 1}), {});
-  const current = project.workItems.find((item) => item.status !== 'done')?.status ?? null;
   const active = project.workItems.filter(({status}) => status !== 'backlog' && status !== 'done');
-  return <><ProjectHeader route={route} project={project}/><Summary items={Object.entries(counts).slice(0, 4).map(([label, value]) => ({label: statusLabel(label), value}))}/><section className="fcp-section"><div className="fcp-section-head"><h2>Task lifecycle</h2><span>{current === null ? 'No active task' : `Current task: ${statusLabel(current)}`}</span></div><StageStrip items={['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done']} current={current}/></section><section className="fcp-section"><div className="fcp-section-head"><h2>Current work</h2><Link href={projectUrl(project.project.slug, 'tasks', route.scope)}>View tasks</Link></div>{active.length === 0 ? <p className="fcp-empty-line">No active tasks observed.</p> : <div className="fcp-list">{active.slice(0, 5).map((task) => <TaskRow project={project.project.slug} route={route} task={task} key={task.id}/>)}</div>}</section>{runs === null ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Recent runs</h2><Link href={projectUrl(project.project.slug, 'runs', route.scope)}>View runs</Link></div>{runs.runs.length === 0 ? <p className="fcp-empty-line">No runs observed.</p> : <div className="fcp-list">{runs.runs.slice(0, 4).map((run) => <RunRow project={project.project.slug} route={route} run={run} key={run.id}/>)}</div>}</section>}</>;
+  const attention = project.workItems.filter((task) => taskNeedsAttention(task, project)).slice(0, 3);
+  return <><ProjectHeader route={route} project={project}/><ContextTabs label="Разделы обзора" items={[{label: 'Сводка', href: projectUrl(project.project.slug, 'overview', route.scope), active: true}, {label: 'Скоп', href: '#scope', active: false}, {label: 'Риски', href: '#attention', active: false}]}/><ScopeBaseline project={project}/><section className="fcp-section" id="attention"><div className="fcp-section-head"><div><h2>Требует внимания</h2><span>Не более трёх подтверждённых рабочих сигналов</span></div><Link href={projectUrl(project.project.slug, 'tasks', route.scope)}>Открыть задачи</Link></div>{attention.length === 0 ? <p className="fcp-empty-line">Сигналов, требующих внимания, не зафиксировано.</p> : <div className="fcp-list">{attention.map((task) => <TaskRow project={project.project.slug} route={route} task={task} projectData={project} key={task.id}/>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Текущая работа</h2><Link href={projectUrl(project.project.slug, 'tasks', route.scope)}>Открыть задачи</Link></div>{active.length === 0 ? <p className="fcp-empty-line">Активные задачи не зафиксированы.</p> : <div className="fcp-list">{active.slice(0, 5).map((task) => <TaskRow project={project.project.slug} route={route} task={task} projectData={project} key={task.id}/>)}</div>}</section>{runs === null ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Последние запуски</h2><Link href={projectUrl(project.project.slug, 'runs', route.scope)}>Открыть запуски</Link></div>{runs.runs.length === 0 ? <p className="fcp-empty-line">Запуски не зафиксированы.</p> : <div className="fcp-list">{runs.runs.slice(0, 4).map((run) => <RunRow project={project.project.slug} route={route} run={run} key={run.id}/>)}</div>}</section>}</>;
 }
 type TaskResponsibility = Readonly<{name: string; source: 'journey' | 'assignment' | 'protocol'}>;
 const protocolStageResponsibility = (
@@ -262,24 +280,24 @@ const taskResponsibility = (
 const effectiveTaskOwner = (task: ProjectData['workItems'][number], project?: ProjectData, access?: AccessData | null) =>
   taskResponsibility(task, project, access)?.name ?? null;
 const taskNextAction = (task: ProjectData['workItems'][number], project?: ProjectData): string | null => {
-  if (task.blocked) return 'Resolve blocker';
+  if (task.blocked) return 'Снять блокировку';
   if (task.handoff !== null) return task.handoff.label;
   const nextStage = task.journey?.stage?.nextStage;
-  if (nextStage !== undefined && nextStage !== null) return `Advance to ${nextStage}`;
+  if (nextStage !== undefined && nextStage !== null) return `Перевести: ${nextStage}`;
   const stage = project?.protocol?.active === true
     ? project.protocol.definition.stages.find((candidate) => candidate.enabled && candidate.taskStatus === task.status)
     : undefined;
   if (stage?.allowedNextStageKey !== null && stage?.allowedNextStageKey !== undefined) {
     const next = project?.protocol?.definition.stages.find((candidate) => candidate.key === stage.allowedNextStageKey);
-    return `Advance to ${next?.name ?? stage.allowedNextStageKey}`;
+    return `Перевести: ${next?.name ?? stage.allowedNextStageKey}`;
   }
-  return task.status === 'done' ? 'Complete' : stage === undefined ? null : 'Complete this stage';
+  return task.status === 'done' ? 'Завершено' : stage === undefined ? null : 'Завершить текущий этап';
 };
 const taskNeedsAttention = (task: ProjectData['workItems'][number], project?: ProjectData, access?: AccessData | null) =>
   task.blocked || effectiveTaskOwner(task, project, access) === null || taskNextAction(task, project) === null;
 function TaskRow({project, route, task, projectData, access}: {project: OperatorProjectSlug; route: WorkspaceUiRoute; task: ProjectData['workItems'][number]; projectData?: ProjectData; access?: AccessData | null}) {
   const responsibility = taskResponsibility(task, projectData, access);
-  return <Link className="fcp-row fcp-task-row" href={taskUrl(project, task.id, route.scope)}><Status value={task.blocked ? 'blocked' : task.status}/><div><strong>{task.title}</strong><small>{responsibility === null ? 'Responsibility not configured' : `${responsibility.source === 'protocol' ? 'По протоколу · ' : ''}${responsibility.name}`}</small></div><span>{taskNextAction(task, projectData) ?? 'Next action not configured'}</span><time>{date(task.updatedAt)}</time><ChevronRight aria-hidden="true" size={16}/></Link>;
+  return <Link className="fcp-row fcp-task-row" href={taskUrl(project, task.id, route.scope)}><Status value={task.blocked ? 'blocked' : task.status}/><div><strong>{task.title}</strong><small>{responsibility === null ? 'Ответственный не назначен' : `${responsibility.source === 'protocol' ? 'По протоколу · ' : ''}${responsibility.name}`}</small></div><span>{taskNextAction(task, projectData) ?? 'Следующее действие не настроено'}</span><time>{date(task.updatedAt)}</time><ChevronRight aria-hidden="true" size={16}/></Link>;
 }
 const selectedTaskFilters = (route: WorkspaceUiRoute) => route.taskFilters ?? {view: 'board' as const, status: 'all' as const, attention: false, owner: null};
 function TaskFilters({route, owners, action}: {
@@ -296,13 +314,13 @@ function TaskFilters({route, owners, action}: {
   const reset = `${action}${resetQuery.size === 0 ? '' : `?${resetQuery.toString()}`}`;
   return <form action={action} className="fcp-task-filters" method="get">
     {filters.view === 'board' ? null : <input name="view" type="hidden" value={filters.view}/>}
-    <label><span>Status</span><select defaultValue={filters.status} name="status"><option value="active">Active work</option><option value="backlog">Backlog</option><option value="ready">Ready</option><option value="in_dev">In development</option><option value="qa">QA</option><option value="acceptance">Acceptance</option><option value="done">Completed</option><option value="all">All statuses</option></select></label>
-    <label><span>Attention</span><select defaultValue={filters.attention ? 'only' : 'all'} name="attention"><option value="all">All</option><option value="only">Needs attention</option></select></label>
-    <label><span>Responsible</span><select defaultValue={filters.owner ?? ''} name="owner"><option value="">All responsible</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
+    <label><span>Статус</span><select defaultValue={filters.status} name="status"><option value="active">В работе</option><option value="backlog">Бэклог</option><option value="ready">Готово к старту</option><option value="in_dev">Разработка</option><option value="qa">Проверка</option><option value="acceptance">Приёмка</option><option value="done">Завершено</option><option value="all">Все статусы</option></select></label>
+    <label><span>Внимание</span><select defaultValue={filters.attention ? 'only' : 'all'} name="attention"><option value="all">Все</option><option value="only">Требует внимания</option></select></label>
+    <label><span>Ответственный</span><select defaultValue={filters.owner ?? ''} name="owner"><option value="">Все</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
     {route.scope.environment === null ? null : <input name="environment" type="hidden" value={route.scope.environment}/>}
     {route.scope.from === null ? null : <input name="from" type="hidden" value={route.scope.from}/>}
     {route.scope.to === null ? null : <input name="to" type="hidden" value={route.scope.to}/>}
-    <button type="submit">Apply</button><Link href={reset}>Reset</Link>
+    <button type="submit">Применить</button><Link href={reset}>Сбросить</Link>
   </form>;
 }
 const taskViewUrl = (route: WorkspaceUiRoute, project: OperatorProjectSlug, view: 'board' | 'mine' | 'blocked') => {
@@ -314,21 +332,21 @@ const taskViewUrl = (route: WorkspaceUiRoute, project: OperatorProjectSlug, view
   return `/projects/${project}/tasks${query.size === 0 ? '' : `?${query.toString()}`}`;
 };
 const boardDescriptions: Record<ProjectData['workItems'][number]['status'], string> = {
-  backlog: 'Not committed', ready: 'Ready to start', in_dev: 'Implementation', qa: 'Verification', acceptance: 'PO decision', done: 'Accepted scope'
+  backlog: 'Не взято в работу', ready: 'Готово к старту', in_dev: 'Разработка', qa: 'Проверка', acceptance: 'Решение владельца', done: 'Принятый результат'
 };
 const boardColumnLabel: Record<ProjectData['workItems'][number]['status'], string> = {
-  backlog: 'Backlog', ready: 'Ready', in_dev: 'In Dev', qa: 'QA', acceptance: 'Acceptance', done: 'Done'
+  backlog: 'Бэклог', ready: 'Готово', in_dev: 'Разработка', qa: 'Проверка', acceptance: 'Приёмка', done: 'Завершено'
 };
 const providerTaskLabel = (task: ProjectData['workItems'][number]) => {
-  if (task.externalUrl === null) return 'Canonical task';
+  if (task.externalUrl === null) return 'Задача';
   const match = task.externalUrl.match(/\/issues\/(\d+)(?:$|[?#])/);
-  return match?.[1] === undefined ? 'Provider task' : `GitHub #${match[1]}`;
+  return match?.[1] === undefined ? 'Связанная задача' : `GitHub #${match[1]}`;
 };
 function TaskBoardCard({route, project, task, access}: {route: WorkspaceUiRoute; project: ProjectData; task: ProjectData['workItems'][number]; access: AccessData | null}) {
   const responsibility = taskResponsibility(task, project, access);
   const nextAction = taskNextAction(task, project);
   const needsAttention = taskNeedsAttention(task, project, access);
-  return <Link className="fcp-board-card" href={taskUrl(project.project.slug, task.id, route.scope)}><header><span>{providerTaskLabel(task)}</span>{needsAttention ? <span className="fcp-board-attention"><AlertTriangle aria-hidden="true" size={13}/>Требует внимания</span> : null}</header><strong>{task.title}</strong><div><span>{responsibility === null ? 'Responsibility not configured' : `${responsibility.source === 'protocol' ? 'По протоколу · ' : ''}${responsibility.name}`}</span><small>{nextAction ?? 'Next action not configured'}</small></div><time>{date(task.updatedAt)}</time></Link>;
+  return <Link className="fcp-board-card" href={taskUrl(project.project.slug, task.id, route.scope)}><header><span>{providerTaskLabel(task)}</span>{needsAttention ? <span className="fcp-board-attention"><AlertTriangle aria-hidden="true" size={13}/>Требует внимания</span> : null}</header><strong>{task.title}</strong><div><span>{responsibility === null ? 'Ответственный не назначен' : `${responsibility.source === 'protocol' ? 'По протоколу · ' : ''}${responsibility.name}`}</span><small>{nextAction ?? 'Следующее действие не настроено'}</small></div><time>{date(task.updatedAt)}</time></Link>;
 }
 function Tasks({route, project, access, operatorActorId}: {route: WorkspaceUiRoute; project: ProjectData; access: AccessData | null; operatorActorId: string | null}) {
   const entries = project.workItems.map((task) => ({project: project.project.slug, projectName: project.project.name, task}));
@@ -352,10 +370,10 @@ function Tasks({route, project, access, operatorActorId}: {route: WorkspaceUiRou
     {label: 'Доска', href: taskViewUrl(route, project.project.slug, 'board'), active: filters.view === 'board', count: entries.length},
     {label: 'Мои задачи', href: taskViewUrl(route, project.project.slug, 'mine'), active: filters.view === 'mine', count: mineCount},
     {label: 'Заблокировано', href: taskViewUrl(route, project.project.slug, 'blocked'), active: filters.view === 'blocked', count: blockedCount}
-  ]}/><div className="fcp-section-head fcp-page-actions"><span>Read-only · synchronized from the configured tracker</span></div><TaskFilters action={`/projects/${project.project.slug}/tasks`} owners={owners} route={route}/><div className="fcp-board" aria-label={`${project.project.name} task board`}>{statuses.map((status) => {
+  ]}/><div className="fcp-section-head fcp-page-actions"><span>Только чтение · данные синхронизируются из подключённого трекера</span></div><TaskFilters action={`/projects/${project.project.slug}/tasks`} owners={owners} route={route}/><div className="fcp-board" aria-label={`${project.project.name} task board`}>{statuses.map((status) => {
     const tasks = visible.filter(({task}) => task.status === status);
-    return <section className="fcp-board-column" key={status}><header><div><h2>{boardColumnLabel[status]}</h2><span>{tasks.length}</span></div><p>{boardDescriptions[status]}</p></header><div>{tasks.length === 0 ? <p className="fcp-board-empty">No matching tasks</p> : tasks.map(({task}) => <TaskBoardCard access={access} project={project} route={route} task={task} key={task.id}/>)}</div></section>;
-  })}</div></>;
+    return <section className={`fcp-board-column fcp-board-column--${status}`} key={status}><header><div><h2>{boardColumnLabel[status]}</h2><span>{tasks.length}</span></div><p>{boardDescriptions[status]}</p></header><div>{tasks.length === 0 ? <p className="fcp-board-empty">Нет подходящих задач</p> : tasks.map(({task}) => <TaskBoardCard access={access} project={project} route={route} task={task} key={task.id}/>)}</div></section>;
+  })}</div><div className="fcp-board-mobile-list" aria-label={`Список задач ${project.project.name}`}>{visible.length === 0 ? <p className="fcp-board-empty">Нет подходящих задач</p> : visible.map(({task}) => <TaskRow access={access} project={project.project.slug} projectData={project} route={route} task={task} key={task.id}/>)}</div></>;
 }
 function DetailFacts({items}: {items: readonly Readonly<{label: string; value: string}>[]}) {
   return <dl className="fcp-details">{items.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>;
@@ -422,10 +440,10 @@ function Protocol({route, project, access, csrfToken}: {route: WorkspaceUiRoute;
     {label: 'Этапы', href: projectUrl(project.project.slug, 'protocol', route.scope), active: true, count: protocol?.definition.stages.filter((stage) => stage.enabled).length ?? 0},
     {label: 'Запуски', href: projectUrl(project.project.slug, 'runs', route.scope), active: false},
     {label: 'Правила', href: '#protocol-rules', active: false}
-  ]}/><section className="fcp-section"><div className="fcp-section-head"><div><h2>Как проект проходит разработку</h2><span>Текущая опубликованная последовательность</span></div><span>{protocol === null ? 'Not configured' : `v${protocol.version} · ${protocol.active ? 'active' : 'inactive'}`}</span></div>{protocol === null ? <Blank title="Процесс не настроен">Нет сохранённого протокола разработки для этого проекта.</Blank> : <ol className="fcp-protocol-flow" aria-label={`${project.project.name} delivery protocol`}>{protocol.definition.stages.filter((stage) => stage.enabled).map((stage, index, stages) => {
+  ]}/><section className="fcp-section"><div className="fcp-section-head"><div><h2>Как проект проходит разработку</h2><span>Текущая опубликованная последовательность</span></div><span>{protocol === null ? 'Не настроено' : `v${protocol.version} · ${protocol.active ? 'активен' : 'неактивен'}`}</span></div>{protocol === null ? <Blank title="Процесс не настроен">Нет сохранённого протокола разработки для этого проекта.</Blank> : <ol className="fcp-protocol-flow" aria-label={`${project.project.name} delivery protocol`}>{protocol.definition.stages.filter((stage) => stage.enabled).map((stage, index, stages) => {
     const responsibility = protocolStageResponsibility(project, access, stage);
     const next = stage.allowedNextStageKey === null ? null : protocol.definition.stages.find((candidate) => candidate.key === stage.allowedNextStageKey);
-    return <li key={stage.key}><header><span>{String(index + 1).padStart(2, '0')}</span><Status value={stage.taskStatus}/></header><h3>{stage.name}</h3><dl><div><dt>Ответственный</dt><dd>{responsibility === null ? 'Responsibility not configured' : `По протоколу · ${responsibility.name}`}</dd></div><div><dt>Режим</dt><dd>{protocolModeLabel(stage.executionMode)}</dd></div><div><dt>Подтверждение</dt><dd>{stage.executionMode === 'human_approval' ? 'Требуется' : 'Не требуется'}</dd></div><div><dt>Evidence</dt><dd>{stage.requiredEvidence.join(', ')}</dd></div></dl><footer>{stage.allowedNextStageKey === null ? <><FileCheck2 aria-hidden="true" size={15}/><span>Завершение процесса</span></> : <><ArrowRight aria-hidden="true" size={15}/><span>Далее: {next?.name ?? stage.allowedNextStageKey}</span></>}</footer>{index === stages.length - 1 ? null : <span className="fcp-protocol-connector" aria-hidden="true"/>}</li>;
+    return <li key={stage.key}><header><span>{String(index + 1).padStart(2, '0')}</span><Status value={stage.taskStatus}/></header><h3>{stage.name}</h3><dl><div><dt>Ответственный</dt><dd>{responsibility === null ? 'Ответственный не назначен' : `По протоколу · ${responsibility.name}`}</dd></div><div><dt>Режим</dt><dd>{protocolModeLabel(stage.executionMode)}</dd></div><div><dt>Подтверждение</dt><dd>{stage.executionMode === 'human_approval' ? 'Требуется' : 'Не требуется'}</dd></div><div><dt>Подтверждающие материалы</dt><dd>{stage.requiredEvidence.join(', ')}</dd></div></dl><footer>{stage.allowedNextStageKey === null ? <><FileCheck2 aria-hidden="true" size={15}/><span>Завершение процесса</span></> : <><ArrowRight aria-hidden="true" size={15}/><span>Далее: {next?.name ?? stage.allowedNextStageKey}</span></>}</footer>{index === stages.length - 1 ? null : <span className="fcp-protocol-connector" aria-hidden="true"/>}</li>;
   })}</ol>}</section><section className="fcp-section" id="protocol-rules"><div className="fcp-section-head"><div><h2>Правила и версии</h2><span>Управляемые изменения через canonical commands</span></div></div><details className="fcp-protocol-management"><summary>Открыть управление протоколом</summary><DeliveryProtocolEditor projectId={project.project.id} protocol={protocol} csrfToken={csrfToken}/></details></section></>;
 }
 function RunRow({project, route, run}: {project: OperatorProjectSlug; route: WorkspaceUiRoute; run: RunsData['runs'][number]}) {
@@ -447,28 +465,28 @@ function RunDetail({route, project, runs, csrfToken}: {route: WorkspaceUiRoute; 
   return <><ProjectHeader route={route} project={project} title={run.workItem ?? 'Run receipt'}/><div className="fcp-detail-layout"><main className="fcp-detail-main"><div className="fcp-detail-status"><Status value={run.status}/><span className="fcp-muted">{run.agent ?? 'Agent unknown'}</span></div>{route.handoffResult === undefined || route.handoffResult === null ? null : <p className={`fcp-command-notice ${route.handoffResult === 'accepted' ? 'success' : 'error'}`}>{route.handoffResult === 'accepted' ? 'Receipt accepted. The task moved to QA.' : `Receipt was not accepted: ${route.handoffResult.replaceAll('_', ' ')}.`}</p>}<section className="fcp-section"><div className="fcp-section-head"><h2>Run receipt</h2><FileCheck2 aria-hidden="true" size={17}/></div><ol className="fcp-timeline">{events.map((event) => <li key={event.label}><span aria-hidden="true" className={event.value === null ? 'missing' : ''}/><div><strong>{event.label}</strong><small>{date(event.value)}</small></div></li>)}</ol></section><section className="fcp-section"><div className="fcp-section-head"><h2>Checks & evidence</h2><GitPullRequest aria-hidden="true" size={17}/></div><p className="fcp-empty-line">{run.artifacts.length === 0 ? 'No artifacts observed.' : `${run.artifacts.length} evidence artifact${run.artifacts.length === 1 ? '' : 's'} recorded.`}</p></section><section className="fcp-section"><div className="fcp-section-head"><h2>Next action</h2><ChevronRight aria-hidden="true" size={17}/></div><p className="fcp-empty-line">{nextAction}</p><RunActionControls run={run} csrfToken={csrfToken}/>{run.workItemId === null ? null : <Link className="fcp-primary" href={taskUrl(project.project.slug, run.workItemId, route.scope)}>Return to task record</Link>}</section></main><aside className="fcp-meta"><h2>Receipt details</h2><DetailFacts items={[{label: 'Task', value: run.workItem ?? 'Unknown'}, {label: 'Agent', value: run.agent ?? 'Unknown'}, {label: 'Approval', value: approval === null ? 'Not observed' : statusLabel(approval.status)}, {label: 'Environment', value: approval?.environment ?? 'Unknown'}, {label: 'Outcome', value: statusLabel(run.receipt?.terminal ?? run.status)}, {label: 'Observed', value: date(run.completedAt ?? run.startedAt)}]}/><details><summary>Technical details</summary><p>Runtime profile: {run.runtimeProfile}</p></details></aside></div></>;
 }
 function ConversationChannel({channel}: {channel: ConversationsData['projects'][number]['channels'][number]}) {
-  const label = channel.conversationClass === 'internal' ? 'Internal' : 'Client';
-  const stateLabel = channel.state === 'not_configured' ? 'Not configured'
-    : channel.state === 'empty' ? 'No messages observed'
-      : channel.state === 'degraded' ? 'Degraded' : 'Observed';
-  return <section className="fcp-conversation"><header><div><h2>{label}</h2><span>{stateLabel} · freshness {date(channel.freshnessAt)}</span></div><Status value={channel.state === 'degraded' ? 'failed' : channel.state === 'ready' ? 'healthy' : 'unknown'}/></header>{channel.failure === null ? null : <p className="fcp-conversation-failure">Ingestion degraded: {channel.failure.code} · {date(channel.failure.at)} · {channel.failure.count} recorded failure{channel.failure.count === 1 ? '' : 's'}</p>}{channel.state === 'not_configured' ? <p className="fcp-empty-line">Not configured. No verified chat binding exists for this project and class.</p> : <div className="fcp-conversation-body"><aside><h3>Participants</h3>{channel.participants.length === 0 ? <p>No participants observed.</p> : <ul>{channel.participants.map((participant) => <li key={participant.id}><strong>{participant.displayName}</strong><span>{participant.resolution === 'resolved' ? 'Resolved identity' : 'Unresolved'} · {participant.controlPlaneAccess}</span></li>)}</ul>}</aside><ol className="fcp-message-list">{channel.messages.length === 0 ? <li className="fcp-empty-line">No messages observed after binding activation.</li> : channel.messages.map((message) => <li key={message.id}><header><strong>{message.author}</strong><time>{date(message.sentAt)}</time></header>{message.text === null ? null : <p>{message.text}</p>}<footer>{message.reply ? <span>Reply</span> : null}{message.threaded ? <span>Thread</span> : null}{message.attachmentSummary === null ? null : <span>Attachments: {message.attachmentSummary}</span>}</footer></li>)}</ol></div>}</section>;
+  const label = channel.conversationClass === 'internal' ? 'Внутренний чат' : 'Чат с клиентом';
+  const stateLabel = channel.state === 'not_configured' ? 'Не настроено'
+    : channel.state === 'empty' ? 'Сообщений пока нет'
+      : channel.state === 'degraded' ? 'Синхронизация нарушена' : 'Синхронизировано';
+  return <section className="fcp-conversation"><header><div><h2>{label}</h2><span>{stateLabel} · обновлено {date(channel.freshnessAt)}</span></div><Status value={channel.state === 'degraded' ? 'failed' : channel.state === 'ready' ? 'healthy' : 'unknown'}/></header>{channel.failure === null ? null : <p className="fcp-conversation-failure">Ошибка синхронизации: {channel.failure.code} · {date(channel.failure.at)} · событий: {channel.failure.count}</p>}{channel.state === 'not_configured' ? <p className="fcp-empty-line">Для проекта нет подтверждённой привязки этого типа чата.</p> : <div className="fcp-conversation-body"><aside><h3>Участники</h3>{channel.participants.length === 0 ? <p>Участники не зафиксированы.</p> : <ul>{channel.participants.map((participant) => <li key={participant.id}><strong>{participant.displayName}</strong><span>{participant.resolution === 'resolved' ? 'Личность подтверждена' : 'Не сопоставлен'} · {participant.controlPlaneAccess}</span></li>)}</ul>}</aside><ol className="fcp-message-list">{channel.messages.length === 0 ? <li className="fcp-empty-line">После подключения новых сообщений не зафиксировано.</li> : channel.messages.map((message) => <li key={message.id}><header><strong>{message.author}</strong><time>{date(message.sentAt)}</time></header>{message.text === null ? null : <p>{message.text}</p>}<footer>{message.reply ? <span>Ответ</span> : null}{message.threaded ? <span>Ветка</span> : null}{message.attachmentSummary === null ? null : <span>Вложения: {message.attachmentSummary}</span>}</footer></li>)}</ol></div>}</section>;
 }
 function Conversations({projects}: {projects: readonly ConversationsData['projects'][number][]}) {
   return <div className="fcp-conversation-projects">{projects.map((project) => <section key={project.id}><h2 className="fcp-conversation-project-name">{project.name}</h2><div className="fcp-conversation-grid">{project.channels.map((channel) => <ConversationChannel channel={channel} key={channel.conversationClass}/>)}</div></section>)}</div>;
 }
 function Chats({route, project, conversations}: {route: WorkspaceUiRoute; project: ProjectData; conversations: ConversationsData | null}) {
   const scoped = conversations?.projects.find((item) => item.id === project.project.id);
-  return <><ProjectHeader route={route} project={project}/><div className="fcp-section-head fcp-page-actions"><span>Verified read-only bindings</span><DeferredAction label="Manage chat membership" detail="chat administration is not configured."/></div>{scoped === undefined ? <Blank title="Conversations unavailable">The canonical conversation read model could not be loaded.</Blank> : <Conversations projects={[scoped]}/>}</>;
+  return <><ProjectHeader route={route} project={project}/><div className="fcp-section-head fcp-page-actions"><span>Просмотр подтверждённых каналов · только чтение</span><DeferredAction label="Настроить участников" detail="управление чатами будет доступно на следующем этапе."/></div>{scoped === undefined ? <Blank title="Чаты недоступны">Не удалось загрузить подтверждённые данные каналов.</Blank> : <Conversations projects={[scoped]}/>}</>;
 }
-const roleLabel = (role: string) => role.replaceAll('_', ' ');
-const resourceLabel = (resource: string) => resource.replaceAll('_', ' ');
+const roleLabel = (role: string) => ({project_owner: 'Владелец продукта', contributor: 'Разработчик', agent: 'ИИ-агент', workspace_admin: 'Администратор'}[role] ?? role.replaceAll('_', ' '));
+const resourceLabel = (resource: string) => ({repository: 'Репозиторий', tracker: 'Проект / трекер', internal_chat: 'Внутренний чат', client_chat: 'Чат с клиентом'}[resource] ?? resource.replaceAll('_', ' '));
 const grantConfirmationState = (grant: AccessData['resourceGrants'][number]) => {
   const observed = [grant.observedProvider, grant.observedLevel, grant.observedAt];
   if (observed.every((value) => value !== null)) {
-    return grant.observedLevel === grant.desiredLevel ? 'Confirmed' : 'Pending confirmation';
+    return grant.observedLevel === grant.desiredLevel ? 'Подтверждено' : 'Требует сверки';
   }
-  if (observed.every((value) => value === null)) return 'Pending confirmation';
-  return 'Unknown';
+  if (observed.every((value) => value === null)) return 'Не подтверждено провайдером';
+  return 'Неполные данные';
 };
 function ResourceGrant({grant, membership}: {
   grant: AccessData['resourceGrants'][number];
@@ -476,7 +494,7 @@ function ResourceGrant({grant, membership}: {
 }) {
   const confirmation = grantConfirmationState(grant);
   const provider = grant.observedProvider ?? 'provider';
-  return <article><div><strong>{resourceLabel(grant.resourceType)}</strong><small>Canonical desired: {grant.desiredLevel} · grant v{grant.version}</small></div><dl><div><dt>Membership baseline</dt><dd>{membership.active ? roleLabel(membership.role) : 'Inactive membership'}</dd></div><div><dt>Provider observation</dt><dd>{grant.observedLevel === null ? 'Not observed' : `${grant.observedLevel} · ${grant.observedProvider ?? 'Unknown provider'}`}</dd></div><div><dt>Confirmation</dt><dd>{confirmation}</dd></div><div><dt>External change</dt><dd>{grant.providerAccessUrl == null ? 'Not configured' : <a href={grant.providerAccessUrl} target="_blank" rel="noreferrer" aria-label={`Manage ${resourceLabel(grant.resourceType)} access in ${provider} (opens in a new tab)`}>Manage in provider <ExternalLink aria-hidden="true" size={13}/></a>}</dd></div></dl><small className="fcp-access-observed">Observed {date(grant.observedAt)}</small></article>;
+  return <article><div><strong>{resourceLabel(grant.resourceType)}</strong><small>Требуемый уровень: {grant.desiredLevel} · версия {grant.version}</small></div><dl><div><dt>Роль в проекте</dt><dd>{membership.active ? roleLabel(membership.role) : 'Участие неактивно'}</dd></div><div><dt>Факт провайдера</dt><dd>{grant.observedLevel === null ? 'Не зафиксирован' : `${grant.observedLevel} · ${grant.observedProvider ?? 'провайдер неизвестен'}`}</dd></div><div><dt>Подтверждение</dt><dd>{confirmation}</dd></div><div><dt>Изменение</dt><dd>{grant.providerAccessUrl == null ? 'Не настроено' : <a href={grant.providerAccessUrl} target="_blank" rel="noreferrer" aria-label={`Управлять доступом ${resourceLabel(grant.resourceType)} в ${provider}`}>Открыть у провайдера <ExternalLink aria-hidden="true" size={13}/></a>}</dd></div></dl><small className="fcp-access-observed">Проверено {date(grant.observedAt)}</small></article>;
 }
 const providerAccessConfirmed = (
   access: AccessData,
@@ -493,8 +511,32 @@ const accessState = (
 ) => !membership.active || actor.disabledAt !== null
   ? 'blocked'
   : providerAccessConfirmed(access, membership) ? 'ready' : 'unknown';
+const accessResources = [
+  {key: 'repository', label: 'Репозиторий'},
+  {key: 'tracker', label: 'Проект / трекер'},
+  {key: 'internal_chat', label: 'Внутренний чат'},
+  {key: 'client_chat', label: 'Чат с клиентом'},
+  {key: 'control_plane', label: 'Control Panel'},
+  {key: 'runtime', label: 'Runtime'}
+] as const;
+function AccessMatrix({project, access, memberships, actors}: {project: ProjectData; access: AccessData; memberships: readonly AccessData['memberships'][number][]; actors: readonly AccessData['actors'][number][]}) {
+  const cell = (actor: AccessData['actors'][number], membership: AccessData['memberships'][number], resource: typeof accessResources[number]) => {
+    if (resource.key === 'control_plane') return {label: membership.active ? 'Только роль' : 'Не настроено', tone: membership.active ? 'role' : 'missing'};
+    if (resource.key === 'runtime') {
+      if (actor.type !== 'agent') return {label: 'Не применяется', tone: 'na'};
+      const activeRuntime = access.agentSystems.find((item) => item.actorId === actor.id)?.profiles.some((profile) => profile.enabled && profile.registrations.some((registration) => registration.projectId === project.project.id && registration.enabled)) ?? false;
+      return {label: activeRuntime ? 'Подтверждено' : 'Не настроено', tone: activeRuntime ? 'confirmed' : 'missing'};
+    }
+    if (project.project.slug === 'ascon' && (resource.key === 'internal_chat' || resource.key === 'client_chat')) return {label: 'Не применяется', tone: 'na'};
+    const grant = access.resourceGrants.find((item) => item.projectId === project.project.id && item.actorId === actor.id && item.resourceType === resource.key);
+    if (grant === undefined) return {label: 'Не настроено', tone: 'missing'};
+    const confirmed = grant.observedLevel !== null && grant.observedAt !== null && grant.observedLevel === grant.desiredLevel;
+    return {label: confirmed ? 'Подтверждено' : 'Только роль', tone: confirmed ? 'confirmed' : 'role'};
+  };
+  return <section className="fcp-access-matrix-section"><div className="fcp-section-head"><div><h2>Карта доступов проекта</h2><span>Роль показывает намерение, «Подтверждено» — факт от подключённого провайдера</span></div></div><div className="fcp-access-matrix-scroll"><table className="fcp-access-matrix"><thead><tr><th>Участник</th>{accessResources.map((resource) => <th key={resource.key}>{resource.label}</th>)}</tr></thead><tbody>{actors.map((actor) => { const membership = memberships.find((item) => item.actorId === actor.id)!; return <tr key={actor.id}><th><strong>{actor.displayName}</strong><small>{roleLabel(membership.role)}</small></th>{accessResources.map((resource) => { const state = cell(actor, membership, resource); return <td key={resource.key}><span className={`fcp-access-cell ${state.tone}`}>{state.label}</span></td>; })}</tr>; })}</tbody></table></div><div className="fcp-access-legend"><span><i className="confirmed"/>Подтверждено провайдером</span><span><i className="role"/>Роль задана, факт не подтверждён</span><span><i className="missing"/>Не настроено</span></div></section>;
+}
 function Access({route, project, access}: {route: WorkspaceUiRoute; project: ProjectData; access: AccessData | null}) {
-  if (access === null) return <><ProjectHeader route={route} project={project}/><Blank title="Access is unavailable">The canonical access read model could not be loaded.</Blank></>;
+  if (access === null) return <><ProjectHeader route={route} project={project}/><Blank title="Доступы недоступны">Не удалось загрузить подтверждённые данные ролей и доступов.</Blank></>;
   const memberships = access.memberships.filter((item) => item.projectId === project.project.id && item.active);
   const actors = memberships.flatMap((item) => access.actors.find((actor) => actor.id === item.actorId) ?? []);
   const selected = actors.find((actor) => actor.id === route.accessActorId) ?? actors[0] ?? null;
@@ -503,13 +545,13 @@ function Access({route, project, access}: {route: WorkspaceUiRoute; project: Pro
   const grants = selected === null ? [] : access.resourceGrants.filter((item) => item.projectId === project.project.id && item.actorId === selected.id);
   const profiles = selected === null ? [] : access.agentSystems.find((item) => item.actorId === selected.id)?.profiles ?? [];
   const actorUrl = (actorId: string) => `/projects/${project.project.slug}/access/${actorId}${scopeQuery(route.scope)}`;
-  return <><ProjectHeader route={route} project={project}/><div className={`fcp-access-layout${route.accessActorId === undefined || route.accessActorId === null ? '' : ' has-selection'}`}>
-    <aside className="fcp-access-master"><div className="fcp-section-head"><div><h2>People &amp; agents</h2><span>Current project memberships</span></div></div>{actors.length === 0 ? <p className="fcp-empty-line">No active project memberships observed.</p> : <div className="fcp-list">{actors.map((actor) => { const row = memberships.find((item) => item.actorId === actor.id)!; return <Link className="fcp-access-person" href={actorUrl(actor.id)} key={actor.id} aria-current={selected?.id === actor.id ? 'page' : undefined}><UsersRound aria-hidden="true" size={17}/><div><strong>{actor.displayName}</strong><small>{roleLabel(row.role)} · {actor.type}</small></div><Status value={accessState(access, row, actor)}/><ChevronRight aria-hidden="true" size={16}/></Link>; })}</div>}</aside>
-    <main className="fcp-access-detail"><Link className="fcp-access-back" href={projectUrl(project.project.slug, 'access', route.scope)}><ChevronLeft aria-hidden="true" size={16}/>People &amp; agents</Link>{selected === null || membership === null ? <Blank title="Access not configured">No persisted membership connects a person or agent to this project.</Blank> : <>
-      <div className="fcp-page-title fcp-access-title"><div><h1>{selected.displayName}</h1><p>Access explanation from persisted membership, grant, and provider-observation records.</p></div><Status value={accessState(access, membership, selected)}/></div>
-      <section className="fcp-section"><div className="fcp-section-head"><h2>Why this actor can access the project</h2><ShieldCheck aria-hidden="true" size={17}/></div><Summary items={[{label: 'Membership', value: membership.active ? roleLabel(membership.role) : 'Inactive'}, {label: 'Actor', value: selected.disabledAt === null ? 'Enabled' : 'Disabled'}, {label: 'External identity', value: identities.length === 0 ? 'Not observed' : `${identities.filter((item) => item.active).length} active`}, {label: 'Explicit grants', value: grants.length}]}/></section>
-      <section className="fcp-section"><div className="fcp-section-head"><h2>Resource grants</h2><span>Desired vs provider-confirmed access</span></div>{grants.length === 0 ? <p className="fcp-empty-line">No explicit resource grants observed. Membership is recorded, but connected resource access is Not configured.</p> : <div className="fcp-access-grants">{grants.map((grant) => <ResourceGrant grant={grant} key={grant.id} membership={membership}/>)}</div>}</section>
-      <section className="fcp-section"><div className="fcp-section-head"><h2>External identities</h2><span>Provider binding metadata only</span></div>{identities.length === 0 ? <p className="fcp-empty-line">Not observed. No provider identity binding is recorded.</p> : <div className="fcp-identity-list">{identities.map((identity) => <span key={identity.provider}>{identity.provider} · {identity.active ? 'Active binding' : 'Inactive binding'}</span>)}</div>}</section>
+  return <><ProjectHeader route={route} project={project}/><AccessMatrix access={access} actors={actors} memberships={memberships} project={project}/><div className={`fcp-access-layout${route.accessActorId === undefined || route.accessActorId === null ? '' : ' has-selection'}`}>
+    <aside className="fcp-access-master"><div className="fcp-section-head"><div><h2>Участники</h2><span>Откройте строку для объяснения доступа</span></div></div>{actors.length === 0 ? <p className="fcp-empty-line">Активные участники проекта не зафиксированы.</p> : <div className="fcp-list">{actors.map((actor) => { const row = memberships.find((item) => item.actorId === actor.id)!; return <Link className="fcp-access-person" href={actorUrl(actor.id)} key={actor.id} aria-current={selected?.id === actor.id ? 'page' : undefined}><UsersRound aria-hidden="true" size={17}/><div><strong>{actor.displayName}</strong><small>{roleLabel(row.role)} · {actor.type === 'agent' ? 'ИИ-агент' : 'человек'}</small></div><Status value={accessState(access, row, actor)}/><ChevronRight aria-hidden="true" size={16}/></Link>; })}</div>}</aside>
+    <main className="fcp-access-detail"><Link className="fcp-access-back" href={projectUrl(project.project.slug, 'access', route.scope)}><ChevronLeft aria-hidden="true" size={16}/>Участники</Link>{selected === null || membership === null ? <Blank title="Выберите участника">Нажмите на участника слева, чтобы увидеть происхождение его доступа.</Blank> : <>
+      <div className="fcp-page-title fcp-access-title"><div><h1>{selected.displayName}</h1><p>Объяснение из роли, явных разрешений и наблюдений подключённого провайдера.</p></div><Status value={accessState(access, membership, selected)}/></div>
+      <section className="fcp-section"><div className="fcp-section-head"><h2>Почему участник видит проект</h2><ShieldCheck aria-hidden="true" size={17}/></div><Summary items={[{label: 'Роль', value: membership.active ? roleLabel(membership.role) : 'Неактивна'}, {label: 'Участник', value: selected.disabledAt === null ? 'Включён' : 'Отключён'}, {label: 'Внешняя личность', value: identities.length === 0 ? 'Не зафиксирована' : `активных: ${identities.filter((item) => item.active).length}`}, {label: 'Явные разрешения', value: grants.length}]}/></section>
+      <section className="fcp-section"><div className="fcp-section-head"><h2>Доступ к ресурсам</h2><span>Требуемый и подтверждённый уровень</span></div>{grants.length === 0 ? <p className="fcp-empty-line">Явные разрешения не зафиксированы. Роль есть, доступ провайдера не настроен.</p> : <div className="fcp-access-grants">{grants.map((grant) => <ResourceGrant grant={grant} key={grant.id} membership={membership}/>)}</div>}</section>
+      <section className="fcp-section"><div className="fcp-section-head"><h2>Внешние учётные записи</h2><span>Только подтверждённые привязки</span></div>{identities.length === 0 ? <p className="fcp-empty-line">Привязка к учётной записи провайдера не зафиксирована.</p> : <div className="fcp-identity-list">{identities.map((identity) => <span key={identity.provider}>{identity.provider} · {identity.active ? 'активна' : 'неактивна'}</span>)}</div>}</section>
       {selected.type !== 'agent' ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Agent registrations</h2><Bot aria-hidden="true" size={17}/></div>{profiles.length === 0 ? <p className="fcp-empty-line">Not observed. This agent has no persisted runtime profile.</p> : <div className="fcp-access-grants">{profiles.map((profile) => <article key={profile.id}><div><strong>{profile.runtimeId} · {profile.runtimeProfile}</strong><small>{profile.enabled ? 'Enabled profile' : 'Disabled profile'} · {profile.registrations.length} recorded project registration{profile.registrations.length === 1 ? '' : 's'}</small></div><dl><div><dt>Current work</dt><dd>{profile.latestRun === null ? 'Not observed' : profile.latestRun.status}</dd></div><div><dt>Last receipt</dt><dd>{profile.latestRun?.receipt === null || profile.latestRun?.receipt === undefined ? 'Not observed' : profile.latestRun.receipt.terminal}</dd></div><div><dt>Runtime liveness</dt><dd>Unknown (not observed)</dd></div></dl></article>)}</div>}</section>}
     </>}</main>
   </div></>;
@@ -520,12 +562,12 @@ function AccessOperations({project, access, csrfToken}: {project: ProjectData; a
   const projectShares = access.sharing.grants.filter((grant) => grant.projectSlug === project.project.slug);
   return <section className="fcp-access-operations" aria-label="Governed access operations">
     <details className="fcp-access-operation">
-      <summary><Link2 aria-hidden="true" size={18}/><span><strong>Client sharing</strong><small>Scoped, expiring task-list links</small></span><b>{projectShares.filter((grant) => grant.active).length}</b><ChevronRight aria-hidden="true" size={16}/></summary>
-      <div>{shareProject === undefined ? <p className="fcp-empty-line">Sharing is Not configured for this project.</p> : <ProjectShareControls csrfToken={csrfToken} enabled={access.sharing.enabled} grants={projectShares} projects={[shareProject]} project={shareProject}/>}</div>
+      <summary><Link2 aria-hidden="true" size={18}/><span><strong>Доступ клиента</strong><small>Ограниченные по сроку ссылки на задачи</small></span><b>{projectShares.filter((grant) => grant.active).length}</b><ChevronRight aria-hidden="true" size={16}/></summary>
+      <div>{shareProject === undefined ? <p className="fcp-empty-line">Публичный доступ для проекта не настроен.</p> : <ProjectShareControls csrfToken={csrfToken} enabled={access.sharing.enabled} grants={projectShares} projects={[shareProject]} project={shareProject}/>}</div>
     </details>
     <details className="fcp-access-operation">
-      <summary><ClipboardList aria-hidden="true" size={18}/><span><strong>Access requests</strong><small>Workspace records; project binding is not recorded</small></span><b>{access.requests.length}</b><ChevronRight aria-hidden="true" size={16}/></summary>
-      <div>{access.requests.length === 0 ? <p className="fcp-empty-line">No persisted access requests are recorded.</p> : <div className="fcp-access-request-list">{access.requests.map((request) => <article key={request.id}><div><strong>{request.requester}</strong><small>{resourceLabel(request.targetSurface)} · {request.requestedScope.length === 0 ? 'Scope not observed' : request.requestedScope.join(', ')}</small></div><Status value={request.status}/><time>{request.expiresAt === null ? 'No expiry recorded' : `Expires ${date(request.expiresAt)}`}</time></article>)}</div>}</div>
+      <summary><ClipboardList aria-hidden="true" size={18}/><span><strong>Запросы доступа</strong><small>Управляемые заявки рабочей области</small></span><b>{access.requests.length}</b><ChevronRight aria-hidden="true" size={16}/></summary>
+      <div>{access.requests.length === 0 ? <p className="fcp-empty-line">Запросы доступа не зафиксированы.</p> : <div className="fcp-access-request-list">{access.requests.map((request) => <article key={request.id}><div><strong>{request.requester}</strong><small>{resourceLabel(request.targetSurface)} · {request.requestedScope.length === 0 ? 'Область не зафиксирована' : request.requestedScope.join(', ')}</small></div><Status value={request.status}/><time>{request.expiresAt === null ? 'Срок не задан' : `Истекает ${date(request.expiresAt)}`}</time></article>)}</div>}</div>
     </details>
   </section>;
 }
@@ -537,6 +579,8 @@ function SystemsSummary({health}: {health: HealthData | null}) {
 function SystemFacts<T>({icon: Icon, title, empty, items, children}: {icon: typeof Bot; title: string; empty: string; items: readonly T[]; children: (item: T) => ReactNode}) { return <section className="fcp-system-card"><header><Icon aria-hidden="true" size={18}/><h2>{title}</h2><span>{items.length}</span></header>{items.length === 0 ? <p>{empty}</p> : <div>{items.slice(0, 3).map((item, index) => <article key={index}>{children(item)}</article>)}</div>}</section>; }
 function Agents({route, access, health, projects}: {route: WorkspaceUiRoute; access: AccessData | null; health: HealthData | null; projects: readonly WorkspaceProjectRef[]}) {
   if (selectedGlobalProject(route) === null) return <ProjectChooser route={route} projects={projects} title="Агенты и системы" detail="Системы и runtime-факты доступны отдельно внутри проекта." area="agents"/>;
+  const selectedProjectSlug = selectedGlobalProject(route);
+  const selectedProject = projects.find((project) => project.slug === selectedProjectSlug) ?? null;
   const managedAgentIds = new Set(access?.memberships.flatMap((membership) =>
     membership.active &&
     membership.role === 'agent' &&
@@ -544,27 +588,31 @@ function Agents({route, access, health, projects}: {route: WorkspaceUiRoute; acc
       ? [membership.actorId] : []) ?? []);
   const agents = access?.actors.filter((actor) => actor.type === 'agent' && managedAgentIds.has(actor.id)) ?? [];
   const systems = new Map<string, AccessData['agentSystems'][number]>(access?.agentSystems.map((item) => [item.actorId, item] as const) ?? []);
-  return <><div className="fcp-page-title"><div><h1>Agents &amp; Systems</h1><p>Fleet facts from provider-neutral availability observations, registrations, runs, and receipts.</p></div><Scope route={route}/></div><div className="fcp-page-actions"><DeferredAction label="Add agent" detail="agent onboarding is not configured."/></div><SystemsSummary health={health}/><section className="fcp-section"><div className="fcp-section-head"><h2>Fleet</h2><span>Fresh observations can keep an idle runtime Healthy</span></div><div className="fcp-list">{agents.length === 0 ? <Blank title="No managed bot configured">This project has no active managed-bot membership; this is not an outage.</Blank> : agents.map((agent) => {
+  return <><div className="fcp-page-title"><div><h1>Агенты и системы</h1><p>Работоспособность, текущая работа и последние результаты — без технического шума.</p></div><Scope route={route}/></div><div className="fcp-page-actions"><DeferredAction label="Добавить агента" detail="подключение новых агентов запланировано на следующий этап."/></div><section className="fcp-agent-command"><div className="fcp-section-head"><div><h2>Управляемые агенты</h2><span>{selectedProject?.name ?? 'Проект'} · факты из наблюдений runtime и подтверждённых receipts</span></div></div>{agents.length === 0 ? <Blank title="Управляемого агента нет">{selectedProjectSlug === 'ascon' ? 'Для ASCON это зафиксированное решение проекта: Владимир работает напрямую через Codex.' : 'В проекте нет активного участника с ролью ИИ-агента.'}</Blank> : agents.map((agent) => {
     const profiles = systems.get(agent.id)?.profiles ?? [];
+    const healthState = agent.disabledAt === null ? fleetHealth(profiles) : 'disabled';
     const currentWork = profiles.find((profile) => profile.fleet.currentWork !== null)?.fleet.currentWork ?? null;
-    return <Link className="fcp-row fcp-agent-row" href={screenUrl({kind: 'agent', agentId: agent.id}, route.scope)} key={agent.id}><Bot aria-hidden="true" size={18}/><div><strong>{agent.displayName}</strong><small>{profiles.length === 0 ? 'Profile not observed' : profiles.map((profile) => `${profile.runtimeId} · ${profile.runtimeProfile}`).join(' · ')}</small></div><span>{currentWork === null ? 'No active work observed' : `${currentWork.project} · ${currentWork.title}`}</span><Status value={agent.disabledAt === null ? fleetHealth(profiles) : 'disabled'}/><ChevronRight aria-hidden="true" size={16}/></Link>;
-  })}</div></section></>;
+    const freshnessAt = profiles.map((profile) => profile.fleet.freshnessAt).filter((value): value is Date => value !== null).sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+    const lastReceipt = profiles.find((profile) => profile.fleet.lastReceipt !== null)?.fleet.lastReceipt ?? null;
+    const components = profiles.flatMap((profile) => profile.registrations.flatMap((registration) => Object.entries(registration.availability.components).map(([name, fact]) => ({name, fact}))));
+    return <article className="fcp-agent-hero" key={agent.id}><header><span className="fcp-agent-icon"><Bot aria-hidden="true" size={24}/></span><div><h2>{agent.displayName}</h2><p>{profiles.length === 0 ? 'Профиль не зафиксирован' : profiles.map((profile) => `${profile.runtimeId} · ${profile.runtimeProfile}`).join(' · ')}</p></div><Status value={healthState}/></header><div className="fcp-agent-vitals"><div><span>Последний heartbeat</span><strong>{date(freshnessAt)}</strong></div><div><span>Текущая работа</span><strong>{currentWork === null ? 'Активной задачи нет' : currentWork.title}</strong><small>{currentWork?.project ?? 'Проект не зафиксирован'}</small></div><div><span>Последний результат</span><strong>{lastReceipt === null ? 'Не зафиксирован' : statusLabel(lastReceipt.terminal)}</strong><small>{lastReceipt === null ? 'Receipt отсутствует' : `${lastReceipt.project} · ${date(lastReceipt.completedAt)}`}</small></div></div><div className="fcp-agent-components">{components.length === 0 ? <span className="fcp-component-chip unknown"><CircleDot aria-hidden="true" size={12}/>Компоненты не наблюдаются</span> : components.map(({name, fact}, index) => <span className={`fcp-component-chip ${statusTone(fact.state)}`} key={`${name}:${index}`}><CircleDot aria-hidden="true" size={12}/>{name} · {statusLabel(fact.state)}</span>)}</div><footer><Link className="fcp-primary" href={screenUrl({kind: 'agent', agentId: agent.id}, route.scope)}>Открыть управление <ChevronRight aria-hidden="true" size={15}/></Link></footer></article>;
+  })}</section><details className="fcp-system-console"><summary><ServerCog aria-hidden="true" size={17}/><span><strong>Системные факты и диагностика</strong><small>Jobs, интеграции, риски и аудит</small></span><ChevronRight aria-hidden="true" size={16}/></summary><div><SystemsSummary health={health}/></div></details></>;
 }
 function AgentProfileSettings({profile, csrfToken}: {
   profile: AccessData['agentSystems'][number]['profiles'][number];
   csrfToken: string | null;
 }) {
   return <section className="fcp-section fcp-settings">
-    <div className="fcp-section-head"><h2>{profile.runtimeId} profile</h2><span>Governed mutation</span></div>
+    <div className="fcp-section-head"><h2>Настройки {profile.runtimeId}</h2><span>Изменение с контролем версии</span></div>
     {csrfToken === null
-      ? <p className="fcp-empty-line">An authenticated operator session is required.</p>
+      ? <p className="fcp-empty-line">Для изменения нужна авторизованная сессия оператора.</p>
       : <form action={`/api/agent-profiles/${profile.id}`} className="fcp-profile-form" method="post">
           <input name="_csrf" type="hidden" value={csrfToken}/>
           <input name="expectedVersion" type="hidden" value={profile.version}/>
-          <label>Instructions<textarea defaultValue={profile.instructions} maxLength={2000} name="instructions" required rows={5}/></label>
-          <label>Evidence<select defaultValue={String(profile.settings.includeEvidence)} name="includeEvidence"><option value="true">Required</option><option value="false">Optional</option></select></label>
-          <label>Status<select defaultValue={String(profile.enabled)} name="enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-          <button className="fcp-primary-button" type="submit">Update profile</button>
+          <label>Инструкции<textarea defaultValue={profile.instructions} maxLength={2000} name="instructions" required rows={5}/></label>
+          <label>Подтверждающие материалы<select defaultValue={String(profile.settings.includeEvidence)} name="includeEvidence"><option value="true">Обязательны</option><option value="false">Необязательны</option></select></label>
+          <label>Состояние<select defaultValue={String(profile.enabled)} name="enabled"><option value="true">Включён</option><option value="false">Отключён</option></select></label>
+          <button className="fcp-primary-button" type="submit">Сохранить настройки</button>
         </form>}
   </section>;
 }

@@ -891,6 +891,84 @@ export const workItems = pgTable(
   ]
 );
 
+/**
+ * A project-owned, provider-neutral baseline.  It deliberately describes
+ * approved scope outcomes rather than inferring progress from tracker counts.
+ */
+export const projectScopeBaselines = pgTable(
+  'project_scope_baselines',
+  {
+    projectId: uuid('project_id').primaryKey().references(() => projects.id, {onDelete: 'cascade'}),
+    totalWeight: integer('total_weight').notNull(), acceptedWeight: integer('accepted_weight').default(0).notNull(),
+    reviewWeight: integer('review_weight').default(0).notNull(), inProgressWeight: integer('in_progress_weight').default(0).notNull(), notStartedWeight: integer('not_started_weight').default(0).notNull(),
+    checkpointTitle: text('checkpoint_title'),
+    checkpointStatus: workItemStatusEnum('checkpoint_status'),
+    checkpointOwnerActorId: uuid('checkpoint_owner_actor_id')
+      .references(() => actors.id, {onDelete: 'set null'}),
+    checkpointTargetAt: timestamp('checkpoint_target_at', {withTimezone: true}),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    check('project_scope_baselines_total_weight_positive', sql`${table.totalWeight} > 0`),
+    check('project_scope_baselines_outcomes_nonnegative', sql`${table.acceptedWeight} >= 0 AND ${table.reviewWeight} >= 0 AND ${table.inProgressWeight} >= 0 AND ${table.notStartedWeight} >= 0`),
+    check('project_scope_baselines_outcomes_match_total', sql`${table.acceptedWeight} + ${table.reviewWeight} + ${table.inProgressWeight} + ${table.notStartedWeight} = ${table.totalWeight}`),
+    check('project_scope_baselines_checkpoint_complete', sql`(${table.checkpointTitle} IS NULL AND ${table.checkpointStatus} IS NULL AND ${table.checkpointOwnerActorId} IS NULL AND ${table.checkpointTargetAt} IS NULL) OR (${table.checkpointTitle} IS NOT NULL AND ${table.checkpointStatus} IS NOT NULL)`)
+  ]
+);
+
+export const scopeOutcomeStateEnum = pgEnum('scope_outcome_state', ['accepted', 'review', 'in_progress', 'not_started', 'not_configured']);
+export const projectScopeBaselineVersions = pgTable('project_scope_baseline_versions', {
+  id: id(), projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+  version: integer('version').notNull(), active: boolean('active').default(true).notNull(),
+  approvedByActorId: uuid('approved_by_actor_id').references(() => actors.id, {onDelete: 'set null'}), approvedAt: timestamp('approved_at', {withTimezone: true}),
+  checkpointTitle: text('checkpoint_title'), checkpointStatus: workItemStatusEnum('checkpoint_status'), checkpointOwnerActorId: uuid('checkpoint_owner_actor_id').references(() => actors.id, {onDelete: 'set null'}), checkpointTargetAt: timestamp('checkpoint_target_at', {withTimezone: true}), updatedAt: updatedAt()
+}, (table) => [
+  uniqueIndex('project_scope_baseline_versions_project_version_unique').on(table.projectId, table.version),
+  uniqueIndex('project_scope_baseline_versions_one_active_per_project').on(table.projectId).where(sql`${table.active}`),
+  check('project_scope_baseline_versions_version_positive', sql`${table.version} > 0`),
+  check('project_scope_baseline_versions_checkpoint_complete', sql`(${table.checkpointTitle} IS NULL AND ${table.checkpointStatus} IS NULL AND ${table.checkpointOwnerActorId} IS NULL AND ${table.checkpointTargetAt} IS NULL) OR (${table.checkpointTitle} IS NOT NULL AND ${table.checkpointStatus} IS NOT NULL)`)
+]);
+export const projectScopeOutcomes = pgTable('project_scope_outcomes', {
+  id: id(), baselineId: uuid('baseline_id').notNull().references(() => projectScopeBaselineVersions.id, {onDelete: 'cascade'}),
+  key: text('key').notNull(), title: text('title').notNull(), weight: integer('weight').notNull(),
+  state: scopeOutcomeStateEnum('state').notNull(), acceptedByActorId: uuid('accepted_by_actor_id').references(() => actors.id, {onDelete: 'set null'}),
+  acceptedAt: timestamp('accepted_at', {withTimezone: true}), evidenceReference: text('evidence_reference'), createdAt: createdAt()
+}, (table) => [uniqueIndex('project_scope_outcomes_baseline_key_unique').on(table.baselineId, table.key), check('project_scope_outcomes_weight_positive', sql`${table.weight} > 0`)]);
+
+/** Legacy aggregate observations remain readable for migration compatibility. */
+export const projectScopeBaselineObservations = pgTable('project_scope_baseline_observations', {
+  id: id(), projectId: uuid('project_id').notNull().references(() => projectScopeBaselines.projectId, {onDelete: 'cascade'}),
+  acceptedWeight: integer('accepted_weight').notNull(), observedAt: timestamp('observed_at', {withTimezone: true}).notNull(), evidenceReference: text('evidence_reference').notNull(), createdAt: createdAt()
+}, (table) => [
+  uniqueIndex('project_scope_baseline_observations_project_observed_unique').on(table.projectId, table.observedAt),
+  index('project_scope_baseline_observations_project_observed_idx').on(table.projectId, table.observedAt),
+  check('project_scope_baseline_observations_accepted_nonnegative', sql`${table.acceptedWeight} >= 0`),
+  check('project_scope_baseline_observations_evidence_bounded', sql`length(${table.evidenceReference}) BETWEEN 1 AND 500`)
+]);
+
+/** Immutable observations are the sole source for the scope burn-up graphic. */
+export const projectScopeOutcomeObservations = pgTable(
+  'project_scope_outcome_observations',
+  {
+    id: id(),
+    projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+    baselineId: uuid('baseline_id').notNull().references(() => projectScopeBaselineVersions.id, {onDelete: 'cascade'}),
+    acceptedWeight: integer('accepted_weight').notNull(),
+    totalWeight: integer('total_weight').notNull(),
+    observedAt: timestamp('observed_at', {withTimezone: true}).notNull(),
+    evidenceReference: text('evidence_reference').notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('project_scope_outcome_observations_project_observed_unique')
+      .on(table.projectId, table.observedAt),
+    index('project_scope_outcome_observations_project_observed_idx')
+      .on(table.projectId, table.observedAt),
+    check('project_scope_outcome_observations_weights_valid', sql`${table.acceptedWeight} >= 0 AND ${table.totalWeight} > 0 AND ${table.acceptedWeight} <= ${table.totalWeight}`),
+    check('project_scope_outcome_observations_evidence_bounded', sql`length(${table.evidenceReference}) BETWEEN 1 AND 500`)
+  ]
+);
+
 export const deliveryJourneys = pgTable(
   'delivery_journeys',
   {
