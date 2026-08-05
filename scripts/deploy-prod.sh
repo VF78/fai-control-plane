@@ -107,6 +107,7 @@ exec 9>/var/lock/fai-control-plane-production-deploy.lock
 flock -n 9 || die 'another fai-control-plane production deployment is running'
 
 previous_commit=''
+checkout_commit=''
 previous_tag=''
 migration_ran=0
 activation_started=0
@@ -213,11 +214,13 @@ trap 'on_error $?' ERR
 cd "$REPO"
 [[ -z "$(git status --porcelain)" ]] || die 'production checkout is not clean'
 [[ "$(git branch --show-current)" == 'main' ]] || die 'production checkout is not on main'
-previous_commit="$(git rev-parse HEAD)"
+checkout_commit="$(git rev-parse HEAD)"
 previous_tag="$(env_value FCP_IMAGE_TAG)"
 is_hash "$previous_tag" || die 'existing FCP_IMAGE_TAG is not an immutable commit hash'
-[[ "$previous_tag" == "$previous_commit" ]] || die 'checkout and current image tag disagree'
 [[ "$previous_tag" != "$TARGET" ]] || die 'requested commit is already active'
+git merge-base --is-ancestor "$previous_tag" "$checkout_commit" || \
+  die 'production checkout has diverged from the active image tag'
+previous_commit="$previous_tag"
 validate_environment
 install -d -m 0700 "$BACKUP_DIR"
 [[ -w "$BACKUP_DIR" ]] || die 'backup destination is unavailable'
@@ -225,7 +228,8 @@ docker image inspect "fai-control-plane:$previous_tag" >/dev/null
 
 git fetch --quiet origin main
 [[ "$(git rev-parse origin/main)" == "$TARGET" ]] || die 'production origin/main differs from requested commit'
-git merge-base --is-ancestor "$previous_commit" "$TARGET" || die 'requested commit is not a fast-forward from production'
+git merge-base --is-ancestor "$checkout_commit" "$TARGET" || die 'requested commit is not a fast-forward from the production checkout'
+git merge-base --is-ancestor "$previous_commit" "$TARGET" || die 'requested commit is not a fast-forward from the active image'
 git merge --ff-only "$TARGET" >/dev/null
 
 compose_target build web worker
