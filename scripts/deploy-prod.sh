@@ -44,6 +44,14 @@ git -C "$git_root" fetch --quiet origin main
 git -C "$git_root" rev-parse --verify --quiet "${commit}^{commit}" >/dev/null || die 'requested commit is unavailable locally'
 
 ssh -o BatchMode=yes -o ConnectTimeout=15 "$DEPLOY_HOST" bash -s -- "$commit" "$dry_run" <<'REMOTE'
+{
+  remote_script="$(mktemp)" || exit 1
+  trap 'rm -f "$remote_script"' EXIT
+  cat > "$remote_script" || exit 1
+  status=0
+  bash "$remote_script" "$@" || status=$?
+  exit "$status"
+}
 set -Eeuo pipefail
 
 TARGET="$1"
