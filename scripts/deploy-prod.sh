@@ -284,8 +284,10 @@ retry 30 5 'public readiness' public_ready
 retry 30 5 'public dashboard' public_dashboard
 
 while IFS= read -r image_tag; do
-  [[ "$image_tag" == "fai-control-plane:$TARGET" || "$image_tag" == "fai-control-plane:$previous_tag" ]] || \
-    docker image rm "$image_tag" >/dev/null
+  if [[ "$image_tag" != "fai-control-plane:$TARGET" && "$image_tag" != "fai-control-plane:$previous_tag" ]] && \
+    ! docker image rm "$image_tag" >/dev/null 2>&1; then
+    printf 'deploy-prod: retained referenced image %s\n' "$image_tag" >&2
+  fi
 done < <(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^fai-control-plane:[0-9a-f]{40}$' || true)
 
 printf 'deploy-prod: activated %s; retained %s and %s\n' "$TARGET" "$TARGET" "$previous_tag"
