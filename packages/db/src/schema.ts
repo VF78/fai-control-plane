@@ -891,31 +891,6 @@ export const workItems = pgTable(
   ]
 );
 
-/**
- * A project-owned, provider-neutral baseline.  It deliberately describes
- * approved scope outcomes rather than inferring progress from tracker counts.
- */
-export const projectScopeBaselines = pgTable(
-  'project_scope_baselines',
-  {
-    projectId: uuid('project_id').primaryKey().references(() => projects.id, {onDelete: 'cascade'}),
-    totalWeight: integer('total_weight').notNull(), acceptedWeight: integer('accepted_weight').default(0).notNull(),
-    reviewWeight: integer('review_weight').default(0).notNull(), inProgressWeight: integer('in_progress_weight').default(0).notNull(), notStartedWeight: integer('not_started_weight').default(0).notNull(),
-    checkpointTitle: text('checkpoint_title'),
-    checkpointStatus: workItemStatusEnum('checkpoint_status'),
-    checkpointOwnerActorId: uuid('checkpoint_owner_actor_id')
-      .references(() => actors.id, {onDelete: 'set null'}),
-    checkpointTargetAt: timestamp('checkpoint_target_at', {withTimezone: true}),
-    updatedAt: updatedAt()
-  },
-  (table) => [
-    check('project_scope_baselines_total_weight_positive', sql`${table.totalWeight} > 0`),
-    check('project_scope_baselines_outcomes_nonnegative', sql`${table.acceptedWeight} >= 0 AND ${table.reviewWeight} >= 0 AND ${table.inProgressWeight} >= 0 AND ${table.notStartedWeight} >= 0`),
-    check('project_scope_baselines_outcomes_match_total', sql`${table.acceptedWeight} + ${table.reviewWeight} + ${table.inProgressWeight} + ${table.notStartedWeight} = ${table.totalWeight}`),
-    check('project_scope_baselines_checkpoint_complete', sql`(${table.checkpointTitle} IS NULL AND ${table.checkpointStatus} IS NULL AND ${table.checkpointOwnerActorId} IS NULL AND ${table.checkpointTargetAt} IS NULL) OR (${table.checkpointTitle} IS NOT NULL AND ${table.checkpointStatus} IS NOT NULL)`)
-  ]
-);
-
 export const scopeOutcomeStateEnum = pgEnum('scope_outcome_state', ['accepted', 'review', 'in_progress', 'not_started', 'not_configured']);
 export const projectScopeBaselineVersions = pgTable('project_scope_baseline_versions', {
   id: id(), projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
@@ -934,17 +909,6 @@ export const projectScopeOutcomes = pgTable('project_scope_outcomes', {
   state: scopeOutcomeStateEnum('state').notNull(), acceptedByActorId: uuid('accepted_by_actor_id').references(() => actors.id, {onDelete: 'set null'}),
   acceptedAt: timestamp('accepted_at', {withTimezone: true}), evidenceReference: text('evidence_reference'), createdAt: createdAt()
 }, (table) => [uniqueIndex('project_scope_outcomes_baseline_key_unique').on(table.baselineId, table.key), check('project_scope_outcomes_weight_positive', sql`${table.weight} > 0`)]);
-
-/** Legacy aggregate observations remain readable for migration compatibility. */
-export const projectScopeBaselineObservations = pgTable('project_scope_baseline_observations', {
-  id: id(), projectId: uuid('project_id').notNull().references(() => projectScopeBaselines.projectId, {onDelete: 'cascade'}),
-  acceptedWeight: integer('accepted_weight').notNull(), observedAt: timestamp('observed_at', {withTimezone: true}).notNull(), evidenceReference: text('evidence_reference').notNull(), createdAt: createdAt()
-}, (table) => [
-  uniqueIndex('project_scope_baseline_observations_project_observed_unique').on(table.projectId, table.observedAt),
-  index('project_scope_baseline_observations_project_observed_idx').on(table.projectId, table.observedAt),
-  check('project_scope_baseline_observations_accepted_nonnegative', sql`${table.acceptedWeight} >= 0`),
-  check('project_scope_baseline_observations_evidence_bounded', sql`length(${table.evidenceReference}) BETWEEN 1 AND 500`)
-]);
 
 /** Immutable observations are the sole source for the scope burn-up graphic. */
 export const projectScopeOutcomeObservations = pgTable(

@@ -1,5 +1,5 @@
 {
-  "id": "af2f4a63-3064-4026-adeb-f159e63c3140",
+  "id": "28a3df4f-736f-4b88-8b33-fb7e612e77f6",
   "prevId": "49eba234-716d-41c7-89fc-4dd73047f8bc",
   "version": "7",
   "dialect": "postgresql",
@@ -4921,8 +4921,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.project_scope_baseline_observations": {
-      "name": "project_scope_baseline_observations",
+    "public.project_scope_baseline_versions": {
+      "name": "project_scope_baseline_versions",
       "schema": "",
       "columns": {
         "id": {
@@ -4938,149 +4938,30 @@
           "primaryKey": false,
           "notNull": true
         },
-        "accepted_weight": {
-          "name": "accepted_weight",
+        "version": {
+          "name": "version",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
-        "observed_at": {
-          "name": "observed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "evidence_reference": {
-          "name": "evidence_reference",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
+        "active": {
+          "name": "active",
+          "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "project_scope_baseline_observations_project_observed_unique": {
-          "name": "project_scope_baseline_observations_project_observed_unique",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "observed_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
+          "default": true
         },
-        "project_scope_baseline_observations_project_observed_idx": {
-          "name": "project_scope_baseline_observations_project_observed_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "observed_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "project_scope_baseline_observations_project_id_project_scope_baselines_project_id_fk": {
-          "name": "project_scope_baseline_observations_project_id_project_scope_baselines_project_id_fk",
-          "tableFrom": "project_scope_baseline_observations",
-          "tableTo": "project_scope_baselines",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "project_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "project_scope_baseline_observations_accepted_nonnegative": {
-          "name": "project_scope_baseline_observations_accepted_nonnegative",
-          "value": "\"project_scope_baseline_observations\".\"accepted_weight\" >= 0"
-        },
-        "project_scope_baseline_observations_evidence_bounded": {
-          "name": "project_scope_baseline_observations_evidence_bounded",
-          "value": "length(\"project_scope_baseline_observations\".\"evidence_reference\") BETWEEN 1 AND 500"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.project_scope_baselines": {
-      "name": "project_scope_baselines",
-      "schema": "",
-      "columns": {
-        "project_id": {
-          "name": "project_id",
+        "approved_by_actor_id": {
+          "name": "approved_by_actor_id",
           "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "total_weight": {
-          "name": "total_weight",
-          "type": "integer",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "accepted_weight": {
-          "name": "accepted_weight",
-          "type": "integer",
+        "approved_at": {
+          "name": "approved_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "review_weight": {
-          "name": "review_weight",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "in_progress_weight": {
-          "name": "in_progress_weight",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "not_started_weight": {
-          "name": "not_started_weight",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
+          "notNull": false
         },
         "checkpoint_title": {
           "name": "checkpoint_title",
@@ -5115,11 +4996,49 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "project_scope_baseline_versions_project_version_unique": {
+          "name": "project_scope_baseline_versions_project_version_unique",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "project_scope_baseline_versions_one_active_per_project": {
+          "name": "project_scope_baseline_versions_one_active_per_project",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"project_scope_baseline_versions\".\"active\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
-        "project_scope_baselines_project_id_projects_id_fk": {
-          "name": "project_scope_baselines_project_id_projects_id_fk",
-          "tableFrom": "project_scope_baselines",
+        "project_scope_baseline_versions_project_id_projects_id_fk": {
+          "name": "project_scope_baseline_versions_project_id_projects_id_fk",
+          "tableFrom": "project_scope_baseline_versions",
           "tableTo": "projects",
           "columnsFrom": [
             "project_id"
@@ -5130,9 +5049,22 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "project_scope_baselines_checkpoint_owner_actor_id_actors_id_fk": {
-          "name": "project_scope_baselines_checkpoint_owner_actor_id_actors_id_fk",
-          "tableFrom": "project_scope_baselines",
+        "project_scope_baseline_versions_approved_by_actor_id_actors_id_fk": {
+          "name": "project_scope_baseline_versions_approved_by_actor_id_actors_id_fk",
+          "tableFrom": "project_scope_baseline_versions",
+          "tableTo": "actors",
+          "columnsFrom": [
+            "approved_by_actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "project_scope_baseline_versions_checkpoint_owner_actor_id_actors_id_fk": {
+          "name": "project_scope_baseline_versions_checkpoint_owner_actor_id_actors_id_fk",
+          "tableFrom": "project_scope_baseline_versions",
           "tableTo": "actors",
           "columnsFrom": [
             "checkpoint_owner_actor_id"
@@ -5148,21 +5080,285 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "project_scope_baselines_total_weight_positive": {
-          "name": "project_scope_baselines_total_weight_positive",
-          "value": "\"project_scope_baselines\".\"total_weight\" > 0"
+        "project_scope_baseline_versions_version_positive": {
+          "name": "project_scope_baseline_versions_version_positive",
+          "value": "\"project_scope_baseline_versions\".\"version\" > 0"
         },
-        "project_scope_baselines_outcomes_nonnegative": {
-          "name": "project_scope_baselines_outcomes_nonnegative",
-          "value": "\"project_scope_baselines\".\"accepted_weight\" >= 0 AND \"project_scope_baselines\".\"review_weight\" >= 0 AND \"project_scope_baselines\".\"in_progress_weight\" >= 0 AND \"project_scope_baselines\".\"not_started_weight\" >= 0"
+        "project_scope_baseline_versions_checkpoint_complete": {
+          "name": "project_scope_baseline_versions_checkpoint_complete",
+          "value": "(\"project_scope_baseline_versions\".\"checkpoint_title\" IS NULL AND \"project_scope_baseline_versions\".\"checkpoint_status\" IS NULL AND \"project_scope_baseline_versions\".\"checkpoint_owner_actor_id\" IS NULL AND \"project_scope_baseline_versions\".\"checkpoint_target_at\" IS NULL) OR (\"project_scope_baseline_versions\".\"checkpoint_title\" IS NOT NULL AND \"project_scope_baseline_versions\".\"checkpoint_status\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.project_scope_outcome_observations": {
+      "name": "project_scope_outcome_observations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
-        "project_scope_baselines_outcomes_match_total": {
-          "name": "project_scope_baselines_outcomes_match_total",
-          "value": "\"project_scope_baselines\".\"accepted_weight\" + \"project_scope_baselines\".\"review_weight\" + \"project_scope_baselines\".\"in_progress_weight\" + \"project_scope_baselines\".\"not_started_weight\" = \"project_scope_baselines\".\"total_weight\""
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
-        "project_scope_baselines_checkpoint_complete": {
-          "name": "project_scope_baselines_checkpoint_complete",
-          "value": "(\"project_scope_baselines\".\"checkpoint_title\" IS NULL AND \"project_scope_baselines\".\"checkpoint_status\" IS NULL AND \"project_scope_baselines\".\"checkpoint_owner_actor_id\" IS NULL AND \"project_scope_baselines\".\"checkpoint_target_at\" IS NULL) OR (\"project_scope_baselines\".\"checkpoint_title\" IS NOT NULL AND \"project_scope_baselines\".\"checkpoint_status\" IS NOT NULL)"
+        "baseline_id": {
+          "name": "baseline_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_weight": {
+          "name": "accepted_weight",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_weight": {
+          "name": "total_weight",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_reference": {
+          "name": "evidence_reference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "project_scope_outcome_observations_project_observed_unique": {
+          "name": "project_scope_outcome_observations_project_observed_unique",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "observed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "project_scope_outcome_observations_project_observed_idx": {
+          "name": "project_scope_outcome_observations_project_observed_idx",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "observed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "project_scope_outcome_observations_project_id_projects_id_fk": {
+          "name": "project_scope_outcome_observations_project_id_projects_id_fk",
+          "tableFrom": "project_scope_outcome_observations",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_scope_outcome_observations_baseline_id_project_scope_baseline_versions_id_fk": {
+          "name": "project_scope_outcome_observations_baseline_id_project_scope_baseline_versions_id_fk",
+          "tableFrom": "project_scope_outcome_observations",
+          "tableTo": "project_scope_baseline_versions",
+          "columnsFrom": [
+            "baseline_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "project_scope_outcome_observations_weights_valid": {
+          "name": "project_scope_outcome_observations_weights_valid",
+          "value": "\"project_scope_outcome_observations\".\"accepted_weight\" >= 0 AND \"project_scope_outcome_observations\".\"total_weight\" > 0 AND \"project_scope_outcome_observations\".\"accepted_weight\" <= \"project_scope_outcome_observations\".\"total_weight\""
+        },
+        "project_scope_outcome_observations_evidence_bounded": {
+          "name": "project_scope_outcome_observations_evidence_bounded",
+          "value": "length(\"project_scope_outcome_observations\".\"evidence_reference\") BETWEEN 1 AND 500"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.project_scope_outcomes": {
+      "name": "project_scope_outcomes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "baseline_id": {
+          "name": "baseline_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "weight": {
+          "name": "weight",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "scope_outcome_state",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_by_actor_id": {
+          "name": "accepted_by_actor_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "evidence_reference": {
+          "name": "evidence_reference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "project_scope_outcomes_baseline_key_unique": {
+          "name": "project_scope_outcomes_baseline_key_unique",
+          "columns": [
+            {
+              "expression": "baseline_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "project_scope_outcomes_baseline_id_project_scope_baseline_versions_id_fk": {
+          "name": "project_scope_outcomes_baseline_id_project_scope_baseline_versions_id_fk",
+          "tableFrom": "project_scope_outcomes",
+          "tableTo": "project_scope_baseline_versions",
+          "columnsFrom": [
+            "baseline_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_scope_outcomes_accepted_by_actor_id_actors_id_fk": {
+          "name": "project_scope_outcomes_accepted_by_actor_id_actors_id_fk",
+          "tableFrom": "project_scope_outcomes",
+          "tableTo": "actors",
+          "columnsFrom": [
+            "accepted_by_actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "project_scope_outcomes_weight_positive": {
+          "name": "project_scope_outcomes_weight_positive",
+          "value": "\"project_scope_outcomes\".\"weight\" > 0"
         }
       },
       "isRLSEnabled": false
@@ -8916,6 +9112,17 @@
       "values": [
         "available",
         "unavailable"
+      ]
+    },
+    "public.scope_outcome_state": {
+      "name": "scope_outcome_state",
+      "schema": "public",
+      "values": [
+        "accepted",
+        "review",
+        "in_progress",
+        "not_started",
+        "not_configured"
       ]
     },
     "public.tracker_status_observation_state": {

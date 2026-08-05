@@ -41,8 +41,9 @@ const requiredTables = [
   schema.projectTrackerRepositoryScopes,
   schema.auditEvents,
   schema.dashboardSnapshots,
-  schema.projectScopeBaselines,
-  schema.projectScopeBaselineObservations
+  schema.projectScopeBaselineVersions,
+  schema.projectScopeOutcomes,
+  schema.projectScopeOutcomeObservations
 ];
 
 describe('canonical schema foundation', () => {
@@ -86,8 +87,9 @@ describe('canonical schema foundation', () => {
       'project_tracker_repository_scopes',
       'audit_events',
       'dashboard_snapshots',
-      'project_scope_baselines',
-      'project_scope_baseline_observations'
+      'project_scope_baseline_versions',
+      'project_scope_outcomes',
+      'project_scope_outcome_observations'
     ]);
   });
 
