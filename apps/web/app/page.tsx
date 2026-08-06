@@ -13,6 +13,10 @@ export default async function PortfolioPage({searchParams}: {searchParams: Promi
   const auth = await currentOperatorSession(cookieStore.get(OPERATOR_SESSION_COOKIE)?.value);
   if (auth.enabled && auth.session === null) return <OperatorLogin />;
   const route = workspaceRoute(['dashboard'], await searchParams)!;
-  const data = await loadWorkspaceData(route);
-  return <WorkspaceShell route={route} data={{...data, csrfToken: auth.session?.csrfToken ?? null}} />;
+  const data = await loadWorkspaceData(route, auth.session?.actorId);
+  return <WorkspaceShell route={route} data={{
+    ...data,
+    csrfToken: auth.session?.csrfToken ?? null,
+    operatorActorId: auth.session?.actorId ?? null
+  }} />;
 }

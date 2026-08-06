@@ -253,6 +253,13 @@
       "when": 1785924199238,
       "tag": "0035_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786032000000,
+      "tag": "0036_seed_approved_scope_baselines",
+      "breakpoints": true
     }
   ]
 }

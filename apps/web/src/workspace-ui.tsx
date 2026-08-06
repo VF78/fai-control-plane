@@ -203,6 +203,11 @@ function Summary({items}: {items: readonly Readonly<{label: string; value: strin
   return <dl className="fcp-summary">{items.map((item) => <div key={item.label}><dt>{item.label}</dt><dd className={item.tone ?? ''}>{item.value}</dd></div>)}</dl>;
 }
 type WorkspaceProjectRef = Readonly<{name: string; slug: OperatorProjectSlug}>;
+type ScopeProgress = Readonly<{
+  totalWeight: number;
+  acceptedWeight: number;
+  states: readonly Readonly<{key: 'accepted' | 'review' | 'in-progress' | 'not-started'; label: string; weight: number}>[];
+}>;
 const selectedGlobalProject = (route: WorkspaceUiRoute) => route.globalProject === undefined || route.globalProject === 'all' ? null : route.globalProject;
 const projectSelection = (route: WorkspaceUiRoute, projects: readonly WorkspaceProjectRef[]) => {
   const selected = selectedGlobalProject(route);
@@ -215,8 +220,31 @@ function ProjectChooser({route, projects, title, detail, area}: {route: Workspac
     : projectUrl(project.slug, area, route.scope);
   return <><div className="fcp-page-title"><div><h1>{title}</h1><p>{detail}</p></div><Scope route={route}/></div><section className="fcp-section"><div className="fcp-section-head"><h2>Доступные проекты</h2></div>{choices.length === 0 ? <p className="fcp-empty-line">Нет доступных проектов.</p> : <div className="fcp-list fcp-project-list">{choices.map((project) => <Link className="fcp-row fcp-project-row" href={href(project)} key={project.slug}><FolderKanban aria-hidden="true" size={18}/><div><strong>{project.name}</strong><small>Открыть рабочую область проекта</small></div><ChevronRight aria-hidden="true" size={16}/></Link>)}</div>}</section></>;
 }
-function Dashboard({route, projects}: {route: WorkspaceUiRoute; projects: readonly WorkspaceProjectRef[]}) {
-  return <ProjectChooser route={route} projects={projects} title="Обзор проектов" detail="Операционные факты доступны отдельно внутри каждого проекта." area="overview"/>;
+const scopeProgress = (project: ProjectData): ScopeProgress | null => {
+  const baseline = project.scopeBaseline;
+  if (baseline === null || baseline === undefined) return null;
+  const configured = baseline.outcomes.filter((outcome) => outcome.state !== 'not_configured');
+  const states = [
+    {key: 'accepted' as const, label: 'Принято', state: 'accepted'},
+    {key: 'review' as const, label: 'На проверке', state: 'review'},
+    {key: 'in-progress' as const, label: 'В работе', state: 'in_progress'},
+    {key: 'not-started' as const, label: 'Не начато', state: 'not_started'}
+  ].map((item) => ({
+    key: item.key,
+    label: item.label,
+    weight: configured.filter((outcome) => outcome.state === item.state).reduce((total, outcome) => total + outcome.weight, 0)
+  }));
+  return {
+    totalWeight: configured.reduce((total, outcome) => total + outcome.weight, 0),
+    acceptedWeight: states[0]!.weight,
+    states
+  };
+};
+function Dashboard({route, projects}: {route: WorkspaceUiRoute; projects: readonly ProjectData[]}) {
+  return <><div className="fcp-page-title"><div><h1>Обзор проектов</h1><p>Подтверждённый прогресс каждого доступного проекта — по весу результатов.</p></div><Scope route={route}/></div><section className="fcp-dashboard-progress" aria-label="Прогресс доступных проектов">{projects.length === 0 ? <p className="fcp-empty-line">Нет доступных проектов.</p> : projects.map((project) => {
+    const progress = scopeProgress(project);
+    return <Link className="fcp-dashboard-progress-card" href={projectUrl(project.project.slug, 'overview', route.scope)} key={project.project.slug}><header><div><span>{project.project.name}</span><small>Принятый скоп</small></div><ChevronRight aria-hidden="true" size={18}/></header>{progress === null || progress.totalWeight === 0 ? <strong>Не настроено</strong> : <><strong>{progress.acceptedWeight} / {progress.totalWeight}</strong><div className="fcp-dashboard-progress-bar" aria-label={progress.states.map((item) => `${item.label}: ${item.weight}`).join(', ')}>{progress.states.map((item) => <span className={`fcp-scope-${item.key}`} key={item.key} style={{width: `${item.weight / progress.totalWeight * 100}%`}}/>)}</div><ul>{progress.states.map((item) => <li key={item.key} className={`fcp-scope-${item.key}`}><span aria-hidden="true"/>{item.label} {item.weight}</li>)}</ul></>}</Link>;
+  })}</section></>;
 }
 function Projects({route, projects}: {route: WorkspaceUiRoute; projects: readonly WorkspaceProjectRef[]}) {
   return <ProjectChooser route={route} projects={projects} title="Проекты" detail="Выберите доступный проект, чтобы открыть его рабочую область." area="overview"/>;
@@ -725,7 +753,7 @@ export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: Work
     ...(scopedConversations === null ? {} : {conversations: {state: 'ready' as const, data: scopedConversations}})
   };
   const content = !routeAllowed ? <Blank title="Проект недоступен">У текущего пользователя нет активного участия в этом проекте.</Blank>
-    : route.screen === 'dashboard' ? <Dashboard route={route} projects={visibleProjects}/>
+    : route.screen === 'dashboard' ? <Dashboard route={route} projects={(data.projectIndex ?? []).filter((item) => authorizedSlugs.has(item.project.slug))}/>
       : route.screen === 'projects' ? <Projects route={route} projects={visibleProjects}/>
         : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={projectSelection(route, visibleProjects)}/>
           : route.screen === 'global_chats' ? <GlobalChats route={route} projects={projectSelection(route, visibleProjects)}/>
