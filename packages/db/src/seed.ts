@@ -308,25 +308,31 @@ try {
           checkpointTitle: 'Совместный E2E-сценарий и бизнес-приёмка',
           checkpointStatus: 'in_dev' as const,
           outcomes: [
-            ['catalog_mapping', 'Сопоставление номенклатуры', 25, 'accepted' as const],
-            ['document_intake', 'Приём и разбор документов', 20, 'accepted' as const],
-            ['stock_price_reconciliation', 'Сверка цен и остатков', 15, 'review' as const],
-            ['joint_e2e', 'Совместный E2E-сценарий', 25, 'in_progress' as const],
-            ['business_acceptance', 'Бизнес-приёмка', 15, 'not_started' as const]
+            ['foundation', 'Фундамент решения', 5, 'accepted' as const],
+            ['matching', 'Сопоставление номенклатуры', 20, 'accepted' as const],
+            ['documents_ocr', 'Документы и OCR', 20, 'accepted' as const],
+            ['onec_api', 'Интеграция 1С и API', 20, 'review' as const],
+            ['feedback', 'Обратная связь', 10, 'in_progress' as const],
+            ['security', 'Безопасность', 10, 'in_progress' as const],
+            ['e2e', 'Совместный E2E-сценарий', 10, 'in_progress' as const],
+            ['release', 'Выпуск', 5, 'not_started' as const]
           ],
-          observations: [[10, 80, '2026-08-01T09:00:00.000Z'], [45, 100, '2026-08-04T15:02:00.000Z']]
+          observations: [[45, 100, '2026-08-04T15:02:00.000Z']]
         }
       : {
           checkpointTitle: 'Подтвердить старт работ',
           checkpointStatus: 'ready' as const,
           outcomes: [
-            ['source_inventory', 'Инвентаризация исходных данных', 20, 'not_started' as const],
-            ['integration_outline', 'Контур интеграции', 20, 'not_started' as const],
-            ['business_scenario', 'Бизнес-сценарий', 20, 'not_started' as const],
-            ['pilot_acceptance', 'Приёмка пилота', 20, 'not_started' as const],
-            ['launch_decision', 'Решение о запуске', 20, 'not_started' as const]
+            ['context', 'Контекст проекта', 5, 'not_started' as const],
+            ['contract', 'Контракт и границы', 5, 'not_started' as const],
+            ['foundation_cloud', 'Фундамент и облачный контур', 15, 'not_started' as const],
+            ['api', 'API', 10, 'not_started' as const],
+            ['roi_rag', 'ROI и RAG', 30, 'not_started' as const],
+            ['quality', 'Качество', 15, 'not_started' as const],
+            ['integration', 'Интеграция', 10, 'not_started' as const],
+            ['acceptance', 'Приёмка', 10, 'not_started' as const]
           ],
-          observations: [[0, 100, '2026-08-04T15:02:00.000Z'], [0, 100, '2026-08-05T09:00:00.000Z']]
+          observations: [[0, 100, '2026-08-05T09:00:00.000Z']]
         };
     await db.insert(projectScopeBaselineVersions).values({
       projectId: persistedProject.id, version: 1, active: true,

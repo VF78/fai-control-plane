@@ -83,23 +83,40 @@ it('derives fleet health from availability observations with run-lease fallback'
   expect(deriveFleetHealth({...base, registrations: [], currentRun: null, asOf})).toBe('not_configured');
 });
 
-it('keeps the dashboard project-first and does not render a mixed portfolio', () => {
+it('renders a separate weighted-scope progress card for every accessible project', () => {
+  const observedAt = new Date('2026-08-04T15:02:00.000Z');
+  const project = {project: {id: 'msa', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: observedAt}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: [], scopeBaseline: {id: 'baseline-1', version: 1, approvedAt: observedAt, updatedAt: observedAt, checkpoint: null, observations: [{acceptedWeight: 45, totalWeight: 100, observedAt}], outcomes: [
+    {key: 'foundation', title: 'Foundation', weight: 5, state: 'accepted' as const, acceptedBy: 'Vladimir', acceptedAt: observedAt, evidenceReference: '#91'},
+    {key: 'matching', title: 'Matching', weight: 20, state: 'accepted' as const, acceptedBy: 'Vladimir', acceptedAt: observedAt, evidenceReference: '#91'},
+    {key: 'documents', title: 'Documents', weight: 20, state: 'accepted' as const, acceptedBy: 'Vladimir', acceptedAt: observedAt, evidenceReference: '#91'},
+    {key: 'api', title: 'API', weight: 20, state: 'review' as const, acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
+    {key: 'feedback', title: 'Feedback', weight: 10, state: 'in_progress' as const, acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
+    {key: 'security', title: 'Security', weight: 10, state: 'in_progress' as const, acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
+    {key: 'e2e', title: 'E2E', weight: 10, state: 'in_progress' as const, acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
+    {key: 'release', title: 'Release', weight: 5, state: 'not_started' as const, acceptedBy: null, acceptedAt: null, evidenceReference: '#91'}
+  ]}};
   const data = {
-    access: {state: 'unconfigured'}, health: null, project: null, runs: null, projectIndex: [],
+    access: {state: 'unconfigured'}, health: null, project: null, runs: null, projectIndex: [project],
     portfolio: {state: 'ready', data: {attention: [], projects: [{id: 'msa', name: 'MSA', slug: 'msa', health: 'yellow', snapshotAt: null, synchronizedAt: new Date('2026-07-30T11:45:00.000Z'), unresolvedRiskCount: 0, metrics: {stages: {backlog: 1, ready: 1, in_dev: 2, qa: 1, acceptance: 0, done: 3}, activeWip: 3, blockedWork: 1, staleActiveWork: 1, pendingApprovals: {count: 2, oldestAt: new Date('2026-07-29T11:45:00.000Z')}, integrationFreshness: new Date('2026-07-30T11:45:00.000Z'), milestoneOutlook: {state: 'unknown', due: 0, overdue: 0}, throughputTrend: {state: 'not_enough_history', recent: 1, previous: 0}, cycleTime: {state: 'not_enough_history', averageHours: null, samples: 1}}}]}}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
 
   expect(markup).toContain('Обзор проектов');
-  expect(markup).toContain('Операционные факты доступны отдельно внутри каждого проекта');
   expect(markup).toContain('MSA');
+  expect(markup).toContain('45 / 100');
+  expect(markup).toContain('Принято 45');
+  expect(markup).toContain('На проверке 20');
+  expect(markup).toContain('В работе 30');
+  expect(markup).toContain('Не начато 5');
+  expect(markup).toContain('href="/projects/msa/overview"');
   expect(markup).not.toContain('Active WIP');
-  expect(markup).not.toContain('Deadline outlook');
+  expect(markup).not.toContain('Все проекты');
 });
 
 it('does not expose attention facts through the dashboard', () => {
+  const project = {project: {id: 'msa', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []};
   const data = {
-    access: {state: 'unconfigured'}, health: null, project: null, runs: null, projectIndex: [],
+    access: {state: 'unconfigured'}, health: null, project: null, runs: null, projectIndex: [project],
     portfolio: {state: 'ready', data: {projects: [{id: 'msa', name: 'MSA', slug: 'msa', health: 'yellow', snapshotAt: null, synchronizedAt: null, unresolvedRiskCount: 1, metrics: {stages: {backlog: 0, ready: 0, in_dev: 1, qa: 0, acceptance: 0, done: 0}, activeWip: 1, blockedWork: 0, staleActiveWork: 0, pendingApprovals: {count: 0, oldestAt: null}, integrationFreshness: null, milestoneOutlook: {state: 'unknown', due: 0, overdue: 0}, throughputTrend: {state: 'not_enough_history', recent: 0, previous: 0}, cycleTime: {state: 'not_enough_history', averageHours: null, samples: 0}}}], attention: [{id: 'risk:1', riskSignalId: '00000000-0000-4000-8000-000000000001', projectId: 'msa', workItemId: 'task-1', severity: 'red', project: 'MSA', object: 'Deployment task', reason: 'Failed verification', stage: 'qa', signalClass: 'fact', impact: 'Release is blocked', freshness: new Date('2026-07-30T10:00:00.000Z'), owner: 'Canonical owner', evidenceReferences: [{type: 'run', id: 'run-1'}], nextAction: 'Review failed verification', sourceUrl: 'https://github.com/VF78/fai-control-plane/issues/1', evidence: 'run: run-1', action: {label: 'Open source', href: 'https://github.com/VF78/fai-control-plane/issues/1'}, disposition: {kind: 'acknowledged', reason: 'investigating', expiresAt: new Date('2026-08-01T12:00:00.000Z'), reentryCondition: 'risk_unresolved_at_expiry', version: 1}, dispositionVersion: 1}, {id: 'job:1', riskSignalId: null, projectId: 'msa', workItemId: null, severity: 'red', project: 'MSA', object: 'Recovery scan', reason: 'Scheduled job is unhealthy', stage: null, signalClass: null, impact: null, freshness: new Date('2026-07-30T09:00:00.000Z'), owner: null, evidenceReferences: [], nextAction: null, sourceUrl: null, evidence: 'Scheduled job status', action: {label: 'No external record', href: null}, disposition: null, dispositionVersion: 0}]}}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
@@ -322,7 +339,10 @@ it('keeps every global surface within the operator membership and rejects unauth
       {id: 'ascon-job', project: 'ASCON', projectSlug: 'ascon', name: 'ASCON secret health', status: 'unhealthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null}
     ], integrations: [], risks: [], audit: [], costLedger: []}},
     conversations: {state: 'ready', data: {projects: [{id: 'ascon-id', name: 'ASCON', slug: 'ascon', channels: [{conversationClass: 'internal', state: 'ready', freshnessAt: new Date(), failure: null, participants: [], messages: [{id: 'ascon-message', participantId: 'none', author: 'ASCON', sentAt: new Date(), text: 'ASCON secret conversation', attachmentSummary: null, reply: false, threaded: false}]}]}]}},
-    project: null, runs: null, projectIndex: [], operatorActorId: 'vitaliy'
+    project: null, runs: null, projectIndex: [
+      {project: {id: 'msa-id', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []},
+      {project: {id: 'ascon-id', workspaceId: 'workspace-1', name: 'ASCON', slug: 'ascon' as const, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []}
+    ], operatorActorId: 'vitaliy'
   } as unknown as WorkspaceData;
   const dashboard = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['dashboard'], {})!, data}));
   const people = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['people'], {})!, data}));
