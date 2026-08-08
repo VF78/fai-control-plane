@@ -36,9 +36,11 @@ type StoreInput = Readonly<{
 const errorResult = (code: CommandError['code'], message: string) => ({
   ok: false as const, error: {code, message}
 });
+type StoreResult = ReturnType<typeof errorResult> |
+  Readonly<{ok: true; value: DeliveryJourneyProjection}>;
 const known = <T>(value: T) => ({availability: 'known' as const, value});
-const unknown = <T>() => ({availability: 'unknown' as const});
-const notConfigured = <T>() => ({availability: 'not_configured' as const});
+const unknown = () => ({availability: 'unknown' as const});
+const notConfigured = () => ({availability: 'not_configured' as const});
 
 const protocolFrom = (row: typeof schema.runbooks.$inferSelect): DeliveryProtocol | null => {
   if (row.protocolState === null || row.revision === null || row.contentHash === null) return null;
@@ -235,7 +237,7 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
           result: existing.result as never, createdAt: existing.createdAt.toISOString()
         }};
       }
-      let result: any;
+      let result: StoreResult;
       let projectId: string | null = null;
       let resultVersion: number | undefined;
       const complete = async () => {

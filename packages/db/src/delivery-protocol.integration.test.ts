@@ -142,7 +142,7 @@ describePostgres('delivery protocol persistence', () => {
     const envelope = (
       type: 'delivery_protocol.draft' | 'delivery_protocol.publish' |
         'delivery_protocol.activate' | 'delivery_protocol.retire',
-      payload: any,
+      payload: unknown,
       key: string
     ) => ({
       commandId: randomUUID(),

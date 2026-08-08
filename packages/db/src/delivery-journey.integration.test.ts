@@ -99,7 +99,7 @@ describePostgres('delivery journey persistence', () => {
     ]);
     const store = createPostgresDeliveryJourneyStore(db);
     const envelope = (type: 'delivery_journey.start' | 'delivery_journey.advance',
-      payload: any, key: string) => ({
+      payload: unknown, key: string) => ({
       commandId: randomUUID(), workspaceId: ids.workspace, correlationId: randomUUID(),
       idempotencyKey: key, actor: {actorId: ids.owner}, type, payload
     });

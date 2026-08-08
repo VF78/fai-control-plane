@@ -2,7 +2,8 @@ import {randomUUID} from 'node:crypto';
 import {
   diffEffectiveInstructions,
   effectiveInstructions,
-  type CanonicalJson,
+  type CommandError,
+  type EffectiveInstructionDiff,
   type EffectiveInstructions,
   type InstructionContent,
   type InstructionSettings
@@ -35,7 +36,7 @@ type StoreInput = Readonly<{
   command: Command;
   requestHash: string;
   authorized: boolean;
-  policyError?: Readonly<{code: string; message: string}>;
+  policyError?: CommandError;
 }>;
 
 type VersionRow = Readonly<{
@@ -50,15 +51,17 @@ const asContent = (row: VersionRow): InstructionContent => ({
   settings: row.settings as InstructionSettings
 });
 
-const emptyEffective = (): EffectiveInstructions => effectiveInstructions({
-  instructions: '',
-  settings: {}
-});
-
-const resultError = (code: string, message: string) => ({
+const resultError = (code: CommandError['code'], message: string) => ({
   ok: false as const,
   error: {code, message}
 });
+type StoreResult = ReturnType<typeof resultError> | Readonly<{ok: true; value: Readonly<{
+  workspaceVersion: number | null;
+  profileVersion: number | null;
+  effective: EffectiveInstructions;
+  diff: EffectiveInstructionDiff;
+  versionId: string;
+}>}>;
 
 export const createPostgresInstructionVersionStore = (db: Database) => {
   const previewIn = async (
@@ -163,14 +166,14 @@ export const createPostgresInstructionVersionStore = (db: Database) => {
               idempotencyKey: command.idempotencyKey,
               requestHash: existing.requestHash,
               commandType: command.type,
-              result: existing.result as any,
+              result: existing.result as StoreResult,
               createdAt: existing.createdAt.toISOString()
             }
           };
         }
 
-        let result: any;
-        let expectedVersion = command.payload.expectedVersion;
+        let result: StoreResult;
+        const expectedVersion = command.payload.expectedVersion;
         let resultVersion: number | undefined;
         const [author] = await tx.select({id: schema.actors.id}).from(schema.actors).where(and(
           eq(schema.actors.id, command.actor.actorId),

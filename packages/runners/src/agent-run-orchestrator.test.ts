@@ -315,13 +315,16 @@ describe('local AgentRun orchestrator', () => {
 
     const publisher = {
       publishDraftChange: vi.fn(async (
-        _input: RepositoryHostPublishDraftChangeInput
-      ): Promise<RepositoryHostPublicationReceipt> => ({
-        status: 'published' as const,
-        externalChangeRef: '17',
-        externalChangeUrl: 'https://github.com/VF78/fai-control-plane/pull/17',
-        externalChangeStatus: 'draft' as const
-      }))
+        input: RepositoryHostPublishDraftChangeInput
+      ): Promise<RepositoryHostPublicationReceipt> => {
+        void input;
+        return {
+          status: 'published' as const,
+          externalChangeRef: '17',
+          externalChangeUrl: 'https://github.com/VF78/fai-control-plane/pull/17',
+          externalChangeStatus: 'draft' as const
+        };
+      })
     };
     const publishingOrchestrator = createLocalAgentRunOrchestrator({
       artifactRoot,

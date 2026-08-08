@@ -85,7 +85,8 @@ describePostgres('instruction version persistence', () => {
       runtimeId: 'generic', runtimeProfile: 'default', configHash: 'a'.repeat(64)
     });
     const store = createPostgresInstructionVersionStore(db);
-    const envelope = (type: 'instruction_version.publish' | 'instruction_version.rollback', payload: any, key: string) => ({
+    type StoreCommand = Parameters<typeof store.execute>[0]['command'];
+    const envelope = (type: StoreCommand['type'], payload: StoreCommand['payload'], key: string): StoreCommand => ({
       commandId: randomUUID(), workspaceId: ids.workspace, correlationId: randomUUID(),
       idempotencyKey: key, issuedAt: '2026-07-29T12:00:00.000Z',
       actor: {actorId: ids.author}, type, payload
