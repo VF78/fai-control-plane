@@ -258,12 +258,11 @@ describePostgres(
         await testPool.query(
           `INSERT INTO agent_profiles (
              id, workspace_id, actor_id, runtime_id, runtime_profile
-           ) VALUES ($1, $2, $3, $4, 'test')`,
+           ) VALUES ($1, $2, $3, 'codex-cli', 'test')`,
           [
             entry.profileId,
             entry.workspaceId,
-            entry.actorId,
-            `${entry.label.toLowerCase()}-runtime`
+            entry.actorId
           ]
         );
         await testPool.query(
@@ -277,12 +276,11 @@ describePostgres(
         await testPool.query(
           `INSERT INTO agent_profiles (
              id, workspace_id, actor_id, runtime_id, runtime_profile
-           ) VALUES ($1, $2, $3, $4, 'test')`,
+           ) VALUES ($1, $2, $3, 'codex-cli', 'test')`,
           [
             entry.runtimeProfileId,
             entry.workspaceId,
-            entry.runtimeActorId,
-            `${entry.label.toLowerCase()}-registered-runtime`
+            entry.runtimeActorId
           ]
         );
         await testPool.query(

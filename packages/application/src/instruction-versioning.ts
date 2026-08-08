@@ -140,12 +140,12 @@ const commandShapeIsValid = (command: InstructionVersionCommand): boolean => {
 
 const requestHashFor = (command: InstructionVersionCommand): string =>
   createHash('sha256').update(canonicalJson({
-    commandId: command.commandId,
     workspaceId: command.workspaceId,
-    correlationId: command.correlationId,
-    idempotencyKey: command.idempotencyKey,
-    issuedAt: command.issuedAt,
-    actorId: command.actor.actorId,
+    actor: {
+      actorId: command.actor.actorId,
+      actorType: command.actor.actorType,
+      capabilities: [...command.actor.capabilities].sort()
+    },
     type: command.type,
     payload: command.payload
   })).digest('hex');

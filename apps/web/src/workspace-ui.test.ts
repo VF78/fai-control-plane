@@ -30,6 +30,26 @@ it('maps only canonical workspace routes and preserves scope on deep links', () 
   expect(workspaceRoute(['people'], {})).toMatchObject({screen: 'people', project: null});
 });
 
+it('renders authenticated, version-checked instruction publication and rollback controls', () => {
+  const data = {
+    portfolio: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [], csrfToken: 'csrf',
+    access: {state: 'ready', data: {
+      canRetireAgents: false,
+      instructionBaselines: [{workspaceId: 'workspace-1', current: {id: 'version-2', version: 2, instructions: 'Use evidence.', createdAt: new Date('2026-08-09T12:00:00.000Z'), rollbackOfVersionId: null}, previous: {id: 'version-1', version: 1, instructions: 'Use facts.', createdAt: new Date('2026-08-08T12:00:00.000Z'), rollbackOfVersionId: null}}],
+      actors: [], memberships: [], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}
+    }}
+  } as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['people'], {})!, data
+  }));
+  expect(markup).toContain('Управление · расширенные настройки');
+  expect(markup).toContain('Версия 2');
+  expect(markup).toContain('Разница с версией 1');
+  expect(markup).toContain('action="/api/instructions/versions"');
+  expect(markup).toContain('Опубликовать версию');
+  expect(markup).toContain('Откатить к версии 1');
+});
+
 it('derives portfolio facts from persisted work, approval, milestone, and transition records', () => {
   const asOf = new Date('2026-07-30T12:00:00.000Z');
   const metrics = derivePortfolioProjectMetrics({
@@ -189,7 +209,7 @@ it('keeps the five workspace areas explicit and deferred actions non-operative',
   }));
   expect(markup).toContain('Рабочие разделы');
   expect(markup).toContain('Контроль');
-  expect(markup).toContain('People and access are unavailable');
+  expect(markup).toContain('Доступы недоступны');
   expect(markup).not.toContain('Manage members');
 });
 
@@ -216,14 +236,14 @@ it('renders only the fixed MSA and ASCON roster memberships in People & Access',
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data
   }));
-  expect(markup).toContain('Vladimir</strong><small>MSA · Владелец продукта · human');
-  expect(markup).toContain('Vitaliy</strong><small>MSA · Разработчик · human');
-  expect(markup).toContain('Hermes</strong><small>MSA · ИИ-агент · agent');
-  expect(markup).toContain('Vladimir</strong><small>ASCON · Владелец продукта · human');
+  expect(markup).toContain('Vladimir</strong><small>MSA · Владелец продукта · человек');
+  expect(markup).toContain('Vitaliy</strong><small>MSA · Разработчик · человек');
+  expect(markup).toContain('Hermes</strong><small>MSA · ИИ-агент</small>');
+  expect(markup).toContain('Vladimir</strong><small>ASCON · Владелец продукта · человек');
   expect(markup).not.toContain('Vitaliy</strong><small>ASCON');
   expect(markup).not.toContain('Hermes</strong><small>ASCON');
   expect(markup).not.toContain('href="/projects/ascon/access/hermes"');
-  expect(markup).toContain('Membership recorded');
+  expect(markup).toContain('Роль зафиксирована');
   expect(markup).toContain('Неизвестно');
   expect(markup).not.toContain('Add person');
 });
@@ -422,15 +442,15 @@ it('renders persisted agent registrations and authorized new-claim controls with
   expect(list).toContain('Агенты и системы');
   expect(list).toContain('Последний heartbeat');
   expect(detail).toContain('provider_neutral/hermes');
-  expect(detail).toContain('Fleet projection from persisted availability and execution facts.');
+  expect(detail).toContain('Работоспособность, текущая работа и результаты из подтверждённых наблюдений.');
   expect(list).toContain('Работоспособность, текущая работа и последние результаты');
   expect(list).toContain('Активной задачи нет');
-  expect(detail).toContain('effective hash');
+  expect(detail).toContain('hash действующей версии');
   expect(detail).toContain('action="/api/agent-profiles/profile-1"');
-  expect(detail).toContain('registration v3');
-  expect(detail).toContain('aria-label="Disable MSA runtime registration for new claims"');
-  expect(detail).toContain('Stops new claims');
-  expect(detail).toContain('Replacement not available');
+  expect(detail).toContain('версия привязки 3');
+  expect(detail).toContain('aria-label="Отключить runtime-привязку MSA для новых запусков"');
+  expect(detail).toContain('Новые запуски будут остановлены');
+  expect(detail).toContain('Замена недоступна');
   if (data.access.state !== 'ready') throw new Error('Expected ready access fixture.');
   const claudeProfile = {
     ...data.access.data.agentSystems[0]!.profiles[0]!,
@@ -457,13 +477,15 @@ it('renders persisted agent registrations and authorized new-claim controls with
       {id: 'agent-2', displayName: 'Codex', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}
     ],
     memberships: [{
+      id: 'membership-agent-2',
       projectId: 'project-1',
       project: 'MSA',
       projectSlug: 'msa',
       actorId: 'agent-2',
       role: 'agent',
       active: true,
-      version: 1
+      version: 1,
+      canManage: true
     }],
     agentSystems: [
       ...data.access.data.agentSystems,
@@ -509,10 +531,10 @@ it('renders persisted agent registrations and authorized new-claim controls with
     ]
   }}};
   const replacement = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data: replacementData}));
-  expect(replacement).toContain('aria-label="Replacement target for MSA"');
+  expect(replacement).toContain('aria-label="Целевая привязка для замены MSA"');
   expect(replacement).toContain('Codex · codex/read_safe');
-  expect(replacement).toContain('aria-label="Replace MSA runtime registration"');
-  expect(replacement).toContain('Atomic switch · preserves history');
+  expect(replacement).toContain('aria-label="Заменить runtime-привязку MSA"');
+  expect(replacement).toContain('Атомарное переключение · история сохраняется');
   const staleData: WorkspaceData = {...data, access: {state: 'ready', data: {
     ...data.access.data,
     agentSystems: data.access.data.agentSystems.map((system) => ({
@@ -536,8 +558,8 @@ it('renders persisted agent registrations and authorized new-claim controls with
     }))
   }}};
   const stale = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data: staleData}));
-  expect(stale).toContain('aria-label="Recover MSA stale runtime registration for new claims"');
-  expect(stale).toContain('Ends expired lease · preserves history');
+  expect(stale).toContain('aria-label="Завершить зависший запуск MSA"');
+  expect(stale).toContain('Завершает истёкшую аренду · история сохраняется');
   const readOnlyData: WorkspaceData = {...data, access: {state: 'ready', data: {
     ...data.access.data,
     agentSystems: data.access.data.agentSystems.map((system) => ({
@@ -631,7 +653,7 @@ it('renders project membership and provider-confirmed grant facts in the access 
   const data = {
     portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf',
     project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: []}},
-    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', role: 'project_owner', active: true, version: 2}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], resourceGrants: [{id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), version: 3}], agentSystems: [], requests: [{id: 'request-1', requester: 'Vladimir', targetSurface: 'repository', requestedScope: ['msa'], status: 'pending', expiresAt: null, decidedAt: null}], secretRefs: [], policy: [], sharing: {enabled: true, projects: [{name: 'MSA', slug: 'msa', workItems: []}], grants: []}}}
+    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{id: 'membership-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', role: 'project_owner', active: true, version: 2, canManage: true}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], resourceGrants: [{id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), version: 3}], agentSystems: [], requests: [{id: 'request-1', requester: 'Vladimir', targetSurface: 'repository', requestedScope: ['msa'], status: 'pending', expiresAt: null, decidedAt: null}], secretRefs: [], policy: [], sharing: {enabled: true, projects: [{name: 'MSA', slug: 'msa', workItems: []}], grants: []}}}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'access', project: 'msa', taskId: null, runId: null, agentId: null, accessActorId: 'actor-1', scope: {environment: null, from: null, to: null}}, data}));
 
@@ -644,6 +666,9 @@ it('renders project membership and provider-confirmed grant facts in the access 
   expect(markup).toContain('Sharing applies only to MSA');
   expect(markup).toContain('Запросы доступа');
   expect(markup).toContain('Управляемые заявки рабочей области');
+  expect(markup).toContain('action="/api/access/memberships/membership-1"');
+  expect(markup).toContain('action="/api/access/grants/grant-1"');
+  expect(markup).toContain('После сохранения Control Plane покажет расхождение');
   expect(markup).not.toContain('Secret refs');
 });
 

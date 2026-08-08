@@ -6,9 +6,10 @@ import {
   type DeliveryProtocol,
   type DeliveryProtocolDefinition,
   type DeliveryProtocolSimulationContext,
+  type DeliveryProtocolSimulation,
   type CommandError
 } from '@fai-control-plane/domain';
-import {and, desc, eq, inArray, isNull, max} from 'drizzle-orm';
+import {and, eq, inArray, isNull, max} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -64,10 +65,15 @@ type GetInput = Readonly<{
   actorId: string;
 }>;
 
-const resultError = (code: string, message: string) => ({
+const resultError = (code: CommandError['code'], message: string) => ({
   ok: false as const,
   error: {code, message}
 });
+type StoreResult = ReturnType<typeof resultError> | Readonly<{ok: true; value: Readonly<{
+  protocol: DeliveryProtocol;
+  simulation?: DeliveryProtocolSimulation;
+  replacedProtocolId?: string;
+}>}>;
 
 const protocolFrom = (row: ProtocolRow): DeliveryProtocol | null => {
   if (
@@ -313,7 +319,7 @@ export const createPostgresDeliveryProtocolStore = (
         };
       }
 
-      let result: any;
+      let result: StoreResult;
       let expectedVersion: number | undefined;
       let resultVersion: number | undefined;
       let projectId: string | null =

@@ -1353,8 +1353,13 @@ export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<
 
 export type AccessData = Readonly<{
   canRetireAgents: boolean;
+  instructionBaselines: readonly Readonly<{
+    workspaceId: string;
+    current: Readonly<{id: string; version: number; instructions: string; createdAt: Date; rollbackOfVersionId: string | null}> | null;
+    previous: Readonly<{id: string; version: number; instructions: string; createdAt: Date; rollbackOfVersionId: string | null}> | null;
+  }>[];
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
-  memberships: readonly Readonly<{projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; role: string; active: boolean; version: number}>[];
+  memberships: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; role: string; active: boolean; version: number; canManage: boolean}>[];
   externalIdentities: readonly Readonly<{actorId: string; provider: string; active: boolean}>[];
   resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; desiredLevel: string; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; providerAccessUrl: string | null; version: number}>[];
   agentSystems: readonly Readonly<{
@@ -1383,7 +1388,11 @@ export type AccessData = Readonly<{
         availability: RuntimeAvailabilityProjection;
         canManage: boolean;
       }>[];
-      instruction: Readonly<{workspaceVersion: number; profileVersion: number | null; hash: string; provenance: string}> | null;
+      instruction: Readonly<{workspaceVersion: number; profileVersion: number | null; hash: string; provenance: string; history?: Readonly<{
+        workspace: Readonly<{id: string; version: number; instructions: string; createdAt: Date; rollbackOfVersionId: string | null}>;
+        override: Readonly<{id: string; version: number; instructions: string; createdAt: Date; rollbackOfVersionId: string | null}> | null;
+        previousOverride: Readonly<{id: string; version: number; instructions: string; createdAt: Date; rollbackOfVersionId: string | null}> | null;
+      }>} > | null;
       latestRun: Readonly<{id: string; status: string; updatedAt: Date; completedAt: Date | null; receipt: Readonly<{terminal: string; completedAt: Date}> | null}> | null;
       fleet: Readonly<{
         health: 'healthy' | 'stale' | 'unknown' | 'not_configured' | 'disabled';
@@ -1527,6 +1536,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
   if (workspaceIds.length === 0) {
     return {
       canRetireAgents: false,
+      instructionBaselines: [],
       actors: [],
       memberships: [],
       externalIdentities: [],
@@ -1600,9 +1610,9 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
         desc(runtimeAvailabilityObservations.observedAt),
         desc(runtimeAvailabilityObservations.id)
       ),
-    db.select({workspaceId: workspaceInstructionVersions.workspaceId, version: workspaceInstructionVersions.version, instructions: workspaceInstructionVersions.instructions, settings: workspaceInstructionVersions.settings})
+    db.select({id: workspaceInstructionVersions.id, workspaceId: workspaceInstructionVersions.workspaceId, version: workspaceInstructionVersions.version, instructions: workspaceInstructionVersions.instructions, settings: workspaceInstructionVersions.settings, createdAt: workspaceInstructionVersions.createdAt, rollbackOfVersionId: workspaceInstructionVersions.rollbackOfVersionId})
       .from(workspaceInstructionVersions).where(inArray(workspaceInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(workspaceInstructionVersions.version)),
-    db.select({agentProfileId: agentProfileInstructionVersions.agentProfileId, version: agentProfileInstructionVersions.version, instructions: agentProfileInstructionVersions.instructions, settings: agentProfileInstructionVersions.settings})
+    db.select({id: agentProfileInstructionVersions.id, agentProfileId: agentProfileInstructionVersions.agentProfileId, version: agentProfileInstructionVersions.version, instructions: agentProfileInstructionVersions.instructions, settings: agentProfileInstructionVersions.settings, createdAt: agentProfileInstructionVersions.createdAt, rollbackOfVersionId: agentProfileInstructionVersions.rollbackOfVersionId})
       .from(agentProfileInstructionVersions).where(inArray(agentProfileInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(agentProfileInstructionVersions.version)),
     db.select({
       id: agentRuns.id, agentProfileId: agentRuns.agentProfileId, status: agentRuns.status,
@@ -1617,7 +1627,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       .leftJoin(agentRunReceipts, eq(agentRunReceipts.agentRunId, agentRuns.id))
       .where(and(inArray(agentProfiles.workspaceId, workspaceIds), inArray(taskPackets.projectId, projectIds)))
       .orderBy(desc(agentRuns.updatedAt), agentRuns.id),
-    db.select({projectId: projectMemberships.projectId, actorId: projectMemberships.actorId, role: projectMemberships.role, active: projectMemberships.active, version: projectMemberships.version})
+    db.select({id: projectMemberships.id, projectId: projectMemberships.projectId, actorId: projectMemberships.actorId, role: projectMemberships.role, active: projectMemberships.active, version: projectMemberships.version})
       .from(projectMemberships).where(inArray(projectMemberships.projectId, projectIds))
       .orderBy(projectMemberships.projectId, projectMemberships.actorId),
     db.select({actorId: actorExternalIdentities.actorId, provider: actorExternalIdentities.provider, active: actorExternalIdentities.active})
@@ -1648,6 +1658,10 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
   for (const instruction of workspaceInstructions) if (!latestWorkspaceInstruction.has(instruction.workspaceId)) latestWorkspaceInstruction.set(instruction.workspaceId, instruction);
   const latestProfileInstruction = new Map<string, (typeof profileInstructions)[number]>();
   for (const instruction of profileInstructions) if (!latestProfileInstruction.has(instruction.agentProfileId)) latestProfileInstruction.set(instruction.agentProfileId, instruction);
+  const workspaceInstructionHistory = new Map<string, (typeof workspaceInstructions)[number][]>();
+  for (const instruction of workspaceInstructions) workspaceInstructionHistory.set(instruction.workspaceId, [...(workspaceInstructionHistory.get(instruction.workspaceId) ?? []), instruction]);
+  const profileInstructionHistory = new Map<string, (typeof profileInstructions)[number][]>();
+  for (const instruction of profileInstructions) profileInstructionHistory.set(instruction.agentProfileId, [...(profileInstructionHistory.get(instruction.agentProfileId) ?? []), instruction]);
   const latestRunByProfile = new Map<string, (typeof profileRuns)[number]>();
   for (const run of profileRuns) if (!latestRunByProfile.has(run.agentProfileId)) latestRunByProfile.set(run.agentProfileId, run);
   const currentRunByProfile = new Map<string, (typeof profileRuns)[number]>();
@@ -1731,7 +1745,12 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
         instruction: effective === null ? null : {
           workspaceVersion: baseline!.version, profileVersion: override?.version ?? null,
           hash: effective.hash,
-          provenance: override === undefined ? `workspace v${baseline!.version}` : `workspace v${baseline!.version} + profile v${override.version}`
+          provenance: override === undefined ? `workspace v${baseline!.version}` : `workspace v${baseline!.version} + profile v${override.version}`,
+          history: {
+            workspace: baseline!,
+            override: override ?? null,
+            previousOverride: profileInstructionHistory.get(profile.id)?.[1] ?? null
+          }
         },
         latestRun: run === null ? null : {
           id: run.id, status: run.status, updatedAt: run.updatedAt, completedAt: run.completedAt,
@@ -1768,10 +1787,21 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
   }));
   return {
     canRetireAgents,
+    instructionBaselines: workspaceIds.map((workspaceId) => ({
+      workspaceId,
+      current: workspaceInstructionHistory.get(workspaceId)?.[0] ?? null,
+      previous: workspaceInstructionHistory.get(workspaceId)?.[1] ?? null
+    })),
     actors: persistedActors,
     memberships: memberships.flatMap((membership) => {
       const project = projectById.get(membership.projectId);
-      return project === undefined ? [] : [{...membership, project: project.name, projectSlug: project.slug}];
+      return project === undefined ? [] : [{
+        ...membership,
+        project: project.name,
+        projectSlug: project.slug,
+        canManage: operator?.type === 'human' && operator.disabledAt === null &&
+          (operator.role === 'workspace_admin' || manageableProjectIds.has(membership.projectId))
+      }];
     }),
     // Provider subjects are deliberately omitted: they are locators, not operator-facing access facts.
     externalIdentities,

@@ -12,7 +12,7 @@ import {
   type NonApprovalCommandOutcome,
   type TaskPacketContent
 } from '@fai-control-plane/domain';
-import {eq} from 'drizzle-orm';
+import {eq, inArray} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {
@@ -48,6 +48,8 @@ const fixture = {
   eventId: randomUUID(),
   packetId: randomUUID(),
   runId: randomUUID(),
+  repositoryScopeId: randomUUID(),
+  secretRefId: randomUUID(),
   approvalId: randomUUID(),
   accessRequestId: randomUUID(),
   otherWorkspaceId: randomUUID(),
@@ -58,7 +60,8 @@ const fixture = {
   otherEventId: randomUUID(),
   otherPacketId: randomUUID(),
   otherRunId: randomUUID(),
-  otherSecretRefId: randomUUID()
+  otherSecretRefId: randomUUID(),
+  otherRepositoryScopeId: randomUUID()
 };
 
 let adminPool: Pool;
@@ -391,9 +394,21 @@ describePostgres(
         [fixture.actorId, fixture.workspaceId]
       );
       await testPool.query(
+        `INSERT INTO secret_refs (id, workspace_id, provider, reference)
+         VALUES ($1, $2, 'test', 'test://primary-repository')`,
+        [fixture.secretRefId, fixture.workspaceId]
+      );
+      await testPool.query(
+        `INSERT INTO project_tracker_repository_scopes (
+           id, project_id, provider, repository_owner, repository_name,
+           repository_external_id, credential_ref_id
+         ) VALUES ($1, $2, 'test', 'fixture', 'primary', 'test:primary', $3)`,
+        [fixture.repositoryScopeId, fixture.projectId, fixture.secretRefId]
+      );
+      await testPool.query(
         `INSERT INTO agent_profiles (
            id, workspace_id, actor_id, runtime_id, runtime_profile
-         ) VALUES ($1, $2, $3, 'test-runtime', 'test')`,
+         ) VALUES ($1, $2, $3, 'codex-cli', 'test')`,
         [fixture.profileId, fixture.workspaceId, fixture.actorId]
       );
       await testPool.query(
@@ -459,7 +474,7 @@ describePostgres(
       await testPool.query(
         `INSERT INTO agent_profiles (
            id, workspace_id, actor_id, runtime_id, runtime_profile
-         ) VALUES ($1, $2, $3, 'other-runtime', 'test')`,
+         ) VALUES ($1, $2, $3, 'codex-cli', 'test')`,
         [fixture.otherProfileId, fixture.otherWorkspaceId, fixture.otherActorId]
       );
       await testPool.query(
@@ -490,6 +505,13 @@ describePostgres(
         [fixture.otherSecretRefId, fixture.otherWorkspaceId]
       );
       await testPool.query(
+        `INSERT INTO project_tracker_repository_scopes (
+           id, project_id, provider, repository_owner, repository_name,
+           repository_external_id, credential_ref_id
+         ) VALUES ($1, $2, 'test', 'fixture', 'other', 'test:other', $3)`,
+        [fixture.otherRepositoryScopeId, fixture.otherProjectId, fixture.otherSecretRefId]
+      );
+      await testPool.query(
         `INSERT INTO task_packets (
            id, project_id, work_item_id, work_item_version, goal, data_policy,
            timebox_minutes, expected_output_schema, reviewer_actor_id,
@@ -510,13 +532,15 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO agent_runs (
-           id, task_packet_id, agent_profile_id, confirmed_packet_hash, base_commit, status,
-           idempotency_key, version
-         ) VALUES ($1, $2, $3, $4, $5, 'queued', $6, 1)`,
+           id, task_packet_id, agent_profile_id, work_item_id, repository_scope_id,
+           confirmed_packet_hash, base_commit, status, idempotency_key, version
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8, 1)`,
         [
           fixture.otherRunId,
           fixture.otherPacketId,
           fixture.otherProfileId,
+          fixture.otherWorkItemId,
+          fixture.otherRepositoryScopeId,
           'b'.repeat(64),
           'b'.repeat(40),
           `other-run-${randomUUID()}`
@@ -524,13 +548,15 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO agent_runs (
-           id, task_packet_id, agent_profile_id, confirmed_packet_hash, base_commit, status,
-           idempotency_key, version
-         ) VALUES ($1, $2, $3, $4, $5, 'queued', $6, 1)`,
+           id, task_packet_id, agent_profile_id, work_item_id, repository_scope_id,
+           confirmed_packet_hash, base_commit, status, idempotency_key, version
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8, 1)`,
         [
           fixture.runId,
           fixture.packetId,
           fixture.profileId,
+          fixture.workItemId,
+          fixture.repositoryScopeId,
           'a'.repeat(64),
           'a'.repeat(40),
           `run-${randomUUID()}`
@@ -680,6 +706,7 @@ describePostgres(
           baseCommit: 'a'.repeat(40),
           status: 'queued',
           failureCode: null,
+          retryOfAgentRunId: null,
           idempotencyKey: expect.any(String),
           version: 1
         },
@@ -957,6 +984,10 @@ describePostgres(
 
     it('namespaces AgentRun idempotency keys by workspace', async () => {
       const unitOfWork = createPostgresUnitOfWork(testDb);
+      await testDb.update(agentRuns).set({
+        status: 'failed',
+        completedAt: new Date()
+      }).where(inArray(agentRuns.id, [fixture.runId, fixture.otherRunId]));
       const userKey = `shared-run-key-${randomUUID()}`;
       const firstRun: AgentRun = {
         id: randomUUID(),

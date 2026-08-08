@@ -67,7 +67,7 @@ describe('draft publication golden path', () => {
           worktrees.set(runId, worktree);
           return worktree;
         }),
-        inspect: vi.fn(async (worktree) => ({
+        inspect: vi.fn(async () => ({
           headCommit,
           dirty: false,
           changedPaths: [`packages/${scope.repository.name}/approved-change.ts`],

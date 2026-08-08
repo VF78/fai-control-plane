@@ -100,6 +100,8 @@ const composedInput = (overrides: Record<string, unknown> = {}) => {
   const {expectedProvider: _expectedProvider, credentialRef: _credentialRef, ...request} = input({
     ...overrides
   });
+  void _expectedProvider;
+  void _credentialRef;
   return {
     ...request,
     sources: {
@@ -116,6 +118,9 @@ const reconciliationInput = (overrides: Record<string, unknown> = {}) => {
     ...overrides
   });
   const {operationId: _operationId, correlationId: _correlationId, mode: _mode, ...result} = request;
+  void _operationId;
+  void _correlationId;
+  void _mode;
   return result;
 };
 
