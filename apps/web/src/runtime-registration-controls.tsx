@@ -86,17 +86,17 @@ export function RuntimeRegistrationControls({
       if (!response.ok || result.receipt === undefined) {
         setNotice({
           tone: 'error',
-          text: result.message ?? 'Registration state was not changed.'
+          text: result.message ?? 'Состояние привязки не изменено.'
         });
         return;
       }
       setNotice({
         tone: 'success',
-        text: `${action === 'recover' ? 'Recovery' : action === 'replace' ? 'Replacement' : action === 'disable' ? 'Disabled' : 'Enabled'} · receipt ${result.receipt.commandId.slice(0, 8)}`
+        text: `${action === 'recover' ? 'Восстановлено' : action === 'replace' ? 'Заменено' : action === 'disable' ? 'Отключено' : 'Включено'} · запись ${result.receipt.commandId.slice(0, 8)}`
       });
       window.setTimeout(() => window.location.reload(), 450);
     } catch {
-      setNotice({tone: 'error', text: 'Registration control is unavailable.'});
+      setNotice({tone: 'error', text: 'Управление привязкой недоступно.'});
     } finally {
       setBusy(false);
     }
@@ -104,32 +104,32 @@ export function RuntimeRegistrationControls({
 
   return <div className="fcp-registration-control">
     <button
-      aria-label={`${enabled ? 'Disable' : 'Enable'} ${projectName} runtime registration for new claims`}
+      aria-label={`${enabled ? 'Отключить' : 'Включить'} runtime-привязку ${projectName} для новых запусков`}
       disabled={busy}
       onClick={() => void submit(enabled ? 'disable' : 'enable')}
       type="button"
     >
       {enabled ? <PowerOff aria-hidden="true" size={15}/> : <Power aria-hidden="true" size={15}/>}
-      {busy ? 'Saving…' : enabled ? 'Disable' : 'Enable'}
+      {busy ? 'Сохранение…' : enabled ? 'Отключить' : 'Включить'}
     </button>
-    <small>{enabled ? 'Stops new claims' : 'Allows new claims'}</small>
+    <small>{enabled ? 'Новые запуски будут остановлены' : 'Новые запуски будут разрешены'}</small>
     {!enabled || staleRun === null ? null : <button
-      aria-label={`Recover ${projectName} stale runtime registration for new claims`}
+      aria-label={`Завершить зависший запуск ${projectName}`}
       disabled={busy}
       onClick={() => void submit('recover')}
       type="button"
     >
       <RotateCcw aria-hidden="true" size={15}/>
-      {busy ? 'Saving…' : 'Recover'}
+      {busy ? 'Сохранение…' : 'Завершить зависший запуск'}
     </button>}
-    {!enabled || staleRun === null ? null : <small>Ends expired lease · preserves history</small>}
+    {!enabled || staleRun === null ? null : <small>Завершает истёкшую аренду · история сохраняется</small>}
     {!enabled ? null : replacementTargets.length === 0
-      ? <small>Replacement not available</small>
+      ? <small>Замена недоступна</small>
       : <>
           <label>
-            <span className="fcp-sr-only">Replacement target for {projectName}</span>
+            <span className="fcp-sr-only">Целевая привязка для замены {projectName}</span>
             <select
-              aria-label={`Replacement target for ${projectName}`}
+              aria-label={`Целевая привязка для замены ${projectName}`}
               disabled={busy}
               onChange={(event) => setReplacementTargetId(event.target.value)}
               value={replacementTargetId}
@@ -139,15 +139,15 @@ export function RuntimeRegistrationControls({
             </select>
           </label>
           <button
-            aria-label={`Replace ${projectName} runtime registration`}
+            aria-label={`Заменить runtime-привязку ${projectName}`}
             disabled={busy}
             onClick={() => void submit('replace')}
             type="button"
           >
             <ReplaceIcon aria-hidden="true" size={15}/>
-            {busy ? 'Saving…' : 'Replace'}
+            {busy ? 'Сохранение…' : 'Заменить'}
           </button>
-          <small>Atomic switch · preserves history</small>
+          <small>Атомарное переключение · история сохраняется</small>
         </>}
     {notice === null ? null : <p
       aria-live="polite"

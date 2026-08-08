@@ -55,6 +55,15 @@ describe('instruction version commands', () => {
       authorized: true,
       requestHash: expect.stringMatching(/^[0-9a-f]{64}$/)
     }));
+
+    const firstHash = execute.mock.calls[0]?.[0].requestHash;
+    await createInstructionVersionService(store).execute({
+      ...command,
+      commandId: randomUUID(),
+      correlationId: randomUUID(),
+      issuedAt: '2026-07-29T12:01:00.000Z'
+    });
+    expect(execute.mock.calls[1]?.[0].requestHash).toBe(firstHash);
   });
 
   it('fails closed before persistence for secret-bearing content', async () => {

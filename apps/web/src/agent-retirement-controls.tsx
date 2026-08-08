@@ -30,12 +30,12 @@ export function AgentRetirementControls({
       });
       const result = await response.json().catch(() => ({})) as {message?: string};
       if (!response.ok) {
-        setError(result.message ?? 'Agent was not retired.');
+        setError(result.message ?? 'Агент не выведен из эксплуатации.');
         return;
       }
       window.location.reload();
     } catch {
-      setError('Agent retirement is unavailable.');
+      setError('Вывод агента из эксплуатации недоступен.');
     } finally {
       setBusy(false);
     }
@@ -44,24 +44,24 @@ export function AgentRetirementControls({
   return <div className="fcp-retirement-control">
     {!confirming
       ? <button
-          aria-label={`Retire ${agentName}`}
+          aria-label={`Вывести из эксплуатации ${agentName}`}
           onClick={() => setConfirming(true)}
           type="button"
-        ><UserX aria-hidden="true" size={15}/>Retire</button>
-      : <div role="group" aria-label={`Confirm retirement of ${agentName}`}>
-          <span>Retire agent?</span>
+        ><UserX aria-hidden="true" size={15}/>Вывести из эксплуатации</button>
+      : <div role="group" aria-label={`Подтвердить вывод ${agentName} из эксплуатации`}>
+          <span>Вывести агента из эксплуатации?</span>
           <button
-            aria-label={`Confirm retirement of ${agentName}`}
+            aria-label={`Подтвердить вывод ${agentName} из эксплуатации`}
             disabled={busy}
             onClick={() => void retire()}
             type="button"
-          ><UserX aria-hidden="true" size={15}/>{busy ? 'Retiring…' : 'Confirm'}</button>
+          ><UserX aria-hidden="true" size={15}/>{busy ? 'Выполняется…' : 'Подтвердить'}</button>
           <button
-            aria-label="Cancel retirement"
+            aria-label="Отменить вывод из эксплуатации"
             disabled={busy}
             onClick={() => setConfirming(false)}
             type="button"
-          ><X aria-hidden="true" size={15}/>Cancel</button>
+          ><X aria-hidden="true" size={15}/>Отмена</button>
         </div>}
     {error === null ? null : <p aria-live="polite" className="fcp-command-notice error">{error}</p>}
   </div>;
