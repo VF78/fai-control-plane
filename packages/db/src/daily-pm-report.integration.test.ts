@@ -90,9 +90,16 @@ describePostgres('PostgreSQL daily PM report producer', () => {
       [ids.msa, ids.other]
     );
     await testPool.query(
-      `INSERT INTO risk_signals (project_id, code, severity, summary, resolved_at) VALUES
-       ($1, 'yellow', 'yellow', 'Yellow', null), ($1, 'red', 'red', 'Red', null),
-       ($1, 'resolved', 'red', 'Resolved', $2)`,
+      `INSERT INTO risk_signals (
+         project_id, code, rule_id, rule_version, signal_class, severity, summary,
+         impact, next_action, observed_at, deduplication_key, resolved_at
+       ) VALUES
+       ($1, 'yellow', 'daily-test', '1', 'fact', 'yellow', 'Yellow',
+        'Yellow impact', 'Review yellow', now(), 'daily-yellow', null),
+       ($1, 'red', 'daily-test', '1', 'fact', 'red', 'Red',
+        'Red impact', 'Review red', now(), 'daily-red', null),
+       ($1, 'resolved', 'daily-test', '1', 'fact', 'red', 'Resolved',
+        'Resolved impact', 'No action', now(), 'daily-resolved', $2)`,
       [ids.msa, now]
     );
     await testPool.query(
