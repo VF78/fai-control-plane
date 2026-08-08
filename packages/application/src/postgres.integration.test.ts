@@ -1414,6 +1414,13 @@ describePostgres(
         provider: 'codex',
         runtimeKey: 'retirement-fixture'
       });
+      await testDb.insert(projectMemberships).values({
+        id: randomUUID(),
+        projectId: fixture.projectId,
+        actorId: agentId,
+        role: 'agent',
+        active: true
+      });
       await testDb.insert(actorExternalIdentities).values({
         id: identityId,
         actorId: agentId,
@@ -1441,10 +1448,13 @@ describePostgres(
       )))).toBe('VERSION_CONFLICT');
       await expect(testDb.select({disabledAt: actors.disabledAt}).from(actors)
         .where(eq(actors.id, agentId))).resolves.toMatchObject([{disabledAt: expect.any(Date)}]);
-      await expect(testDb.select({id: agentProfiles.id}).from(agentProfiles)
-        .where(eq(agentProfiles.id, profileId))).resolves.toEqual([{id: profileId}]);
-      await expect(testDb.select({id: runtimeRegistrations.id}).from(runtimeRegistrations)
-        .where(eq(runtimeRegistrations.id, registrationId))).resolves.toEqual([{id: registrationId}]);
+      await expect(testDb.select({id: agentProfiles.id, enabled: agentProfiles.enabled}).from(agentProfiles)
+        .where(eq(agentProfiles.id, profileId))).resolves.toEqual([{id: profileId, enabled: false}]);
+      await expect(testDb.select({id: runtimeRegistrations.id, enabled: runtimeRegistrations.enabled}).from(runtimeRegistrations)
+        .where(eq(runtimeRegistrations.id, registrationId))).resolves.toEqual([{id: registrationId, enabled: false}]);
+      await expect(testDb.select({active: projectMemberships.active}).from(projectMemberships)
+        .where(and(eq(projectMemberships.projectId, fixture.projectId), eq(projectMemberships.actorId, agentId))))
+        .resolves.toEqual([{active: false}]);
       await expect(testDb.select({id: actorExternalIdentities.id}).from(actorExternalIdentities)
         .where(eq(actorExternalIdentities.id, identityId))).resolves.toEqual([{id: identityId}]);
       await expect(testDb.select({id: auditEvents.id}).from(auditEvents).where(and(

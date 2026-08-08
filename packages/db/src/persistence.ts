@@ -1749,6 +1749,35 @@ const persistActorRetirement = async (
       isNull(schema.actors.disabledAt)
     ))
     .returning({id: schema.actors.id});
+  // Retirement is a terminal operator action.  Keep the historical bindings,
+  // but make every executable/project-facing projection inactive in the same
+  // transaction so the manager UI can never advertise a retired agent as live.
+  if (updated !== undefined) {
+    await tx.update(schema.agentProfiles).set({
+      enabled: false,
+      updatedAt: disabledAt
+    }).where(and(
+      eq(schema.agentProfiles.workspaceId, workspaceId),
+      eq(schema.agentProfiles.actorId, mutation.aggregateId),
+      eq(schema.agentProfiles.enabled, true)
+    ));
+    await tx.update(schema.runtimeRegistrations).set({
+      enabled: false,
+      version: sql`${schema.runtimeRegistrations.version} + 1`,
+      updatedAt: disabledAt
+    }).where(and(
+      eq(schema.runtimeRegistrations.actorId, mutation.aggregateId),
+      eq(schema.runtimeRegistrations.enabled, true)
+    ));
+    await tx.update(schema.projectMemberships).set({
+      active: false,
+      version: sql`${schema.projectMemberships.version} + 1`,
+      updatedAt: disabledAt
+    }).where(and(
+      eq(schema.projectMemberships.actorId, mutation.aggregateId),
+      eq(schema.projectMemberships.active, true)
+    ));
+  }
   return updated === undefined
     ? conflictOrNotFound(tx, workspaceId, mutation)
     : {
