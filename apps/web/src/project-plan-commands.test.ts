@@ -56,3 +56,25 @@ it('maps a persisted failed receipt to 4xx and the client rejects it', async () 
   await expect(postProjectPlan(payload)).rejects.toThrow('Only Product Owner');
   vi.unstubAllGlobals();
 });
+
+it('accepts an exact materialization CAS payload and derives a stable replay key', async () => {
+  const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: id, commandType: 'project_plan.materialize', result: {ok: true, value: {materialization: {workItemCount: 6}}}}});
+  const payload = {_csrf: 'csrf', action: 'materialize', projectId, planId: id, expectedPlanVersion: 3,
+    expectedPlanHash: 'a'.repeat(64), expectedSourceManifestHash: 'b'.repeat(64)};
+  const response = await projectPlanCommand(request(payload), dependencies(execute));
+  expect(response.status).toBe(200);
+  expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+    idempotencyKey: `project_plan.materialize.v1:${id}:3:${'a'.repeat(64)}:${'b'.repeat(64)}`,
+    type: 'project_plan.materialize', payload: expect.objectContaining({projectId, planId: id, expectedPlanVersion: 3})
+  }));
+  await expect(response.json()).resolves.toMatchObject({materialization: {workItemCount: 6}});
+});
+
+it('rejects extra or stale-shaped materialization payloads before execution', async () => {
+  const execute = vi.fn();
+  const payload = {_csrf: 'csrf', action: 'materialize', projectId, planId: id, expectedPlanVersion: 0,
+    expectedPlanHash: 'a'.repeat(64), expectedSourceManifestHash: 'b'.repeat(64), provider: 'github'};
+  const response = await projectPlanCommand(request(payload), dependencies(execute));
+  expect(response.status).toBe(400);
+  expect(execute).not.toHaveBeenCalled();
+});

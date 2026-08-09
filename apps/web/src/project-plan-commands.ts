@@ -18,7 +18,8 @@ const commandError = (error: Readonly<{code: string; message: string}>) => {
 const mutationResponse = (result: Awaited<ReturnType<Awaited<ReturnType<typeof getDeliveryRuntime>>['plan']['execute']>>) => {
   if (!('receipt' in result)) return commandError(result.error);
   if (!result.receipt.result.ok) return commandError(result.receipt.result.error);
-  return Response.json({receipt: {commandId: result.receipt.commandId, commandType: result.receipt.commandType}}, {headers: noStore});
+  return Response.json({receipt: {commandId: result.receipt.commandId, commandType: result.receipt.commandType},
+    ...('materialization' in result.receipt.result.value ? {materialization: result.receipt.result.value.materialization} : {})}, {headers: noStore});
 };
 const MAX_BODY_BYTES = 300 * 1024;
 const body = async (request: Request) => {
@@ -80,6 +81,17 @@ export async function projectPlanCommand(request: Request, overrides: ProjectPla
       typeof value.expectedPlanHash === 'string' && typeof value.expectedSimulationHash === 'string') {
       const result = await runtime.plan.execute({...base, idempotencyKey: `project_plan.approve.v1:${value.planId}:${value.expectedRevision}`,
         type: 'project_plan.approve', payload: {planId: value.planId, expectedRevision: value.expectedRevision as number, expectedPlanHash: value.expectedPlanHash, expectedSimulationHash: value.expectedSimulationHash}});
+      return mutationResponse(result);
+    }
+    if (value.action === 'materialize' && exact(value, ['_csrf', 'action', 'projectId', 'planId', 'expectedPlanVersion', 'expectedPlanHash', 'expectedSourceManifestHash']) &&
+      typeof value.planId === 'string' && UUID.test(value.planId) && Number.isSafeInteger(value.expectedPlanVersion) && (value.expectedPlanVersion as number) > 0 &&
+      typeof value.expectedPlanHash === 'string' && /^[0-9a-f]{64}$/.test(value.expectedPlanHash) &&
+      typeof value.expectedSourceManifestHash === 'string' && /^[0-9a-f]{64}$/.test(value.expectedSourceManifestHash)) {
+      const result = await runtime.plan.execute({...base,
+        idempotencyKey: `project_plan.materialize.v1:${value.planId}:${value.expectedPlanVersion}:${value.expectedPlanHash}:${value.expectedSourceManifestHash}`,
+        type: 'project_plan.materialize', payload: {projectId: value.projectId, planId: value.planId,
+          expectedPlanVersion: value.expectedPlanVersion as number, expectedPlanHash: value.expectedPlanHash,
+          expectedSourceManifestHash: value.expectedSourceManifestHash}});
       return mutationResponse(result);
     }
     return invalid('invalid_request');

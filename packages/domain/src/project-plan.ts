@@ -98,6 +98,30 @@ export type ProjectPlanSimulation = Readonly<{
   warnings: readonly string[];
 }>;
 
+export type ProjectPlanSourceManifest = readonly Readonly<{
+  artifactId: string;
+  version: number;
+  sha256: string;
+}>[];
+
+export type ProjectPlanMaterialization = Readonly<{
+  id: string;
+  projectId: string;
+  planId: string;
+  planVersionId: string;
+  planVersion: number;
+  planHash: string;
+  sourceManifestHash: string;
+  baselineId: string;
+  outcomeCount: number;
+  milestoneCount: number;
+  workItemCount: number;
+  dependencyCount: number;
+  journeyCount: number;
+  publicationIntentCount: number;
+  createdAt: string;
+}>;
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const keyPattern = /^[a-z][a-z0-9_-]{0,47}$/;
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -241,6 +265,21 @@ export const validateProjectPlanDefinition = (value: unknown): CommandResult<Pro
 
 export const hashProjectPlanDefinition = (definition: ProjectPlanDefinition) =>
   createHash('sha256').update(canonicalJson(definition as never)).digest('hex');
+
+export const hashProjectPlanSourceManifest = (manifest: ProjectPlanSourceManifest) =>
+  createHash('sha256').update(canonicalJson(manifest as never)).digest('hex');
+
+export const deterministicProjectPlanUuid = (
+  planVersionId: string,
+  resource: 'materialization' | 'baseline' | 'outcome' | 'milestone' | 'work_item',
+  key = 'root'
+): string => {
+  const bytes = Buffer.from(createHash('sha256').update(`${planVersionId}\0${resource}\0${key}`).digest().subarray(0, 16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
 
 export const simulateProjectPlan = (input: Readonly<{
   definition: unknown;

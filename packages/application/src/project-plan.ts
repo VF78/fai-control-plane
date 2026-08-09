@@ -8,6 +8,7 @@ import {
   type CommandError,
   type ProjectPlan,
   type ProjectPlanDefinition,
+  type ProjectPlanMaterialization,
   type ProjectPlanSimulation,
   type SourceArtifact,
   type SourceArtifactMediaType,
@@ -36,18 +37,26 @@ export type ApproveProjectPlanCommand = CanonicalCommandEnvelope<'project_plan.a
   expectedPlanHash: string;
   expectedSimulationHash: string;
 }>>;
-export type ProjectPlanMutationCommand = RecordSourceArtifactCommand | SaveProjectPlanDraftCommand | ApproveProjectPlanCommand;
+export type MaterializeProjectPlanCommand = CanonicalCommandEnvelope<'project_plan.materialize', Readonly<{
+  projectId: string;
+  planId: string;
+  expectedPlanVersion: number;
+  expectedPlanHash: string;
+  expectedSourceManifestHash: string;
+}>>;
+export type ProjectPlanMutationCommand = RecordSourceArtifactCommand | SaveProjectPlanDraftCommand | ApproveProjectPlanCommand | MaterializeProjectPlanCommand;
 
 export type ProjectPlanWorkspace = Readonly<{
   artifacts: readonly SourceArtifact[];
   draft: ProjectPlan | null;
   approved: ProjectPlan | null;
   simulation: ProjectPlanSimulation | null;
+  materialization: ProjectPlanMaterialization | null;
 }>;
 export type ProjectPlanReceipt = Readonly<{
   commandId: string;
   commandType: ProjectPlanMutationCommand['type'];
-  result: Readonly<{ok: true; value: Readonly<{artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation}>}> |
+  result: Readonly<{ok: true; value: Readonly<{artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation; materialization?: ProjectPlanMaterialization}>}> |
     Readonly<{ok: false; error: CommandError}>;
 }>;
 export type ProjectPlanExecution =
@@ -74,11 +83,8 @@ const SHA = /^[0-9a-f]{64}$/;
 const readPolicy = {actionCategory: 'read', surface: 'control_plane', environment: 'development'} as const;
 const writePolicy = {actionCategory: 'write', surface: 'control_plane', environment: 'development'} as const;
 const requestHash = (command: ProjectPlanMutationCommand) => createHash('sha256').update(canonicalJson({
-  commandId: command.commandId,
   workspaceId: command.workspaceId,
-  correlationId: command.correlationId,
   idempotencyKey: command.idempotencyKey,
-  issuedAt: command.issuedAt,
   actorId: command.actor.actorId,
   type: command.type,
   payload: command.payload
@@ -108,9 +114,13 @@ export const createProjectPlanService = (store: ProjectPlanStore): ProjectPlanSe
       }
       const definition = validateProjectPlanDefinition(command.payload.definition);
       if (!definition.ok) return {status: 'rejected', error: definition.error};
-    } else if (!Number.isSafeInteger(command.payload.expectedRevision) || command.payload.expectedRevision < 1 ||
-      !SHA.test(command.payload.expectedPlanHash) || !SHA.test(command.payload.expectedSimulationHash)) {
+    } else if (command.type === 'project_plan.approve' && (!Number.isSafeInteger(command.payload.expectedRevision) || command.payload.expectedRevision < 1 ||
+      !SHA.test(command.payload.expectedPlanHash) || !SHA.test(command.payload.expectedSimulationHash))) {
       return rejected('INVALID_COMMAND', 'Plan approval preconditions are invalid.');
+    } else if (command.type === 'project_plan.materialize' && (!UUID.test(command.payload.projectId) ||
+      !Number.isSafeInteger(command.payload.expectedPlanVersion) || command.payload.expectedPlanVersion < 1 ||
+      !SHA.test(command.payload.expectedPlanHash) || !SHA.test(command.payload.expectedSourceManifestHash))) {
+      return rejected('INVALID_COMMAND', 'Plan materialization preconditions are invalid.');
     }
     const authorization = authorize(command.actor, writePolicy);
     const result = await store.execute({command, requestHash: requestHash(command), authorized: authorization.ok,

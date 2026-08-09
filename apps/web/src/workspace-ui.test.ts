@@ -36,7 +36,7 @@ it('renders the Russian source-draft-approval lifecycle under project setup', ()
   const project = {
     project: {id: '22222222-2222-4222-8222-222222222222', workspaceId: '11111111-1111-4111-8111-111111111111', name: 'Проект', slug: 'project', description: null, defaultBranch: 'main', updatedAt: now},
     setup: {id: '33333333-3333-4333-8333-333333333333', state: 'pending', version: 1, lastErrorCode: null, configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none', clientChat: 'none', executionMode: 'manual', agentProfileId: null}},
-    plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSimulation: null},
+    plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null},
     agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []
   };
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'setup', project: 'project', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data: {
@@ -53,11 +53,27 @@ it('distinguishes edit-only delivery authority from Product Owner approval', () 
   const markup = renderToStaticMarkup(createElement(ProjectPlanControls, {
     projectId: '22222222-2222-4222-8222-222222222222',
     csrfToken: 'csrf', canEdit: true, canApprove: false,
-    plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSimulation: null}
+    plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null}
   }));
   expect(markup).toContain('Редактирование доступно');
   expect(markup).toContain('активный Product Owner');
   expect(markup).not.toContain('Утвердить версию');
+});
+
+it('renders a truthful materialization summary without an execution start action', () => {
+  const approved = {id: '22222222-2222-4222-8222-222222222222', projectId: '33333333-3333-4333-8333-333333333333', revision: 2, state: 'approved' as const,
+    definition: {title: 'План', outcomes: [], milestones: [], risks: [], tasks: []}, contentHash: 'a'.repeat(64), approvedVersion: 1,
+    approvedByActorId: '44444444-4444-4444-8444-444444444444', approvedAt: '2026-08-09T10:00:00.000Z'};
+  const markup = renderToStaticMarkup(createElement(ProjectPlanControls, {projectId: approved.projectId, csrfToken: 'csrf', canEdit: true, canApprove: true,
+    plan: {artifacts: [], draft: null, approved, approvedSourceManifest: [], approvedSourceManifestHash: 'b'.repeat(64), approvedSimulation: null,
+      materialization: {id: '55555555-5555-4555-8555-555555555555', projectId: approved.projectId, planId: approved.id,
+        planVersionId: '66666666-6666-4666-8666-666666666666', planVersion: 1, planHash: approved.contentHash, sourceManifestHash: 'b'.repeat(64),
+        baselineId: '77777777-7777-4777-8777-777777777777', outcomeCount: 5, milestoneCount: 2, workItemCount: 6, dependencyCount: 4,
+        journeyCount: 0, publicationIntentCount: 0, createdAt: '2026-08-09T10:00:00.000Z'}}}));
+  expect(markup).toContain('План материализован');
+  expect(markup).toContain('Внешние bindings не настроены');
+  expect(markup).toContain('Запуск исполнения остаётся отдельным решением');
+  expect(markup).not.toContain('Start execution');
 });
 
 it('renders a dynamic authorized project card, manager intake, and resumable setup detail', () => {

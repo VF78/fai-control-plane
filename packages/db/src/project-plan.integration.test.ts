@@ -1,11 +1,15 @@
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {sourceArtifactDigest} from '@fai-control-plane/domain';
+import {defaultDeliveryProtocolDefinition, deterministicProjectPlanUuid, hashDeliveryProtocolDefinition,
+  hashProjectPlanDefinition, hashProjectPlanSourceManifest, sourceArtifactDigest} from '@fai-control-plane/domain';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
-import {actors, auditEvents, commandReceipts, createDatabase, createPostgresProjectPlanStore, projectMemberships, projectPlanDrafts, projectPlanVersions, projects, workspaces} from './index';
+import {actors, agentRuns, auditEvents, commandReceipts, createDatabase, createPostgresProjectPlanStore,
+  deliveryJourneys, outboxEvents, projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPublicationIntents,
+  projectPlanVersions, projectScopeBaselineVersions, projectScopeOutcomes, projectSetups, projects,
+  runbooks, workItemDependencies, workItems, workItemScopeOutcomes, workspaces} from './index';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (process.env.CI && databaseUrl === undefined) throw new Error('DATABASE_URL is required for project plan integration tests in CI.');
@@ -41,7 +45,10 @@ describePostgres('project plan persistence', () => {
     const envelope = (type: string, payload: unknown, key: string, actorId = ownerId) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId}, type, payload});
     await expect(store.execute({command: envelope('project_plan.source.record', {artifactId, projectId, name: 'Интервью', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}}, 'source') as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true}}});
     const citation = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 2}};
-    const definition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: citation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: citation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: citation}], tasks: [{key: 't1', title: 'Выполнить результат', outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: citation}]}]};
+    const definition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: citation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: citation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: citation}], tasks: [
+      {key: 't1', title: 'Подготовить результат', outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: citation}]},
+      {key: 't2', title: 'Проверить результат', outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['t1'], acceptanceEvidence: [{description: 'Проверка выполнена', evidence: citation}]}
+    ]};
     await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: null, definition}, 'draft') as never, requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {revision: 1}}}}});
     await expect(store.simulate({workspaceId, projectId: otherProjectId, actorId: ownerId, definition})).resolves.toMatchObject({readyForApproval: false, blockers: [expect.stringContaining('цитат')]});
     await expect(store.simulate({workspaceId, projectId, actorId: adminId, definition})).resolves.toMatchObject({capabilities: {canEdit: true, canApprove: false}, readyForApproval: false});
@@ -72,6 +79,60 @@ describePostgres('project plan persistence', () => {
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: foreignProjectId, actorId: foreignActorId, role: 'project_owner'});
     await expect(store.inspect({workspaceId: foreignWorkspaceId, projectId, actorId: foreignActorId})).resolves.toBeNull();
     await expect(store.simulate({workspaceId: foreignWorkspaceId, projectId, actorId: foreignActorId, definition})).resolves.toBeNull();
+
+    await db.insert(projectSetups).values({id: randomUUID(), projectId, state: 'pending', configuration: {
+      repositoryBinding: 'none', trackerBinding: 'create_managed', internalChat: 'none', clientChat: 'none',
+      executionMode: 'manual', agentProfileId: null
+    }});
+    const materializePayload = {projectId, planId, expectedPlanVersion: version!.version,
+      expectedPlanHash: version!.contentHash, expectedSourceManifestHash: hashProjectPlanSourceManifest(version!.sourceManifest)};
+    await testPool.query('update project_source_artifacts set content = $1, size_bytes = $2 where id = $3', ['tampered', Buffer.byteLength('tampered'), artifactId]);
+    await expect(store.execute({command: envelope('project_plan.materialize', materializePayload, 'materialize-tampered-source') as never,
+      requestHash: 'l'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_COMMAND'}}}});
+    await testPool.query('update project_source_artifacts set content = $1, size_bytes = $2 where id = $3', [content, Buffer.byteLength(content), artifactId]);
+    await expect(store.execute({command: envelope('project_plan.materialize', materializePayload, 'materialize-admin', adminId) as never,
+      requestHash: 'h'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}});
+    await db.insert(projectScopeBaselineVersions).values({id: randomUUID(), projectId, version: 1, active: true});
+    await expect(store.execute({command: envelope('project_plan.materialize', materializePayload, 'materialize-existing-baseline') as never,
+      requestHash: 'k'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    expect(await db.select().from(projectPlanMaterializations)).toHaveLength(0);
+    expect(await db.select().from(workItems)).toHaveLength(0);
+    expect(await db.select().from(outboxEvents)).toHaveLength(0);
+    await testPool.query('update project_scope_baseline_versions set active = false where project_id = $1', [projectId]);
+    await expect(store.execute({command: envelope('project_plan.materialize', materializePayload, 'materialize-inactive-baseline') as never,
+      requestHash: 'm'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    await db.delete(projectScopeBaselineVersions);
+    const concurrentMaterializations = await Promise.all([
+      store.execute({command: envelope('project_plan.materialize', materializePayload, 'materialize-a') as never, requestHash: 'i'.repeat(64), authorized: true}),
+      store.execute({command: envelope('project_plan.materialize', materializePayload, 'materialize-b') as never, requestHash: 'j'.repeat(64), authorized: true})
+    ]);
+    expect(concurrentMaterializations).toHaveLength(2);
+    expect(concurrentMaterializations.every((entry) => 'receipt' in entry && entry.receipt.result.ok)).toBe(true);
+    const [materialization] = await db.select().from(projectPlanMaterializations);
+    expect(materialization).toMatchObject({outcomeCount: 5, milestoneCount: 1, workItemCount: 2,
+      dependencyCount: 1, journeyCount: 0, publicationIntentCount: 9});
+    expect(materialization?.id).toBe(deterministicProjectPlanUuid(version!.id, 'materialization'));
+    expect(await db.select().from(projectScopeBaselineVersions)).toHaveLength(1);
+    expect((await db.select().from(projectScopeOutcomes)).map(({weight, state, sourcePlanVersionId}) => ({weight, state, sourcePlanVersionId})))
+      .toEqual(Array.from({length: 5}, () => ({weight: 20, state: 'not_started', sourcePlanVersionId: version!.id})));
+    expect(await db.select().from(workItems)).toEqual(expect.arrayContaining([
+      expect.objectContaining({id: deterministicProjectPlanUuid(version!.id, 'work_item', 't1'), sourcePlanVersionId: version!.id, sourceTaskKey: 't1', acceptanceEvidence: definition.tasks[0]!.acceptanceEvidence}),
+      expect.objectContaining({id: deterministicProjectPlanUuid(version!.id, 'work_item', 't2'), sourcePlanVersionId: version!.id, sourceTaskKey: 't2', acceptanceEvidence: definition.tasks[1]!.acceptanceEvidence})
+    ]));
+    expect(await db.select().from(workItemDependencies)).toEqual([expect.objectContaining({sourcePlanVersionId: version!.id})]);
+    expect(await db.select().from(workItemScopeOutcomes)).toEqual(expect.arrayContaining([
+      expect.objectContaining({sourcePlanVersionId: version!.id})
+    ]));
+    expect(await db.select().from(deliveryJourneys)).toHaveLength(0);
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+    expect(await db.select().from(outboxEvents)).toHaveLength(0);
+    const publication = await db.select().from(projectPublicationIntents);
+    expect(publication).toHaveLength(9);
+    expect(publication.every(({surface, mode, state}) =>
+      surface === 'tracker' && mode === 'create_managed' && state === 'desired')).toBe(true);
+    await expect(store.inspect({workspaceId, projectId, actorId: ownerId})).resolves.toMatchObject({
+      materialization: {id: materialization!.id, planVersion: 1, workItemCount: 2}
+    });
   });
 
   it('enforces workspace composites and JSONB shapes at the migration boundary', async () => {
@@ -88,5 +149,75 @@ describePostgres('project plan persistence', () => {
     const versionSql = `insert into project_plan_versions (id,workspace_id,project_id,plan_id,version,source_revision,definition,content_hash,source_manifest,simulation,approved_by_actor_id,approved_at) values ($1,$2,$3,$4,1,1,'{}'::jsonb,$5,$6::jsonb,'{}'::jsonb,$7,now())`;
     await expect(testPool.query(versionSql, [randomUUID(), workspaceB, projectB, approvedPlanId, 'a'.repeat(64), '[]', actorB])).rejects.toMatchObject({code: '23503'});
     await expect(testPool.query(versionSql, [randomUUID(), workspaceA, projectA, approvedPlanId, 'a'.repeat(64), '{}', actorA])).rejects.toMatchObject({code: '23514'});
+
+    const approvedPlanBId = randomUUID();
+    await db.insert(projectPlanDrafts).values({id: approvedPlanBId, workspaceId: workspaceB, projectId: projectB, state: 'approved', definition: {} as never, contentHash: 'b'.repeat(64), revision: 1, createdByActorId: actorB, approvedByActorId: actorB, approvedAt: new Date()});
+    const planVersionA = randomUUID(); const planVersionB = randomUUID();
+    await testPool.query(versionSql, [planVersionA, workspaceA, projectA, approvedPlanId, 'a'.repeat(64), '[]', actorA]);
+    await testPool.query(versionSql, [planVersionB, workspaceB, projectB, approvedPlanBId, 'b'.repeat(64), '[]', actorB]);
+    const baselineA = randomUUID(); const baselineB = randomUUID();
+    await db.insert(projectScopeBaselineVersions).values([
+      {id: baselineA, projectId: projectA, version: 1, active: false, sourcePlanVersionId: planVersionA, sourcePlanHash: 'a'.repeat(64)},
+      {id: baselineB, projectId: projectB, version: 1, active: false, sourcePlanVersionId: planVersionB, sourcePlanHash: 'b'.repeat(64)}
+    ]);
+    const materializationSql = `insert into project_plan_materializations (id,workspace_id,project_id,plan_version_id,baseline_id,command_id,plan_version,plan_hash,source_manifest_hash,outcome_count,milestone_count,work_item_count,dependency_count,journey_count,publication_intent_count,created_by_actor_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,1,0,0,0,$10)`;
+    await expect(testPool.query(materializationSql, [randomUUID(), workspaceA, projectA, planVersionA, baselineB, randomUUID(), 1, 'a'.repeat(64), 'c'.repeat(64), actorA])).rejects.toMatchObject({code: '23503'});
+    await expect(testPool.query(materializationSql, [randomUUID(), workspaceA, projectA, planVersionA, baselineA, randomUUID(), 2, 'a'.repeat(64), 'c'.repeat(64), actorA])).rejects.toMatchObject({code: '23503'});
+
+    const workItemA = randomUUID(); const workItemB = randomUUID();
+    await db.insert(workItems).values([
+      {id: workItemA, projectId: projectA, title: 'A', sourcePlanVersionId: planVersionA, sourceTaskKey: 'a', acceptanceEvidence: []},
+      {id: workItemB, projectId: projectB, title: 'B', sourcePlanVersionId: planVersionB, sourceTaskKey: 'b', acceptanceEvidence: []}
+    ]);
+    await expect(testPool.query('insert into work_item_dependencies (work_item_id,depends_on_work_item_id,source_plan_version_id) values ($1,$2,$3)', [workItemA, workItemB, planVersionA])).rejects.toMatchObject({code: '23503'});
+    await expect(testPool.query(`insert into project_publication_intents (id,workspace_id,project_id,plan_version_id,surface,mode,resource_kind,canonical_id,state,idempotency_key) values ($1,$2,$3,$4,'tracker','none','baseline',$5,'desired',$6)`, [randomUUID(), workspaceA, projectA, planVersionA, baselineA, randomUUID()])).rejects.toMatchObject({code: '23514'});
+  });
+
+  it('serializes competing approved plans and creates only root journeys for a ready protocol', async () => {
+    const workspaceId = randomUUID(); const projectId = randomUUID(); const ownerId = randomUUID();
+    await db.insert(workspaces).values({id: workspaceId, name: 'Concurrent', slug: `concurrent-${randomUUID()}`});
+    await db.insert(projects).values({id: projectId, workspaceId, name: 'Concurrent', slug: `concurrent-project-${randomUUID()}`});
+    await db.insert(actors).values({id: ownerId, workspaceId, type: 'human', role: 'developer', displayName: 'PO', authMode: 'user'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId, actorId: ownerId, role: 'project_owner'});
+    const assumption = {kind: 'assumption' as const, statement: 'Product Owner подтвердит результат'};
+    const definition = {title: 'Исполняемый план', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: assumption})),
+      milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: assumption}],
+      risks: [{key: 'r1', statement: 'Изменятся требования', mitigation: 'Повторная приёмка', evidence: assumption}], tasks: [
+        {key: 'root', title: 'Корневая задача', outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'PO подтвердил', evidence: assumption}]},
+        {key: 'dependent', title: 'Зависимая задача', outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['root'], acceptanceEvidence: [{description: 'Проверка пройдена', evidence: assumption}]}
+      ]};
+    const contentHash = hashProjectPlanDefinition(definition);
+    const planIds = [randomUUID(), randomUUID()]; const versionIds = [randomUUID(), randomUUID()];
+    await db.insert(projectPlanDrafts).values(planIds.map((id) => ({id, workspaceId, projectId, state: 'approved' as const, definition, contentHash, revision: 1, createdByActorId: ownerId, approvedByActorId: ownerId, approvedAt: new Date()})));
+    await db.insert(projectPlanVersions).values(planIds.map((planId, index) => ({id: versionIds[index]!, workspaceId, projectId, planId, version: index + 1, sourceRevision: 1, definition, contentHash, sourceManifest: [], simulation: {} as never, approvedByActorId: ownerId, approvedAt: new Date()})));
+    const protocol = defaultDeliveryProtocolDefinition();
+    await db.insert(runbooks).values({id: randomUUID(), projectId, name: 'Delivery', version: 1, definition: protocol as never, active: true, protocolState: 'published', revision: 1, contentHash: hashDeliveryProtocolDefinition(protocol)});
+    const store = createPostgresProjectPlanStore(db);
+    const commands = planIds.map((planId, index) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: `competing-${index}`, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId: ownerId}, type: 'project_plan.materialize' as const,
+      payload: {projectId, planId, expectedPlanVersion: index + 1, expectedPlanHash: contentHash, expectedSourceManifestHash: hashProjectPlanSourceManifest([])}}));
+    const results = await Promise.all(commands.map((command, index) => store.execute({command: command as never, requestHash: `${index + 1}`.repeat(64), authorized: true})));
+    expect(results.filter((entry) => 'receipt' in entry && entry.receipt.result.ok)).toHaveLength(1);
+    expect(results.filter((entry) => 'receipt' in entry && !entry.receipt.result.ok && entry.receipt.result.error.code === 'INVALID_TRANSITION')).toHaveLength(1);
+    await expect(testPool.query('select count(*)::int as count from project_plan_materializations where project_id = $1', [projectId])).resolves.toMatchObject({rows: [{count: 1}]});
+    await expect(testPool.query('select count(*)::int as count from project_scope_baseline_versions where project_id = $1', [projectId])).resolves.toMatchObject({rows: [{count: 1}]});
+    await expect(testPool.query('select wi.source_task_key, wi.status from delivery_journeys dj join work_items wi on wi.id = dj.work_item_id where wi.project_id = $1', [projectId])).resolves.toMatchObject({rows: [{source_task_key: 'root', status: 'ready'}]});
+    await expect(testPool.query('select status from work_items where project_id = $1 and source_task_key = $2', [projectId, 'dependent'])).resolves.toMatchObject({rows: [{status: 'backlog'}]});
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+
+    const rollbackProjectId = randomUUID(); const rollbackPlanId = randomUUID(); const rollbackVersionId = randomUUID();
+    await db.insert(projects).values({id: rollbackProjectId, workspaceId, name: 'Rollback', slug: `rollback-${randomUUID()}`});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: rollbackProjectId, actorId: ownerId, role: 'project_owner'});
+    await db.insert(projectPlanDrafts).values({id: rollbackPlanId, workspaceId, projectId: rollbackProjectId, state: 'approved', definition, contentHash, revision: 1, createdByActorId: ownerId, approvedByActorId: ownerId, approvedAt: new Date()});
+    await db.insert(projectPlanVersions).values({id: rollbackVersionId, workspaceId, projectId: rollbackProjectId, planId: rollbackPlanId, version: 1, sourceRevision: 1, definition, contentHash, sourceManifest: [], simulation: {} as never, approvedByActorId: ownerId, approvedAt: new Date()});
+    await db.insert(projectSetups).values({id: randomUUID(), projectId: rollbackProjectId, state: 'pending', configuration: {repositoryBinding: 'none', trackerBinding: 'create_managed', internalChat: 'none', clientChat: 'none', executionMode: 'manual', agentProfileId: null}});
+    const rollbackBaselineId = deterministicProjectPlanUuid(rollbackVersionId, 'baseline');
+    const conflictingIntentId = deterministicProjectPlanUuid(rollbackVersionId, 'materialization', `tracker:baseline:${rollbackBaselineId}`);
+    await db.insert(projectPublicationIntents).values({id: conflictingIntentId, workspaceId, projectId: rollbackProjectId, planVersionId: rollbackVersionId, surface: 'tracker', mode: 'create_managed', resourceKind: 'baseline', canonicalId: rollbackBaselineId, state: 'desired', idempotencyKey: `${rollbackVersionId}:tracker:baseline:${rollbackBaselineId}`});
+    const rollbackCommand = {commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: 'late-conflict', issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId: ownerId}, type: 'project_plan.materialize' as const,
+      payload: {projectId: rollbackProjectId, planId: rollbackPlanId, expectedPlanVersion: 1, expectedPlanHash: contentHash, expectedSourceManifestHash: hashProjectPlanSourceManifest([])}};
+    await expect(store.execute({command: rollbackCommand as never, requestHash: 'z'.repeat(64), authorized: true})).rejects.toMatchObject({cause: {code: '23505'}});
+    await expect(testPool.query('select count(*)::int as count from project_scope_baseline_versions where project_id = $1', [rollbackProjectId])).resolves.toMatchObject({rows: [{count: 0}]});
+    await expect(testPool.query('select count(*)::int as count from work_items where project_id = $1', [rollbackProjectId])).resolves.toMatchObject({rows: [{count: 0}]});
+    await expect(testPool.query('select count(*)::int as count from project_plan_materializations where project_id = $1', [rollbackProjectId])).resolves.toMatchObject({rows: [{count: 0}]});
   });
 });
