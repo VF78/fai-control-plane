@@ -24,15 +24,29 @@ export const configureControlPlaneDeadLetterQueue = async (
 
 export const loadQueueFailureCounts = async (
   query: (statement: string, values: unknown[]) => Promise<Readonly<{rows: readonly QueueFailureRow[]}>>,
-  sourceQueueNames: readonly string[]
+  sourceQueueNames: readonly string[],
+  supersedingQueueNames: readonly string[] = []
 ): Promise<readonly Readonly<{queueName: string; failedCount: number}>[]> => {
   const result = await query(
-    `select coalesce(source_name, name) as queue_name, count(*)::integer as failed_count
-     from pgboss.job
-     where (state = 'failed' and name = any($1::text[]))
-        or (name = $2 and source_name = any($1::text[]))
-     group by coalesce(source_name, name)`,
-    [sourceQueueNames, CONTROL_PLANE_DEAD_LETTER_QUEUE]
+    `select source.queue_name,
+       case when source.queue_name = any($3::text[]) then coalesce((
+         select case
+           when job.name = $2 or job.state in ('failed', 'cancelled') then 1
+           else 0
+         end
+         from pgboss.job job
+         where (job.name = source.queue_name and job.state in ('completed', 'failed', 'cancelled'))
+            or (job.name = $2 and job.source_name = source.queue_name)
+         order by coalesce(job.completed_on, job.created_on) desc, job.created_on desc, job.id desc
+         limit 1
+       ), 0)::integer else (
+         select count(*)::integer
+         from pgboss.job job
+         where (job.state = 'failed' and job.name = source.queue_name)
+            or (job.name = $2 and job.source_name = source.queue_name)
+       ) end as failed_count
+     from unnest($1::text[]) as source(queue_name)`,
+    [sourceQueueNames, CONTROL_PLANE_DEAD_LETTER_QUEUE, supersedingQueueNames]
   );
   const failures = new Map(result.rows.map((row) => [row.queue_name, row.failed_count] as const));
   return sourceQueueNames.map((queueName) => {

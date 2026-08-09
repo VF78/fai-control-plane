@@ -10,7 +10,7 @@ const workspaceId = '00000000-0000-4000-8000-000000000003';
 const csrfToken = 'csrf-token';
 
 it('requires an exact CSRF form and sends only the authenticated operator and selected WorkItem to the builder', async () => {
-  const create = vi.fn(async () => ({status: 'replayed' as const, projectSlug: 'msa' as const}));
+  const create = vi.fn(async () => ({status: 'replayed' as const, projectSlug: 'new-project' as const}));
   const dependencies: CodingTaskPacketCommandDependencies = {
     requireSession: async (_request: Request, options?: Readonly<{csrfToken?: string | null}>) => options?.csrfToken === csrfToken
       ? {
@@ -35,7 +35,7 @@ it('requires an exact CSRF form and sends only the authenticated operator and se
   );
   expect(exact.status).toBe(303);
   expect(exact.headers.get('location')).toBe(
-    `https://control.example.test/projects/msa/tasks/${workItemId}`
+    `https://control.example.test/projects/new-project/tasks/${workItemId}`
   );
   expect(create).toHaveBeenCalledWith({workspaceId, actorId, workItemId});
 

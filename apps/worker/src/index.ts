@@ -187,11 +187,15 @@ const healthcheckQueueNames = [
   QA_INTAKE_QUEUE,
   ...(githubSyncEnabled ? [GITHUB_RECONCILIATION_QUEUE] : [])
 ];
+const supersedingHealthcheckQueueNames = healthcheckQueueNames.filter(
+  (queueName) => queueName !== INCOMING_EVENT_QUEUE
+);
 const healthcheckProducer = createPostgresHealthcheckProducer(db, {
   queueFailures: async () => {
     return loadQueueFailureCounts(
       (statement, values) => pool.query<{queue_name: string; failed_count: number}>(statement, values),
-      healthcheckQueueNames
+      healthcheckQueueNames,
+      supersedingHealthcheckQueueNames
     );
   }
 });

@@ -6,21 +6,21 @@ import {Clock3, Eye, RotateCcw} from 'lucide-react';
 type Disposition = Readonly<{
   kind: 'acknowledged' | 'snoozed';
   reason: 'investigating' | 'awaiting_evidence' | 'planned_maintenance' | 'external_dependency';
-  expiresAt: string;
+  expiresAt: Date;
   reentryCondition: 'risk_unresolved_at_expiry';
   version: number;
 }> | null;
 
 const durations = [
-  {label: '4 hours', milliseconds: 4 * 60 * 60 * 1_000},
-  {label: '1 day', milliseconds: 24 * 60 * 60 * 1_000},
-  {label: '7 days', milliseconds: 7 * 24 * 60 * 60 * 1_000}
+  {label: '4 часа', milliseconds: 4 * 60 * 60 * 1_000},
+  {label: '1 день', milliseconds: 24 * 60 * 60 * 1_000},
+  {label: '7 дней', milliseconds: 7 * 24 * 60 * 60 * 1_000}
 ] as const;
 const reasons = [
-  {value: 'investigating', label: 'Investigating'},
-  {value: 'awaiting_evidence', label: 'Awaiting evidence'},
-  {value: 'planned_maintenance', label: 'Planned maintenance'},
-  {value: 'external_dependency', label: 'External dependency'}
+  {value: 'investigating', label: 'Разбираемся'},
+  {value: 'awaiting_evidence', label: 'Ждём подтверждение'},
+  {value: 'planned_maintenance', label: 'Плановые работы'},
+  {value: 'external_dependency', label: 'Внешняя зависимость'}
 ] as const;
 
 export function RiskDispositionControls({
@@ -70,15 +70,15 @@ export function RiskDispositionControls({
       );
       if (!response.ok) {
         setMessage(response.status === 409
-          ? 'Disposition changed. Refresh and retry.'
-          : 'Disposition was not recorded.');
+          ? 'Состояние риска изменилось. Обновите страницу и повторите.'
+          : 'Решение по риску не сохранено.');
         return;
       }
       setAction(null);
       setReason('investigating');
       window.location.reload();
     } catch {
-      setMessage('Disposition was not recorded.');
+      setMessage('Решение по риску не сохранено.');
     } finally {
       setPending(false);
     }
@@ -88,30 +88,30 @@ export function RiskDispositionControls({
     {disposition === null ? null : <details>
       <summary>
         <Eye aria-hidden="true" size={14}/>
-        Acknowledged until {new Date(disposition.expiresAt).toLocaleString()}
+        Учтено до {new Date(disposition.expiresAt).toLocaleString('ru-RU')}
       </summary>
       <p>{reasons.find(({value}) => value === disposition.reason)?.label}</p>
-      <small><RotateCcw aria-hidden="true" size={13}/>Returns to active attention if unresolved at expiry.</small>
+      <small><RotateCcw aria-hidden="true" size={13}/>Вернётся в активные риски, если причина не устранена.</small>
     </details>}
-    {csrfToken === null ? null : <div className="fcp-risk-actions" aria-label="Risk disposition">
+    {csrfToken === null ? null : <div className="fcp-risk-actions" aria-label="Решение по риску">
       <button
-        aria-label="Acknowledge risk"
+        aria-label="Зафиксировать риск"
         disabled={pending}
         onClick={() => setAction(action === 'acknowledged' ? null : 'acknowledged')}
         type="button"
-      ><Eye aria-hidden="true" size={15}/>Acknowledge</button>
+      ><Eye aria-hidden="true" size={15}/>Учесть</button>
       <button
-        aria-label="Snooze risk"
+        aria-label="Отложить риск"
         disabled={pending}
         onClick={() => setAction(action === 'snoozed' ? null : 'snoozed')}
         type="button"
-      ><Clock3 aria-hidden="true" size={15}/>Snooze</button>
+      ><Clock3 aria-hidden="true" size={15}/>Отложить</button>
     </div>}
     {action === null ? null : <form onSubmit={submit}>
       <label>
-        <span className="sr-only">Reason</span>
+        <span className="sr-only">Причина</span>
         <select
-          aria-label="Disposition reason"
+          aria-label="Причина решения по риску"
           autoFocus
           disabled={pending}
           onChange={(event) =>
@@ -123,9 +123,9 @@ export function RiskDispositionControls({
         </select>
       </label>
       <label>
-        <span className="sr-only">Expiry</span>
+        <span className="sr-only">Срок</span>
         <select
-          aria-label="Disposition expiry"
+          aria-label="Срок решения по риску"
           disabled={pending}
           onChange={(event) => setDuration(Number(event.target.value))}
           value={duration}
@@ -137,9 +137,9 @@ export function RiskDispositionControls({
         </select>
       </label>
       <button disabled={pending} type="submit">
-        {pending ? 'Saving…' : action === 'snoozed' ? 'Snooze' : 'Confirm'}
+        {pending ? 'Сохраняем…' : action === 'snoozed' ? 'Отложить' : 'Подтвердить'}
       </button>
-      <small><RotateCcw aria-hidden="true" size={13}/>Returns if unresolved at expiry.</small>
+      <small><RotateCcw aria-hidden="true" size={13}/>Риск вернётся автоматически, если останется открытым.</small>
     </form>}
     {message === null ? null : <p aria-live="polite">{message}</p>}
   </div>;

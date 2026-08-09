@@ -6,8 +6,6 @@
 export type OperatorScreenRef =
   | Readonly<{kind: 'dashboard'}>
   | Readonly<{kind: 'projects'}>
-  | Readonly<{kind: 'tasks'; project: 'all' | 'msa' | 'ascon'}>
-  | Readonly<{kind: 'chats'; project: 'all' | 'msa' | 'ascon'}>
   | Readonly<{kind: 'project'; projectSlug: string; section: 'overview' | 'tasks' | 'protocol' | 'runs' | 'chats' | 'access'}>
   | Readonly<{kind: 'task'; projectSlug: string; taskId: string}>
   | Readonly<{kind: 'run'; projectSlug: string; runId: string}>

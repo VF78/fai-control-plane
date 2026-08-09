@@ -18,7 +18,10 @@ import {
   type AccessResourceType,
   type SecretsProvider
 } from '@fai-control-plane/domain';
-import {createGitHubRepositoryReadAdapter} from '@fai-control-plane/integrations/runtime';
+import {
+  createGitHubRepositoryReadAdapter,
+  GitHubRepositoryReadError
+} from '@fai-control-plane/integrations/runtime';
 
 const projectSlugs = ['msa', 'ascon'] as const;
 const maximumObservationsPerSnapshot = 10;
@@ -177,7 +180,14 @@ export const createGitHubReconciliationRuntime = (
       taskTracker: github,
       repositoryObservation: github,
       scopeAuthorizer: createPostgresTrackerRepositoryReadScopeAuthorizer(db),
-      projector: createPostgresTrackerSnapshotProjector(db)
+      projector: createPostgresTrackerSnapshotProjector(db),
+      onRepositoryReadFailure(error) {
+        console.warn('github repository read failed', {
+          code: error instanceof GitHubRepositoryReadError
+            ? error.code
+            : 'github_read_unavailable'
+        });
+      }
     })
   });
 

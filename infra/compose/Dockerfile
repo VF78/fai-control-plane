@@ -40,8 +40,8 @@ RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static 
     && if [ -d apps/web/public ]; then \
          cp -R apps/web/public apps/web/.next/standalone/apps/web/public; \
        fi \
-    && mkdir -p /var/lib/fai/artifacts \
-    && chown -R node:node /var/lib/fai
+    && mkdir -p apps/web/.next/standalone/apps/web/.next/cache /var/lib/fai/artifacts \
+    && chown -R node:node apps/web/.next/standalone/apps/web/.next/cache /var/lib/fai
 
 USER node
 

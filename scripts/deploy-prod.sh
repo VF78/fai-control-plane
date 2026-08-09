@@ -283,6 +283,11 @@ retry 30 5 'public health' public_health
 retry 30 5 'public readiness' public_ready
 retry 30 5 'public dashboard' public_dashboard
 
+# A completed one-shot migration container can keep an otherwise obsolete
+# application image referenced forever. Remove only the stopped migrate
+# service container from this Compose project before enforcing image retention.
+compose rm --force migrate >/dev/null
+
 while IFS= read -r image_tag; do
   if [[ "$image_tag" != "fai-control-plane:$TARGET" && "$image_tag" != "fai-control-plane:$previous_tag" ]] && \
     ! docker image rm "$image_tag" >/dev/null 2>&1; then

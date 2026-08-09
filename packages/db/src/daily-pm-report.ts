@@ -1,4 +1,4 @@
-import {and, asc, desc, eq, inArray, isNull, sql} from 'drizzle-orm';
+import {and, asc, desc, eq, isNull, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -12,7 +12,6 @@ export const DAILY_PM_REPORT_QUEUE = 'daily-pm-report';
 export const dailyPmReportCron = '0 9 * * *';
 export const dailyPmReportSnapshotStaleAfterMs = 15 * 60 * 1_000;
 
-const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const dailyPmReportName = 'daily_pm_report';
 const workItemStatuses = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
 const riskSeverities = ['green', 'yellow', 'red'] as const;
@@ -163,7 +162,6 @@ export const createPostgresDailyPmReportProducer = (
           eq(schema.projectTrackerRepositoryScopes.projectId, schema.projects.id),
           eq(schema.projectTrackerRepositoryScopes.provider, 'github')
         ))
-        .where(inArray(schema.projects.slug, configuredProjectSlugs))
         .groupBy(schema.projects.id)
         .orderBy(asc(schema.projects.id));
       const runAt = now();

@@ -836,6 +836,8 @@ type TrackerRepositoryObservationPorts =
 export type CreateTrackerRepositorySnapshotOrchestrationServiceInput = TrackerRepositoryObservationPorts & Readonly<{
   projector: TrackerSnapshotProjector;
   scopeAuthorizer: TrackerRepositoryReadScopeAuthorizer;
+  /** Receives the in-process adapter failure for bounded operational telemetry only. */
+  onRepositoryReadFailure?: (error: unknown) => void;
 }>;
 
 type Target = Readonly<{
@@ -1260,7 +1262,12 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
           workItems: taskObservation.workItems
         };
       }
-    } catch {
+    } catch (error) {
+      try {
+        dependencies.onRepositoryReadFailure?.(error);
+      } catch {
+        // Observability must never change the canonical failure result.
+      }
       return failedTrackerSnapshotResult('repository_read_failed');
     }
     const snapshot = validateTrackerRepositorySnapshot({

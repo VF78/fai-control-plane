@@ -415,11 +415,11 @@ const projectItemsQuery = `query ProjectStatus($projectId: ID!, $after: String) 
 }`;
 
 const pullRequestEvidenceQuery = `query PullRequestEvidence(
-  $repositoryOwner: String!, $repositoryName: String!
+  $repositoryOwner: String!, $repositoryName: String!, $after: String
 ) {
   repository(owner: $repositoryOwner, name: $repositoryName) {
     nameWithOwner
-    pullRequests(first: 100, states: [OPEN, CLOSED, MERGED]) {
+    pullRequests(first: 100, states: [OPEN, CLOSED, MERGED], after: $after) {
       nodes {
         number
         closingIssuesReferences(first: 2) {
@@ -640,15 +640,13 @@ const pullRequestEvidence = (
   payload: JsonObject,
   scope: GitHubRepositoryScopeDefinition,
   linkedWorkItemExternalIdsByPullRequestNumber: Map<number, readonly string[]>
-): void => {
+): string | null => {
   const repository = object(payload.repository);
   if (boundedString(repository.nameWithOwner, 256) !== scope.fullName) {
     return fail('github_response_invalid');
   }
   const pullRequests = object(repository.pullRequests);
-  if (boolean(object(pullRequests.pageInfo).hasNextPage)) {
-    return fail('github_pagination_exceeded');
-  }
+  const pageInfo = object(pullRequests.pageInfo);
   for (const value of array(pullRequests.nodes)) {
     const pullRequest = object(value);
     const number = positiveInteger(pullRequest.number);
@@ -672,6 +670,8 @@ const pullRequestEvidence = (
     )) return fail('github_response_invalid');
     linkedWorkItemExternalIdsByPullRequestNumber.set(number, linkedWorkItemExternalIds);
   }
+  if (!boolean(pageInfo.hasNextPage)) return null;
+  return boundedString(pageInfo.endCursor, 512);
 };
 
 const readProjectEvidence = async (
@@ -685,14 +685,20 @@ const readProjectEvidence = async (
   if (repositoryOwner === undefined || repositoryName === undefined) {
     return fail('github_response_invalid');
   }
-  pullRequestEvidence(
-    await repositoryClient.graphql(pullRequestEvidenceQuery, {
-      repositoryOwner,
-      repositoryName
-    }),
-    scope,
-    linkedWorkItemExternalIdsByPullRequestNumber
-  );
+  let pullRequestAfter: string | null = null;
+  for (let page = 0; page < maximumPages; page += 1) {
+    pullRequestAfter = pullRequestEvidence(
+      await repositoryClient.graphql(pullRequestEvidenceQuery, {
+        repositoryOwner,
+        repositoryName,
+        after: pullRequestAfter
+      }),
+      scope,
+      linkedWorkItemExternalIdsByPullRequestNumber
+    );
+    if (pullRequestAfter === null) break;
+    if (page === maximumPages - 1) return fail('github_pagination_exceeded');
+  }
   let after: string | null = null;
   for (let page = 0; page < maximumProjectItemPages; page += 1) {
     const payload = await projectClient.graphql(projectItemsQuery, {

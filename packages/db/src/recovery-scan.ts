@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {and, asc, desc, eq, inArray, lte, sql} from 'drizzle-orm';
+import {and, asc, desc, eq, lte, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {fromDrizzle} from 'pg-boss';
 import {INCOMING_EVENT_QUEUE, type PgBossTransactionalSender} from './incoming-event-inbox';
@@ -12,7 +12,6 @@ type Database = NodePgDatabase<typeof schema>;
 export const RECOVERY_SCAN_QUEUE = 'recovery-scan';
 export const recoveryScanCron = '*/5 * * * *';
 
-const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const recoveryScanName = 'recovery_scan';
 const maximumIncomingEventAttempts = 5;
 const recoveryExhaustedCode = 'incoming_event_recovery_exhausted';
@@ -32,7 +31,6 @@ export const createPostgresRecoveryScanProducer = (
           eq(schema.projectTrackerRepositoryScopes.projectId, schema.projects.id),
           eq(schema.projectTrackerRepositoryScopes.provider, 'github')
         ))
-        .where(inArray(schema.projects.slug, configuredProjectSlugs))
         .groupBy(schema.projects.id)
         .orderBy(asc(schema.projects.id));
       let firstFailure: unknown;

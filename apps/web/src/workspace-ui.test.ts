@@ -10,8 +10,20 @@ import {
 import {workspaceRoute} from './operator-workspace-route';
 import {WorkspaceShell, type WorkspaceData} from './workspace-ui';
 import {ProjectPlanControls} from './project-plan-controls';
+import {RiskDispositionControls} from './risk-disposition-controls';
 
 vi.mock('next/navigation', () => ({useRouter: () => ({refresh: vi.fn()})}));
+
+it('renders the canonical risk decision controls in Russian', () => {
+  const markup = renderToStaticMarkup(createElement(RiskDispositionControls, {
+    csrfToken: 'csrf', disposition: null, expectedVersion: 0,
+    projectId: 'project-1', riskSignalId: 'risk-1'
+  }));
+  expect(markup).toContain('Решение по риску');
+  expect(markup).toContain('Учесть');
+  expect(markup).toContain('Отложить');
+  expect(markup).not.toContain('Disposition');
+});
 
 it('maps only canonical workspace routes and preserves scope on deep links', () => {
   expect(workspaceRoute(['projects', 'msa', 'tasks', 'task-1'], {
@@ -100,6 +112,9 @@ it('renders a dynamic authorized project card, manager intake, and resumable set
   expect(projectsMarkup).toContain('Создать проект');
   const detailMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'dynamic-project', 'setup'], {})!,
     data: {...base, project: {state: 'ready', data: project}} as unknown as WorkspaceData}));
+  expect(detailMarkup).toContain('Владелец продукта');
+  expect(detailMarkup).toContain('Состояние: Неизвестно');
+  expect(detailMarkup).not.toContain('PO + Developer');
   expect(detailMarkup).toContain('Ожидает настройки');
   expect(detailMarkup).toContain('Внешние ресурсы не считаются готовыми');
   expect(detailMarkup).not.toContain('Все обязательные ресурсы подтверждены');

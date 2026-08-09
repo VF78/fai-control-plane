@@ -16,7 +16,6 @@ export const healthcheckStaleAfterMs = 15 * 60 * 1_000;
 export const activeWorkItemStaleAfterMs = 7 * 24 * 60 * 60 * 1_000;
 export const pendingApprovalStaleAfterMs = 24 * 60 * 60 * 1_000;
 
-const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const healthcheckName = 'healthcheck';
 const activeWorkItemStatuses = new Set(['in_dev', 'qa', 'acceptance']);
 const deadlineOverdueRuleId = 'delivery_deadline_overdue';
@@ -51,7 +50,6 @@ export const createPostgresHealthcheckProducer = (
           eq(schema.projectTrackerRepositoryScopes.projectId, schema.projects.id),
           eq(schema.projectTrackerRepositoryScopes.provider, 'github')
         ))
-        .where(inArray(schema.projects.slug, configuredProjectSlugs))
         .groupBy(schema.projects.id)
         .orderBy(asc(schema.projects.id));
       let failedQueuesPromise: Promise<

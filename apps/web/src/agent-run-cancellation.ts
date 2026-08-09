@@ -15,6 +15,7 @@ import {
   readBoundedForm,
   requireOperatorSession
 } from './operator-auth-runtime';
+import {isOperatorProjectSlug} from './operator-data';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -154,7 +155,7 @@ export async function cancelAgentRunCommand(
     });
     if (result === 'cancelled') {
       const requestedScope = new URL(request.url).searchParams.get('project');
-      const location = requestedScope === 'msa' || requestedScope === 'ascon'
+      const location = requestedScope !== null && isOperatorProjectSlug(requestedScope)
         ? `/projects/${requestedScope}/runs/${runId}`
         : '/dashboard';
       return new Response(null, {
