@@ -1,6 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import {isAbsolute} from 'node:path';
 import {
+  createAccessObservationService,
   createCanonicalCommandService,
   createTrackerRepositorySnapshotReconciliationService,
   createTrackerRepositorySnapshotOrchestrationService
@@ -14,6 +15,7 @@ import {
 import {
   createActorContextIssuer,
   type OpaqueSecretRef,
+  type AccessResourceType,
   type SecretsProvider
 } from '@fai-control-plane/domain';
 import {createGitHubRepositoryReadAdapter} from '@fai-control-plane/integrations/runtime';
@@ -30,6 +32,7 @@ type Queryable = Readonly<{
   query(text: string, values?: unknown[]): Promise<Readonly<{rows: unknown[]}>>;
 }>;
 type ScopeRow = Readonly<{
+  scopeId: string;
   projectId: string;
   projectSlug: ProjectSlug;
   owner: string;
@@ -38,6 +41,20 @@ type ScopeRow = Readonly<{
   credentialReference: string;
   credentialScope: string[];
   lastInboundVersion: string | null;
+  repositoryExternalId: string;
+}>;
+type AccessObservationRow = Readonly<{
+  workspaceId: string;
+  projectId: string;
+  grantId: string;
+  grantVersion: number;
+  grantActorId: string;
+  identityActorId: string;
+  resourceType: AccessResourceType;
+  resourceId: string;
+  identityProvider: string;
+  externalSubject: string;
+  identityActive: boolean;
 }>;
 
 type ReconciliationFailure = Readonly<{
@@ -213,6 +230,7 @@ export const createGitHubReconciliationRuntime = (
       }
       const scopeResult = await pool.query(
         `select
+           s.id as "scopeId",
            p.id as "projectId",
            p.slug as "projectSlug",
            s.repository_owner as "owner",
@@ -220,7 +238,8 @@ export const createGitHubReconciliationRuntime = (
            sr.provider as "credentialProvider",
            sr.reference as "credentialReference",
            sr.scope as "credentialScope",
-           tb.last_inbound_version as "lastInboundVersion"
+           tb.last_inbound_version as "lastInboundVersion",
+           s.repository_external_id as "repositoryExternalId"
          from project_tracker_repository_scopes s
          inner join projects p on p.id = s.project_id
          inner join secret_refs sr on sr.id = s.credential_ref_id
@@ -256,6 +275,10 @@ export const createGitHubReconciliationRuntime = (
         createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)}),
         trustedActor.value
       );
+      const accessObservation = createAccessObservationService({
+        observer: github,
+        commands: createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)})
+      });
       const reconcileStatusObservations = async (project: ProjectSlug): Promise<void> => {
         for (let attempted = 0; attempted < maximumObservationsPerSnapshot; attempted += 1) {
           const result = await observationProcessor.processAvailable();
@@ -298,6 +321,53 @@ export const createGitHubReconciliationRuntime = (
           project,
           status: result.result.status
         });
+        const accessResult = await pool.query(
+          `select
+             p.workspace_id as "workspaceId",
+             rag.project_id as "projectId",
+             rag.id as "grantId",
+             rag.version as "grantVersion",
+             rag.actor_id as "grantActorId",
+             coalesce(aei.actor_id::text, '') as "identityActorId",
+             rag.resource_type as "resourceType",
+             rag.resource_id as "resourceId",
+             coalesce(aei.provider, '') as "identityProvider",
+             coalesce(aei.external_subject, '') as "externalSubject",
+             coalesce(aei.active, false) as "identityActive"
+           from resource_access_grants rag
+           inner join projects p on p.id = rag.project_id
+           left join actor_external_identities aei on
+             aei.actor_id = rag.actor_id and aei.provider = 'github'
+           where p.workspace_id = $1 and rag.project_id = $2 and
+             rag.resource_type = 'repository' and rag.resource_id = $3
+           order by rag.id`,
+          [workspace.id, scope.projectId, scope.scopeId]
+        );
+        for (const binding of accessResult.rows as AccessObservationRow[]) {
+          const observation = await accessObservation.observe({
+            workspaceId: workspace.id,
+            projectId: scope.projectId,
+            actor: trustedActor.value,
+            binding: {
+              ...binding,
+              repository: {
+                scopeId: scope.scopeId,
+                owner: scope.owner,
+                repository: scope.repository,
+                externalId: scope.repositoryExternalId
+              }
+            }
+          });
+          console.info('github access observation', {
+            code: `GITHUB_ACCESS_${observation.state.toUpperCase()}`,
+            project,
+            grantId: binding.grantId,
+            state: observation.state,
+            ...(observation.state === 'confirmed'
+              ? {level: observation.confirmedLevel, observedAt: observation.observedAt}
+              : {remediation: observation.remediation})
+          });
+        }
         await reconcileStatusObservations(project);
       }
     }

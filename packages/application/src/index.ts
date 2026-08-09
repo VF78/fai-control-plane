@@ -1,4 +1,5 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
+export * from './access-observation.ts';
 export {
   createDeliveryJourneyService,
   type AdvanceDeliveryJourneyCommand,
