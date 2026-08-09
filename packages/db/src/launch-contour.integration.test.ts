@@ -17,7 +17,6 @@ import {
   createDatabase,
   createPostgresConversationStore,
   createPostgresDeliveryJourneyStore,
-  createPostgresRuntimeAvailabilityStore,
   deliveryJourneys,
   projectMemberships,
   projects,
@@ -328,15 +327,15 @@ describePostgres('test-operational launch contour', () => {
 
     const [registration] = await db.select().from(runtimeRegistrations);
     if (registration === undefined) throw new Error('runtime registration missing');
-    const monitoring = createPostgresRuntimeAvailabilityStore(db);
     for (const component of ['service', 'scheduler', 'delivery'] as const) {
-      await expect(monitoring.record({
+      await db.insert(runtimeAvailabilityObservations).values({
         runtimeRegistrationId: registration.id,
         component,
         state: 'available',
         observedAt,
+        ttlSeconds: 300,
         evidenceReference: `test://hermes/${component}/available`
-      })).resolves.toBe('recorded');
+      });
     }
     expect(await db.select().from(runtimeAvailabilityObservations)).toHaveLength(3);
     expect(await db.select().from(trackerSnapshotOperations)).toHaveLength(2);

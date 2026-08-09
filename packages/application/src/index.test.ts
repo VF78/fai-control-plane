@@ -24,6 +24,7 @@ import {
   type ResourceAccessGrant,
   type RetirableAgent,
   type RuntimeRegistration,
+  type RuntimeRecoveryPolicy,
   type TaskPacket,
   type UnitOfWork,
   type WorkItem
@@ -125,6 +126,7 @@ class FakeUnitOfWork implements UnitOfWork {
   readonly retirableAgents = new Map<string, RetirableAgent>();
   readonly resourceAccessGrants = new Map<string, ResourceAccessGrant>();
   readonly runtimeRegistrations = new Map<string, RuntimeRegistration>();
+  readonly runtimeRecoveryPolicies = new Map<string, RuntimeRecoveryPolicy>();
   readonly receipts = new Map<string, CommandReceipt>();
   readonly audits: unknown[] = [];
   readonly mutations: unknown[] = [];
@@ -181,6 +183,8 @@ class FakeUnitOfWork implements UnitOfWork {
         this.resourceAccessGrants.get(value) ?? null,
       loadRuntimeRegistration: async (_token, value) =>
         this.runtimeRegistrations.get(value) ?? null,
+      loadRuntimeRecoveryPolicy: async (_token, value) =>
+        this.runtimeRecoveryPolicies.get(value) ?? null,
       loadAccessCommandAuthority: async () => ({
         workspaceAdmin: this.accessAdmin,
         projectRole: null
@@ -208,6 +212,9 @@ class FakeUnitOfWork implements UnitOfWork {
               mutation.replacementTarget.aggregate
             );
           }
+        }
+        if (mutation.aggregateType === 'runtime_recovery_policy') {
+          this.runtimeRecoveryPolicies.set(mutation.aggregateId, mutation.aggregate);
         }
         return {status: 'persisted' as const, mutation: {cas: {expectedPersistedVersion: mutation.expectedPersistedVersion, persistedVersion: mutation.aggregateType === 'task_packet' || mutation.aggregateType === 'actor' ? 1 : mutation.aggregate.version}, audit: {} as never} as never};
       },
@@ -1250,5 +1257,84 @@ describe('canonical command service', () => {
       }
     }))).resolves.toMatchObject({status: 'rejected'});
     expect(uow.executions).toBe(0);
+  });
+
+  it('accepts a fresh trusted-system observation once and rejects stale evidence', async () => {
+    const systemActorId = id();
+    const issuer = createActorContextIssuer({
+      users: [], agents: [], systems: [{
+        actorId: systemActorId,
+        capabilities: ['write:runtime_observation:development']
+      }]
+    });
+    if (!issuer.ok) throw new Error('System issuer did not initialize.');
+    const systemActor = issuer.value.issueSystem(systemActorId);
+    if (!systemActor.ok) throw new Error('System actor did not initialize.');
+    const registration: RuntimeRegistration = {
+      id: id(), projectId, actorId, agentProfileId: id(), provider: 'provider_neutral',
+      runtimeKey: 'runtime-1', enabled: true, version: 1
+    };
+    const uow = new FakeUnitOfWork();
+    uow.runtimeRegistrations.set(registration.id, registration);
+    const observe = {
+      commandId: id(), workspaceId, correlationId: id(), idempotencyKey: `observe-${id()}`,
+      issuedAt: '2026-07-25T12:00:00.000Z', actor: systemActor.value,
+      type: 'runtime_availability.observe' as const,
+      payload: {
+        observationId: id(), registrationId: registration.id, component: 'service' as const,
+        state: 'available' as const, observedAt: '2026-07-25T11:59:30.000Z',
+        ttlSeconds: 60, evidenceReference: 'probe:service:ok'
+      }
+    };
+    const service = serviceFor(uow);
+    await expect(service.execute(observe)).resolves.toMatchObject({
+      status: 'completed', receipt: {result: {ok: true}}
+    });
+    await expect(service.execute(observe)).resolves.toMatchObject({status: 'replayed'});
+    expect(uow.mutations).toHaveLength(1);
+    const trustedHumanId = id();
+    const trustedHumanIssuer = createActorContextIssuer({
+      users: [{actorId: trustedHumanId, capabilities: ['write:runtime_observation:development']}],
+      agents: [], systems: []
+    });
+    if (!trustedHumanIssuer.ok) throw new Error('Trusted human issuer did not initialize.');
+    const trustedHuman = trustedHumanIssuer.value.issueUser(trustedHumanId);
+    if (!trustedHuman.ok) throw new Error('Trusted human did not initialize.');
+    await expect(service.execute({
+      ...observe, commandId: id(), idempotencyKey: `human-${id()}`, actor: trustedHuman.value,
+      payload: {...observe.payload, observationId: id()}
+    })).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_ACTOR_CONTEXT'}}}});
+    await expect(service.execute({
+      ...observe, commandId: id(), idempotencyKey: `stale-${id()}`,
+      payload: {...observe.payload, observationId: id(), observedAt: '2026-07-25T11:58:59.000Z'}
+    })).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_COMMAND'}}}});
+    expect(uow.mutations).toHaveLength(1);
+  });
+
+  it('sets one versioned recovery policy without executing a recovery action', async () => {
+    const registration: RuntimeRegistration = {
+      id: id(), projectId, actorId, agentProfileId: id(), provider: 'provider_neutral',
+      runtimeKey: 'runtime-1', enabled: true, version: 1
+    };
+    const uow = new FakeUnitOfWork();
+    uow.runtimeRegistrations.set(registration.id, registration);
+    const service = serviceFor(uow);
+    await expect(service.execute(command('runtime_registration.recovery_policy.set', {
+      registrationId: registration.id,
+      enabled: true,
+      staleThresholdSeconds: 900,
+      maximumAttempts: 2,
+      expectedVersion: null
+    }))).resolves.toMatchObject({receipt: {result: {ok: true, value: {
+      enabled: true, staleThresholdSeconds: 900, maximumAttempts: 2, version: 1
+    }}}});
+    expect(uow.agentRuns.size).toBe(0);
+    await expect(service.execute(command('runtime_registration.recovery_policy.set', {
+      registrationId: registration.id,
+      enabled: true,
+      staleThresholdSeconds: 900,
+      maximumAttempts: 3,
+      expectedVersion: null
+    }))).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
   });
 });

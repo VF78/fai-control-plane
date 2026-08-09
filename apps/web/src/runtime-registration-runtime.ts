@@ -43,6 +43,19 @@ type ReplacementMutationStatus =
       target: Readonly<{enabled: true; version: number}>;
     }>
   | Readonly<{status: 'forbidden' | 'not_found' | 'stale' | 'invalid'}>;
+type RecoveryPolicyMutationStatus =
+  | Readonly<{
+      status: 'updated' | 'replayed';
+      commandId: string;
+      commandType: 'runtime_registration.recovery_policy.set';
+      policy: Readonly<{
+        enabled: boolean;
+        staleThresholdSeconds: number;
+        maximumAttempts: number;
+        version: number;
+      }>;
+    }>
+  | Readonly<{status: 'forbidden' | 'not_found' | 'stale' | 'invalid'}>;
 
 const enabledCapabilities = (capabilities: Record<string, boolean>): Capability[] =>
   Object.entries(capabilities).flatMap(([capability, enabled]) =>
@@ -103,6 +116,15 @@ export type RuntimeRegistrationRuntime = Readonly<{
     targetRegistrationId: string;
     targetExpectedVersion: number;
   }>): Promise<ReplacementMutationStatus>;
+  setRecoveryPolicy(input: Readonly<{
+    workspaceId: string;
+    operatorActorId: string;
+    registrationId: string;
+    enabled: boolean;
+    staleThresholdSeconds: number;
+    maximumAttempts: number;
+    expectedVersion: number | null;
+  }>): Promise<RecoveryPolicyMutationStatus>;
 }>;
 
 export const createRuntimeRegistrationRuntime = (db: Database): RuntimeRegistrationRuntime => ({
@@ -351,6 +373,61 @@ export const createRuntimeRegistrationRuntime = (db: Database): RuntimeRegistrat
       commandType: 'runtime_registration.replace',
       source: {enabled: false, version: replacement.source.version},
       target: {enabled: true, version: replacement.target.version}
+    };
+  },
+  async setRecoveryPolicy(input) {
+    const actor = await operatorActor(db, input.workspaceId, input.operatorActorId);
+    if (actor === null) return {status: 'forbidden'};
+    const inputHash = createHash('sha256').update([
+      input.registrationId, input.enabled, input.staleThresholdSeconds,
+      input.maximumAttempts, input.expectedVersion ?? 'new'
+    ].join('\0')).digest('hex');
+    const result = await createCanonicalCommandService({
+      unitOfWork: createPostgresUnitOfWork(db)
+    }).execute({
+      commandId: randomUUID(),
+      workspaceId: input.workspaceId,
+      correlationId: randomUUID(),
+      idempotencyKey: `runtime_registration.recovery_policy.v1:${input.registrationId}:${input.expectedVersion ?? 'new'}:${inputHash}`,
+      issuedAt: new Date().toISOString(),
+      actor,
+      type: 'runtime_registration.recovery_policy.set',
+      payload: {
+        registrationId: input.registrationId,
+        enabled: input.enabled,
+        staleThresholdSeconds: input.staleThresholdSeconds,
+        maximumAttempts: input.maximumAttempts,
+        expectedVersion: input.expectedVersion
+      }
+    });
+    if (!('receipt' in result)) return {status: 'invalid'};
+    if (!result.receipt.result.ok) {
+      switch (result.receipt.result.error.code) {
+        case 'CAPABILITY_DENIED':
+        case 'POLICY_DENIED':
+        case 'INVALID_ACTOR_CONTEXT': return {status: 'forbidden'};
+        case 'NOT_FOUND': return {status: 'not_found'};
+        case 'VERSION_CONFLICT': return {status: 'stale'};
+        default: return {status: 'invalid'};
+      }
+    }
+    const value = result.receipt.result.value as Record<string, unknown>;
+    if (typeof value !== 'object' || value === null ||
+      typeof value.enabled !== 'boolean' ||
+      typeof value.staleThresholdSeconds !== 'number' ||
+      typeof value.maximumAttempts !== 'number' || typeof value.version !== 'number') {
+      return {status: 'invalid'};
+    }
+    return {
+      status: result.status === 'replayed' ? 'replayed' : 'updated',
+      commandId: result.receipt.commandId,
+      commandType: 'runtime_registration.recovery_policy.set',
+      policy: {
+        enabled: value.enabled,
+        staleThresholdSeconds: value.staleThresholdSeconds,
+        maximumAttempts: value.maximumAttempts,
+        version: value.version
+      }
     };
   }
 });

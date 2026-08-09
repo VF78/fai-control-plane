@@ -36,6 +36,7 @@ import {
   projectMemberships,
   resourceAccessGrants,
   runtimeAvailabilityObservations,
+  runtimeRecoveryPolicies,
   runtimeRegistrations,
   runbooks,
   riskSignalDispositionEvents,
@@ -65,6 +66,7 @@ import {
   actorTypes,
   canonicalJson,
   deriveRuntimeAvailability,
+  deriveRuntimeRecoveryCandidate,
   effectiveInstructions,
   environments,
   policyDecisionFor,
@@ -1386,6 +1388,18 @@ export type AccessData = Readonly<{
         version: number;
         updatedAt: Date;
         availability: RuntimeAvailabilityProjection;
+        ttlSeconds?: Readonly<{service: number | null; scheduler: number | null; delivery: number | null}>;
+        recoveryPolicy?: Readonly<{
+          enabled: boolean;
+          staleThresholdSeconds: number;
+          maximumAttempts: number;
+          version: number;
+        }> | null;
+        recoveryCandidate?: Readonly<{
+          staleComponents: readonly string[];
+          missingComponents: readonly string[];
+          maximumAttempts: number;
+        }> | null;
         canManage: boolean;
       }>[];
       instruction: Readonly<{workspaceVersion: number; profileVersion: number | null; hash: string; provenance: string; history?: Readonly<{
@@ -1476,7 +1490,7 @@ export const deriveRuntimeAvailabilityAlerts = (
         owner,
         evidenceReferences,
         nextAction: health === 'not_configured'
-          ? 'Configure observation thresholds and a script-only runtime adapter.'
+          ? 'Configure component TTLs and the gated HTTP runtime observation transport.'
           : 'Refresh the provider-neutral observations and inspect stale components.',
         sourceUrl: null,
         evidence: evidenceReferences.length === 0 ? 'No runtime observation recorded' : 'Persisted runtime availability observations',
@@ -1549,7 +1563,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     };
   }
   const projectIds = configuredProjects.map(({id}) => id);
-  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, availabilityObservations, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants] = await Promise.all([
+  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, availabilityObservations, recoveryPolicies, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
     db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt})
@@ -1610,6 +1624,17 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
         desc(runtimeAvailabilityObservations.observedAt),
         desc(runtimeAvailabilityObservations.id)
       ),
+    db.select({
+      runtimeRegistrationId: runtimeRecoveryPolicies.runtimeRegistrationId,
+      enabled: runtimeRecoveryPolicies.enabled,
+      staleThresholdSeconds: runtimeRecoveryPolicies.staleThresholdSeconds,
+      maximumAttempts: runtimeRecoveryPolicies.maximumAttempts,
+      version: runtimeRecoveryPolicies.version,
+      createdAt: runtimeRecoveryPolicies.createdAt,
+      updatedAt: runtimeRecoveryPolicies.updatedAt
+    }).from(runtimeRecoveryPolicies)
+      .innerJoin(runtimeRegistrations, eq(runtimeRegistrations.id, runtimeRecoveryPolicies.runtimeRegistrationId))
+      .where(inArray(runtimeRegistrations.projectId, projectIds)),
     db.select({id: workspaceInstructionVersions.id, workspaceId: workspaceInstructionVersions.workspaceId, version: workspaceInstructionVersions.version, instructions: workspaceInstructionVersions.instructions, settings: workspaceInstructionVersions.settings, createdAt: workspaceInstructionVersions.createdAt, rollbackOfVersionId: workspaceInstructionVersions.rollbackOfVersionId})
       .from(workspaceInstructionVersions).where(inArray(workspaceInstructionVersions.workspaceId, workspaceIds)).orderBy(desc(workspaceInstructionVersions.version)),
     db.select({id: agentProfileInstructionVersions.id, agentProfileId: agentProfileInstructionVersions.agentProfileId, version: agentProfileInstructionVersions.version, instructions: agentProfileInstructionVersions.instructions, settings: agentProfileInstructionVersions.settings, createdAt: agentProfileInstructionVersions.createdAt, rollbackOfVersionId: agentProfileInstructionVersions.rollbackOfVersionId})
@@ -1683,6 +1708,9 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       observation
     ]);
   }
+  const recoveryPolicyByRegistration = new Map(
+    recoveryPolicies.map((policy) => [policy.runtimeRegistrationId, policy] as const)
+  );
   const asOf = new Date();
   const actorById = new Map(persistedActors.map((actor) => [actor.id, actor]));
   const operator = operatorActorId === undefined ? undefined : actorById.get(operatorActorId);
@@ -1713,7 +1741,23 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     const receiptRun = latestReceiptByProfile.get(profile.id) ?? null;
     const profileRegistrations = registrations.flatMap((registration) => {
       const project = projectById.get(registration.projectId);
-      return registration.agentProfileId !== profile.id || registration.actorId !== profile.actorId || project === undefined ? [] : [{
+      if (registration.agentProfileId !== profile.id || registration.actorId !== profile.actorId || project === undefined) return [];
+      const observations = availabilityByRegistration.get(registration.id) ?? [];
+      const recoveryPolicy = recoveryPolicyByRegistration.get(registration.id) ?? null;
+      const recoveryCandidate = deriveRuntimeRecoveryCandidate({
+        policy: recoveryPolicy,
+        enabled: registration.enabled && profile.enabled &&
+          (actorById.get(profile.actorId)?.disabledAt ?? null) === null,
+        expectedComponents: [
+          ...(registration.serviceMaxAgeSeconds === null ? [] : ['service' as const]),
+          ...(registration.schedulerMaxAgeSeconds === null ? [] : ['scheduler' as const]),
+          ...(registration.deliveryMaxAgeSeconds === null ? [] : ['delivery' as const])
+        ],
+        observations,
+        policyActivatedAt: recoveryPolicy?.updatedAt ?? recoveryPolicy?.createdAt ?? asOf,
+        asOf
+      });
+      return [{
         id: registration.id, projectId: registration.projectId,
         project: project.name, projectSlug: project.slug, provider: registration.provider,
         runtimeKey: registration.runtimeKey, enabled: registration.enabled,
@@ -1726,9 +1770,16 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
             scheduler: registration.schedulerMaxAgeSeconds,
             delivery: registration.deliveryMaxAgeSeconds
           },
-          observations: availabilityByRegistration.get(registration.id) ?? [],
+          observations,
           asOf
         }),
+        ttlSeconds: {
+          service: registration.serviceMaxAgeSeconds,
+          scheduler: registration.schedulerMaxAgeSeconds,
+          delivery: registration.deliveryMaxAgeSeconds
+        },
+        recoveryPolicy,
+        recoveryCandidate,
         canManage: operator?.type === 'human' && operator.disabledAt === null &&
           (operator.role === 'workspace_admin' || manageableProjectIds.has(registration.projectId))
       }];

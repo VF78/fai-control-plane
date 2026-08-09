@@ -1,7 +1,7 @@
 'use client';
 
 import {useState} from 'react';
-import {Power, PowerOff, Replace as ReplaceIcon, RotateCcw} from 'lucide-react';
+import {Power, PowerOff, Replace as ReplaceIcon, RotateCcw, ShieldCheck} from 'lucide-react';
 
 type RegistrationResponse = Readonly<{
   message?: string;
@@ -19,6 +19,7 @@ export function RuntimeRegistrationControls({
   projectName,
   registrationId,
   replacementTargets,
+  recoveryPolicy,
   staleRun
 }: Readonly<{
   agentId: string;
@@ -35,19 +36,28 @@ export function RuntimeRegistrationControls({
     version: number;
     label: string;
   }>[];
+  recoveryPolicy: Readonly<{
+    enabled: boolean;
+    staleThresholdSeconds: number;
+    maximumAttempts: number;
+    version: number;
+  }> | null;
   staleRun: Readonly<{id: string; version: number}> | null;
 }>) {
   const [busy, setBusy] = useState(false);
   const [replacementTargetId, setReplacementTargetId] = useState(
     replacementTargets[0]?.id ?? ''
   );
+  const [recoveryEnabled, setRecoveryEnabled] = useState(recoveryPolicy?.enabled ?? false);
+  const [staleThresholdSeconds, setStaleThresholdSeconds] = useState(recoveryPolicy?.staleThresholdSeconds ?? 900);
+  const [maximumAttempts, setMaximumAttempts] = useState(recoveryPolicy?.maximumAttempts ?? 1);
   const [notice, setNotice] = useState<Readonly<{
     tone: 'success' | 'error';
     text: string;
   }> | null>(null);
   if (!canManage || csrfToken === null) return null;
 
-  const submit = async (action: 'enable' | 'disable' | 'recover' | 'replace') => {
+  const submit = async (action: 'enable' | 'disable' | 'recover' | 'replace' | 'set_recovery_policy') => {
     if (action === 'recover' && staleRun === null) return;
     const replacementTarget = replacementTargets.find(
       (target) => target.id === replacementTargetId
@@ -64,7 +74,14 @@ export function RuntimeRegistrationControls({
           body: JSON.stringify({
             _csrf: csrfToken,
             action,
-            ...(action === 'replace'
+            ...(action === 'set_recovery_policy'
+              ? {
+                  enabled: recoveryEnabled,
+                  expectedVersion: recoveryPolicy?.version ?? null,
+                  maximumAttempts,
+                  staleThresholdSeconds
+                }
+              : action === 'replace'
               ? {
                   targetExpectedVersion: replacementTarget?.version,
                   targetRegistrationId: replacementTarget?.id
@@ -77,7 +94,7 @@ export function RuntimeRegistrationControls({
                   runId: staleRun?.id
                 }
               : {}),
-            expectedVersion,
+            ...(action === 'set_recovery_policy' ? {} : {expectedVersion}),
             projectId
           })
         }
@@ -92,7 +109,7 @@ export function RuntimeRegistrationControls({
       }
       setNotice({
         tone: 'success',
-        text: `${action === 'recover' ? 'Восстановлено' : action === 'replace' ? 'Заменено' : action === 'disable' ? 'Отключено' : 'Включено'} · запись ${result.receipt.commandId.slice(0, 8)}`
+        text: `${action === 'set_recovery_policy' ? 'Политика сохранена' : action === 'recover' ? 'Восстановлено' : action === 'replace' ? 'Заменено' : action === 'disable' ? 'Отключено' : 'Включено'} · запись ${result.receipt.commandId.slice(0, 8)}`
       });
       window.setTimeout(() => window.location.reload(), 450);
     } catch {
@@ -149,6 +166,14 @@ export function RuntimeRegistrationControls({
           </button>
           <small>Атомарное переключение · история сохраняется</small>
         </>}
+    <details>
+      <summary><ShieldCheck aria-hidden="true" size={15}/> Политика восстановления</summary>
+      <label><input checked={recoveryEnabled} onChange={(event) => setRecoveryEnabled(event.target.checked)} type="checkbox"/> Включена</label>
+      <label>Порог устаревания, секунд<input min={30} max={604800} onChange={(event) => setStaleThresholdSeconds(Number(event.target.value))} type="number" value={staleThresholdSeconds}/></label>
+      <label>Максимум попыток<input min={1} max={10} onChange={(event) => setMaximumAttempts(Number(event.target.value))} type="number" value={maximumAttempts}/></label>
+      <button disabled={busy} onClick={() => void submit('set_recovery_policy')} type="button">Сохранить политику</button>
+      <small>Создаёт только кандидат для проверки. Никаких автоматических повторов или замен.</small>
+    </details>
     {notice === null ? null : <p
       aria-live="polite"
       className={`fcp-command-notice ${notice.tone}`}

@@ -52,7 +52,8 @@ export const policySurfaces = [
   'runner',
   'artifact_store',
   'secrets',
-  'worktree'
+  'worktree',
+  'runtime_observation'
 ] as const;
 export type PolicySurface = (typeof policySurfaces)[number];
 
@@ -532,7 +533,8 @@ const defaultDecision = (
 ): PolicyDecision => {
   if (approvalActions.has(actionCategory)) return 'ask';
   if (actorType === 'system') {
-    return actionCategory === 'read' && surface === 'control_plane' ? 'allow' : 'deny';
+    return (actionCategory === 'read' && surface === 'control_plane') ||
+      (actionCategory === 'write' && surface === 'runtime_observation') ? 'allow' : 'deny';
   }
   if (actionCategory === 'delete') return actorType === 'human' ? 'ask' : 'deny';
   if (environment === 'production') {
@@ -870,6 +872,28 @@ export type ReplaceRuntimeRegistrationCommand = CanonicalCommandEnvelope<
     targetExpectedVersion: number;
   }>
 >;
+export type ObserveRuntimeAvailabilityCommand = CanonicalCommandEnvelope<
+  'runtime_availability.observe',
+  Readonly<{
+    observationId: string;
+    registrationId: string;
+    component: 'service' | 'scheduler' | 'delivery';
+    state: 'available' | 'unavailable';
+    observedAt: string;
+    ttlSeconds: number;
+    evidenceReference: string;
+  }>
+>;
+export type SetRuntimeRecoveryPolicyCommand = CanonicalCommandEnvelope<
+  'runtime_registration.recovery_policy.set',
+  Readonly<{
+    registrationId: string;
+    enabled: boolean;
+    staleThresholdSeconds: number;
+    maximumAttempts: number;
+    expectedVersion: number | null;
+  }>
+>;
 export type CanonicalCommand =
   | TransitionWorkItemCommand
   | SetBlockedCommand
@@ -891,7 +915,9 @@ export type CanonicalCommand =
   | CreateRuntimeRegistrationCommand
   | UpdateRuntimeRegistrationCommand
   | DisableRuntimeRegistrationCommand
-  | ReplaceRuntimeRegistrationCommand;
+  | ReplaceRuntimeRegistrationCommand
+  | ObserveRuntimeAvailabilityCommand
+  | SetRuntimeRecoveryPolicyCommand;
 
 export type CanonicalJson =
   | null
@@ -1634,12 +1660,15 @@ export type ProjectionAvailability<T> =
 
 export {
   deriveRuntimeAvailability,
+  deriveRuntimeRecoveryCandidate,
   runtimeAvailabilityComponents,
   type RuntimeAvailabilityComponent,
   type RuntimeAvailabilityHealth,
   type RuntimeAvailabilityObservation,
   type RuntimeAvailabilityProjection,
   type RuntimeAvailabilityThresholds,
+  type RuntimeRecoveryCandidate,
+  type RuntimeRecoveryPolicy,
   type RuntimeComponentAvailability
 } from './runtime-monitoring.ts';
 
@@ -2415,6 +2444,27 @@ export type RuntimeRegistrationMutation = Readonly<{
     aggregate: RuntimeRegistration;
   }>;
 }>;
+export type RuntimeAvailabilityObservationMutation = Readonly<{
+  aggregateType: 'runtime_availability_observation';
+  aggregateId: string;
+  expectedPersistedVersion: null;
+  aggregate: Readonly<{
+    id: string;
+    runtimeRegistrationId: string;
+    component: 'service' | 'scheduler' | 'delivery';
+    state: 'available' | 'unavailable';
+    observedAt: string;
+    ttlSeconds: number;
+    evidenceReference: string;
+    version: 1;
+  }>;
+}>;
+export type RuntimeRecoveryPolicyMutation = Readonly<{
+  aggregateType: 'runtime_recovery_policy';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: import('./runtime-monitoring.ts').RuntimeRecoveryPolicy;
+}>;
 export type CanonicalMutation =
   | WorkItemUpdateMutation
   | AgentProfileUpdateMutation
@@ -2428,7 +2478,9 @@ export type CanonicalMutation =
   | ActorExternalIdentityMutation
   | ActorRetirementMutation
   | ResourceAccessGrantMutation
-  | RuntimeRegistrationMutation;
+  | RuntimeRegistrationMutation
+  | RuntimeAvailabilityObservationMutation
+  | RuntimeRecoveryPolicyMutation;
 export type PersistedCanonicalMutation = Readonly<{
   cas: PersistedVersionCas;
   audit: AuditAppendToken;
@@ -2548,6 +2600,10 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     registrationId: string
   ): Promise<RuntimeRegistration | null>;
+  loadRuntimeRecoveryPolicy?(
+    claimToken: ReceiptClaimToken,
+    registrationId: string
+  ): Promise<import('./runtime-monitoring.ts').RuntimeRecoveryPolicy | null>;
   loadAccessCommandAuthority(
     claimToken: ReceiptClaimToken,
     actorId: string,

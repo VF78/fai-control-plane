@@ -109,6 +109,7 @@ import {
   type ResourceAccessGrant,
   type RetirableAgent,
   type RuntimeRegistration,
+  type RuntimeRecoveryPolicy,
   type ReceiptClaimToken,
   type RunnerClaimAuthorization,
   type RunnerClaimRecord,
@@ -803,7 +804,9 @@ const commandTypes = new Set<CanonicalCommand['type']>([
   'runtime_registration.create',
   'runtime_registration.update',
   'runtime_registration.disable',
-  'runtime_registration.replace'
+  'runtime_registration.replace',
+  'runtime_availability.observe',
+  'runtime_registration.recovery_policy.set'
 ]);
 
 const defaultIds: IdGenerator = {next: randomUUID};
@@ -1820,6 +1823,31 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         isUuid(payload.targetRegistrationId) &&
         payload.targetRegistrationId !== payload.sourceRegistrationId &&
         isVersion(payload.targetExpectedVersion);
+    case 'runtime_availability.observe':
+      return hasExactKeys(payload, [
+        'observationId', 'registrationId', 'component', 'state', 'observedAt',
+        'ttlSeconds', 'evidenceReference'
+      ]) && isUuid(payload.observationId) && isUuid(payload.registrationId) &&
+        isOneOf(['service', 'scheduler', 'delivery'] as const, payload.component) &&
+        isOneOf(['available', 'unavailable'] as const, payload.state) &&
+        isCanonicalTimestamp(payload.observedAt) &&
+        Number.isInteger(payload.ttlSeconds) &&
+        (payload.ttlSeconds as number) >= 30 && (payload.ttlSeconds as number) <= 604800 &&
+        typeof payload.evidenceReference === 'string' &&
+        payload.evidenceReference.length >= 1 && payload.evidenceReference.length <= 500 &&
+        !/[\u0000-\u001f\u007f]/.test(payload.evidenceReference) &&
+        !containsHighConfidenceSecretContent(payload.evidenceReference);
+    case 'runtime_registration.recovery_policy.set':
+      return hasExactKeys(payload, [
+        'registrationId', 'enabled', 'staleThresholdSeconds', 'maximumAttempts',
+        'expectedVersion'
+      ]) && isUuid(payload.registrationId) && typeof payload.enabled === 'boolean' &&
+        Number.isInteger(payload.staleThresholdSeconds) &&
+        (payload.staleThresholdSeconds as number) >= 30 &&
+        (payload.staleThresholdSeconds as number) <= 604800 &&
+        Number.isInteger(payload.maximumAttempts) &&
+        (payload.maximumAttempts as number) >= 1 && (payload.maximumAttempts as number) <= 10 &&
+        (payload.expectedVersion === null || isVersion(payload.expectedVersion));
   }
   return assertNever(type);
 };
@@ -2010,7 +2038,16 @@ export const createCanonicalCommandService = (
     claim: CommandReceiptClaim,
     command: CanonicalCommand
   ) => {
-    const routine = authorize(command.actor, CANONICAL_COMMAND_POLICY);
+    if (command.type === 'runtime_availability.observe' && command.actor.kind !== 'trusted_system') {
+      return completeNoMutation(
+        transaction, claimToken, claim, command, commandTarget(command),
+        failed('INVALID_ACTOR_CONTEXT', 'Runtime observations require a trusted system actor.'),
+        'write', 'deny'
+      );
+    }
+    const routine = authorize(command.actor, command.type === 'runtime_availability.observe'
+      ? {actionCategory: 'write', surface: 'runtime_observation', environment: 'development'}
+      : CANONICAL_COMMAND_POLICY);
     if (!routine.ok) {
       return completeNoMutation(
         transaction, claimToken, claim, command, commandTarget(command), routine, 'write',
@@ -2039,6 +2076,8 @@ export const createCanonicalCommandService = (
       case 'runtime_registration.update': return runtimeRegistrationUpdate(transaction, claimToken, claim, command);
       case 'runtime_registration.disable': return runtimeRegistrationDisable(transaction, claimToken, claim, command);
       case 'runtime_registration.replace': return runtimeRegistrationReplace(transaction, claimToken, claim, command);
+      case 'runtime_availability.observe': return runtimeAvailabilityObserve(transaction, claimToken, claim, command);
+      case 'runtime_registration.recovery_policy.set': return runtimeRecoveryPolicySet(transaction, claimToken, claim, command);
     }
     return assertNever(command);
   };
@@ -3145,6 +3184,114 @@ export const createCanonicalCommandService = (
     }, resultTarget, value);
   }
 
+  async function runtimeAvailabilityObserve(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken,
+    claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'runtime_availability.observe'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor('runtime_availability_observation', payload.observationId);
+    const registration = await transaction.loadRuntimeRegistration(token, payload.registrationId);
+    if (registration === null || !registration.enabled) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('NOT_FOUND', 'Enabled runtime registration was not found.'), 'write'
+    );
+    const observedAt = new Date(payload.observedAt).getTime();
+    const now = clock.now().getTime();
+    if (observedAt > now + 5 * 60 * 1_000 || now - observedAt > payload.ttlSeconds * 1_000) {
+      return completeNoMutation(
+        transaction, token, claim, command, target,
+        failed('INVALID_COMMAND', 'Runtime observation is outside its declared TTL.'), 'write'
+      );
+    }
+    const value = succeeded({
+      id: payload.observationId,
+      registrationId: payload.registrationId,
+      component: payload.component,
+      state: payload.state,
+      observedAt: payload.observedAt,
+      ttlSeconds: payload.ttlSeconds,
+      evidenceReference: payload.evidenceReference,
+      version: 1
+    });
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'runtime_availability_observation',
+        aggregateId: payload.observationId,
+        expectedPersistedVersion: null,
+        aggregate: {
+          id: payload.observationId,
+          runtimeRegistrationId: payload.registrationId,
+          component: payload.component,
+          state: payload.state,
+          observedAt: payload.observedAt,
+          ttlSeconds: payload.ttlSeconds,
+          evidenceReference: payload.evidenceReference,
+          version: 1
+        }
+      },
+      audit: audit(
+        claim, ids, clock, targetFor('runtime_availability_observation', payload.observationId, undefined, 1),
+        command.actor.actorId, command.type, 'write', value, 'allow'
+      )
+    }, targetFor('runtime_availability_observation', payload.observationId, undefined, 1), value);
+  }
+
+  async function runtimeRecoveryPolicySet(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken,
+    claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'runtime_registration.recovery_policy.set'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor('runtime_recovery_policy', payload.registrationId, payload.expectedVersion ?? undefined);
+    const registration = await transaction.loadRuntimeRegistration(token, payload.registrationId);
+    if (registration === null) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('NOT_FOUND', 'Runtime registration was not found.'), 'access_change'
+    );
+    const authorization = await accessAuthority(transaction, token, command, registration.projectId);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    if (transaction.loadRuntimeRecoveryPolicy === undefined) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed('INVALID_COMMAND', 'Recovery policy persistence is unavailable.'), 'access_change'
+    );
+    const current = await transaction.loadRuntimeRecoveryPolicy(token, payload.registrationId);
+    if ((current?.version ?? null) !== payload.expectedVersion) return completeNoMutation(
+      transaction, token, claim, command,
+      targetFor('runtime_recovery_policy', payload.registrationId, payload.expectedVersion ?? undefined, current?.version),
+      failed('VERSION_CONFLICT', 'Recovery policy version conflicts with the command.'),
+      'access_change'
+    );
+    const policy: RuntimeRecoveryPolicy = {
+      runtimeRegistrationId: payload.registrationId,
+      enabled: payload.enabled,
+      staleThresholdSeconds: payload.staleThresholdSeconds,
+      maximumAttempts: payload.maximumAttempts,
+      version: (current?.version ?? 0) + 1
+    };
+    const resultTarget = targetFor(
+      'runtime_recovery_policy', payload.registrationId,
+      payload.expectedVersion ?? undefined, policy.version
+    );
+    const value = succeeded({...policy});
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {
+        aggregateType: 'runtime_recovery_policy',
+        aggregateId: payload.registrationId,
+        expectedPersistedVersion: payload.expectedVersion,
+        aggregate: policy
+      },
+      audit: audit(
+        claim, ids, clock, resultTarget, command.actor.actorId, command.type,
+        'access_change', value, 'allow'
+      )
+    }, resultTarget, value);
+  }
+
   async function persistRuntimeRegistration(
     transaction: CanonicalCommandTransaction,
     token: ReceiptClaimToken,
@@ -3214,6 +3361,13 @@ const commandTarget = (command: CanonicalCommand): Target => {
         'runtime_registration',
         command.payload.sourceRegistrationId,
         command.payload.sourceExpectedVersion
+      );
+    case 'runtime_availability.observe':
+      return targetFor('runtime_availability_observation', command.payload.observationId);
+    case 'runtime_registration.recovery_policy.set':
+      return targetFor(
+        'runtime_recovery_policy', command.payload.registrationId,
+        command.payload.expectedVersion ?? undefined
       );
   }
   return assertNever(command);

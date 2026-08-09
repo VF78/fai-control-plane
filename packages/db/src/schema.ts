@@ -714,6 +714,7 @@ export const runtimeAvailabilityObservations = pgTable(
     component: runtimeAvailabilityComponentEnum('component').notNull(),
     state: runtimeAvailabilityStateEnum('state').notNull(),
     observedAt: timestamp('observed_at', {withTimezone: true}).notNull(),
+    ttlSeconds: integer('ttl_seconds'),
     evidenceReference: text('evidence_reference').notNull(),
     createdAt: createdAt()
   },
@@ -732,7 +733,37 @@ export const runtimeAvailabilityObservations = pgTable(
       'runtime_availability_observations_evidence_bounded',
       sql`length(${table.evidenceReference}) between 1 and 500
         and ${table.evidenceReference} !~ '[[:cntrl:]]'`
+    ),
+    check(
+      'runtime_availability_observations_ttl_bounded',
+      sql`${table.ttlSeconds} between 30 and 604800`
     )
+  ]
+);
+
+export const runtimeRecoveryPolicies = pgTable(
+  'runtime_recovery_policies',
+  {
+    runtimeRegistrationId: uuid('runtime_registration_id')
+      .primaryKey()
+      .references(() => runtimeRegistrations.id, {onDelete: 'cascade'}),
+    enabled: boolean('enabled').default(false).notNull(),
+    staleThresholdSeconds: integer('stale_threshold_seconds').notNull(),
+    maximumAttempts: integer('maximum_attempts').notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    check(
+      'runtime_recovery_policies_stale_threshold_bounded',
+      sql`${table.staleThresholdSeconds} between 30 and 604800`
+    ),
+    check(
+      'runtime_recovery_policies_maximum_attempts_bounded',
+      sql`${table.maximumAttempts} between 1 and 10`
+    ),
+    check('runtime_recovery_policies_version_positive', sql`${table.version} > 0`)
   ]
 );
 
