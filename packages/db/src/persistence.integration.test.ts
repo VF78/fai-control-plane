@@ -4,6 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {
   CURRENT_POLICY_VERSION,
   createApprovalBinding,
+  createActorContextIssuer,
   createTaskPacket,
   type AgentRun,
   type ApprovalRequiredCommandOutcome,
@@ -12,6 +13,7 @@ import {
   type NonApprovalCommandOutcome,
   type TaskPacketContent
 } from '@fai-control-plane/domain';
+import {createCanonicalCommandService} from '../../application/src/index';
 import {eq, inArray} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
@@ -30,6 +32,9 @@ import {
   auditEvents,
   commandReceipts,
   taskPackets,
+  projects,
+  projectMemberships,
+  projectSetups,
   workItems
 } from './schema';
 
@@ -1571,6 +1576,108 @@ describePostgres(
       });
       expect(receipt?.result).not.toBeNull();
       expect(receipt?.completedAt).toBeInstanceOf(Date);
+    });
+
+    it('rejects a forged project setup at the PostgreSQL mutation boundary without side effects', async () => {
+      const receiptClaim = claim(`forged-setup-${randomUUID()}`);
+      const projectId = randomUUID();
+      const setupId = randomUUID();
+      const outcome: NonApprovalCommandOutcome = {
+        kind: 'non_approval',
+        mutation: {
+          aggregateType: 'project_setup', aggregateId: setupId, expectedPersistedVersion: null,
+          aggregate: {
+            id: setupId,
+            project: {id: projectId, workspaceId: fixture.workspaceId, name: 'Forged', slug: `forged-${randomUUID()}`, version: 1},
+            productOwnerActorId: fixture.actorId,
+            memberships: [{id: randomUUID(), projectId, actorId: fixture.actorId,
+              role: 'project_owner', active: true, version: 1}],
+            configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none',
+              clientChat: 'none', executionMode: 'manual', agentProfileId: null, providerId: 'github'} as never,
+            state: 'pending', lastErrorCode: null, version: 1
+          }
+        },
+        audit: {
+          id: randomUUID(), workspaceId: fixture.workspaceId, actorId: fixture.actorId,
+          commandId: receiptClaim.commandId, correlationId: receiptClaim.correlationId,
+          actionCategory: 'access_change', action: 'project.create', targetType: 'project_setup',
+          targetId: setupId, resultVersion: 1, occurredAt: new Date().toISOString()
+        }
+      };
+      await expect(createPostgresUnitOfWork(testDb).executeCommand(receiptClaim,
+        (transaction, token) => completeNonApproval(transaction, receiptClaim, token, outcome)))
+        .rejects.toThrow('exact canonical shape');
+      expect(await testDb.select().from(projects).where(eq(projects.id, projectId))).toHaveLength(0);
+      expect(await testDb.select().from(projectSetups).where(eq(projectSetups.id, setupId))).toHaveLength(0);
+      expect(await testDb.select().from(commandReceipts).where(eq(commandReceipts.idempotencyKey, receiptClaim.idempotencyKey))).toHaveLength(0);
+    });
+
+    it('atomically creates and replays a provider-neutral project setup with audit isolation', async () => {
+      const issuer = createActorContextIssuer({users: [{actorId: fixture.actorId,
+        capabilities: ['write:control_plane:development']}], agents: [], systems: []});
+      if (!issuer.ok) throw new Error('issuer fixture failed');
+      const actor = issuer.value.issueUser(fixture.actorId);
+      if (!actor.ok) throw new Error('actor fixture failed');
+      const ids = {project: randomUUID(), setup: randomUUID(), membership: randomUUID()};
+      const command = {
+        commandId: randomUUID(), workspaceId: fixture.workspaceId, correlationId: randomUUID(),
+        idempotencyKey: `project-${randomUUID()}`, issuedAt: new Date().toISOString(), actor: actor.value,
+        type: 'project.create' as const, payload: {
+          projectId: ids.project, setupId: ids.setup, name: 'Atomic project', slug: `atomic-${randomUUID()}`,
+          productOwnerActorId: fixture.actorId, productOwnerMembershipId: ids.membership, members: [],
+          repositoryBinding: 'create_managed' as const, trackerBinding: 'link_existing' as const,
+          internalChat: 'none' as const, clientChat: 'none' as const,
+          executionMode: 'manual' as const, agentProfileId: null
+        }
+      };
+      const service = createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(testDb)});
+      await expect(service.execute(command)).resolves.toMatchObject({status: 'completed', receipt: {result: {ok: true}}});
+      await expect(service.execute(command)).resolves.toMatchObject({status: 'replayed'});
+      expect(await testDb.select().from(projects).where(eq(projects.id, ids.project))).toHaveLength(1);
+      expect(await testDb.select().from(projectMemberships).where(eq(projectMemberships.projectId, ids.project))).toHaveLength(1);
+      expect(await testDb.select().from(projectSetups).where(eq(projectSetups.id, ids.setup))).toMatchObject([{
+        projectId: ids.project, state: 'pending', version: 1, lastErrorCode: null
+      }]);
+      await expect(testDb.update(projectSetups).set({state: 'ready'}).where(eq(projectSetups.id, ids.setup)))
+        .rejects.toMatchObject({cause: {code: '23514'}});
+      expect(await testDb.select({state: projectSetups.state}).from(projectSetups)
+        .where(eq(projectSetups.id, ids.setup))).toEqual([{state: 'pending'}]);
+      expect(await testDb.select().from(auditEvents).where(eq(auditEvents.commandId, command.commandId))).toHaveLength(1);
+      expect(await testDb.select().from(commandReceipts).where(eq(commandReceipts.idempotencyKey, command.idempotencyKey))).toHaveLength(1);
+
+      const rollbackProjectId = randomUUID();
+      const rollbackKey = `rollback-${randomUUID()}`;
+      const collidingSetup = {...command, commandId: randomUUID(), correlationId: randomUUID(),
+        idempotencyKey: rollbackKey, payload: {...command.payload, projectId: rollbackProjectId,
+          productOwnerMembershipId: randomUUID(), slug: `rollback-${randomUUID()}`}};
+      await expect(service.execute(collidingSetup)).rejects.toBeDefined();
+      expect(await testDb.select().from(projects).where(eq(projects.id, rollbackProjectId))).toHaveLength(0);
+      expect(await testDb.select().from(projectMemberships).where(eq(projectMemberships.projectId, rollbackProjectId))).toHaveLength(0);
+      expect(await testDb.select().from(commandReceipts).where(eq(commandReceipts.idempotencyKey, rollbackKey))).toHaveLength(0);
+
+      const concurrentSlug = `concurrent-${randomUUID()}`;
+      const concurrent = [0, 1].map((index) => ({...command, commandId: randomUUID(),
+        correlationId: randomUUID(), idempotencyKey: `concurrent-${index}-${randomUUID()}`,
+        payload: {...command.payload, projectId: randomUUID(), setupId: randomUUID(),
+          productOwnerMembershipId: randomUUID(), slug: concurrentSlug}}));
+      const concurrentResults = await Promise.all(concurrent.map((candidate) => service.execute(candidate)));
+      expect(concurrentResults.filter((result) => result.status === 'completed' &&
+        result.receipt.result.ok)).toHaveLength(1);
+      expect(concurrentResults.filter((result) => result.status === 'completed' &&
+        !result.receipt.result.ok && result.receipt.result.error.code === 'VERSION_CONFLICT')).toHaveLength(1);
+      expect(await testDb.select().from(projects).where(eq(projects.slug, concurrentSlug))).toHaveLength(1);
+
+      const crossIds = {project: randomUUID(), setup: randomUUID(), membership: randomUUID()};
+      const crossKey = `cross-${randomUUID()}`;
+      const crossWorkspace = {...command, commandId: randomUUID(), workspaceId: fixture.otherWorkspaceId,
+        correlationId: randomUUID(), idempotencyKey: crossKey, payload: {...command.payload,
+          projectId: crossIds.project, setupId: crossIds.setup,
+          productOwnerMembershipId: crossIds.membership, slug: `cross-${randomUUID()}`}};
+      await expect(service.execute(crossWorkspace)).rejects.toThrow('Actor does not belong to claim workspace');
+      expect(await testDb.select().from(projects).where(eq(projects.id, crossIds.project))).toHaveLength(0);
+      expect(await testDb.select().from(projectMemberships).where(eq(projectMemberships.projectId, crossIds.project))).toHaveLength(0);
+      expect(await testDb.select().from(projectSetups).where(eq(projectSetups.id, crossIds.setup))).toHaveLength(0);
+      expect(await testDb.select().from(commandReceipts).where(eq(commandReceipts.idempotencyKey, crossKey))).toHaveLength(0);
     });
 
     it('preserves existing rows while upgrading the foundation migrations', async () => {

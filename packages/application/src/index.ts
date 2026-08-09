@@ -797,6 +797,7 @@ const commandTypes = new Set<CanonicalCommand['type']>([
   'access_request.request',
   'access_request.decide',
   'project_membership.set',
+  'project.create',
   'actor.onboard',
   'actor_external_identity.bind',
   'actor.retire',
@@ -1736,6 +1737,36 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         isUuid(payload.subjectActorId) && isOneOf(projectMembershipRoles, payload.role) &&
         typeof payload.active === 'boolean' &&
         (payload.expectedVersion === null || isVersion(payload.expectedVersion));
+    case 'project.create': {
+      if (!hasExactKeys(payload, [
+        'projectId', 'setupId', 'name', 'slug', 'productOwnerActorId',
+        'productOwnerMembershipId', 'members', 'repositoryBinding', 'trackerBinding',
+        'internalChat', 'clientChat', 'executionMode', 'agentProfileId'
+      ]) || !isUuid(payload.projectId) || !isUuid(payload.setupId) ||
+        !isUuid(payload.productOwnerActorId) || !isUuid(payload.productOwnerMembershipId) ||
+        typeof payload.name !== 'string' || payload.name.trim() !== payload.name ||
+        payload.name.length < 1 || payload.name.length > 120 || /[\u0000-\u001f\u007f]/.test(payload.name) ||
+        typeof payload.slug !== 'string' || !/^[a-z][a-z0-9-]{1,47}$/.test(payload.slug) ||
+        ['all', 'api', 'dashboard', 'new', 'projects', 'settings'].includes(payload.slug) ||
+        !isDenseArray(payload.members) || payload.members.length > 20) return false;
+      const modes = ['none', 'link_existing', 'create_managed'] as const;
+      if (![payload.repositoryBinding, payload.trackerBinding, payload.internalChat, payload.clientChat]
+        .every((mode) => isOneOf(modes, mode)) ||
+        !isOneOf(['manual', 'managed_agent'] as const, payload.executionMode) ||
+        (payload.executionMode === 'manual' ? payload.agentProfileId !== null : !isUuid(payload.agentProfileId))) return false;
+      const seen = new Set<string>();
+      const membershipIds = new Set<string>([payload.productOwnerMembershipId]);
+      return payload.members.every((entry) => {
+        if (!isPlainObject(entry) || !hasExactKeys(entry, ['membershipId', 'actorId', 'role']) ||
+          !isUuid(entry.membershipId) || !isUuid(entry.actorId) ||
+          !isOneOf(projectMembershipRoles, entry.role) || entry.role === 'workspace_owner' ||
+          entry.role === 'project_owner' || seen.has(entry.actorId) || membershipIds.has(entry.membershipId) ||
+          entry.actorId === payload.productOwnerActorId) return false;
+        seen.add(entry.actorId);
+        membershipIds.add(entry.membershipId);
+        return true;
+      });
+    }
     case 'actor.onboard': {
       if (!hasExactKeys(payload, [
         'actorId', 'membershipId', 'projectId', 'actorType', 'displayName',
@@ -2068,6 +2099,7 @@ export const createCanonicalCommandService = (
       case 'access_request.request': return accessRequestCreate(transaction, claimToken, claim, command);
       case 'access_request.decide': return accessRequestDecide(transaction, claimToken, claim, command);
       case 'project_membership.set': return projectMembershipSet(transaction, claimToken, claim, command);
+      case 'project.create': return projectCreate(transaction, claimToken, claim, command);
       case 'actor.onboard': return actorOnboard(transaction, claimToken, claim, command);
       case 'actor_external_identity.bind': return actorExternalIdentityBind(transaction, claimToken, claim, command);
       case 'actor.retire': return actorRetire(transaction, claimToken, claim, command);
@@ -2735,6 +2767,67 @@ export const createCanonicalCommandService = (
     }, resultTarget, value);
   }
 
+  async function projectCreate(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'project.create'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor('project_setup', payload.setupId);
+    if (command.actor.kind !== 'trusted_user' || transaction.loadProjectSetupContext === undefined) {
+      return completeNoMutation(transaction, token, claim, command, target,
+        failed('INVALID_ACTOR_CONTEXT', 'Only an authenticated workspace manager may create projects.'));
+    }
+    if (payload.productOwnerActorId !== command.actor.actorId &&
+      !payload.members.some(({actorId}) => actorId === command.actor.actorId)) {
+      return completeNoMutation(transaction, token, claim, command, target,
+        failed('INVALID_COMMAND', 'Project creator must retain an active membership in the new project.'));
+    }
+    const context = await transaction.loadProjectSetupContext(token, {
+      actorId: command.actor.actorId, slug: payload.slug,
+      productOwnerActorId: payload.productOwnerActorId,
+      members: payload.members.map(({actorId, role}) => ({actorId, role})),
+      agentProfileId: payload.agentProfileId
+    });
+    if (context === null) return completeNoMutation(transaction, token, claim, command, target,
+      failed('NOT_FOUND', 'Workspace setup context was not found.'));
+    if (!context.workspaceAdmin) return completeNoMutation(transaction, token, claim, command, target,
+      failed('CAPABILITY_DENIED', 'Workspace administrator capability is required.'));
+    if (context.slugExists) return completeNoMutation(transaction, token, claim, command, target,
+      failed('VERSION_CONFLICT', 'Project slug is already in use.'));
+    if (!context.validProductOwner || !context.validMembers || !context.validAgentProfile) {
+      return completeNoMutation(transaction, token, claim, command, target,
+        failed('INVALID_COMMAND', 'Project owner, members, or execution profile are incompatible.'));
+    }
+    const memberships = [{
+      id: payload.productOwnerMembershipId, projectId: payload.projectId,
+      actorId: payload.productOwnerActorId, role: 'project_owner' as const, active: true, version: 1
+    }, ...payload.members.map((member) => ({
+      id: member.membershipId, projectId: payload.projectId, actorId: member.actorId,
+      role: member.role, active: true, version: 1
+    }))];
+    const aggregate = {
+      id: payload.setupId,
+      project: {id: payload.projectId, workspaceId: command.workspaceId, name: payload.name, slug: payload.slug, version: 1 as const},
+      productOwnerActorId: payload.productOwnerActorId,
+      memberships,
+      configuration: {
+        repositoryBinding: payload.repositoryBinding, trackerBinding: payload.trackerBinding,
+        internalChat: payload.internalChat, clientChat: payload.clientChat,
+        executionMode: payload.executionMode, agentProfileId: payload.agentProfileId
+      },
+      state: 'pending' as const, lastErrorCode: null, version: 1 as const
+    };
+    const value = succeeded({projectId: payload.projectId, slug: payload.slug, setupId: payload.setupId,
+      setupState: 'pending', setupVersion: 1});
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {aggregateType: 'project_setup', aggregateId: payload.setupId,
+        expectedPersistedVersion: null, aggregate},
+      audit: audit(claim, ids, clock, targetFor('project_setup', payload.setupId, undefined, 1),
+        command.actor.actorId, command.type, 'access_change', value, 'allow')
+    }, targetFor('project_setup', payload.setupId, undefined, 1), value);
+  }
+
   async function actorOnboard(
     transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
     command: Extract<CanonicalCommand, {type: 'actor.onboard'}>
@@ -3342,6 +3435,7 @@ const commandTarget = (command: CanonicalCommand): Target => {
     case 'access_request.decide': return targetFor('access_request', command.payload.requestId, command.payload.expectedVersion);
     case 'project_membership.set':
       return targetFor('project_membership', command.payload.membershipId, command.payload.expectedVersion ?? undefined);
+    case 'project.create': return targetFor('project_setup', command.payload.setupId);
     case 'actor.onboard':
       return targetFor('actor_onboarding', command.payload.actorId);
     case 'actor_external_identity.bind':

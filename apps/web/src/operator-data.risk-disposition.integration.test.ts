@@ -199,7 +199,7 @@ describePostgres('operator risk disposition projection', () => {
 
     const previousDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = testDatabaseUrl;
-    const loaded = await loadPortfolioData();
+    const loaded = await loadPortfolioData([{projectId: ids.project, slug: 'msa'}]);
     if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = previousDatabaseUrl;
 
@@ -259,7 +259,7 @@ describePostgres('operator risk disposition projection', () => {
       occurredAt: new Date(now.getTime() + 60_000)
     });
     process.env.DATABASE_URL = testDatabaseUrl;
-    const recovered = await loadPortfolioData();
+    const recovered = await loadPortfolioData([{projectId: ids.project, slug: 'msa'}]);
     if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = previousDatabaseUrl;
     expect(recovered.state).toBe('ready');

@@ -349,6 +349,17 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.actorId, 'projectMembership.actorId');
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
+    case 'project_setup':
+      uuid(mutation.aggregate.id, 'projectSetup.id');
+      uuid(mutation.aggregate.project.id, 'projectSetup.project.id');
+      uuid(mutation.aggregate.project.workspaceId, 'projectSetup.project.workspaceId');
+      invariant(mutation.aggregateId === mutation.aggregate.id &&
+        mutation.expectedPersistedVersion === null && mutation.aggregate.version === 1,
+      'Project setup must use insert mode.');
+      invariant(mutation.aggregate.memberships.every((membership) =>
+        membership.projectId === mutation.aggregate.project.id && membership.active && membership.version === 1),
+      'Project setup memberships must be active and project-bound.');
+      break;
     case 'actor_onboarding':
       uuid(mutation.aggregate.id, 'actorOnboarding.id');
       uuid(mutation.aggregate.workspaceId, 'actorOnboarding.workspaceId');
@@ -808,6 +819,14 @@ const currentVersion = async (
           eq(schema.projectMemberships.id, mutation.aggregateId),
           eq(schema.projects.workspaceId, workspaceId)
         ));
+      return row?.version ?? null;
+    }
+    case 'project_setup': {
+      const [row] = await tx.select({version: schema.projectSetups.version})
+        .from(schema.projectSetups)
+        .innerJoin(schema.projects, eq(schema.projects.id, schema.projectSetups.projectId))
+        .where(and(eq(schema.projectSetups.id, mutation.aggregateId),
+          eq(schema.projects.workspaceId, workspaceId)));
       return row?.version ?? null;
     }
     case 'actor_onboarding': {
@@ -2046,6 +2065,105 @@ const persistActorRetirement = async (
       };
 };
 
+const persistProjectSetup = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'project_setup'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (aggregate.project.workspaceId !== workspaceId) return {status: 'not_found'};
+  invariant(aggregate.state === 'pending' && aggregate.lastErrorCode === null,
+    'New project setup must start pending without an error.');
+  const rawConfiguration: unknown = aggregate.configuration;
+  const configurationKeys = [
+    'repositoryBinding', 'trackerBinding', 'internalChat', 'clientChat',
+    'executionMode', 'agentProfileId'
+  ];
+  const bindingModes = new Set(['none', 'link_existing', 'create_managed']);
+  invariant(typeof rawConfiguration === 'object' && rawConfiguration !== null && !Array.isArray(rawConfiguration) &&
+    Object.getPrototypeOf(rawConfiguration) === Object.prototype,
+  'Project setup configuration must be a plain object.');
+  const configuration = rawConfiguration as Record<string, unknown>;
+  invariant(
+    Object.keys(configuration).length === configurationKeys.length &&
+    configurationKeys.every((key) => Object.hasOwn(configuration, key)),
+  'Project setup configuration must have the exact canonical shape.');
+  invariant(['repositoryBinding', 'trackerBinding', 'internalChat', 'clientChat']
+    .every((key) => bindingModes.has(configuration[key] as string)) &&
+    (configuration.executionMode === 'manual' || configuration.executionMode === 'managed_agent') &&
+    (configuration.executionMode === 'manual'
+      ? configuration.agentProfileId === null
+      : typeof configuration.agentProfileId === 'string' && isUuid(configuration.agentProfileId)),
+  'Project setup configuration values are not canonical.');
+  invariant(aggregate.project.name.trim() === aggregate.project.name &&
+    aggregate.project.name.length > 0 && aggregate.project.name.length <= 120 &&
+    !/[\u0000-\u001f\u007f]/.test(aggregate.project.name) &&
+    /^[a-z][a-z0-9-]{1,47}$/.test(aggregate.project.slug) &&
+    !['all', 'api', 'dashboard', 'new', 'projects', 'settings'].includes(aggregate.project.slug),
+  'Project setup identity is not canonical.');
+  invariant(aggregate.memberships.length >= 1 && aggregate.memberships.length <= 21,
+    'Project setup membership count is out of bounds.');
+  const membershipIds = new Set(aggregate.memberships.map(({id}) => id));
+  const actorIds = new Set(aggregate.memberships.map(({actorId}) => actorId));
+  invariant(membershipIds.size === aggregate.memberships.length && actorIds.size === aggregate.memberships.length &&
+    aggregate.memberships.every(({id, actorId}) => isUuid(id) && isUuid(actorId)),
+  'Project setup membership identities must be unique UUIDs.');
+  const ownerMemberships = aggregate.memberships.filter(({actorId, role}) =>
+    actorId === aggregate.productOwnerActorId && role === 'project_owner');
+  invariant(ownerMemberships.length === 1 && aggregate.memberships.filter(({role}) => role === 'project_owner').length === 1 &&
+    aggregate.memberships.every(({role}) => ['project_owner', 'contributor', 'reviewer', 'client_viewer', 'agent'].includes(role)),
+  'Project setup must contain exactly one Product Owner membership and canonical roles.');
+  const actorRows = await tx.select({id: schema.actors.id, type: schema.actors.type})
+    .from(schema.actors).where(and(eq(schema.actors.workspaceId, workspaceId),
+      inArray(schema.actors.id, [...actorIds]), isNull(schema.actors.disabledAt)));
+  const actorTypes = new Map(actorRows.map((actor) => [actor.id, actor.type]));
+  invariant(actorRows.length === aggregate.memberships.length && aggregate.memberships.every((membership) =>
+    membership.role === 'agent'
+      ? actorTypes.get(membership.actorId) === 'agent'
+      : actorTypes.get(membership.actorId) === 'human'),
+  'Project setup actors must be active, workspace-scoped, and role-compatible.');
+  if (configuration.executionMode === 'managed_agent') {
+    const [profile] = await tx.select({actorId: schema.agentProfiles.actorId})
+      .from(schema.agentProfiles).innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
+      .where(and(eq(schema.agentProfiles.id, configuration.agentProfileId as string),
+        eq(schema.agentProfiles.workspaceId, workspaceId), eq(schema.agentProfiles.enabled, true),
+        eq(schema.actors.type, 'agent'), isNull(schema.actors.disabledAt)));
+    invariant(profile !== undefined && aggregate.memberships.some(({actorId, role}) =>
+      actorId === profile.actorId && role === 'agent'),
+    'Managed execution profile must belong to an active agent member.');
+  }
+  const [project] = await tx.insert(schema.projects).values({
+    id: aggregate.project.id,
+    workspaceId,
+    name: aggregate.project.name,
+    slug: aggregate.project.slug,
+    version: 1
+  }).returning({id: schema.projects.id});
+  invariant(project !== undefined, 'Project setup project insert failed.');
+  await tx.insert(schema.projectMemberships).values(aggregate.memberships.map((membership) => ({
+    id: membership.id,
+    projectId: membership.projectId,
+    actorId: membership.actorId,
+    role: membership.role,
+    active: true,
+    version: 1
+  })));
+  const [setup] = await tx.insert(schema.projectSetups).values({
+    id: aggregate.id,
+    projectId: aggregate.project.id,
+    state: aggregate.state,
+    configuration: aggregate.configuration,
+    lastErrorCode: aggregate.lastErrorCode,
+    version: 1
+  }).returning({version: schema.projectSetups.version});
+  invariant(setup !== undefined, 'Project setup aggregate insert failed.');
+  return {
+    status: 'persisted',
+    cas: {expectedPersistedVersion: null, persistedVersion: setup.version},
+    projectId: aggregate.project.id
+  };
+};
+
 const persistAggregate = (
   tx: Transaction,
   workspaceId: string,
@@ -2067,6 +2185,8 @@ const persistAggregate = (
       return persistAccessRequest(tx, workspaceId, mutation);
     case 'project_membership':
       return persistProjectMembership(tx, workspaceId, mutation);
+    case 'project_setup':
+      return persistProjectSetup(tx, workspaceId, mutation);
     case 'actor_onboarding':
       return persistActorOnboarding(tx, workspaceId, mutation);
     case 'actor_external_identity':
@@ -2744,6 +2864,53 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
           return {
             workspaceAdmin: actor.role === 'workspace_admin',
             projectRole: membership?.role ?? null
+          };
+        },
+
+        async loadProjectSetupContext(token, input) {
+          const state = requireClaim(token);
+          const ids = [input.productOwnerActorId, ...input.members.map(({actorId}) => actorId)];
+          if (!isUuid(input.actorId) || !ids.every(isUuid) ||
+            (input.agentProfileId !== null && !isUuid(input.agentProfileId))) return null;
+          const [workspace] = await tx.select({id: schema.workspaces.id}).from(schema.workspaces)
+            .where(eq(schema.workspaces.id, state.claim.workspaceId)).for('update');
+          if (workspace === undefined) return null;
+          const [operator, existing, candidates] = await Promise.all([
+            tx.select({role: schema.actors.role}).from(schema.actors).where(and(
+              eq(schema.actors.id, input.actorId), eq(schema.actors.workspaceId, state.claim.workspaceId),
+              eq(schema.actors.type, 'human'), eq(schema.actors.authMode, 'user'), isNull(schema.actors.disabledAt)
+            )).limit(1),
+            tx.select({id: schema.projects.id}).from(schema.projects).where(and(
+              eq(schema.projects.workspaceId, state.claim.workspaceId), eq(schema.projects.slug, input.slug)
+            )).limit(1),
+            tx.select({id: schema.actors.id, type: schema.actors.type}).from(schema.actors).where(and(
+              eq(schema.actors.workspaceId, state.claim.workspaceId), inArray(schema.actors.id, ids),
+              isNull(schema.actors.disabledAt)
+            ))
+          ]);
+          if (operator[0] === undefined) return null;
+          const actorType = new Map(candidates.map((candidate) => [candidate.id, candidate.type]));
+          const validProductOwner = actorType.get(input.productOwnerActorId) === 'human';
+          const validMembers = candidates.length === ids.length && input.members.every((member) =>
+            member.role === 'agent'
+              ? actorType.get(member.actorId) === 'agent'
+              : actorType.get(member.actorId) === 'human');
+          let validAgentProfile = input.agentProfileId === null;
+          if (input.agentProfileId !== null) {
+            const [profile] = await tx.select({actorId: schema.agentProfiles.actorId})
+              .from(schema.agentProfiles).innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
+              .where(and(eq(schema.agentProfiles.id, input.agentProfileId),
+                eq(schema.agentProfiles.workspaceId, state.claim.workspaceId), eq(schema.agentProfiles.enabled, true),
+                eq(schema.actors.type, 'agent'), isNull(schema.actors.disabledAt)));
+            validAgentProfile = profile !== undefined && input.members.some((member) =>
+              member.actorId === profile.actorId && member.role === 'agent');
+          }
+          return {
+            workspaceAdmin: operator[0].role === 'workspace_admin',
+            slugExists: existing[0] !== undefined,
+            validProductOwner,
+            validMembers,
+            validAgentProfile
           };
         },
 

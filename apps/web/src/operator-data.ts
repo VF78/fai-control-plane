@@ -33,6 +33,7 @@ import {
   projectScopeOutcomes,
   projectTrackerRepositoryScopes,
   projects,
+  projectSetups,
   projectMemberships,
   resourceAccessGrants,
   runtimeAvailabilityObservations,
@@ -84,10 +85,9 @@ import {
   type AttentionQueueItem
 } from './attention-queue';
 
-export const operatorProjectSlugs = ['msa', 'ascon'] as const;
-export type OperatorProjectSlug = (typeof operatorProjectSlugs)[number];
+export type OperatorProjectSlug = string;
 export const isOperatorProjectSlug = (value: string): value is OperatorProjectSlug =>
-  (operatorProjectSlugs as readonly string[]).includes(value);
+  /^[a-z][a-z0-9-]{1,47}$/.test(value) && !['all', 'api', 'dashboard', 'new', 'projects', 'settings'].includes(value);
 
 export type OperatorLoad<T> =
   | Readonly<{state: 'ready'; data: T}>
@@ -98,7 +98,7 @@ type Project = Readonly<{
   id: string;
   workspaceId: string;
   name: string;
-  slug: OperatorProjectSlug;
+  slug: string;
   description: string | null;
   defaultBranch: string;
   updatedAt: Date;
@@ -207,7 +207,12 @@ const readDatabase = async <T>(loader: (db: Database) => Promise<T>): Promise<Op
   }
 };
 
-const scopedProjects = async (db: Database, slug?: OperatorProjectSlug): Promise<Project[]> => {
+export type AuthorizedProjectScope = Readonly<{projectId: string; slug: OperatorProjectSlug}>;
+const scopedProjects = async (
+  db: Database,
+  scopes?: readonly AuthorizedProjectScope[],
+  workspaceId?: string
+): Promise<Project[]> => {
   const rows = await db.select({
     id: projects.id,
     workspaceId: projects.workspaceId,
@@ -216,17 +221,18 @@ const scopedProjects = async (db: Database, slug?: OperatorProjectSlug): Promise
     description: projects.description,
     defaultBranch: projects.defaultBranch,
     updatedAt: projects.updatedAt
-  }).from(projects).where(slug === undefined
-    ? inArray(projects.slug, operatorProjectSlugs)
-    : eq(projects.slug, slug)).orderBy(projects.slug);
-  return rows.flatMap((project): Project[] =>
-    isOperatorProjectSlug(project.slug) ? [{...project, slug: project.slug}] : []);
+  }).from(projects).where(workspaceId !== undefined
+    ? eq(projects.workspaceId, workspaceId)
+    : inArray(projects.id, (scopes ?? []).map(({projectId}) => projectId))).orderBy(projects.slug);
+  const authorized = scopes === undefined ? null : new Map(scopes.map((scope) => [scope.projectId, scope.slug]));
+  return rows.flatMap((project): Project[] => isOperatorProjectSlug(project.slug) &&
+    (authorized === null || authorized.get(project.id) === project.slug) ? [project] : []);
 };
 
 export const loadConversationsData = (
-  scope?: OperatorProjectSlug
+  scopes?: readonly AuthorizedProjectScope[]
 ): Promise<OperatorLoad<ConversationsData>> => readDatabase(async (db) => {
-  const configuredProjects = await scopedProjects(db, scope);
+  const configuredProjects = await scopedProjects(db, scopes);
   const projectIds = configuredProjects.map(({id}) => id);
   const rows = await loadConversationRows(db, projectIds);
   const actorIds = [...new Set(rows.participants.flatMap(({actorId}) =>
@@ -449,8 +455,8 @@ export const derivePortfolioProjectMetrics = (input: Readonly<{
   };
 };
 
-export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => readDatabase(async (db) => {
-  const configuredProjects = await scopedProjects(db);
+export const loadPortfolioData = (scopes?: readonly AuthorizedProjectScope[]): Promise<OperatorLoad<PortfolioData>> => readDatabase(async (db) => {
+  const configuredProjects = await scopedProjects(db, scopes);
   if (configuredProjects.length === 0) return {projects: [], attention: []};
   const projectIds = configuredProjects.map(({id}) => id);
   const latestDispositionVersions = db.select({
@@ -686,6 +692,13 @@ export const loadPortfolioData = (): Promise<OperatorLoad<PortfolioData>> => rea
 
 export type ProjectData = Readonly<{
   project: Project;
+  setup?: Readonly<{
+    id: string;
+    state: 'pending' | 'in_progress' | 'blocked';
+    version: number;
+    lastErrorCode: string | null;
+    configuration: import('@fai-control-plane/db').ProjectSetupConfiguration;
+  }> | null;
   agentProfiles: readonly Readonly<{id: string; runtimeId: string}>[];
   snapshot: Readonly<{health: 'green' | 'yellow' | 'red'; capturedAt: Date}> | null;
   synchronizedAt: Date | null;
@@ -751,10 +764,10 @@ export type DeliveryLifecycleData = Readonly<{
 
 /** A deliberately small, task-scoped read model for the delivery-detail lifecycle rail. */
 export const loadDeliveryLifecycleData = (
-  slug: OperatorProjectSlug,
+  scope: AuthorizedProjectScope,
   workItemId: string
 ): Promise<OperatorLoad<DeliveryLifecycleData | null>> => readDatabase(async (db) => {
-  const [project] = await scopedProjects(db, slug);
+  const [project] = await scopedProjects(db, [scope]);
   if (project === undefined) return null;
   const [task] = await db.select({id: workItems.id}).from(workItems).where(and(
     eq(workItems.id, workItemId), eq(workItems.projectId, project.id), isNull(workItems.deletedAt)
@@ -807,10 +820,14 @@ export const loadDeliveryLifecycleData = (
   };
 });
 
-export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
-  const [project] = await scopedProjects(db, slug);
+export const loadProjectData = (scope: AuthorizedProjectScope): Promise<OperatorLoad<ProjectData | null>> => readDatabase(async (db) => {
+  const [project] = await scopedProjects(db, [scope]);
   if (project === undefined) return null;
-  const [snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations] = await Promise.all([
+  const slug = project.slug;
+  const [setups, snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations] = await Promise.all([
+    db.select({id: projectSetups.id, state: projectSetups.state, version: projectSetups.version,
+      lastErrorCode: projectSetups.lastErrorCode, configuration: projectSetups.configuration})
+      .from(projectSetups).where(eq(projectSetups.projectId, project.id)).limit(1),
     db.select({health: dashboardSnapshots.health, capturedAt: dashboardSnapshots.capturedAt})
       .from(dashboardSnapshots).where(eq(dashboardSnapshots.projectId, project.id)).orderBy(desc(dashboardSnapshots.capturedAt)).limit(1),
     db.select({createdAt: trackerSnapshotOperations.createdAt})
@@ -988,6 +1005,9 @@ export const loadProjectData = (slug: OperatorProjectSlug): Promise<OperatorLoad
   }));
   return {
     project,
+    setup: setups[0] === undefined ? null : {
+      ...setups[0], state: setups[0].state as 'pending' | 'in_progress' | 'blocked'
+    },
     agentProfiles: availableProfiles.filter((profile) => isRuntimeAvailable(profile.runtimeId)),
     snapshot: snapshots[0] ?? null,
     synchronizedAt: operations[0]?.createdAt ?? null,
@@ -1090,8 +1110,8 @@ export type RunsData = Readonly<{
   }> [];
 }>;
 
-export const loadRunsData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<RunsData>> => readDatabase(async (db) => {
-  const configuredProjects = await scopedProjects(db, scope);
+export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promise<OperatorLoad<RunsData>> => readDatabase(async (db) => {
+  const configuredProjects = await scopedProjects(db, scopes);
   if (configuredProjects.length === 0) return {runs: [], approvals: [], packets: []};
   const projectIds = configuredProjects.map(({id}) => id);
   const workspaceIds = [...new Set(configuredProjects.map(({workspaceId}) => workspaceId))];
@@ -1544,7 +1564,15 @@ export const deriveFleetHealth = (input: Readonly<{
 };
 
 export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<AccessData>> => readDatabase(async (db) => {
-  const configuredProjects = await scopedProjects(db);
+  const [operatorWorkspace] = operatorActorId === undefined ? [] : await db.select({workspaceId: actors.workspaceId})
+    .from(actors).where(and(eq(actors.id, operatorActorId), eq(actors.type, 'human'),
+      eq(actors.authMode, 'user'), isNull(actors.disabledAt))).limit(1);
+  if (operatorActorId !== undefined && operatorWorkspace === undefined) throw new Error('Operator is not active.');
+  const configuredWorkspaceId = operatorWorkspace?.workspaceId ??
+    (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      .test(process.env.FCP_WORKSPACE_ID ?? '') ? process.env.FCP_WORKSPACE_ID : undefined);
+  const configuredProjects = configuredWorkspaceId === undefined ? [] :
+    await scopedProjects(db, undefined, configuredWorkspaceId);
   const workspaceIds = [...new Set(configuredProjects.map(({workspaceId}) => workspaceId))];
   const sharingEnabled = process.env.PUBLIC_SHARING_ENABLED === 'true';
   if (workspaceIds.length === 0) {
@@ -1939,8 +1967,8 @@ export type HealthData = Readonly<{
   }>[];
 }>;
 
-export const loadHealthData = (scope?: OperatorProjectSlug): Promise<OperatorLoad<HealthData>> => readDatabase(async (db) => {
-  const configuredProjects = await scopedProjects(db, scope);
+export const loadHealthData = (scopes?: readonly AuthorizedProjectScope[]): Promise<OperatorLoad<HealthData>> => readDatabase(async (db) => {
+  const configuredProjects = await scopedProjects(db, scopes);
   if (configuredProjects.length === 0) return {jobs: [], integrations: [], risks: [], audit: [], costLedger: []};
   const projectIds = configuredProjects.map(({id}) => id);
   const projectById = new Map(configuredProjects.map((project) => [project.id, project]));

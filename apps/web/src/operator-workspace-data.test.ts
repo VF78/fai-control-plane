@@ -15,10 +15,10 @@ import {loadWorkspaceData} from './operator-workspace-data';
 
 beforeEach(() => {
   loaders.loadAccessData.mockResolvedValue({state: 'ready', data: {
-    memberships: [{actorId: 'vitaliy', projectSlug: 'msa', active: true}]
+    memberships: [{actorId: 'vitaliy', projectId: 'msa-id', projectSlug: 'msa', active: true}]
   }});
-  loaders.loadProjectData.mockImplementation(async (slug: string) => ({
-    state: 'ready', data: {project: {slug}}
+  loaders.loadProjectData.mockImplementation(async (scope: {projectId: string; slug: string}) => ({
+    state: 'ready', data: {project: {id: scope.projectId, slug: scope.slug}}
   }));
 });
 
@@ -29,6 +29,6 @@ it('loads dashboard project baselines only for the authenticated operator member
   }, 'vitaliy');
 
   expect(loaders.loadProjectData).toHaveBeenCalledTimes(1);
-  expect(loaders.loadProjectData).toHaveBeenCalledWith('msa');
-  expect(data.projectIndex).toEqual([{project: {slug: 'msa'}}]);
+  expect(loaders.loadProjectData).toHaveBeenCalledWith({projectId: 'msa-id', slug: 'msa'});
+  expect(data.projectIndex).toEqual([{project: {id: 'msa-id', slug: 'msa'}}]);
 });
