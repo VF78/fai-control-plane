@@ -244,7 +244,9 @@ it('renders the persisted weighted scope baseline without deriving progress from
     portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
     project: {state: 'ready', data: {
       project: {id: 'msa-id', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: observedAt},
-      agentProfiles: [], snapshot: {health: 'yellow', capturedAt: observedAt}, synchronizedAt: observedAt, protocol: null, workItems: [],
+      agentProfiles: [], snapshot: {health: 'yellow', capturedAt: observedAt}, synchronizedAt: observedAt, protocol: null,
+      execution: {projectId: 'msa-id', status: 'stopped', version: 0, selection: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null},
+      workItems: [],
       scopeBaseline: {id: 'baseline-1', version: 1, approvedAt: observedAt, updatedAt: observedAt, outcomes: [
         {key: 'accepted', title: 'Принятый результат', weight: 45, state: 'accepted', acceptedBy: 'Vladimir', acceptedAt: observedAt, evidenceReference: '#91'},
         {key: 'review', title: 'Результат на проверке', weight: 15, state: 'review', acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
@@ -265,7 +267,7 @@ it('renders the persisted weighted scope baseline without deriving progress from
 });
 
 it('keeps the selected workspace area when changing between authorized projects', () => {
-  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []});
+  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, execution: {projectId: slug, status: 'stopped' as const, version: 0, selection: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}, workItems: []});
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'global_tasks', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
     data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [project('MSA', 'msa'), project('ASCON', 'ascon')]}

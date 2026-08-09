@@ -1064,11 +1064,88 @@ export const workItems = pgTable(
   },
   (table) => [
     index('work_items_project_status_idx').on(table.projectId, table.status),
+    uniqueIndex('work_items_identity_project_unique').on(table.id, table.projectId),
     foreignKey({columns: [table.projectId, table.sourcePlanVersionId], foreignColumns: [projectPlanVersions.projectId, projectPlanVersions.id], name: 'work_items_project_plan_version_fk'}).onDelete('restrict'),
     uniqueIndex('work_items_identity_source_plan_unique').on(table.id, table.sourcePlanVersionId),
     uniqueIndex('work_items_plan_source_key_unique').on(table.sourcePlanVersionId, table.sourceTaskKey),
     check('work_items_plan_source_complete', sql`(${table.sourcePlanVersionId} is null and ${table.sourceTaskKey} is null and ${table.acceptanceEvidence} is null) or (${table.sourcePlanVersionId} is not null and ${table.sourceTaskKey} is not null and ${table.acceptanceEvidence} is not null)`),
     check('work_items_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
+export const projectExecutions = pgTable(
+  'project_executions',
+  {
+    projectId: uuid('project_id').primaryKey()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    status: text('status').$type<import('@fai-control-plane/domain').ProjectExecutionStatus>()
+      .notNull(),
+    selectedWorkItemId: uuid('selected_work_item_id'),
+    selectedPlanVersionId: uuid('selected_plan_version_id'),
+    selectedWorkItemVersion: integer('selected_work_item_version'),
+    selectedProtocolId: uuid('selected_protocol_id'),
+    selectedProtocolVersion: integer('selected_protocol_version'),
+    selectedJourneyVersion: integer('selected_journey_version'),
+    selectedStageKey: text('selected_stage_key'),
+    selectedResponsibleActorId: uuid('selected_responsible_actor_id'),
+    selectedAgentProfileId: uuid('selected_agent_profile_id'),
+    blockReason: text('block_reason'),
+    version: integer('version').default(1).notNull(),
+    startedAt: timestamp('started_at', {withTimezone: true}).notNull(),
+    pausedAt: timestamp('paused_at', {withTimezone: true}),
+    completedAt: timestamp('completed_at', {withTimezone: true}),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.selectedWorkItemId, table.projectId],
+      foreignColumns: [workItems.id, workItems.projectId],
+      name: 'project_executions_selected_work_item_project_fk'
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.selectedWorkItemId, table.selectedPlanVersionId],
+      foreignColumns: [workItems.id, workItems.sourcePlanVersionId],
+      name: 'project_executions_selected_work_item_plan_fk'
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.selectedPlanVersionId, table.projectId],
+      foreignColumns: [projectPlanVersions.id, projectPlanVersions.projectId],
+      name: 'project_executions_selected_plan_project_fk'
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.selectedProtocolId, table.selectedProtocolVersion],
+      foreignColumns: [runbooks.id, runbooks.version],
+      name: 'project_executions_selected_protocol_version_fk'
+    }).onDelete('restrict'),
+    foreignKey({columns: [table.selectedResponsibleActorId], foreignColumns: [actors.id],
+      name: 'project_executions_selected_actor_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.selectedAgentProfileId], foreignColumns: [agentProfiles.id],
+      name: 'project_executions_selected_agent_profile_fk'}).onDelete('restrict'),
+    check('project_executions_status_valid',
+      sql`${table.status} in ('stopped', 'running', 'paused', 'blocked', 'completed')`),
+    check('project_executions_version_positive', sql`${table.version} > 0`),
+    check('project_executions_selection_shape',
+      sql`(${table.status} = 'completed' and ${table.selectedWorkItemId} is null) or (${table.status} <> 'completed')`),
+    check('project_executions_running_selection',
+      sql`${table.status} <> 'running' or ${table.selectedWorkItemId} is not null`),
+    check('project_executions_selection_snapshot_shape', sql`
+      (${table.selectedWorkItemId} is null and ${table.selectedPlanVersionId} is null and
+       ${table.selectedWorkItemVersion} is null and ${table.selectedProtocolId} is null and
+       ${table.selectedProtocolVersion} is null and ${table.selectedJourneyVersion} is null and
+       ${table.selectedStageKey} is null and ${table.selectedResponsibleActorId} is null and
+       ${table.selectedAgentProfileId} is null)
+      or
+      (${table.selectedWorkItemId} is not null and ${table.selectedPlanVersionId} is not null and
+       ${table.selectedWorkItemVersion} > 0 and ${table.selectedProtocolId} is not null and
+       ${table.selectedProtocolVersion} > 0 and ${table.selectedJourneyVersion} > 0 and
+       ${table.selectedStageKey} ~ '^[a-z][a-z0-9_]{0,63}$' and ${table.selectedResponsibleActorId} is not null)`),
+    check('project_executions_block_shape',
+      sql`(${table.status} = 'blocked' and ${table.blockReason} ~ '^[a-z][a-z0-9_]{0,63}$') or (${table.status} <> 'blocked' and ${table.blockReason} is null)`),
+    check('project_executions_pause_shape',
+      sql`(${table.status} = 'paused') = (${table.pausedAt} is not null)`),
+    check('project_executions_completion_shape',
+      sql`(${table.status} = 'completed') = (${table.completedAt} is not null)`)
   ]
 );
 
