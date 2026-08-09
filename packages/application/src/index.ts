@@ -1,6 +1,18 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export * from './access-observation.ts';
 export {
+  createProjectPlanService,
+  type ApproveProjectPlanCommand,
+  type ProjectPlanExecution,
+  type ProjectPlanMutationCommand,
+  type ProjectPlanReceipt,
+  type ProjectPlanService,
+  type ProjectPlanStore,
+  type ProjectPlanWorkspace,
+  type RecordSourceArtifactCommand,
+  type SaveProjectPlanDraftCommand
+} from './project-plan.ts';
+export {
   createDeliveryJourneyService,
   type AdvanceDeliveryJourneyCommand,
   type DeliveryJourneyCommand,

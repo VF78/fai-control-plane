@@ -195,6 +195,7 @@ export const actors = pgTable(
     updatedAt: updatedAt()
   },
   (table) => [
+    uniqueIndex('actors_workspace_id_unique').on(table.workspaceId, table.id),
     uniqueIndex('actors_external_subject_unique').on(
       table.workspaceId,
       table.authMode,
@@ -272,6 +273,7 @@ export const projects = pgTable(
     updatedAt: updatedAt()
   },
   (table) => [
+    uniqueIndex('projects_workspace_id_unique').on(table.workspaceId, table.id),
     uniqueIndex('projects_workspace_slug_unique').on(
       table.workspaceId,
       table.slug
@@ -332,6 +334,105 @@ export const projectSetups = pgTable(
     check('project_setups_state_valid', sql`${table.state} in ('pending', 'in_progress', 'blocked')`),
     check('project_setups_version_positive', sql`${table.version} > 0`),
     check('project_setups_error_code_valid', sql`${table.lastErrorCode} is null or ${table.lastErrorCode} ~ '^[a-z][a-z0-9_]{0,63}$'`)
+  ]
+);
+
+export const projectSourceArtifacts = pgTable(
+  'project_source_artifacts',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    name: text('name').notNull(),
+    mediaType: text('media_type').notNull(),
+    content: text('content').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    sha256: text('sha256').notNull(),
+    provenance: jsonb('provenance').$type<Readonly<{
+      kind: 'manager_note' | 'manager_upload';
+      label: string;
+      capturedAt: string;
+    }>>().notNull(),
+    createdByActorId: uuid('created_by_actor_id').notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workspaceId, table.projectId],
+      foreignColumns: [projects.workspaceId, projects.id],
+      name: 'project_source_artifacts_workspace_project_fk'
+    }).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.createdByActorId], foreignColumns: [actors.workspaceId, actors.id], name: 'project_source_artifacts_workspace_actor_fk'}).onDelete('restrict'),
+    index('project_source_artifacts_project_created_idx').on(table.projectId, table.createdAt),
+    check('project_source_artifacts_media_type', sql`${table.mediaType} in ('text/plain', 'text/markdown', 'application/json')`),
+    check('project_source_artifacts_content_bounded', sql`octet_length(${table.content}) between 1 and 262144 and ${table.sizeBytes} = octet_length(${table.content})`),
+    check('project_source_artifacts_sha256', sql`${table.sha256} ~ '^[0-9a-f]{64}$'`),
+    check('project_source_artifacts_provenance_object', sql`jsonb_typeof(${table.provenance}) = 'object'`),
+    check('project_source_artifacts_version_one', sql`${table.version} = 1`)
+  ]
+);
+
+export const projectPlanDrafts = pgTable(
+  'project_plan_drafts',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    state: text('state').default('draft').notNull(),
+    definition: jsonb('definition').$type<import('@fai-control-plane/domain').ProjectPlanDefinition>().notNull(),
+    contentHash: text('content_hash').notNull(),
+    revision: integer('revision').default(1).notNull(),
+    createdByActorId: uuid('created_by_actor_id').notNull(),
+    approvedByActorId: uuid('approved_by_actor_id'),
+    approvedAt: timestamp('approved_at', {withTimezone: true}),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    foreignKey({columns: [table.workspaceId, table.projectId], foreignColumns: [projects.workspaceId, projects.id], name: 'project_plan_drafts_workspace_project_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.createdByActorId], foreignColumns: [actors.workspaceId, actors.id], name: 'project_plan_drafts_workspace_created_actor_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.approvedByActorId], foreignColumns: [actors.workspaceId, actors.id], name: 'project_plan_drafts_workspace_approved_actor_fk'}).onDelete('restrict'),
+    uniqueIndex('project_plan_drafts_identity_scope_unique').on(table.id, table.workspaceId, table.projectId),
+    uniqueIndex('project_plan_drafts_project_active_unique').on(table.projectId).where(sql`${table.state} = 'draft'`),
+    index('project_plan_drafts_project_updated_idx').on(table.projectId, table.updatedAt),
+    check('project_plan_drafts_state', sql`${table.state} in ('draft', 'approved')`),
+    check('project_plan_drafts_revision_positive', sql`${table.revision} > 0`),
+    check('project_plan_drafts_hash', sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`),
+    check('project_plan_drafts_definition_object', sql`jsonb_typeof(${table.definition}) = 'object'`),
+    check('project_plan_drafts_approval_shape', sql`(${table.state} = 'draft' and ${table.approvedByActorId} is null and ${table.approvedAt} is null) or (${table.state} = 'approved' and ${table.approvedByActorId} is not null and ${table.approvedAt} is not null)`)
+  ]
+);
+
+export const projectPlanVersions = pgTable(
+  'project_plan_versions',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    planId: uuid('plan_id').notNull(),
+    version: integer('version').notNull(),
+    sourceRevision: integer('source_revision').notNull(),
+    definition: jsonb('definition').$type<import('@fai-control-plane/domain').ProjectPlanDefinition>().notNull(),
+    contentHash: text('content_hash').notNull(),
+    sourceManifest: jsonb('source_manifest').$type<readonly Readonly<{artifactId: string; version: number; sha256: string}>[]>().notNull(),
+    simulation: jsonb('simulation').$type<import('@fai-control-plane/domain').ProjectPlanSimulation>().notNull(),
+    approvedByActorId: uuid('approved_by_actor_id').notNull(),
+    approvedAt: timestamp('approved_at', {withTimezone: true}).notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    foreignKey({columns: [table.workspaceId, table.projectId], foreignColumns: [projects.workspaceId, projects.id], name: 'project_plan_versions_workspace_project_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.planId, table.workspaceId, table.projectId], foreignColumns: [projectPlanDrafts.id, projectPlanDrafts.workspaceId, projectPlanDrafts.projectId], name: 'project_plan_versions_plan_scope_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.approvedByActorId], foreignColumns: [actors.workspaceId, actors.id], name: 'project_plan_versions_workspace_actor_fk'}).onDelete('restrict'),
+    uniqueIndex('project_plan_versions_project_version_unique').on(table.projectId, table.version),
+    uniqueIndex('project_plan_versions_plan_unique').on(table.planId),
+    index('project_plan_versions_project_created_idx').on(table.projectId, table.createdAt),
+    check('project_plan_versions_positive', sql`${table.version} > 0 and ${table.sourceRevision} > 0`),
+    check('project_plan_versions_hash', sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`),
+    check('project_plan_versions_definition_object', sql`jsonb_typeof(${table.definition}) = 'object'`),
+    check('project_plan_versions_source_manifest_array', sql`jsonb_typeof(${table.sourceManifest}) = 'array'`),
+    check('project_plan_versions_simulation_object', sql`jsonb_typeof(${table.simulation}) = 'object'`)
   ]
 );
 

@@ -1,5 +1,5 @@
-import {createDeliveryJourneyService, createDeliveryProtocolService} from '@fai-control-plane/application';
-import {actors, createDatabase, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore} from '@fai-control-plane/db';
+import {createDeliveryJourneyService, createDeliveryProtocolService, createProjectPlanService} from '@fai-control-plane/application';
+import {actors, createDatabase, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresProjectPlanStore} from '@fai-control-plane/db';
 import {createActorContextIssuer, type Capability, type CommandResult, type TrustedUserActorContext} from '@fai-control-plane/domain';
 import {and, eq, isNull} from 'drizzle-orm';
 
@@ -10,12 +10,14 @@ const capabilities = (value: Record<string, boolean>): Capability[] => Object.en
 export type DeliveryRuntime = Readonly<{
   protocol: ReturnType<typeof createDeliveryProtocolService>;
   journey: ReturnType<typeof createDeliveryJourneyService>;
+  plan: ReturnType<typeof createProjectPlanService>;
   actor(workspaceId: string, actorId: string): Promise<CommandResult<TrustedUserActorContext>>;
 }>;
 
 const createRuntime = (db: Database): DeliveryRuntime => ({
   protocol: createDeliveryProtocolService(createPostgresDeliveryProtocolStore(db)),
   journey: createDeliveryJourneyService(createPostgresDeliveryJourneyStore(db)),
+  plan: createProjectPlanService(createPostgresProjectPlanStore(db)),
   async actor(workspaceId, actorId) {
     const [operator] = await db.select({capabilities: actors.capabilities}).from(actors).where(and(
       eq(actors.id, actorId), eq(actors.workspaceId, workspaceId), eq(actors.type, 'human'),
