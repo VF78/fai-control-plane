@@ -58,9 +58,13 @@ export async function runtimeRegistrationStateCommand(
     !UUID.test(registrationId) ||
     !isRecord(body) ||
     (body.action !== 'enable' && body.action !== 'disable' &&
-      body.action !== 'recover' && body.action !== 'replace') ||
+      body.action !== 'recover' && body.action !== 'replace' &&
+      body.action !== 'set_recovery_policy') ||
     typeof body.projectId !== 'string' || !UUID.test(body.projectId) ||
-    !Number.isInteger(body.expectedVersion) || (body.expectedVersion as number) < 1 ||
+    (body.action === 'set_recovery_policy'
+      ? body.expectedVersion !== null &&
+        (!Number.isInteger(body.expectedVersion) || (body.expectedVersion as number) < 1)
+      : !Number.isInteger(body.expectedVersion) || (body.expectedVersion as number) < 1) ||
     (body.action === 'recover'
       ? (
           !exact(body, [
@@ -72,7 +76,19 @@ export async function runtimeRegistrationStateCommand(
           !Number.isInteger(body.expectedRunVersion) ||
           (body.expectedRunVersion as number) < 1
         )
-      : body.action === 'replace'
+      : body.action === 'set_recovery_policy'
+        ? (
+            !exact(body, [
+              '_csrf', 'action', 'enabled', 'expectedVersion', 'maximumAttempts',
+              'projectId', 'staleThresholdSeconds'
+            ]) || typeof body.enabled !== 'boolean' ||
+            !Number.isInteger(body.staleThresholdSeconds) ||
+            (body.staleThresholdSeconds as number) < 30 ||
+            (body.staleThresholdSeconds as number) > 604800 ||
+            !Number.isInteger(body.maximumAttempts) ||
+            (body.maximumAttempts as number) < 1 || (body.maximumAttempts as number) > 10
+          )
+        : body.action === 'replace'
         ? (
             !exact(body, [
               '_csrf', 'action', 'expectedVersion', 'projectId',
@@ -96,7 +112,17 @@ export async function runtimeRegistrationStateCommand(
 
   try {
     const runtime = await overrides.getRuntime();
-    const result = body.action === 'recover'
+    const result = body.action === 'set_recovery_policy'
+      ? await runtime.setRecoveryPolicy({
+          workspaceId: authorization.runtime.config.workspaceId,
+          operatorActorId: authorization.session.actorId,
+          registrationId,
+          enabled: body.enabled as boolean,
+          staleThresholdSeconds: body.staleThresholdSeconds as number,
+          maximumAttempts: body.maximumAttempts as number,
+          expectedVersion: body.expectedVersion as number | null
+        })
+      : body.action === 'recover'
       ? await runtime.recoverExpiredRun({
           workspaceId: authorization.runtime.config.workspaceId,
           operatorActorId: authorization.session.actorId,
@@ -132,7 +158,9 @@ export async function runtimeRegistrationStateCommand(
         status: result.status,
         ...('failureCode' in result
           ? {run: {failureCode: result.failureCode, version: result.version}}
-          : 'source' in result
+          : 'policy' in result
+            ? {policy: result.policy}
+            : 'source' in result
             ? {replacement: {source: result.source, target: result.target}}
             : {registration: {enabled: result.enabled, version: result.version}}),
         receipt: {

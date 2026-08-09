@@ -135,6 +135,35 @@ it('maps replacement to one exact canonical switch and returns its receipt', asy
   }));
 });
 
+it('authenticates and version-checks a bounded recovery policy update', async () => {
+  const setRecoveryPolicy = vi.fn().mockResolvedValue({
+    status: 'updated',
+    commandId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    commandType: 'runtime_registration.recovery_policy.set',
+    policy: {enabled: true, staleThresholdSeconds: 900, maximumAttempts: 2, version: 4}
+  });
+  const response = await runtimeRegistrationStateCommand(request({
+    _csrf: 'csrf',
+    action: 'set_recovery_policy',
+    enabled: true,
+    expectedVersion: 3,
+    maximumAttempts: 2,
+    projectId,
+    staleThresholdSeconds: 900
+  }), registrationId, {
+    requireSession: vi.fn().mockResolvedValue(authorization) as never,
+    getRuntime: vi.fn().mockResolvedValue({setRecoveryPolicy})
+  });
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toMatchObject({
+    policy: {enabled: true, staleThresholdSeconds: 900, maximumAttempts: 2, version: 4},
+    receipt: {commandType: 'runtime_registration.recovery_policy.set'}
+  });
+  expect(setRecoveryPolicy).toHaveBeenCalledWith(expect.objectContaining({
+    registrationId, expectedVersion: 3, staleThresholdSeconds: 900, maximumAttempts: 2
+  }));
+});
+
 it('fails closed for malformed, cross-scope, unauthorized, and stale requests', async () => {
   const requireSession = vi.fn().mockResolvedValue(authorization) as never;
   const getRuntime = (status: string) => vi.fn().mockResolvedValue({

@@ -1,6 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {
   computeApprovalActionHash,
+  containsHighConfidenceSecretContent,
   DEFAULT_AGENT_INSTRUCTIONS,
   DEFAULT_AGENT_SETTINGS,
   OPERATOR_CANCELLED_BEFORE_CLAIM,
@@ -163,7 +164,9 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
   const aggregateId =
     mutation.aggregateType === 'task_packet'
       ? mutation.aggregate.packetId
-      : mutation.aggregate.id;
+      : mutation.aggregateType === 'runtime_recovery_policy'
+        ? mutation.aggregate.runtimeRegistrationId
+        : mutation.aggregate.id;
   invariant(
     mutation.aggregateId === aggregateId,
     'mutation.aggregateId must equal the aggregate identifier.'
@@ -460,6 +463,49 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
           'Replacement must atomically switch two registrations for different agents.'
         );
       }
+      break;
+    case 'runtime_availability_observation':
+      uuid(mutation.aggregate.id, 'runtimeAvailabilityObservation.id');
+      uuid(mutation.aggregate.runtimeRegistrationId, 'runtimeAvailabilityObservation.runtimeRegistrationId');
+      invariant(
+        ['service', 'scheduler', 'delivery'].includes(mutation.aggregate.component),
+        'Runtime availability component is invalid.'
+      );
+      invariant(
+        ['available', 'unavailable'].includes(mutation.aggregate.state),
+        'Runtime availability state is invalid.'
+      );
+      invariant(
+        date(mutation.aggregate.observedAt, 'runtimeAvailabilityObservation.observedAt').toISOString() ===
+          mutation.aggregate.observedAt,
+        'Runtime availability timestamp must be canonical.'
+      );
+      invariant(
+        Number.isInteger(mutation.aggregate.ttlSeconds) &&
+          mutation.aggregate.ttlSeconds >= 30 && mutation.aggregate.ttlSeconds <= 604800,
+        'Runtime availability TTL is invalid.'
+      );
+      invariant(
+        mutation.aggregate.evidenceReference.length >= 1 &&
+          mutation.aggregate.evidenceReference.length <= 500 &&
+          !/[\u0000-\u001f\u007f]/.test(mutation.aggregate.evidenceReference) &&
+          !containsHighConfidenceSecretContent(mutation.aggregate.evidenceReference),
+        'Runtime availability evidence is invalid.'
+      );
+      validateVersionMode(null, mutation.aggregate.version);
+      break;
+    case 'runtime_recovery_policy':
+      uuid(mutation.aggregate.runtimeRegistrationId, 'runtimeRecoveryPolicy.runtimeRegistrationId');
+      invariant(
+        mutation.aggregate.runtimeRegistrationId === mutation.aggregateId &&
+          Number.isInteger(mutation.aggregate.staleThresholdSeconds) &&
+          mutation.aggregate.staleThresholdSeconds >= 30 &&
+          mutation.aggregate.staleThresholdSeconds <= 604800 &&
+          Number.isInteger(mutation.aggregate.maximumAttempts) &&
+          mutation.aggregate.maximumAttempts >= 1 && mutation.aggregate.maximumAttempts <= 10,
+        'Runtime recovery policy is invalid.'
+      );
+      validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
   }
 };
@@ -819,6 +865,34 @@ const currentVersion = async (
         )
         .where(and(
           eq(schema.runtimeRegistrations.id, mutation.aggregateId),
+          eq(schema.projects.workspaceId, workspaceId)
+        ));
+      return row?.version ?? null;
+    }
+    case 'runtime_availability_observation': {
+      const [row] = await tx.select({id: schema.runtimeAvailabilityObservations.id})
+        .from(schema.runtimeAvailabilityObservations)
+        .innerJoin(
+          schema.runtimeRegistrations,
+          eq(schema.runtimeRegistrations.id, schema.runtimeAvailabilityObservations.runtimeRegistrationId)
+        )
+        .innerJoin(schema.projects, eq(schema.projects.id, schema.runtimeRegistrations.projectId))
+        .where(and(
+          eq(schema.runtimeAvailabilityObservations.id, mutation.aggregateId),
+          eq(schema.projects.workspaceId, workspaceId)
+        ));
+      return row === undefined ? null : 1;
+    }
+    case 'runtime_recovery_policy': {
+      const [row] = await tx.select({version: schema.runtimeRecoveryPolicies.version})
+        .from(schema.runtimeRecoveryPolicies)
+        .innerJoin(
+          schema.runtimeRegistrations,
+          eq(schema.runtimeRegistrations.id, schema.runtimeRecoveryPolicies.runtimeRegistrationId)
+        )
+        .innerJoin(schema.projects, eq(schema.projects.id, schema.runtimeRegistrations.projectId))
+        .where(and(
+          eq(schema.runtimeRecoveryPolicies.runtimeRegistrationId, mutation.aggregateId),
           eq(schema.projects.workspaceId, workspaceId)
         ));
       return row?.version ?? null;
@@ -1800,6 +1874,96 @@ const persistRuntimeRegistration = async (
       };
 };
 
+const persistRuntimeAvailabilityObservation = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'runtime_availability_observation'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  const ttlColumn = aggregate.component === 'service'
+    ? schema.runtimeRegistrations.serviceMaxAgeSeconds
+    : aggregate.component === 'scheduler'
+      ? schema.runtimeRegistrations.schedulerMaxAgeSeconds
+      : schema.runtimeRegistrations.deliveryMaxAgeSeconds;
+  const [registration] = await tx.select({
+    projectId: schema.runtimeRegistrations.projectId,
+    ttlSeconds: ttlColumn
+  }).from(schema.runtimeRegistrations)
+    .innerJoin(schema.projects, eq(schema.projects.id, schema.runtimeRegistrations.projectId))
+    .where(and(
+      eq(schema.runtimeRegistrations.id, aggregate.runtimeRegistrationId),
+      eq(schema.runtimeRegistrations.enabled, true),
+      eq(schema.projects.workspaceId, workspaceId)
+    ));
+  if (registration === undefined || registration.ttlSeconds !== aggregate.ttlSeconds) {
+    return {status: 'not_found'};
+  }
+  const [row] = await tx.insert(schema.runtimeAvailabilityObservations).values({
+    id: aggregate.id,
+    runtimeRegistrationId: aggregate.runtimeRegistrationId,
+    component: aggregate.component,
+    state: aggregate.state,
+    observedAt: new Date(aggregate.observedAt),
+    ttlSeconds: aggregate.ttlSeconds,
+    evidenceReference: aggregate.evidenceReference
+  }).onConflictDoNothing().returning({id: schema.runtimeAvailabilityObservations.id});
+  return row === undefined
+    ? conflictOrNotFound(tx, workspaceId, mutation)
+    : {
+        status: 'persisted',
+        cas: {expectedPersistedVersion: null, persistedVersion: 1},
+        projectId: registration.projectId
+      };
+};
+
+const persistRuntimeRecoveryPolicy = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'runtime_recovery_policy'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  const [registration] = await tx.select({projectId: schema.runtimeRegistrations.projectId})
+    .from(schema.runtimeRegistrations)
+    .innerJoin(schema.projects, eq(schema.projects.id, schema.runtimeRegistrations.projectId))
+    .where(and(
+      eq(schema.runtimeRegistrations.id, aggregate.runtimeRegistrationId),
+      eq(schema.projects.workspaceId, workspaceId)
+    ));
+  if (registration === undefined) return {status: 'not_found'};
+  if (mutation.expectedPersistedVersion === null) {
+    const [row] = await tx.insert(schema.runtimeRecoveryPolicies).values({
+      runtimeRegistrationId: aggregate.runtimeRegistrationId,
+      enabled: aggregate.enabled,
+      staleThresholdSeconds: aggregate.staleThresholdSeconds,
+      maximumAttempts: aggregate.maximumAttempts,
+      version: 1
+    }).onConflictDoNothing().returning({version: schema.runtimeRecoveryPolicies.version});
+    return row === undefined ? conflictOrNotFound(tx, workspaceId, mutation) : {
+      status: 'persisted',
+      cas: {expectedPersistedVersion: null, persistedVersion: row.version},
+      projectId: registration.projectId
+    };
+  }
+  const [row] = await tx.update(schema.runtimeRecoveryPolicies).set({
+    enabled: aggregate.enabled,
+    staleThresholdSeconds: aggregate.staleThresholdSeconds,
+    maximumAttempts: aggregate.maximumAttempts,
+    version: sql`${schema.runtimeRecoveryPolicies.version} + 1`,
+    updatedAt: new Date()
+  }).where(and(
+    eq(schema.runtimeRecoveryPolicies.runtimeRegistrationId, aggregate.runtimeRegistrationId),
+    eq(schema.runtimeRecoveryPolicies.version, mutation.expectedPersistedVersion)
+  )).returning({version: schema.runtimeRecoveryPolicies.version});
+  return row === undefined ? conflictOrNotFound(tx, workspaceId, mutation) : {
+    status: 'persisted',
+    cas: {
+      expectedPersistedVersion: mutation.expectedPersistedVersion,
+      persistedVersion: row.version
+    },
+    projectId: registration.projectId
+  };
+};
+
 const conflictOrNotFound = async (
   tx: Transaction,
   workspaceId: string,
@@ -1913,6 +2077,10 @@ const persistAggregate = (
       return persistResourceAccessGrant(tx, workspaceId, mutation);
     case 'runtime_registration':
       return persistRuntimeRegistration(tx, workspaceId, mutation);
+    case 'runtime_availability_observation':
+      return persistRuntimeAvailabilityObservation(tx, workspaceId, mutation);
+    case 'runtime_recovery_policy':
+      return persistRuntimeRecoveryPolicy(tx, workspaceId, mutation);
   }
 };
 
@@ -2490,6 +2658,28 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               eq(schema.actors.workspaceId, state.claim.workspaceId),
               eq(schema.agentProfiles.workspaceId, state.claim.workspaceId),
               eq(schema.agentProfiles.actorId, schema.runtimeRegistrations.actorId)
+            ));
+          return row ?? null;
+        },
+
+        async loadRuntimeRecoveryPolicy(token, registrationId) {
+          const state = requireClaim(token);
+          if (!isUuid(registrationId)) return null;
+          const [row] = await tx.select({
+            runtimeRegistrationId: schema.runtimeRecoveryPolicies.runtimeRegistrationId,
+            enabled: schema.runtimeRecoveryPolicies.enabled,
+            staleThresholdSeconds: schema.runtimeRecoveryPolicies.staleThresholdSeconds,
+            maximumAttempts: schema.runtimeRecoveryPolicies.maximumAttempts,
+            version: schema.runtimeRecoveryPolicies.version
+          }).from(schema.runtimeRecoveryPolicies)
+            .innerJoin(
+              schema.runtimeRegistrations,
+              eq(schema.runtimeRegistrations.id, schema.runtimeRecoveryPolicies.runtimeRegistrationId)
+            )
+            .innerJoin(schema.projects, eq(schema.projects.id, schema.runtimeRegistrations.projectId))
+            .where(and(
+              eq(schema.runtimeRecoveryPolicies.runtimeRegistrationId, registrationId),
+              eq(schema.projects.workspaceId, state.claim.workspaceId)
             ));
           return row ?? null;
         },

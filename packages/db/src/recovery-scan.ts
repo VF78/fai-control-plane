@@ -1,10 +1,11 @@
 import {randomUUID} from 'node:crypto';
-import {and, asc, eq, inArray, lte, sql} from 'drizzle-orm';
+import {and, asc, desc, eq, inArray, lte, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {fromDrizzle} from 'pg-boss';
 import {INCOMING_EVENT_QUEUE, type PgBossTransactionalSender} from './incoming-event-inbox';
 import {reconcileRiskSignal} from './risk-signal';
 import * as schema from './schema';
+import {deriveRuntimeRecoveryCandidate} from '@fai-control-plane/domain';
 
 type Database = NodePgDatabase<typeof schema>;
 
@@ -195,6 +196,89 @@ export const createPostgresRecoveryScanProducer = (
                 nextAction: 'inspect_failed_incoming_events'
               }
             });
+
+            const policies = await tx.select({
+              registrationId: schema.runtimeRecoveryPolicies.runtimeRegistrationId,
+              enabled: schema.runtimeRecoveryPolicies.enabled,
+              staleThresholdSeconds: schema.runtimeRecoveryPolicies.staleThresholdSeconds,
+              maximumAttempts: schema.runtimeRecoveryPolicies.maximumAttempts,
+              version: schema.runtimeRecoveryPolicies.version,
+              policyCreatedAt: schema.runtimeRecoveryPolicies.createdAt,
+              policyUpdatedAt: schema.runtimeRecoveryPolicies.updatedAt,
+              serviceMaxAgeSeconds: schema.runtimeRegistrations.serviceMaxAgeSeconds,
+              schedulerMaxAgeSeconds: schema.runtimeRegistrations.schedulerMaxAgeSeconds,
+              deliveryMaxAgeSeconds: schema.runtimeRegistrations.deliveryMaxAgeSeconds,
+              registrationEnabled: schema.runtimeRegistrations.enabled
+            }).from(schema.runtimeRecoveryPolicies)
+              .innerJoin(
+                schema.runtimeRegistrations,
+                eq(schema.runtimeRegistrations.id, schema.runtimeRecoveryPolicies.runtimeRegistrationId)
+              )
+              .where(eq(schema.runtimeRegistrations.projectId, projectId))
+              .orderBy(asc(schema.runtimeRecoveryPolicies.runtimeRegistrationId));
+            for (const policy of policies) {
+              const observations = await tx.selectDistinctOn([
+                schema.runtimeAvailabilityObservations.component
+              ], {
+                id: schema.runtimeAvailabilityObservations.id,
+                component: schema.runtimeAvailabilityObservations.component,
+                state: schema.runtimeAvailabilityObservations.state,
+                observedAt: schema.runtimeAvailabilityObservations.observedAt,
+                evidenceReference: schema.runtimeAvailabilityObservations.evidenceReference
+              }).from(schema.runtimeAvailabilityObservations)
+                .where(eq(
+                  schema.runtimeAvailabilityObservations.runtimeRegistrationId,
+                  policy.registrationId
+                ))
+                .orderBy(
+                  schema.runtimeAvailabilityObservations.component,
+                  desc(schema.runtimeAvailabilityObservations.observedAt),
+                  desc(schema.runtimeAvailabilityObservations.id)
+                );
+              const candidate = deriveRuntimeRecoveryCandidate({
+                policy: {
+                  runtimeRegistrationId: policy.registrationId,
+                  enabled: policy.enabled,
+                  staleThresholdSeconds: policy.staleThresholdSeconds,
+                  maximumAttempts: policy.maximumAttempts,
+                  version: policy.version
+                },
+                enabled: policy.registrationEnabled,
+                expectedComponents: [
+                  ...(policy.serviceMaxAgeSeconds === null ? [] : ['service' as const]),
+                  ...(policy.schedulerMaxAgeSeconds === null ? [] : ['scheduler' as const]),
+                  ...(policy.deliveryMaxAgeSeconds === null ? [] : ['delivery' as const])
+                ],
+                observations,
+                policyActivatedAt: policy.policyUpdatedAt ?? policy.policyCreatedAt,
+                asOf: runAt
+              });
+              await reconcileRiskSignal(tx, {
+                projectId,
+                deduplicationKey: `runtime_recovery:${policy.registrationId}`,
+                observedAt: runAt,
+                condition: candidate === null ? null : {
+                  code: 'runtime_recovery_attention',
+                  ruleId: 'runtime_recovery_attention',
+                  ruleVersion: '1',
+                  signalClass: 'fact',
+                  severity: 'yellow',
+                  summary: 'Runtime registration needs a recovery review.',
+                  details: {
+                    runtimeRegistrationId: candidate.runtimeRegistrationId,
+                    staleComponents: [...candidate.staleComponents],
+                    missingComponents: [...candidate.missingComponents],
+                    maximumAttempts: candidate.maximumAttempts,
+                    automaticAction: false
+                  },
+                  evidenceReferences: observations
+                    .filter((observation) => candidate.staleComponents.includes(observation.component))
+                    .map((observation) => ({type: 'runtime_availability_observation', id: observation.id})),
+                  impact: 'Observed runtime availability exceeded the configured stale threshold.',
+                  nextAction: 'review_runtime_registration_recovery'
+                }
+              });
+            }
             await tx.update(schema.scheduledJobs).set({
               status: 'active',
               lastSuccessAt: runAt,

@@ -45,11 +45,6 @@ export {
   matchesTaskPacketProfileSnapshot
 } from './runtime-availability';
 export {
-  createPostgresRuntimeAvailabilityStore,
-  runtimeObservationFromEnvironment,
-  type RuntimeAvailabilityObservationInput
-} from './runtime-monitoring';
-export {
   createPostgresDeliveryProtocolStore
 } from './delivery-protocol';
 export {createPostgresDeliveryJourneyStore} from './delivery-journey';

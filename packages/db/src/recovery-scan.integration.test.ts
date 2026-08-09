@@ -14,6 +14,8 @@ import {
   incomingEvents,
   projectTrackerRepositoryScopes,
   riskSignals,
+  runtimeRecoveryPolicies,
+  runtimeRegistrations,
   scheduledJobs,
   secretRefs,
   taskPackets,
@@ -41,7 +43,8 @@ const ids = {
   event: randomUUID(),
   packet: randomUUID(),
   run: randomUUID(),
-  repositoryScope: randomUUID()
+  repositoryScope: randomUUID(),
+  registration: randomUUID()
 };
 
 describePostgres('PostgreSQL recovery scan producer', () => {
@@ -309,5 +312,65 @@ describePostgres('PostgreSQL recovery scan producer', () => {
       eq(riskSignals.projectId, ids.project),
       isNull(riskSignals.resolvedAt)
     ))).toHaveLength(1);
+  });
+
+  it('reconciles one review candidate from policy without another runtime action', async () => {
+    await db.insert(runtimeRegistrations).values({
+      id: ids.registration,
+      projectId: ids.project,
+      actorId: ids.actor,
+      agentProfileId: ids.profile,
+      provider: 'provider_neutral',
+      runtimeKey: 'recovery-observer',
+      enabled: true,
+      serviceMaxAgeSeconds: 60
+    });
+    await db.insert(runtimeRecoveryPolicies).values({
+      runtimeRegistrationId: ids.registration,
+      enabled: true,
+      staleThresholdSeconds: 60,
+      maximumAttempts: 2,
+      createdAt: new Date(now.getTime() - 30_000),
+      updatedAt: new Date(now.getTime() - 30_000)
+    });
+    const before = (await db.select({
+      status: agentRuns.status,
+      version: agentRuns.version
+    }).from(agentRuns).where(eq(agentRuns.id, ids.run)))[0];
+    const producer = createPostgresRecoveryScanProducer(db, {
+      async send() { return randomUUID(); }
+    }, {now: () => now});
+    await producer.run();
+    expect(await db.select().from(riskSignals).where(and(
+      eq(riskSignals.projectId, ids.project),
+      eq(riskSignals.deduplicationKey, `runtime_recovery:${ids.registration}`),
+      isNull(riskSignals.resolvedAt)
+    ))).toHaveLength(0);
+    await db.update(runtimeRecoveryPolicies).set({
+      updatedAt: new Date(now.getTime() - 61_000)
+    }).where(eq(runtimeRecoveryPolicies.runtimeRegistrationId, ids.registration));
+    await producer.run();
+    await producer.run();
+    expect(await db.select({
+      status: agentRuns.status,
+      version: agentRuns.version
+    }).from(agentRuns).where(eq(agentRuns.id, ids.run))).toEqual([before]);
+    const candidates = await db.select().from(riskSignals).where(and(
+      eq(riskSignals.projectId, ids.project),
+      eq(riskSignals.deduplicationKey, `runtime_recovery:${ids.registration}`),
+      isNull(riskSignals.resolvedAt)
+    ));
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      code: 'runtime_recovery_attention',
+      details: {
+        runtimeRegistrationId: ids.registration,
+        staleComponents: [],
+        missingComponents: ['service'],
+        maximumAttempts: 2,
+        automaticAction: false
+      },
+      nextAction: 'review_runtime_registration_recovery'
+    });
   });
 });
