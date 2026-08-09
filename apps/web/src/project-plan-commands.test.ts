@@ -1,7 +1,8 @@
 import {createHash} from 'node:crypto';
 import {expect, it, vi} from 'vitest';
+import {hashProjectPlanSourceManifest} from '@fai-control-plane/domain';
 import {projectPlanCommand, type ProjectPlanCommandDependencies} from './project-plan-commands';
-import {postProjectPlan} from './project-plan-controls';
+import {defaultGenerationArtifactIds, postProjectPlan} from './project-plan-controls';
 
 const workspaceId = '11111111-1111-4111-8111-111111111111';
 const projectId = '22222222-2222-4222-8222-222222222222';
@@ -68,6 +69,33 @@ it('accepts an exact materialization CAS payload and derives a stable replay key
     type: 'project_plan.materialize', payload: expect.objectContaining({projectId, planId: id, expectedPlanVersion: 3})
   }));
   await expect(response.json()).resolves.toMatchObject({materialization: {workItemCount: 6}});
+});
+
+it('creates a canonical draft-generation command from an exact source manifest', async () => {
+  const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: id, commandType: 'project_plan.draft.generate', result: {ok: true, value: {plan: {revision: 2}}}}});
+  const manifest = [{artifactId: id, version: 1, sha256: 'a'.repeat(64)}];
+  const response = await projectPlanCommand(request({_csrf: 'csrf', action: 'generate_draft', projectId, planId: id, expectedRevision: 1, sourceManifest: manifest}), dependencies(execute));
+  expect(response.status).toBe(200);
+  expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+    idempotencyKey: `project_plan.draft.generate.v1:${id}:1:${hashProjectPlanSourceManifest(manifest)}`,
+    type: 'project_plan.draft.generate', payload: {planId: id, projectId, expectedRevision: 1, sourceManifest: manifest}
+  }));
+});
+
+it('rejects an empty or oversized generation corpus before execution', async () => {
+  const execute = vi.fn();
+  const base = {_csrf: 'csrf', action: 'generate_draft', projectId, planId: id, expectedRevision: null};
+  expect((await projectPlanCommand(request({...base, sourceManifest: []}), dependencies(execute))).status).toBe(422);
+  expect((await projectPlanCommand(request({...base, sourceManifest: Array.from({length: 33}, () => ({artifactId: id, version: 1, sha256: 'a'.repeat(64)}))}), dependencies(execute))).status).toBe(422);
+  expect(execute).not.toHaveBeenCalled();
+});
+
+it('defaults source selection to all bounded artifacts or a usable bounded subset', () => {
+  const artifact = (index: number, sizeBytes: number) => ({id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, name: `Source ${index}`,
+    mediaType: 'text/plain', content: 'x', sizeBytes, sha256: 'a'.repeat(64), version: 1, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}});
+  expect(defaultGenerationArtifactIds([artifact(1, 10), artifact(2, 10)])).toHaveLength(2);
+  expect(defaultGenerationArtifactIds([artifact(1, 200 * 1024), artifact(2, 200 * 1024), artifact(3, 200 * 1024)])).toHaveLength(2);
+  expect(defaultGenerationArtifactIds(Array.from({length: 33}, (_, index) => artifact(index + 1, 1)))).toHaveLength(32);
 });
 
 it('rejects extra or stale-shaped materialization payloads before execution', async () => {

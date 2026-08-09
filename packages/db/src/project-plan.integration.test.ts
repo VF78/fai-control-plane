@@ -3,6 +3,7 @@ import {fileURLToPath} from 'node:url';
 import {defaultDeliveryProtocolDefinition, deterministicProjectPlanUuid, hashDeliveryProtocolDefinition,
   hashProjectPlanDefinition, hashProjectPlanSourceManifest, sourceArtifactDigest} from '@fai-control-plane/domain';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
+import {eq} from 'drizzle-orm';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
@@ -25,6 +26,44 @@ describePostgres('project plan persistence', () => {
     await migrate(db, {migrationsFolder: fileURLToPath(new URL('../drizzle', import.meta.url))});
   }, 30_000);
   afterAll(async () => { await testPool?.end(); if (adminPool !== undefined) { try { await dropDatabaseWhenDisconnected(adminPool, databaseName); } finally { await adminPool.end(); } } }, 30_000);
+
+  it('assembles or replaces only a CAS-protected draft from the exact bounded project corpus', async () => {
+    const workspaceId = randomUUID(); const projectId = randomUUID(); const ownerId = randomUUID(); const planId = randomUUID(); const competingPlanId = randomUUID();
+    await db.insert(workspaces).values({id: workspaceId, name: 'Generation', slug: `generation-${randomUUID()}`});
+    await db.insert(projects).values({id: projectId, workspaceId, name: 'Generated', slug: `generated-${randomUUID()}`});
+    await db.insert(actors).values({id: ownerId, workspaceId, type: 'human', role: 'developer', displayName: 'PO', authMode: 'user'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId, actorId: ownerId, role: 'project_owner'});
+    const store = createPostgresProjectPlanStore(db);
+    const envelope = (type: string, payload: unknown, key: string) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId: ownerId}, type, payload});
+    const record = async (artifactId: string, content: string, key: string) => store.execute({command: envelope('project_plan.source.record', {
+      artifactId, projectId, name: key, mediaType: 'text/markdown', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content),
+      provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}
+    }, key) as never, requestHash: key.padEnd(64, '0').slice(0, 64), authorized: true});
+    const firstArtifactId = randomUUID(); const firstContent = '# Результат\nСогласовать границы\nПодтвердить критерии';
+    await expect(record(firstArtifactId, firstContent, 'gen-source-1')).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const firstManifest = [{artifactId: firstArtifactId, version: 1, sha256: sourceArtifactDigest(firstContent)}];
+    const generate = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: firstManifest}, 'generate-1');
+    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 1}}}}});
+    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({status: 'replayed'});
+    expect(await db.select().from(projectPlanVersions)).toHaveLength(0);
+    expect(await db.select().from(projectPlanMaterializations)).toHaveLength(0);
+    expect(await db.select().from(workItems)).toHaveLength(0);
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+
+    const secondArtifactId = randomUUID(); const secondContent = 'Проверить итог с Product Owner';
+    await expect(record(secondArtifactId, secondContent, 'gen-source-2')).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const staleManifest = [...firstManifest, {artifactId: secondArtifactId, version: 1, sha256: '0'.repeat(64)}];
+    await expect(store.execute({command: envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: staleManifest}, 'generate-stale') as never,
+      requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    const fullManifest = [...firstManifest, {artifactId: secondArtifactId, version: 1, sha256: sourceArtifactDigest(secondContent)}];
+    await expect(store.execute({command: envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: fullManifest}, 'generate-2') as never,
+      requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 2}}}}});
+    await expect(store.execute({command: envelope('project_plan.draft.generate', {planId: competingPlanId, projectId, expectedRevision: null, sourceManifest: fullManifest}, 'generate-competing') as never,
+      requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    expect(await db.select().from(projectPlanDrafts)).toHaveLength(1);
+    expect(await db.select().from(auditEvents)).toHaveLength(6);
+    expect(await db.select().from(commandReceipts)).toHaveLength(6);
+  });
 
   it('isolates source evidence, saves with CAS, and freezes an approved version and source manifest', async () => {
     const workspaceId = randomUUID(); const projectId = randomUUID(); const otherProjectId = randomUUID(); const ownerId = randomUUID(); const adminId = randomUUID(); const leadId = randomUUID(); const inactiveOwnerId = randomUUID(); const artifactId = randomUUID(); const planId = randomUUID();
@@ -70,8 +109,16 @@ describePostgres('project plan persistence', () => {
     await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 2, expectedPlanHash: simulation!.planHash, expectedSimulationHash: simulation!.simulationHash}, 'approve') as never, requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'approved', approvedVersion: 1}}}}});
     const [version] = await db.select().from(projectPlanVersions);
     expect(version?.sourceManifest).toEqual([{artifactId, version: 1, sha256: sourceArtifactDigest(content)}]);
-    expect(await db.select().from(commandReceipts)).toHaveLength(9); expect(await db.select().from(auditEvents)).toHaveLength(9);
+    expect(await db.select().from(commandReceipts).where(eq(commandReceipts.workspaceId, workspaceId))).toHaveLength(9);
+    expect(await db.select().from(auditEvents).where(eq(auditEvents.workspaceId, workspaceId))).toHaveLength(9);
     await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 3, definition}, 'immutable') as never, requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    const replanSaveId = randomUUID(); const replanGenerateId = randomUUID();
+    await expect(store.execute({command: envelope('project_plan.draft.save', {planId: replanSaveId, projectId, expectedRevision: null, definition}, 'replan-save-blocked') as never,
+      requestHash: 'n'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('scope-delta re-plan')}}}});
+    await expect(store.execute({command: envelope('project_plan.draft.generate', {planId: replanGenerateId, projectId, expectedRevision: null,
+      sourceManifest: [{artifactId, version: 1, sha256: sourceArtifactDigest(content)}]}, 'replan-generate-blocked') as never,
+      requestHash: 'o'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('scope-delta re-plan')}}}});
+    expect(await db.select().from(projectPlanDrafts).where(eq(projectPlanDrafts.projectId, projectId))).toHaveLength(1);
     const foreignWorkspaceId = randomUUID(); const foreignProjectId = randomUUID(); const foreignActorId = randomUUID();
     await db.insert(workspaces).values({id: foreignWorkspaceId, name: 'Foreign', slug: `foreign-${randomUUID()}`});
     await db.insert(projects).values({id: foreignProjectId, workspaceId: foreignWorkspaceId, name: 'Foreign', slug: `foreign-project-${randomUUID()}`});
