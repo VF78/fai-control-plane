@@ -2151,7 +2151,7 @@ export const agentRuns = pgTable(
   ]
 );
 
-/** Immutable linkage between one execution selection version and its isolated runner handoff. */
+/** Immutable linkage between one execution selection version and one isolated runner attempt. */
 export const projectExecutionDispatches = pgTable(
   'project_execution_dispatches',
   {
@@ -2188,7 +2188,7 @@ export const projectExecutionDispatches = pgTable(
       foreignColumns: [actors.workspaceId, actors.id]}).onDelete('restrict'),
     uniqueIndex('project_execution_dispatches_execution_unique')
       .on(table.projectId, table.executionVersion),
-    uniqueIndex('project_execution_dispatches_packet_unique').on(table.taskPacketId),
+    index('project_execution_dispatches_packet_idx').on(table.taskPacketId),
     uniqueIndex('project_execution_dispatches_run_unique').on(table.agentRunId),
     check('project_execution_dispatches_execution_version_positive',
       sql`${table.executionVersion} > 0`),

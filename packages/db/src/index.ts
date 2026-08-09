@@ -54,6 +54,7 @@ export {
 } from './agent-run-acceptance';
 export {createPostgresProjectPlanStore} from './project-plan';
 export {
+  createPostgresAgentRunRetryContinuationStore,
   createPostgresProjectExecutionDispatcher,
   createPostgresProjectExecutionStore,
   loadProjectExecutionProjection,

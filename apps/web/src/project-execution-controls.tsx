@@ -1,7 +1,7 @@
 'use client';
 
 import {useState} from 'react';
-import {CirclePause, CirclePlay, PackageCheck, RotateCcw} from 'lucide-react';
+import {CirclePause, CirclePlay, PackageCheck, RefreshCcw, RotateCcw} from 'lucide-react';
 import type {ProjectExecutionProjection} from '@fai-control-plane/domain';
 
 const statusLabel: Record<ProjectExecutionProjection['status'], string> = {
@@ -25,12 +25,16 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
 }>) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const run = async (action: 'start' | 'pause' | 'resume' | 'dispatch') => {
+  const run = async (action: 'start' | 'pause' | 'resume' | 'dispatch' | 'retry') => {
     setBusy(true); setNotice(null);
     try {
-      const response = await fetch(action === 'dispatch' ? '/api/project-execution/dispatch' : '/api/project-execution', {
+      const response = await fetch(action === 'dispatch' ? '/api/project-execution/dispatch'
+        : action === 'retry' ? '/api/project-execution/retry' : '/api/project-execution', {
         method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(action === 'dispatch'
           ? {_csrf: csrfToken, projectId, executionVersion: execution.version}
+          : action === 'retry'
+            ? {_csrf: csrfToken, projectId, failedRunId: execution.dispatch!.agentRunId,
+                retryRunId: crypto.randomUUID(), expectedExecutionVersion: execution.version}
           : {_csrf: csrfToken, action, projectId, expectedVersion: execution.version, idempotencyKey: crypto.randomUUID()})
       });
       const result = await response.json().catch(() => ({})) as {status?: string; message?: string};
@@ -44,6 +48,8 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
   const dispatchFactual = execution.status === 'running' && execution.selection?.boundary === 'autonomous_ready' &&
     execution.dispatch === null;
   const dispatchEligible = dispatchFactual && hasWriteCapability && runnerQueueAvailable;
+  const retryEligible = runnerQueueAvailable && execution.status === 'running' &&
+    execution.selection?.boundary === 'autonomous_ready' && execution.dispatch?.agentRunStatus === 'failed';
   return <section className="fcp-section fcp-orchestrator" aria-label="Управление исполнением проекта">
     <div className="fcp-section-head"><div><h2>Исполнение проекта</h2><span>Канонический выбор следующей работы · без автоматического запуска runner</span></div><strong className={`fcp-orchestrator-status ${execution.status}`}>{statusLabel[execution.status]}</strong></div>
     <div className="fcp-orchestrator-summary">
@@ -54,11 +60,13 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
         {execution.status === 'running' || execution.status === 'blocked' ? <button className="fcp-secondary" disabled={!actionable || busy} onClick={() => void run('pause')}><CirclePause aria-hidden="true" size={16}/>Пауза</button> : null}
         {execution.status === 'paused' ? <button className="fcp-primary-button" disabled={!actionable || busy} onClick={() => void run('resume')}><RotateCcw aria-hidden="true" size={16}/>Продолжить</button> : null}
         {dispatchEligible ? <button className="fcp-primary-button" disabled={!actionable || busy} onClick={() => void run('dispatch')}><PackageCheck aria-hidden="true" size={16}/>Подготовить запуск агента</button> : null}
+        {retryEligible ? <button className="fcp-primary-button" disabled={!actionable || busy} onClick={() => void run('retry')}><RefreshCcw aria-hidden="true" size={16}/>Повторить в пределах политики</button> : null}
         {!canManage ? <small>Управление доступно владельцу проекта или delivery-администратору.</small>
           : !hasWriteCapability ? <small>Нужна capability write:control_plane:development; запросите её у администратора рабочей области.</small>
             : csrfToken === null ? <small>Нужна авторизованная operator-сессия.</small> : null}
         {dispatchFactual && hasWriteCapability && !runnerQueueAvailable
           ? <small>Подготовка запуска недоступна: очередь runner или локальный transport не включены.</small> : null}
+        {retryEligible ? <small>Правило допуска повтора: не более 3 попыток; новая попытка не ставится в очередь после 120 минут с первой попытки, при 100 ₽ уже наблюдённой стоимости прошлых попыток или неизвестной стоимости. Это пороги допуска, а не бюджет следующего запуска; его отдельный неизменяемый timebox остаётся в Task Packet. Переход через подтверждение, production или release запрещён.</small> : null}
       </div>
     </div>
     {execution.dispatch === null

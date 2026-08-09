@@ -4,6 +4,7 @@ import type {
   RunnerClaimRecord,
   RunnerTransportStore
 } from '@fai-control-plane/domain';
+import {runnerActivationEnabled} from '@fai-control-plane/domain';
 import {and, asc, eq, exists, inArray, isNull, or, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
@@ -137,9 +138,11 @@ const repositoryAuthorizationFor = (
 );
 
 export const createPostgresRunnerClaimStore = (
-  db: Database
+  db: Database,
+  options: Readonly<{activationEnvironment?: Readonly<Record<string, string | undefined>>}> = {}
 ): RunnerTransportStore => ({
   async claim(input, prepare) {
+    if (!runnerActivationEnabled(options.activationEnvironment)) return null;
     const claimedAtMs = input.claimedAt.getTime();
     const leaseMs = input.leaseExpiresAt.getTime() - claimedAtMs;
     if (

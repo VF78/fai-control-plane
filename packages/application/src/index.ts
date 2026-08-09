@@ -1,6 +1,18 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export * from './access-observation.ts';
 export {
+  AGENT_RUN_RETRY_CONTINUATION_COMMAND,
+  MVP_AGENT_RUN_RETRY_POLICY,
+  createAgentRunRetryContinuationService,
+  evaluateAgentRunRetryAdmission,
+  type AgentRunRetryContinuationReceipt,
+  type AgentRunRetryContinuationStore,
+  type AgentRunRetryContinuationValue,
+  type AgentRunRetryPolicy,
+  type AgentRunRetryStopReason,
+  type RetryAgentRunContinuationCommand
+} from './agent-run-continuation.ts';
+export {
   AGENT_RUN_ACCEPTANCE_COMMAND,
   createAgentRunAcceptanceService,
   mapRunnerCompletionToDeliveryEvidence,

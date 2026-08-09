@@ -1,19 +1,21 @@
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {MVP_AGENT_RUN_RETRY_POLICY} from '@fai-control-plane/domain';
 import {
   hashAgentProfileConfiguration,
   hashDeliveryProtocolDefinition,
   validateDeliveryEvidenceReferences
 } from '@fai-control-plane/domain';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
-import {and, eq} from 'drizzle-orm';
+import {and, eq, inArray} from 'drizzle-orm';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
   actors, agentProfiles, agentRunReceipts, agentRuns, approvalRequests, artifacts, auditEvents,
   canonicalEvents, commandReceipts,
-  createDatabase, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore,
+  createDatabase, createPostgresAgentRunRetryContinuationStore,
+  createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore,
   createPostgresAgentRunAcceptanceStore, createPostgresRunnerClaimStore,
   deliveryJourneyEvidence, deliveryJourneys,
   outboxEvents, projectExecutionDispatches, projectExecutions,
@@ -21,7 +23,7 @@ import {
   projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPlanVersions,
   projectPublicationIntents, projectScopeBaselineVersions, projectTrackerRepositoryScopes,
   projects, runbooks, runtimeRegistrations, secretRefs, taskPackets, trackerBindings,
-  statusTransitions, workItemDependencies, workItems, workspaces
+  riskSignals, statusTransitions, workItemDependencies, workItems, workspaces
 } from './index';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -616,11 +618,19 @@ describePostgres('governed project orchestration persistence', () => {
       .run({workspaceId: ids.workspace, projectId: ids.project, expectedVersion: 1,
         requestedByActorId: ids.owner});
     const claimedAt = new Date('2026-08-09T10:02:00.000Z');
-    const claim = await createPostgresRunnerClaimStore(db).claim({workspaceId: ids.workspace,
+    const claimInput = {workspaceId: ids.workspace,
       runnerId: 'isolated-runner', projectIds: [ids.project],
       repositories: [{owner: 'owner', name: 'repository'}], runtimeIds: ['codex-cli'],
       leaseTokenHash: 'f'.repeat(64), claimedAt,
-      leaseExpiresAt: new Date(claimedAt.getTime() + 60_000)}, (record) => record);
+      leaseExpiresAt: new Date(claimedAt.getTime() + 60_000)};
+    await expect(createPostgresRunnerClaimStore(db, {activationEnvironment: {
+      RUNNER_ENABLED: 'false', LOCAL_RUNNER_TRANSPORT_ENABLED: 'true'
+    }}).claim(claimInput, (record) => record)).resolves.toBeNull();
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.workItemId, ids.task)))[0])
+      .toMatchObject({status: 'queued', attempt: 0});
+    const claim = await createPostgresRunnerClaimStore(db, {activationEnvironment: {
+      RUNNER_ENABLED: 'true', LOCAL_RUNNER_TRANSPORT_ENABLED: 'true'
+    }}).claim(claimInput, (record) => record);
     expect(claim).toMatchObject({attempt: 1, runtimeId: 'codex-cli', runtimeProfile: 'read_safe',
       repository: {owner: 'owner', name: 'repository'}, baseCommit: 'a'.repeat(40),
       promptFields: {acceptanceCriteria: ['Focused checks pass', 'Implementation change', 'Relevant checks']}});
@@ -888,5 +898,197 @@ describePostgres('governed project orchestration persistence', () => {
       requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {value: {
       status: 'completed', version: 3, selection: null
     }}}});
+  });
+
+  it('atomically and idempotently replaces one failed dispatch within explicit attempt, time, and cost limits', async () => {
+    const fixture = await seedAutonomousProject(false);
+    await fixture.store.execute({command: fixture.command('project_execution.start', 0, `retry-start-${randomUUID()}`) as never,
+      requestHash: '1'.repeat(64), authorized: true});
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+      workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner
+    });
+    const [failed] = await db.select().from(agentRuns).where(eq(agentRuns.workItemId, fixture.ids.task));
+    if (failed === undefined) throw new Error('failed retry fixture missing');
+    const completedAt = new Date(failed.createdAt.getTime() + 60_000);
+    await db.update(agentRuns).set({status: 'failed', attempt: 1, failureCode: 'process_failed',
+      completedAt, version: failed.version + 1, updatedAt: completedAt}).where(eq(agentRuns.id, failed.id));
+    await db.insert(commandReceipts).values({workspaceId: fixture.ids.workspace,
+      idempotencyKey: `cost-${randomUUID()}`, requestHash: 'c'.repeat(64), commandId: randomUUID(),
+      correlationId: randomUUID(), state: 'completed', commandType: 'agent_run.cost.record.v1',
+      aggregateType: 'agent_run', aggregateId: failed.id, result: {ok: true, value: {
+        kind: 'cost', agentRunId: failed.id, cost: {state: 'calculated', amountMinor: 9_999, currency: 'RUB'}
+      }}, completedAt});
+    const retryRunId = randomUUID();
+    const command = {commandId: randomUUID(), workspaceId: fixture.ids.workspace,
+      correlationId: randomUUID(),
+      idempotencyKey: `agent-run-retry-continuation:v1:${failed.id}:${retryRunId}:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'agent_run.retry_continuation.v1' as const,
+      payload: {projectId: fixture.ids.project, failedRunId: failed.id, retryRunId,
+        expectedExecutionVersion: 1}};
+    const store = createPostgresAgentRunRetryContinuationStore(db, {
+      now: () => new Date(failed.createdAt.getTime() + 119 * 60_000), runnerQueueEnabled: true
+    });
+    await expect(store.execute({command: command as never,
+      requestHash: 'r'.repeat(64), policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: false,
+      policyError: {code: 'CAPABILITY_DENIED', message: 'denied before retry'}}))
+      .resolves.toMatchObject({status: 'rejected', error: {code: 'CAPABILITY_DENIED'}});
+    expect(await db.select().from(commandReceipts).where(and(
+      eq(commandReceipts.workspaceId, fixture.ids.workspace),
+      eq(commandReceipts.idempotencyKey, command.idempotencyKey)))).toHaveLength(0);
+    const alternateRetryRunId = randomUUID();
+    const alternate = {...command, commandId: randomUUID(), correlationId: randomUUID(),
+      idempotencyKey: `agent-run-retry-continuation:v1:${failed.id}:${alternateRetryRunId}:${fixture.ids.owner}`,
+      payload: {...command.payload, retryRunId: alternateRetryRunId}};
+    const results = await Promise.all([
+      store.execute({command: command as never, requestHash: 'r'.repeat(64),
+        policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true}),
+      store.execute({command: alternate as never, requestHash: 's'.repeat(64),
+        policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true})
+    ]);
+    const queued = results.find((result) => 'receipt' in result && result.receipt.result.ok &&
+      result.receipt.result.value.disposition === 'queued');
+    const conflicted = results.find((result) => 'receipt' in result && !result.receipt.result.ok);
+    expect(queued).toMatchObject({status: 'completed', receipt: {result: {ok: true, value: {
+      disposition: 'queued', attemptsUsed: 1, observedCostMinor: 9_999,
+      executionVersion: 2, stopReason: null
+    }}}});
+    expect(conflicted).toMatchObject({status: 'completed', receipt: {result: {ok: false,
+      error: {code: 'VERSION_CONFLICT'}}}});
+    if (queued === undefined || !('receipt' in queued) || !queued.receipt.result.ok ||
+      queued.receipt.result.value.retryRunId === null) throw new Error('queued retry result missing');
+    const winningRetryRunId = queued.receipt.result.value.retryRunId;
+    const winningCommand = winningRetryRunId === retryRunId ? command : alternate;
+    const winningHash = winningRetryRunId === retryRunId ? 'r'.repeat(64) : 's'.repeat(64);
+    await expect(store.execute({command: winningCommand as never, requestHash: winningHash,
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true})).resolves.toMatchObject({status: 'replayed'});
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.taskPacketId, failed.taskPacketId)))
+      .toHaveLength(2);
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, winningRetryRunId)))[0])
+      .toMatchObject({status: 'queued', retryOfAgentRunId: failed.id, attempt: 0});
+    expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId, fixture.ids.project)))[0])
+      .toMatchObject({status: 'running', version: 2});
+    expect((await db.select().from(projectExecutionDispatches).where(and(
+      eq(projectExecutionDispatches.projectId, fixture.ids.project),
+      eq(projectExecutionDispatches.executionVersion, 2))))[0])
+      .toMatchObject({agentRunId: winningRetryRunId, taskPacketId: failed.taskPacketId});
+  });
+
+  it('stops on unknown cost with one owner-backed attention and never auto-crosses the accepted human boundary', async () => {
+    const fixture = await seedAutonomousProject(false);
+    await fixture.store.execute({command: fixture.command('project_execution.start', 0, `stop-start-${randomUUID()}`) as never,
+      requestHash: '2'.repeat(64), authorized: true});
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+      workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner
+    });
+    const [failed] = await db.select().from(agentRuns).where(eq(agentRuns.workItemId, fixture.ids.task));
+    if (failed === undefined) throw new Error('stop retry fixture missing');
+    const firstCostAt = new Date(failed.createdAt.getTime() + 60_000);
+    await db.update(agentRuns).set({status: 'failed', attempt: 1, failureCode: 'process_failed',
+      completedAt: firstCostAt, version: failed.version + 1}).where(eq(agentRuns.id, failed.id));
+    await db.insert(commandReceipts).values([
+      {workspaceId: fixture.ids.workspace, idempotencyKey: `cost-known-${randomUUID()}`,
+        requestHash: 'k'.repeat(64), commandId: randomUUID(), correlationId: randomUUID(),
+        state: 'completed', commandType: 'agent_run.cost.record.v1', aggregateType: 'agent_run',
+        aggregateId: failed.id, result: {ok: true, value: {kind: 'cost', agentRunId: failed.id,
+          cost: {state: 'calculated', amountMinor: 500, currency: 'RUB'}}}, completedAt: firstCostAt},
+      {workspaceId: fixture.ids.workspace, idempotencyKey: `cost-correction-${randomUUID()}`,
+        requestHash: 'l'.repeat(64), commandId: randomUUID(), correlationId: randomUUID(),
+        state: 'completed', commandType: 'agent_run.cost.record.v1', aggregateType: 'agent_run',
+        aggregateId: failed.id, result: {ok: true, value: {kind: 'cost', agentRunId: failed.id,
+          cost: {state: 'pending', reason: 'correction_pending'}}},
+        completedAt: new Date(firstCostAt.getTime() + 60_000)}
+    ]);
+    const retryRunId = randomUUID();
+    const command = {commandId: randomUUID(), workspaceId: fixture.ids.workspace,
+      correlationId: randomUUID(),
+      idempotencyKey: `agent-run-retry-continuation:v1:${failed.id}:${retryRunId}:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'agent_run.retry_continuation.v1' as const,
+      payload: {projectId: fixture.ids.project, failedRunId: failed.id, retryRunId,
+        expectedExecutionVersion: 1}};
+    const store = createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true});
+    await expect(store.execute({command: command as never, requestHash: 'u'.repeat(64),
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {ok: true, value: {
+        disposition: 'ask', stopReason: 'cost_unknown', retryRunId: null,
+        attentionId: expect.any(String), executionVersion: 2
+      }}}});
+    await expect(store.execute({command: command as never, requestHash: 'u'.repeat(64),
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true}))
+      .resolves.toMatchObject({status: 'replayed'});
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.taskPacketId, failed.taskPacketId))).toHaveLength(1);
+    expect(await db.select().from(riskSignals).where(and(eq(riskSignals.projectId, fixture.ids.project),
+      eq(riskSignals.deduplicationKey, `agent_run_retry_stop:v1:${failed.id}`))))
+      .toEqual([expect.objectContaining({ownerActorId: fixture.ids.owner,
+        nextAction: expect.stringContaining('Review the failed receipt')})]);
+    expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId, fixture.ids.project)))[0])
+      .toMatchObject({status: 'blocked', version: 2, blockReason: 'retry_cost_unknown'});
+
+    const accepted = await seedCompletedAcceptance();
+    await accepted.store.execute({command: accepted.command(), requestHash: 'a'.repeat(64), authorized: true});
+    const resume = {commandId: randomUUID(), workspaceId: accepted.ids.workspace,
+      correlationId: randomUUID(), idempotencyKey: `accepted-resume-${randomUUID()}`,
+      issuedAt: '2026-08-09T12:00:00.000Z', actor: {actorId: accepted.ids.owner},
+      type: 'project_execution.resume' as const,
+      payload: {projectId: accepted.ids.project, expectedVersion: 2}};
+    await expect(createPostgresProjectExecutionStore(db).execute({command: resume as never,
+      requestHash: 'e'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {ok: true, value: {
+        status: 'blocked', version: 3, blockReason: 'human_confirmation_required',
+        selection: {boundary: 'human_confirmation_required', stageKey: 'qa'}, dispatch: null
+      }}}});
+    const rejectedRetryRunId = randomUUID();
+    const boundaryCommand = {commandId: randomUUID(), workspaceId: accepted.ids.workspace,
+      correlationId: randomUUID(),
+      idempotencyKey: `agent-run-retry-continuation:v1:${accepted.run.id}:${rejectedRetryRunId}:${accepted.ids.owner}`,
+      actor: {actorId: accepted.ids.owner}, type: 'agent_run.retry_continuation.v1' as const,
+      payload: {projectId: accepted.ids.project, failedRunId: accepted.run.id,
+        retryRunId: rejectedRetryRunId, expectedExecutionVersion: 3}};
+    await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true}).execute({
+      command: boundaryCommand as never, requestHash: 'b'.repeat(64),
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true
+    })).resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'INVALID_TRANSITION'}}}});
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.id, rejectedRetryRunId))).toHaveLength(0);
+    expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId, accepted.ids.project)))[0])
+      .toMatchObject({status: 'blocked', version: 3, blockReason: 'human_confirmation_required'});
+  });
+
+  it('refuses retry admission when server activation or the exact runtime registration is unavailable', async () => {
+    const fixture = await seedAutonomousProject(false);
+    await fixture.store.execute({command: fixture.command('project_execution.start', 0,
+      `activation-start-${randomUUID()}`) as never, requestHash: 'm'.repeat(64), authorized: true});
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+      workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner
+    });
+    const [failed] = await db.select().from(agentRuns).where(eq(agentRuns.workItemId, fixture.ids.task));
+    if (failed === undefined) throw new Error('activation retry fixture missing');
+    await db.update(agentRuns).set({status: 'failed', attempt: 1, failureCode: 'process_failed',
+      completedAt: new Date(), version: failed.version + 1}).where(eq(agentRuns.id, failed.id));
+    const commandFor = (retryRunId: string) => ({commandId: randomUUID(), workspaceId: fixture.ids.workspace,
+      correlationId: randomUUID(),
+      idempotencyKey: `agent-run-retry-continuation:v1:${failed.id}:${retryRunId}:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'agent_run.retry_continuation.v1' as const,
+      payload: {projectId: fixture.ids.project, failedRunId: failed.id, retryRunId,
+        expectedExecutionVersion: 1}});
+    const disabledQueueRunId = randomUUID();
+    await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: false}).execute({
+      command: commandFor(disabledQueueRunId) as never, requestHash: 'n'.repeat(64),
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true
+    })).resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'POLICY_DENIED'}}}});
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.id, disabledQueueRunId))).toHaveLength(0);
+    await db.update(runtimeRegistrations).set({enabled: false, version: 2}).where(and(
+      eq(runtimeRegistrations.projectId, fixture.ids.project),
+      eq(runtimeRegistrations.agentProfileId, fixture.ids.profile)));
+    const disabledRegistrationRunId = randomUUID();
+    await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true}).execute({
+      command: commandFor(disabledRegistrationRunId) as never, requestHash: 'o'.repeat(64),
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true
+    })).resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'INVALID_TRANSITION'}}}});
+    expect(await db.select().from(agentRuns).where(inArray(agentRuns.id,
+      [disabledQueueRunId, disabledRegistrationRunId]))).toHaveLength(0);
+    expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId,
+      fixture.ids.project)))[0]).toMatchObject({status: 'running', version: 1});
   });
 });

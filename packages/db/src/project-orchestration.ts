@@ -4,6 +4,7 @@ import {
   createTaskPacket,
   OPERATOR_CANCELLED_BEFORE_CLAIM,
   simulateAgentRunQueuePolicy,
+  evaluateAgentRunRetryAdmission,
   validateDeliveryProtocolDefinition,
   type CommandError,
   type DeliveryProtocolResponsibility,
@@ -11,8 +12,12 @@ import {
   type ProjectExecutionProjection,
   type ProjectExecutionSelection
 } from '@fai-control-plane/domain';
-import type {ProjectExecutionStore} from '@fai-control-plane/application';
-import {and, asc, desc, eq, inArray, isNull} from 'drizzle-orm';
+import type {
+  AgentRunRetryContinuationStore,
+  AgentRunRetryContinuationValue,
+  ProjectExecutionStore
+} from '@fai-control-plane/application';
+import {and, asc, desc, eq, inArray, isNull, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 import {isRuntimeAvailable} from './runtime-availability';
@@ -402,6 +407,341 @@ export const loadProjectExecutionProjection = async (
     .where(eq(schema.projectExecutions.projectId, projectId)).limit(1);
   return projectionFrom(db, workspaceId, projectId, row);
 };
+
+const calculatedCost = (result: unknown, runId: string, currency: string): number | null => {
+  if (typeof result !== 'object' || result === null) return null;
+  const value = (result as {value?: unknown}).value;
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as {kind?: unknown; agentRunId?: unknown; cost?: unknown};
+  if (record.kind !== 'cost' || record.agentRunId !== runId ||
+    typeof record.cost !== 'object' || record.cost === null) return null;
+  const cost = record.cost as {state?: unknown; amountMinor?: unknown; currency?: unknown};
+  return cost.state === 'calculated' && cost.currency === currency &&
+    Number.isSafeInteger(cost.amountMinor) && (cost.amountMinor as number) >= 0
+    ? cost.amountMinor as number : null;
+};
+
+/**
+ * Atomically replaces the current failed dispatch with one bounded retry, or
+ * records one canonical ask/attention boundary. It never invokes a runner or
+ * crosses a non-autonomous delivery stage.
+ */
+export const createPostgresAgentRunRetryContinuationStore = (
+  db: Database,
+  options: Readonly<{
+    now?: () => Date;
+    runnerQueueEnabled?: boolean;
+    runtimeEnvironment?: Readonly<Record<string, string | undefined>>;
+  }> = {}
+): AgentRunRetryContinuationStore => ({
+  async execute(input) {
+    return db.transaction(async (tx) => {
+      const {command} = input;
+      const now = options.now?.() ?? new Date();
+      const denialAuditCommandId = (reason: string) => `agent-run-retry-denied:v1:${createHash('sha256')
+        .update(`${command.commandId}:${input.requestHash}:${reason}`)
+        .digest('hex')}`;
+      if (!input.authorized) {
+        const error = input.policyError ?? {code: 'POLICY_DENIED' as const,
+          message: 'Policy denies AgentRun retry continuation.'};
+        await tx.insert(schema.auditEvents).values({
+          id: randomUUID(), workspaceId: command.workspaceId,
+          commandId: denialAuditCommandId(error.code), actionCategory: 'write', action: command.type,
+          targetType: 'agent_run', targetId: command.payload.failedRunId,
+          policyDecision: 'deny', outcome: 'rejected', reasonCode: error.code,
+          expectedVersion: command.payload.expectedExecutionVersion,
+          correlationId: command.correlationId, occurredAt: now, metadata: {}
+        }).onConflictDoNothing({
+          target: [schema.auditEvents.workspaceId, schema.auditEvents.commandId]
+        });
+        return {status: 'rejected' as const, error};
+      }
+      const [claimed] = await tx.insert(schema.commandReceipts).values({
+        workspaceId: command.workspaceId,
+        idempotencyKey: command.idempotencyKey,
+        requestHash: input.requestHash,
+        commandId: command.commandId,
+        correlationId: command.correlationId,
+        commandType: command.type
+      }).onConflictDoNothing({
+        target: [schema.commandReceipts.workspaceId, schema.commandReceipts.idempotencyKey]
+      }).returning();
+      if (claimed === undefined) {
+        const [existing] = await tx.select().from(schema.commandReceipts).where(and(
+          eq(schema.commandReceipts.workspaceId, command.workspaceId),
+          eq(schema.commandReceipts.idempotencyKey, command.idempotencyKey)
+        )).limit(1).for('update');
+        if (existing === undefined || existing.requestHash !== input.requestHash) {
+          return {status: 'key_reused' as const, existingRequestHash: existing?.requestHash ?? ''};
+        }
+        if (existing.state !== 'completed' || existing.result === null) {
+          throw new Error('agent_run_retry_continuation_receipt_incomplete');
+        }
+        return {status: 'replayed' as const, receipt: {
+          commandId: existing.commandId,
+          workspaceId: command.workspaceId,
+          correlationId: existing.correlationId,
+          idempotencyKey: command.idempotencyKey,
+          requestHash: existing.requestHash,
+          commandType: command.type,
+          result: existing.result as never,
+          createdAt: existing.createdAt.toISOString()
+        }};
+      }
+      const projectLink: {value: string | undefined} = {value: undefined};
+      let resultVersion: number | undefined;
+      const complete = async (result: Readonly<{ok: true; value: AgentRunRetryContinuationValue}> |
+        Readonly<{ok: false; error: CommandError}>, policyDecision: 'allow' | 'deny' = 'allow') => {
+        await tx.insert(schema.auditEvents).values({
+          id: randomUUID(), workspaceId: command.workspaceId, projectId: projectLink.value,
+          actorId: command.actor.actorId, commandId: command.commandId,
+          actionCategory: 'write', action: command.type, targetType: 'agent_run',
+          targetId: command.payload.failedRunId, policyDecision,
+          outcome: result.ok ? 'succeeded' : policyDecision === 'deny' ? 'rejected' : 'failed',
+          ...(!result.ok ? {reasonCode: result.error.code} : {}),
+          expectedVersion: command.payload.expectedExecutionVersion, resultVersion,
+          correlationId: command.correlationId, occurredAt: now, metadata: {}
+        });
+        await tx.update(schema.commandReceipts).set({
+          state: 'completed', aggregateType: 'project_execution',
+          aggregateId: projectLink.value ?? command.payload.projectId,
+          expectedVersion: command.payload.expectedExecutionVersion,
+          resultVersion, result, completedAt: now
+        }).where(eq(schema.commandReceipts.id, claimed.id));
+        return {status: 'completed' as const, receipt: {
+          commandId: command.commandId, workspaceId: command.workspaceId,
+          correlationId: command.correlationId, idempotencyKey: command.idempotencyKey,
+          requestHash: input.requestHash, commandType: command.type, result,
+          createdAt: claimed.createdAt.toISOString()
+        }};
+      };
+      const [project] = await tx.select({id: schema.projects.id}).from(schema.projects).where(and(
+        eq(schema.projects.id, command.payload.projectId),
+        eq(schema.projects.workspaceId, command.workspaceId)
+      )).limit(1).for('update');
+      if (project === undefined) return complete({ok: false, error: {code: 'NOT_FOUND', message: 'Project was not found.'}});
+      projectLink.value = project.id;
+      if (!await authority(tx, command.workspaceId, project.id, command.actor.actorId)) {
+        const error = {code: 'CAPABILITY_DENIED' as const,
+          message: 'Only an active project owner or delivery administrator can retry execution.'};
+        await tx.delete(schema.commandReceipts).where(eq(schema.commandReceipts.id, claimed.id));
+        await tx.insert(schema.auditEvents).values({
+          id: randomUUID(), workspaceId: command.workspaceId, projectId: project.id,
+          actorId: command.actor.actorId, commandId: denialAuditCommandId(error.code),
+          actionCategory: 'write', action: command.type, targetType: 'agent_run',
+          targetId: command.payload.failedRunId, policyDecision: 'deny', outcome: 'rejected',
+          reasonCode: error.code, expectedVersion: command.payload.expectedExecutionVersion,
+          correlationId: command.correlationId, occurredAt: now, metadata: {}
+        }).onConflictDoNothing({
+          target: [schema.auditEvents.workspaceId, schema.auditEvents.commandId]
+        });
+        return {status: 'rejected' as const, error};
+      }
+      const [execution] = await tx.select().from(schema.projectExecutions).where(
+        eq(schema.projectExecutions.projectId, project.id)
+      ).limit(1).for('update');
+      if (execution === undefined || execution.version !== command.payload.expectedExecutionVersion) {
+        resultVersion = execution?.version;
+        return complete({ok: false, error: {code: 'VERSION_CONFLICT', message: 'Project execution version conflicts.'}});
+      }
+      if (execution.status !== 'running') {
+        return complete({ok: false, error: {code: 'INVALID_TRANSITION',
+          message: 'Only the failed dispatch of a running autonomous stage can be retried.'}});
+      }
+      const persisted = await persistedSelection(tx, command.workspaceId, project.id, execution);
+      if (persisted.stale || persisted.selection === null ||
+        persisted.selection.boundary !== 'autonomous_ready') {
+        return complete({ok: false, error: {code: 'INVALID_TRANSITION',
+          message: 'Retry continuation stops before human, production, release, and stale selection boundaries.'}});
+      }
+      const [dispatch] = await tx.select().from(schema.projectExecutionDispatches).where(and(
+        eq(schema.projectExecutionDispatches.projectId, project.id),
+        eq(schema.projectExecutionDispatches.executionVersion, execution.version),
+        eq(schema.projectExecutionDispatches.agentRunId, command.payload.failedRunId)
+      )).limit(1).for('update');
+      const [failedRun] = await tx.select().from(schema.agentRuns).where(and(
+        eq(schema.agentRuns.id, command.payload.failedRunId),
+        eq(schema.agentRuns.workItemId, persisted.selection.workItemId)
+      )).limit(1).for('update');
+      if (dispatch === undefined || failedRun === undefined) {
+        return complete({ok: false, error: {code: 'NOT_FOUND', message: 'The exact failed dispatch was not found.'}});
+      }
+      if (failedRun.status !== 'failed') {
+        return complete({ok: false, error: {code: 'INVALID_TRANSITION', message: 'Only a failed AgentRun can be retried.'}});
+      }
+      if (options.runnerQueueEnabled !== true) {
+        return complete({ok: false, error: {code: 'POLICY_DENIED',
+          message: 'Retry admission requires the enabled isolated runner queue and local transport.'}});
+      }
+      const [profileBinding] = await tx.select({
+        profileId: schema.agentProfiles.id,
+        profileActorId: schema.agentProfiles.actorId,
+        profileRuntimeId: schema.agentProfiles.runtimeId,
+        profileRuntimeProfile: schema.agentProfiles.runtimeProfile,
+        profileEnabled: schema.agentProfiles.enabled,
+        profileVersion: schema.agentProfiles.version,
+        profileConfigHash: schema.agentProfiles.configHash,
+        actorType: schema.actors.type,
+        actorAuthMode: schema.actors.authMode,
+        actorDisabledAt: schema.actors.disabledAt,
+        registrationId: schema.runtimeRegistrations.id,
+        registrationVersion: schema.runtimeRegistrations.version,
+        registrationEnabled: schema.runtimeRegistrations.enabled,
+        packetProfileId: schema.taskPackets.agentProfileSnapshotId,
+        packetProfileRuntimeId: schema.taskPackets.agentProfileSnapshotRuntimeId,
+        packetProfileRuntimeProfile: schema.taskPackets.runtimeProfile,
+        packetProfileEnabled: schema.taskPackets.agentProfileSnapshotEnabled,
+        packetProfileVersion: schema.taskPackets.agentProfileSnapshotVersion,
+        packetProfileHash: schema.taskPackets.agentProfileSnapshotHash
+      }).from(schema.agentProfiles)
+        .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
+        .innerJoin(schema.runtimeRegistrations, and(
+          eq(schema.runtimeRegistrations.id, dispatch.runtimeRegistrationId),
+          eq(schema.runtimeRegistrations.projectId, project.id),
+          eq(schema.runtimeRegistrations.agentProfileId, schema.agentProfiles.id),
+          eq(schema.runtimeRegistrations.actorId, schema.agentProfiles.actorId)
+        ))
+        .innerJoin(schema.taskPackets, eq(schema.taskPackets.id, failedRun.taskPacketId))
+        .where(and(
+          eq(schema.agentProfiles.id, failedRun.agentProfileId),
+          eq(schema.agentProfiles.workspaceId, command.workspaceId)
+        )).limit(1).for('update', {of: schema.runtimeRegistrations});
+      if (profileBinding === undefined ||
+        profileBinding.profileId !== persisted.selection.responsibleActor.agentProfileId ||
+        profileBinding.profileActorId !== persisted.selection.responsibleActor.id ||
+        !profileBinding.profileEnabled || profileBinding.actorType !== 'agent' ||
+        profileBinding.actorAuthMode !== 'agent' || profileBinding.actorDisabledAt !== null ||
+        !profileBinding.registrationEnabled ||
+        profileBinding.registrationVersion !== dispatch.runtimeRegistrationVersion ||
+        !isRuntimeAvailable(profileBinding.profileRuntimeId, options.runtimeEnvironment) ||
+        profileBinding.packetProfileId !== profileBinding.profileId ||
+        profileBinding.packetProfileRuntimeId !== profileBinding.profileRuntimeId ||
+        profileBinding.packetProfileRuntimeProfile !== profileBinding.profileRuntimeProfile ||
+        profileBinding.packetProfileEnabled !== true ||
+        profileBinding.packetProfileVersion !== profileBinding.profileVersion ||
+        profileBinding.packetProfileHash !== profileBinding.profileConfigHash) {
+        return complete({ok: false, error: {code: 'POLICY_DENIED',
+          message: 'The exact enabled profile, runtime registration, or Task Packet snapshot is unavailable.'}});
+      }
+      const history = await tx.select({id: schema.agentRuns.id, status: schema.agentRuns.status,
+        createdAt: schema.agentRuns.createdAt}).from(schema.agentRuns).where(
+        eq(schema.agentRuns.taskPacketId, failedRun.taskPacketId)
+      ).orderBy(asc(schema.agentRuns.createdAt), asc(schema.agentRuns.id)).for('update');
+      if (history.some(({status}) => status === 'queued' || status === 'running' || status === 'waiting_approval')) {
+        return complete({ok: false, error: {code: 'VERSION_CONFLICT', message: 'An active AgentRun already exists for this retry chain.'}});
+      }
+      for (const runId of history.map(({id}) => id).sort()) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${runId}, 0))`);
+      }
+      const costReceipts = await tx.select({id: schema.commandReceipts.id,
+        aggregateId: schema.commandReceipts.aggregateId, result: schema.commandReceipts.result,
+        completedAt: schema.commandReceipts.completedAt,
+        createdAt: schema.commandReceipts.createdAt}).from(schema.commandReceipts).where(and(
+        eq(schema.commandReceipts.workspaceId, command.workspaceId),
+        eq(schema.commandReceipts.commandType, 'agent_run.cost.record.v1'),
+        eq(schema.commandReceipts.state, 'completed'),
+        inArray(schema.commandReceipts.aggregateId, history.map(({id}) => id))
+      )).orderBy(desc(schema.commandReceipts.completedAt), desc(schema.commandReceipts.createdAt),
+        desc(schema.commandReceipts.id));
+      const latestCostByRun = new Map<string, unknown>();
+      for (const receipt of costReceipts) {
+        if (receipt.aggregateId !== null && !latestCostByRun.has(receipt.aggregateId)) {
+          latestCostByRun.set(receipt.aggregateId, receipt.result);
+        }
+      }
+      let observedCostMinor: number | null = 0;
+      let observedCostExceeded = false;
+      for (const run of history) {
+        const cost = calculatedCost(latestCostByRun.get(run.id), run.id, input.policy.currency);
+        if (cost === null) { observedCostMinor = null; break; }
+        if (!Number.isSafeInteger(observedCostMinor + cost)) {
+          observedCostMinor = input.policy.maxObservedPriorCostMinor;
+          observedCostExceeded = true;
+          break;
+        }
+        observedCostMinor += cost;
+        if (observedCostMinor >= input.policy.maxObservedPriorCostMinor) {
+          observedCostExceeded = true;
+          observedCostMinor = Math.min(observedCostMinor,
+            input.policy.maxObservedPriorCostMinor);
+          break;
+        }
+      }
+      const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - history[0]!.createdAt.getTime()) / 60_000));
+      const attemptsUsed = history.length;
+      const costFact = observedCostMinor;
+      const stopReason = evaluateAgentRunRetryAdmission({attemptsUsed, elapsedMinutes,
+        observedPriorCostMinor: costFact,
+        observedPriorCostExceeded: observedCostExceeded}, input.policy);
+      resultVersion = execution.version + 1;
+      if (stopReason !== null) {
+        const [updated] = await tx.update(schema.projectExecutions).set({
+          status: 'blocked', blockReason: `retry_${stopReason}`, version: resultVersion, updatedAt: now
+        }).where(and(eq(schema.projectExecutions.projectId, project.id),
+          eq(schema.projectExecutions.version, execution.version), eq(schema.projectExecutions.status, 'running')))
+          .returning({version: schema.projectExecutions.version});
+        if (updated === undefined) throw new Error('agent_run_retry_continuation_execution_cas');
+        const deduplicationKey = `agent_run_retry_stop:v1:${failedRun.id}`;
+        const [insertedAttention] = await tx.insert(schema.riskSignals).values({
+          projectId: project.id, workItemId: failedRun.workItemId, agentRunId: failedRun.id,
+          code: `retry_${stopReason}`, ruleId: 'agent_run_retry_policy', ruleVersion: 'v1',
+          signalClass: 'fact', severity: 'yellow',
+          summary: `AgentRun retry stopped: ${stopReason}.`,
+          details: {attemptsUsed, elapsedMinutes, observedCostMinor: costFact,
+            policy: input.policy},
+          evidenceReferences: [{type: 'agent_run', id: failedRun.id},
+            {type: 'command_receipt', id: command.commandId}],
+          impact: 'Autonomous continuation is paused until a human reviews the bounded retry facts.',
+          ownerActorId: command.actor.actorId,
+          nextAction: 'Review the failed receipt and retry policy facts; explicitly stop or issue a new governed decision.',
+          observedAt: now, deduplicationKey
+        }).onConflictDoNothing().returning({id: schema.riskSignals.id});
+        const [attention] = insertedAttention === undefined
+          ? await tx.select({id: schema.riskSignals.id}).from(schema.riskSignals).where(and(
+              eq(schema.riskSignals.projectId, project.id),
+              eq(schema.riskSignals.deduplicationKey, deduplicationKey),
+              isNull(schema.riskSignals.resolvedAt)
+            )).limit(1)
+          : [insertedAttention];
+        return complete({ok: true, value: {disposition: 'ask', projectId: project.id,
+          failedRunId: failedRun.id, retryRunId: null, executionVersion: resultVersion,
+          attemptsUsed, elapsedMinutes, observedCostMinor: costFact,
+          currency: input.policy.currency, stopReason,
+          attentionId: attention?.id ?? null,
+          nextAction: 'Human review is required; no AgentRun was queued.',
+          policy: input.policy}});
+      }
+      const [newRun] = await tx.insert(schema.agentRuns).values({
+        id: command.payload.retryRunId, taskPacketId: failedRun.taskPacketId,
+        agentProfileId: failedRun.agentProfileId, workItemId: failedRun.workItemId,
+        repositoryScopeId: failedRun.repositoryScopeId, retryOfAgentRunId: failedRun.id,
+        confirmedPacketHash: failedRun.confirmedPacketHash, baseCommit: failedRun.baseCommit,
+        status: 'queued', idempotencyKey: command.idempotencyKey, attempt: 0, version: 1,
+        createdAt: now, updatedAt: now
+      }).returning({id: schema.agentRuns.id});
+      if (newRun === undefined) throw new Error('agent_run_retry_continuation_insert');
+      const [updated] = await tx.update(schema.projectExecutions).set({
+        version: resultVersion, updatedAt: now
+      }).where(and(eq(schema.projectExecutions.projectId, project.id),
+        eq(schema.projectExecutions.version, execution.version), eq(schema.projectExecutions.status, 'running')))
+        .returning({version: schema.projectExecutions.version});
+      if (updated === undefined) throw new Error('agent_run_retry_continuation_execution_cas');
+      await tx.insert(schema.projectExecutionDispatches).values({
+        workspaceId: command.workspaceId, projectId: project.id, executionVersion: resultVersion,
+        selectionHash: dispatch.selectionHash, taskPacketId: dispatch.taskPacketId,
+        agentRunId: newRun.id, runtimeRegistrationId: dispatch.runtimeRegistrationId,
+        runtimeRegistrationVersion: dispatch.runtimeRegistrationVersion,
+        requestedByActorId: command.actor.actorId, createdAt: now
+      });
+      return complete({ok: true, value: {disposition: 'queued', projectId: project.id,
+        failedRunId: failedRun.id, retryRunId: newRun.id, executionVersion: resultVersion,
+        attemptsUsed, elapsedMinutes, observedCostMinor: costFact,
+        currency: input.policy.currency, stopReason: null, attentionId: null,
+        nextAction: 'Wait for an authorized isolated runner to claim the queued retry.',
+        policy: input.policy}});
+    });
+  }
+});
 
 const nextState = async (tx: Transaction, workspaceId: string, projectId: string) => {
   const [materialization] = await tx.select({planVersionId: schema.projectPlanMaterializations.planVersionId})

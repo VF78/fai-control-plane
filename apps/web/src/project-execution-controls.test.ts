@@ -104,3 +104,26 @@ it('hides activation and explains missing write capability or runner transport',
   expect(noTransport).not.toContain('Подготовить запуск агента');
   expect(noTransport).toContain('очередь runner или локальный transport не включены');
 });
+
+it('offers one bounded retry only for the current failed autonomous dispatch', () => {
+  const markup = renderToStaticMarkup(createElement(ProjectExecutionControls, {
+    projectId: 'project-1', csrfToken: 'csrf', canManage: true,
+    hasWriteCapability: true, runnerQueueAvailable: true, execution: {
+      ...base, status: 'running', blockReason: null, decisions: [],
+      selection: {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Исправить результат', workItemVersion: 1,
+        protocolId: 'protocol-1', protocolVersion: 3, journeyVersion: 1,
+        stageKey: 'development', stageName: 'Разработка', executionMode: 'autonomous',
+        responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent', agentProfileId: 'profile-1'},
+        boundary: 'autonomous_ready'},
+      dispatch: {selectionHash: 'a'.repeat(64), taskPacketId: 'packet-1', taskPacketHash: 'b'.repeat(64),
+        agentRunId: 'run-1', agentRunStatus: 'failed', attempt: 1, failureCode: 'process_failed',
+        queuedAt: base.startedAt, claimedAt: base.startedAt, completedAt: base.startedAt,
+        nextAction: 'Inspect the receipt.'}
+    }
+  }));
+  expect(markup).toContain('Повторить в пределах политики');
+  expect(markup).toContain('Правило допуска повтора');
+  expect(markup).toContain('пороги допуска, а не бюджет следующего запуска');
+  expect(markup).toContain('timebox остаётся в Task Packet');
+  expect(markup).toContain('production или release запрещён');
+});
