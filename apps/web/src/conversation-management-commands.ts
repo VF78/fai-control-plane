@@ -33,22 +33,29 @@ const exact = <Key extends string>(
     !keys.every((key) => form.has(key))) return null;
   return Object.fromEntries(entries) as Record<Key, string>;
 };
-const redirect = (request: Request): Response => {
-  const fallback = new URL('/dashboard', request.url);
+const redirect = (request: Request, publicBaseUrl: URL): Response => {
+  const fallback = new URL('/dashboard', publicBaseUrl);
   const referer = request.headers.get('referer');
   if (referer === null) return new Response(null, {status: 303, headers: {...noStore, location: fallback.toString()}});
   try {
     const candidate = new URL(referer);
     return new Response(null, {
       status: 303,
-      headers: {...noStore, location: candidate.origin === fallback.origin ? candidate.toString() : fallback.toString()}
+      headers: {
+        ...noStore,
+        location: candidate.origin === publicBaseUrl.origin ? candidate.toString() : fallback.toString()
+      }
     });
   } catch {
     return new Response(null, {status: 303, headers: {...noStore, location: fallback.toString()}});
   }
 };
-const response = (request: Request, status: Awaited<ReturnType<Runtime['setChannel']>>): Response =>
-  status === 'updated' || status === 'replayed' ? redirect(request) :
+const response = (
+  request: Request,
+  status: Awaited<ReturnType<Runtime['setChannel']>>,
+  publicBaseUrl: URL
+): Response =>
+  status === 'updated' || status === 'replayed' ? redirect(request, publicBaseUrl) :
     Response.json({status}, {status: status === 'forbidden' ? 403 : status === 'not_found' ? 404 :
       status === 'stale' ? 409 : 400, headers: noStore});
 const version = (value: string | undefined): number | null | undefined =>
@@ -80,7 +87,7 @@ export async function setConversationChannelCommand(
       desiredState: values.action === 'activate' ? 'active' :
         values.action === 'deactivate' ? 'inactive' : 'not_used',
       expectedVersion
-    }));
+    }), authorization.runtime.config.publicBaseUrl);
   } catch {
     return Response.json({status: 'unavailable'}, {status: 503, headers: noStore});
   }
@@ -115,7 +122,7 @@ export async function setConversationAccessCommand(
       expectedVersion,
       desiredLevel: values.desiredLevel as (typeof accessLevels)[number]
     });
-    return response(request, status);
+    return response(request, status, authorization.runtime.config.publicBaseUrl);
   } catch {
     return Response.json({status: 'unavailable'}, {status: 503, headers: noStore});
   }
