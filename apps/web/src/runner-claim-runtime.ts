@@ -101,7 +101,7 @@ const loadRuntime = async (): Promise<Runtime> => {
     },
     tokenHash: createHash('sha256').update(token).digest(),
     service: createRunnerClaimService({
-      store: createPostgresRunnerClaimStore(db)
+      store: createPostgresRunnerClaimStore(db, {activationEnvironment: process.env})
     })
   };
 };

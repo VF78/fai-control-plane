@@ -1,5 +1,5 @@
-import {createDeliveryJourneyService, createDeliveryProtocolService, createProjectExecutionService, createProjectPlanService} from '@fai-control-plane/application';
-import {actors, createDatabase, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore, createPostgresProjectPlanStore, loadProjectExecutionProjection} from '@fai-control-plane/db';
+import {createAgentRunRetryContinuationService, createDeliveryJourneyService, createDeliveryProtocolService, createProjectExecutionService, createProjectPlanService} from '@fai-control-plane/application';
+import {actors, createDatabase, createPostgresAgentRunRetryContinuationStore, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore, createPostgresProjectPlanStore, loadProjectExecutionProjection} from '@fai-control-plane/db';
 import {createActorContextIssuer, type Capability, type CommandResult, type TrustedUserActorContext} from '@fai-control-plane/domain';
 import {and, eq, isNull} from 'drizzle-orm';
 import {runnerActivationEnabled} from './runner-activation-policy';
@@ -13,6 +13,7 @@ export type DeliveryRuntime = Readonly<{
   journey: ReturnType<typeof createDeliveryJourneyService>;
   plan: ReturnType<typeof createProjectPlanService>;
   projectExecution: ReturnType<typeof createProjectExecutionService>;
+  agentRunRetryContinuation: ReturnType<typeof createAgentRunRetryContinuationService>;
   projectExecutionDispatch: ReturnType<typeof createPostgresProjectExecutionDispatcher>;
   projectExecutionProjection(workspaceId: string, projectId: string): ReturnType<typeof loadProjectExecutionProjection>;
   actor(workspaceId: string, actorId: string): Promise<CommandResult<TrustedUserActorContext>>;
@@ -23,6 +24,11 @@ const createRuntime = (db: Database): DeliveryRuntime => ({
   journey: createDeliveryJourneyService(createPostgresDeliveryJourneyStore(db)),
   plan: createProjectPlanService(createPostgresProjectPlanStore(db)),
   projectExecution: createProjectExecutionService(createPostgresProjectExecutionStore(db)),
+  agentRunRetryContinuation: createAgentRunRetryContinuationService(
+    createPostgresAgentRunRetryContinuationStore(db, {
+      runnerQueueEnabled: runnerActivationEnabled(), runtimeEnvironment: process.env
+    })
+  ),
   projectExecutionDispatch: createPostgresProjectExecutionDispatcher(db, {
     runnerQueueEnabled: runnerActivationEnabled(), runtimeEnvironment: process.env
   }),

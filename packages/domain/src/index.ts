@@ -4,6 +4,8 @@ export * from './delivery-protocol.ts';
 export * from './delivery-journey.ts';
 export * from './project-plan.ts';
 export * from './project-orchestration.ts';
+export * from './agent-run-retry-policy.ts';
+export * from './runner-activation.ts';
 import type {
   ActorExternalIdentity,
   ProjectMembership,

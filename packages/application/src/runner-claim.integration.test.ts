@@ -364,7 +364,9 @@ describePostgres(
 
       let now = new Date('2026-07-26T10:00:00.000Z');
       const service = createRunnerClaimService({
-        store: createPostgresRunnerClaimStore(testDb),
+        store: createPostgresRunnerClaimStore(testDb, {activationEnvironment: {
+          RUNNER_ENABLED: 'true', LOCAL_RUNNER_TRANSPORT_ENABLED: 'true'
+        }}),
         clock: {now: () => now}
       });
       const authorization = {
