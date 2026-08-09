@@ -3,13 +3,13 @@ import type {ReactNode} from 'react';
 import './styles.css';
 
 export const metadata: Metadata = {
-  title: 'f(AI) Control Plane',
-  description: 'Internal software delivery control plane'
+  title: 'f(AI) Control',
+  description: 'Панель управления разработкой программного обеспечения'
 };
 
 export default function RootLayout({children}: {children: ReactNode}) {
   return (
-    <html lang="en">
+    <html lang="ru">
       <body>{children}</body>
     </html>
   );

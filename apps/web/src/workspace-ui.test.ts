@@ -1020,8 +1020,10 @@ it('renders immutable protocol stages and persisted journey responsibility/evide
   } as unknown as WorkspaceData;
   const protocol = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'protocol', project: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
   const task = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
-  expect(protocol).toContain('Published versions are immutable');
-  expect(protocol).toContain('Development');
+  expect(protocol).toContain('Опубликованная версия неизменяема');
+  expect(protocol).toContain('Разработка');
+  expect(protocol).toContain('Изменения реализации');
+  expect(protocol).not.toContain('canonical commands');
   expect(protocol).not.toContain('disabled=""');
   expect(task).toContain('Canonical contributor');
   expect(task).toContain('commit:abc123');
