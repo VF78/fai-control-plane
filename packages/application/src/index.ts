@@ -15,6 +15,16 @@ export {
   type SaveProjectPlanDraftCommand
 } from './project-plan.ts';
 export {
+  createProjectExecutionService,
+  type PauseProjectExecutionCommand,
+  type ProjectExecution,
+  type ProjectExecutionCommand,
+  type ProjectExecutionReceipt,
+  type ProjectExecutionStore,
+  type ResumeProjectExecutionCommand,
+  type StartProjectExecutionCommand
+} from './project-orchestration.ts';
+export {
   createDeliveryJourneyService,
   type AdvanceDeliveryJourneyCommand,
   type DeliveryJourneyCommand,

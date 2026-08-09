@@ -3,6 +3,7 @@ export * from './instruction-versioning.ts';
 export * from './delivery-protocol.ts';
 export * from './delivery-journey.ts';
 export * from './project-plan.ts';
+export * from './project-orchestration.ts';
 import type {
   ActorExternalIdentity,
   ProjectMembership,

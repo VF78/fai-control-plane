@@ -58,6 +58,7 @@ import {
   ledgerRoi,
   loadConversationRows,
   loadFailedNotificationDeliveryFacts,
+  loadProjectExecutionProjection,
   parseLedgerRecord,
   type LedgerCost,
   type LedgerRecord,
@@ -84,6 +85,7 @@ import {
   type ProjectPlan,
   type ProjectPlanSimulation,
   type ProjectPlanMaterialization,
+  type ProjectExecutionProjection,
   type CanonicalJson,
   type PolicyDecision,
   type RuntimeAvailabilityProjection
@@ -711,6 +713,7 @@ export type ProjectData = Readonly<{
   agentProfiles: readonly Readonly<{id: string; runtimeId: string}>[];
   snapshot: Readonly<{health: 'green' | 'yellow' | 'red'; capturedAt: Date}> | null;
   synchronizedAt: Date | null;
+  execution: ProjectExecutionProjection;
   scopeBaseline?: Readonly<{
     id: string;
     version: number;
@@ -842,7 +845,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   const [project] = await scopedProjects(db, [scope]);
   if (project === undefined) return null;
   const slug = project.slug;
-  const [setups, snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations] = await Promise.all([
+  const [setups, snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations, execution] = await Promise.all([
     db.select({id: projectSetups.id, state: projectSetups.state, version: projectSetups.version,
       lastErrorCode: projectSetups.lastErrorCode, configuration: projectSetups.configuration})
       .from(projectSetups).where(eq(projectSetups.projectId, project.id)).limit(1),
@@ -946,7 +949,8 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       observedAt: projectScopeOutcomeObservations.observedAt
     }).from(projectScopeOutcomeObservations)
       .where(eq(projectScopeOutcomeObservations.projectId, project.id))
-      .orderBy(projectScopeOutcomeObservations.observedAt, projectScopeOutcomeObservations.id)
+      .orderBy(projectScopeOutcomeObservations.observedAt, projectScopeOutcomeObservations.id),
+    loadProjectExecutionProjection(db, project.workspaceId, project.id)
   ]);
   const [planArtifactRows, planDraftRows, planVersionRows] = await Promise.all([
     db.select({id: projectSourceArtifacts.id, name: projectSourceArtifacts.name, mediaType: projectSourceArtifacts.mediaType,
@@ -1064,6 +1068,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     agentProfiles: availableProfiles.filter((profile) => isRuntimeAvailable(profile.runtimeId)),
     snapshot: snapshots[0] ?? null,
     synchronizedAt: operations[0]?.createdAt ?? null,
+    execution,
     scopeBaseline: baseline === null ? null : {
       id: baseline.id,
       version: baseline.version,

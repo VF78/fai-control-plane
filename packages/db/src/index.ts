@@ -50,6 +50,10 @@ export {
 export {createPostgresDeliveryJourneyStore} from './delivery-journey';
 export {createPostgresProjectPlanStore} from './project-plan';
 export {
+  createPostgresProjectExecutionStore,
+  loadProjectExecutionProjection
+} from './project-orchestration';
+export {
   createPostgresGitHubProjectStatusPublisher,
 } from './github-project-status-writeback';
 export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
