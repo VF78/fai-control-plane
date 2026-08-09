@@ -1363,7 +1363,7 @@ export type AccessData = Readonly<{
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
   memberships: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; role: string; active: boolean; version: number; canManage: boolean}>[];
   externalIdentities: readonly Readonly<{actorId: string; provider: string; active: boolean}>[];
-  resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; desiredLevel: string; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; providerAccessUrl: string | null; version: number}>[];
+  resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; desiredLevel: string; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; observationState: 'confirmed' | 'unobserved' | 'unsupported'; remediation: string | null; providerAccessUrl: string | null; version: number}>[];
   agentSystems: readonly Readonly<{
     actorId: string;
     profiles: readonly Readonly<{
@@ -1563,7 +1563,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     };
   }
   const projectIds = configuredProjects.map(({id}) => id);
-  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, availabilityObservations, recoveryPolicies, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants] = await Promise.all([
+  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, availabilityObservations, recoveryPolicies, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants, accessBindings] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
     db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt})
@@ -1661,7 +1661,20 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       .orderBy(actorExternalIdentities.actorId, actorExternalIdentities.provider),
     db.select({id: resourceAccessGrants.id, projectId: resourceAccessGrants.projectId, actorId: resourceAccessGrants.actorId, resourceType: resourceAccessGrants.resourceType, desiredLevel: resourceAccessGrants.desiredLevel, observedProvider: resourceAccessGrants.observedProvider, observedExternalResourceRef: resourceAccessGrants.observedExternalResourceRef, observedLevel: resourceAccessGrants.observedLevel, observedAt: resourceAccessGrants.observedAt, version: resourceAccessGrants.version})
       .from(resourceAccessGrants).where(inArray(resourceAccessGrants.projectId, projectIds))
-      .orderBy(resourceAccessGrants.projectId, resourceAccessGrants.actorId, resourceAccessGrants.resourceType)
+      .orderBy(resourceAccessGrants.projectId, resourceAccessGrants.actorId, resourceAccessGrants.resourceType),
+    db.select({projectId: projectTrackerRepositoryScopes.projectId})
+      .from(projectTrackerRepositoryScopes)
+      .innerJoin(trackerBindings, and(
+        eq(trackerBindings.projectId, projectTrackerRepositoryScopes.projectId),
+        eq(trackerBindings.provider, projectTrackerRepositoryScopes.provider),
+        eq(trackerBindings.surface, 'repository'),
+        eq(trackerBindings.entityType, 'project'),
+        eq(trackerBindings.externalId, projectTrackerRepositoryScopes.repositoryExternalId)
+      ))
+      .where(and(
+        inArray(projectTrackerRepositoryScopes.projectId, projectIds),
+        eq(projectTrackerRepositoryScopes.provider, 'github')
+      ))
   ]);
   const grantIds = grants.map(({shareId}) => shareId);
   const scopeRows = grantIds.length === 0
@@ -1679,6 +1692,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
   const projectById = new Map(
     configuredProjects.map((project) => [project.id, project])
   );
+  const githubProjectV2ProjectIds = new Set(accessBindings.map(({projectId}) => projectId));
   const latestWorkspaceInstruction = new Map<string, (typeof workspaceInstructions)[number]>();
   for (const instruction of workspaceInstructions) if (!latestWorkspaceInstruction.has(instruction.workspaceId)) latestWorkspaceInstruction.set(instruction.workspaceId, instruction);
   const latestProfileInstruction = new Map<string, (typeof profileInstructions)[number]>();
@@ -1858,10 +1872,23 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     externalIdentities,
     resourceGrants: resourceGrants.flatMap((grant) => {
       const project = projectById.get(grant.projectId);
+      const confirmed = grant.observedProvider !== null && grant.observedLevel !== null && grant.observedAt !== null;
+      const observationState = confirmed
+        ? 'confirmed' as const
+        : grant.resourceType === 'tracker' && githubProjectV2ProjectIds.has(grant.projectId)
+          ? 'unsupported' as const
+          : 'unobserved' as const;
+      const remediation = observationState === 'confirmed'
+        ? null
+        : observationState === 'unsupported'
+          ? 'GitHub Project V2 не поддерживает проверку прав участников через этот адаптер. Проверьте доступ в GitHub.'
+          : 'Факт провайдера ещё не зафиксирован. Проверьте привязку ресурса и дождитесь синхронизации.';
       return project === undefined ? [] : [{
         ...grant,
         project: project.name,
         projectSlug: project.slug,
+        observationState,
+        remediation,
         // A provider locator is never shown. It becomes a link only when the
         // provider-confirmed observation itself carries a safe HTTPS URL.
         providerAccessUrl: grant.observedProvider === null

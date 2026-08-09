@@ -58,6 +58,41 @@ export type ProviderAccessObservation = Readonly<{
   observedAt: string;
 }>;
 
+export type AccessObservationState =
+  | 'confirmed'
+  | 'unobserved'
+  | 'unsupported'
+  | 'unavailable';
+
+export type AccessObservationInput = Readonly<{
+  resourceType: AccessResourceType;
+  externalSubject: string;
+  repository: Readonly<{
+    owner: string;
+    repository: string;
+    externalId: string;
+  }>;
+}>;
+
+export type AccessObservationResult =
+  | Readonly<{
+      state: 'confirmed';
+      provider: string;
+      externalResourceRef: string;
+      confirmedLevel: AccessLevel;
+      observedAt: string;
+    }>
+  | Readonly<{
+      state: Exclude<AccessObservationState, 'confirmed'>;
+      remediation: string;
+    }>;
+
+/** Read-only provider boundary. It cannot grant, revoke, or otherwise mutate access. */
+export interface AccessObservationPort {
+  readonly provider: string;
+  observeAccess(input: AccessObservationInput): Promise<AccessObservationResult>;
+}
+
 export type ResourceAccessGrant = Readonly<{
   id: string;
   projectId: string;

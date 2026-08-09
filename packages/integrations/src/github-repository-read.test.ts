@@ -1177,3 +1177,87 @@ describe('GitHub repository read adapter', () => {
     expect(JSON.stringify(failure)).not.toContain('caller-secret');
   });
 });
+
+describe('GitHub repository access observation', () => {
+  const observe = (fetch: GitHubFetch, overrides: Record<string, unknown> = {}) =>
+    adapter(fetch).observeAccess({
+      resourceType: 'repository',
+      externalSubject: 'github:user:75837222',
+      repository: {
+        owner: 'VF78', repository: 'MSA', externalId: 'github:repository:1278325372'
+      },
+      ...overrides
+    });
+
+  it.each([
+    ['none', 'none'], ['read', 'read'], ['triage', 'read'], ['write', 'write'],
+    ['maintain', 'write'], ['admin', 'admin']
+  ])('maps GitHub %s permission to canonical %s', async (permission, expected) => {
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/user/75837222') return jsonResponse({id: 75837222, login: 'VF78'});
+      if (url.pathname.endsWith('/collaborators/VF78/permission')) return jsonResponse({permission});
+      throw new Error(`Unexpected route ${url.pathname}`);
+    });
+
+    await expect(observe(fetch)).resolves.toMatchObject({
+      state: 'confirmed', provider: 'github', confirmedLevel: expected,
+      externalResourceRef: 'github:repository:1278325372'
+    });
+  });
+
+  it('resolves the immutable numeric ID before requesting collaborator permission', async () => {
+    const paths: string[] = [];
+    const fetch = routeFetch((url) => {
+      paths.push(url.pathname);
+      if (url.pathname === '/user/75837222') return jsonResponse({id: 75837222, login: 'renamed-user'});
+      if (url.pathname.endsWith('/collaborators/renamed-user/permission')) return jsonResponse({permission: 'read'});
+      throw new Error(`Unexpected route ${url.pathname}`);
+    });
+
+    await expect(observe(fetch)).resolves.toMatchObject({state: 'confirmed'});
+    expect(paths).toEqual(['/user/75837222', '/repos/VF78/MSA/collaborators/renamed-user/permission']);
+  });
+
+  it('confirms no access when the resolved user is not a repository collaborator', async () => {
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/user/75837222') return jsonResponse({id: 75837222, login: 'VF78'});
+      if (url.pathname.endsWith('/collaborators/VF78/permission')) {
+        return jsonResponse({message: 'not found'}, 404);
+      }
+      if (url.pathname === '/repositories/1278325372') return jsonResponse(repositoryPayload());
+      throw new Error(`Unexpected route ${url.pathname}`);
+    });
+    await expect(observe(fetch)).resolves.toMatchObject({state: 'confirmed', confirmedLevel: 'none'});
+  });
+
+  it('does not turn collaborator 404 into none when immutable repository revalidation fails', async () => {
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/user/75837222') return jsonResponse({id: 75837222, login: 'VF78'});
+      return jsonResponse({message: 'not found'}, 404);
+    });
+    await expect(observe(fetch)).resolves.toMatchObject({state: 'unavailable'});
+  });
+
+  it.each([
+    ['user 404', 404, {}, 'unobserved'],
+    ['forbidden', 403, {}, 'unavailable'],
+    ['server failure', 503, {}, 'unavailable'],
+    ['rate limit', 403, {'x-ratelimit-remaining': '0'}, 'unavailable']
+  ])('returns a truthful state for %s', async (_name, status, headers, state) => {
+    const fetch = routeFetch((url) => url.pathname === '/user/75837222'
+      ? jsonResponse({message: 'failure'}, status, headers)
+      : jsonResponse({permission: 'admin'}));
+    await expect(observe(fetch)).resolves.toMatchObject({state});
+  });
+
+  it('does not guess a mutable login or Project V2 access', async () => {
+    const fetch = vi.fn<GitHubFetch>();
+    await expect(observe(fetch, {externalSubject: 'github:user:VF78'})).resolves.toMatchObject({
+      state: 'unobserved'
+    });
+    await expect(observe(fetch, {resourceType: 'tracker'})).resolves.toMatchObject({
+      state: 'unsupported'
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
