@@ -28,13 +28,22 @@ describe('control-plane dead-letter queue', () => {
 
   it('projects terminal and dead-lettered failures by source queue without selecting payload data', async () => {
     const query = vi.fn(async () => ({rows: [{queue_name: 'source-a', failed_count: 2}]}));
-    const result = await loadQueueFailureCounts(query, ['source-a', 'source-b']);
+    const result = await loadQueueFailureCounts(
+      query,
+      ['source-a', 'source-b'],
+      ['source-a']
+    );
 
     expect(result).toEqual([{queueName: 'source-a', failedCount: 2}, {queueName: 'source-b', failedCount: 0}]);
     const [statement, values] = query.mock.calls[0]! as unknown as [string, unknown[]];
-    expect(statement).toContain('coalesce(source_name, name)');
+    expect(statement).toContain('job.source_name = source.queue_name');
+    expect(statement).toContain('coalesce(job.completed_on, job.created_on)');
     expect(statement).not.toMatch(/\bdata\b|payload/i);
-    expect(values).toEqual([['source-a', 'source-b'], CONTROL_PLANE_DEAD_LETTER_QUEUE]);
+    expect(values).toEqual([
+      ['source-a', 'source-b'],
+      CONTROL_PLANE_DEAD_LETTER_QUEUE,
+      ['source-a']
+    ]);
     expect(telemetry.recordDeadLetterQueueVisibility).toHaveBeenCalledWith('source-a');
     expect(telemetry.recordDeadLetterQueueVisibility).toHaveBeenCalledTimes(1);
   });

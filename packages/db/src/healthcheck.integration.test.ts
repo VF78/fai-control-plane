@@ -102,7 +102,7 @@ describePostgres('PostgreSQL healthcheck producer', () => {
     );
     await testPool.query(
       `INSERT INTO projects (id, workspace_id, name, slug) VALUES
-       ($1, $2, 'MSA', 'msa'), ($3, $2, 'Ascon', 'ascon')`,
+       ($1, $2, 'MSA', 'msa'), ($3, $2, 'Dynamic project', 'dynamic-project')`,
       [ids.project, ids.workspace, ids.otherProject]
     );
     await db.insert(secretRefs).values({
@@ -150,8 +150,8 @@ describePostgres('PostgreSQL healthcheck producer', () => {
         projectId: ids.otherProject,
         provider: 'github',
         repositoryOwner: 'VF78',
-        repositoryName: 'ascon',
-        repositoryExternalId: 'github:repository:ascon',
+        repositoryName: 'dynamic-project',
+        repositoryExternalId: 'github:repository:dynamic-project',
         credentialRefId: ids.secret
       }
     ]);

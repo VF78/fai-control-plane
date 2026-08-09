@@ -70,6 +70,7 @@ const seedWriteback = async () => {
     destination: 'github',
     eventType: 'github.project_status.write.v1',
     idempotencyKey: `github-project-status:${bindingId}:${mutationId}`,
+    availableAt: new Date(0),
     payload: {
       version: 1,
       bindingId,

@@ -90,7 +90,9 @@ const projectItemsPayload = (
   nodes: readonly unknown[] = [],
   pageInfo: Readonly<{hasNextPage: boolean; endCursor?: string | null}> = {hasNextPage: false},
   repositoryFullName: string = 'VF78/MSA',
-  pullRequests: readonly unknown[] = []
+  pullRequests: readonly unknown[] = [],
+  pullRequestPageInfo: Readonly<{hasNextPage: boolean; endCursor?: string | null}> =
+    {hasNextPage: false}
 ) => ({
   data: {
     node: {
@@ -102,7 +104,7 @@ const projectItemsPayload = (
       nameWithOwner: repositoryFullName,
       pullRequests: {
         nodes: pullRequests,
-        pageInfo: {hasNextPage: false}
+        pageInfo: pullRequestPageInfo
       }
     }
   }
@@ -678,6 +680,52 @@ describe('GitHub repository read adapter', () => {
       conclusion: 'success'
     })]);
     expect(second).toEqual(first);
+  });
+
+  it('paginates pull-request linkage evidence beyond 100 records', async () => {
+    const cursors: Array<string | null | undefined> = [];
+    const fetch = routeFetch((url) => {
+      if (url.pathname === '/repos/VF78/MSA') return jsonResponse(repositoryPayload());
+      if (url.pathname.endsWith('/issues')) return jsonResponse([]);
+      if (url.pathname.endsWith('/pulls')) return jsonResponse([]);
+      throw new Error(`Unexpected route ${url.pathname}`);
+    }, (init) => {
+      const body = JSON.parse(init.body ?? '{}') as {variables?: {
+        projectId?: string;
+        repositoryOwner?: string;
+        repositoryName?: string;
+        after?: string | null;
+      }};
+      if (body.variables?.repositoryOwner !== undefined) {
+        cursors.push(body.variables.after);
+        const firstPage = body.variables.after === null;
+        return projectItemsPayload(
+          'PVT_kwHOBIUvJs4Bbefq',
+          [],
+          {hasNextPage: false},
+          'VF78/MSA',
+          firstPage ? Array.from({length: 100}, (_, index) => ({
+            number: index + 1,
+            closingIssuesReferences: {nodes: [], pageInfo: {hasNextPage: false}}
+          })) : Array.from({length: 10}, (_, index) => ({
+            number: index + 101,
+            closingIssuesReferences: {nodes: [], pageInfo: {hasNextPage: false}}
+          })),
+          firstPage
+            ? {hasNextPage: true, endCursor: 'pull-request-page-2'}
+            : {hasNextPage: false}
+        );
+      }
+      return projectItemsPayload(
+        body.variables?.projectId ?? 'PVT_kwHOBIUvJs4Bbefq',
+        [],
+        {hasNextPage: false},
+        'VF78/MSA'
+      );
+    });
+
+    await expect(readMsa(fetch)).resolves.toMatchObject({pullRequests: []});
+    expect(cursors).toEqual([null, 'pull-request-page-2']);
   });
 
   it('normalizes provider ordering and reads checks only for open pull requests', async () => {

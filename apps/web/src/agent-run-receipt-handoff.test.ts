@@ -10,8 +10,8 @@ const workspaceId = '00000000-0000-4000-8000-000000000004';
 const csrfToken = 'csrf-token';
 const receiptSha256 = 'a'.repeat(64);
 
-const request = (overrides: Record<string, string> = {}) => new Request(
-  `https://control.example.test/api/agent-runs/${runId}/accept-receipt?project=msa`,
+const request = (overrides: Record<string, string> = {}, project = 'msa') => new Request(
+  `https://control.example.test/api/agent-runs/${runId}/accept-receipt?project=${project}`,
   {
     method: 'POST',
     headers: {'content-type': 'application/x-www-form-urlencoded'},
@@ -58,6 +58,16 @@ it('passes only the session-bound atomic acceptance facts to the runtime', async
     receiptSha256,
     expectedWorkItemVersion: 7
   });
+});
+
+it('returns to any valid canonical project slug', async () => {
+  const runtime = dependencies('accepted');
+  const response = await acceptAgentRunReceiptCommand(
+    request({}, 'new-project'), runId, runtime.value
+  );
+  expect(response.headers.get('location')).toBe(
+    `https://control.example.test/projects/new-project/runs/${runId}?handoff=accepted`
+  );
 });
 
 it.each(['stale', 'forbidden', 'not_found', 'unavailable'] as const)(

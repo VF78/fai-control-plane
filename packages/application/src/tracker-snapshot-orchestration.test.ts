@@ -459,12 +459,17 @@ describe('tracker repository snapshot orchestration', () => {
 
   it('sanitizes adapter and projector failures without duplicate calls', async () => {
     const readerFailure = fakes();
+    const onRepositoryReadFailure = vi.fn();
     readerFailure.reader.mockRejectedValueOnce(new Error('credential=secret-value'));
-    const readerService = createTrackerRepositorySnapshotOrchestrationService(readerFailure);
+    const readerService = createTrackerRepositorySnapshotOrchestrationService({
+      ...readerFailure,
+      onRepositoryReadFailure
+    });
     await expect(readerService.orchestrate(input())).resolves.toEqual({
       status: 'failed', code: 'repository_read_failed'
     });
     expect(readerFailure.reader).toHaveBeenCalledTimes(1);
+    expect(onRepositoryReadFailure).toHaveBeenCalledWith(expect.any(Error));
     expect(readerFailure.bootstrap).not.toHaveBeenCalled();
 
     const projectorFailure = fakes();

@@ -1,4 +1,4 @@
-import {and, asc, eq, inArray, isNull, sql} from 'drizzle-orm';
+import {and, asc, eq, isNull, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -11,7 +11,6 @@ export const QA_INTAKE_QUEUE = 'qa-intake';
 // pg-boss evaluates cron expressions in UTC; this runs daily at 09:20 UTC.
 export const qaIntakeCron = '20 9 * * *';
 
-const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const qaIntakeName = 'qa_intake';
 const maximumWorkItems = 10;
 const maximumPullRequestsPerWorkItem = 3;
@@ -36,7 +35,7 @@ const configuredProjects = (db: Database) => db.select({
 }).from(schema.projects).innerJoin(schema.projectTrackerRepositoryScopes, and(
   eq(schema.projectTrackerRepositoryScopes.projectId, schema.projects.id),
   eq(schema.projectTrackerRepositoryScopes.provider, 'github')
-)).where(inArray(schema.projects.slug, configuredProjectSlugs)).groupBy(
+)).groupBy(
   schema.projects.id,
   schema.projects.workspaceId
 ).orderBy(asc(schema.projects.id));

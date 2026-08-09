@@ -13,7 +13,7 @@ import {
   workItems
 } from '@fai-control-plane/db';
 import {createActorContextIssuer, type Capability} from '@fai-control-plane/domain';
-import type {OperatorProjectSlug} from './operator-data';
+import {isOperatorProjectSlug, type OperatorProjectSlug} from './operator-data';
 
 type Database = ReturnType<typeof createDatabase>['db'];
 
@@ -153,7 +153,7 @@ const createRuntime = (db: Database): CodingTaskPacketRuntime => ({
     if (
       sourceUrl === null ||
       issueRequirements === null ||
-      (candidate.projectSlug !== 'msa' && candidate.projectSlug !== 'ascon')
+      !isOperatorProjectSlug(candidate.projectSlug)
     ) {
       return {status: 'ineligible'};
     }

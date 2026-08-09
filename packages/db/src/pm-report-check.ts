@@ -1,4 +1,4 @@
-import {and, asc, eq, inArray, sql} from 'drizzle-orm';
+import {and, asc, eq, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {reconcileRiskSignal} from './risk-signal';
 import * as schema from './schema';
@@ -9,7 +9,6 @@ export const PM_REPORT_CHECK_QUEUE = 'pm-report-check';
 // pg-boss evaluates cron expressions in UTC; this runs daily at 09:10 UTC.
 export const pmReportCheckCron = '10 9 * * *';
 
-const configuredProjectSlugs = ['msa', 'ascon'] as const;
 const pmReportCheckName = 'pm_report_check';
 const missingReportCode = 'daily_pm_report_missing';
 
@@ -36,7 +35,6 @@ export const createPostgresPmReportCheckProducer = (
           eq(schema.projectTrackerRepositoryScopes.projectId, schema.projects.id),
           eq(schema.projectTrackerRepositoryScopes.provider, 'github')
         ))
-        .where(inArray(schema.projects.slug, configuredProjectSlugs))
         .groupBy(schema.projects.id)
         .orderBy(asc(schema.projects.id));
       const runAt = now();
