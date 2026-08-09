@@ -17,7 +17,7 @@ export async function loadWorkspaceData(route: WorkspaceRoute, operatorActorId?:
   const requiresProject = selectedProject !== undefined;
   const loadProjectIndex = route.screen === 'dashboard' || route.screen === 'projects' || route.screen === 'global_tasks';
   const [portfolio, project, runs, health, projectIndex, lifecycle, conversations] = await Promise.all([
-    route.screen === 'dashboard' ? Promise.resolve({state: 'unconfigured'} as const) : loadPortfolioData(authorizedProjects),
+    loadPortfolioData(authorizedProjects),
     requiresProject ? loadProjectData(selectedProject) : Promise.resolve(null),
     requiresProject ? loadRunsData([selectedProject]) : Promise.resolve(null),
     route.screen === 'agents' || route.screen === 'agent' ? loadHealthData(selectedGlobal === undefined ? authorizedProjects : [selectedGlobal]) : Promise.resolve(null),
