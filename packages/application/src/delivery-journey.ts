@@ -106,11 +106,8 @@ const shapeIsValid = (command: DeliveryJourneyCommand): boolean => {
 };
 const hashFor = (command: DeliveryJourneyCommand) => createHash('sha256')
   .update(canonicalJson({
-    commandId: command.commandId,
     workspaceId: command.workspaceId,
-    correlationId: command.correlationId,
     idempotencyKey: command.idempotencyKey,
-    issuedAt: command.issuedAt,
     actorId: command.actor.actorId,
     type: command.type,
     payload: command.payload

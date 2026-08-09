@@ -4,13 +4,14 @@ import {
   defaultDeliveryProtocolDefinition,
   hashDeliveryProtocolDefinition
 } from '@fai-control-plane/domain';
-import {eq} from 'drizzle-orm';
+import {and, eq} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
   actors,
+  auditEvents,
   createDatabase,
   createPostgresDeliveryJourneyStore,
   deliveryJourneyEvidence,
@@ -107,6 +108,16 @@ describePostgres('delivery journey persistence', () => {
       workItemId: ids.task, protocolId: ids.protocol, expectedWorkItemVersion: 1,
       deadlineAt: '2026-08-01T10:00:00.000Z'
     }, 'start');
+    const deniedStart = {...start, commandId: randomUUID(), idempotencyKey: 'denied-start',
+      actor: {actorId: ids.contributor}};
+    await expect(store.execute({command: deniedStart as never,
+      requestHash: createHash('sha256').update('denied-start').digest('hex'), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}});
+    expect((await db.select().from(auditEvents).where(and(
+      eq(auditEvents.workspaceId, ids.workspace), eq(auditEvents.actorId, ids.contributor),
+      eq(auditEvents.action, 'delivery_journey.start'))))[0]).toMatchObject({
+      policyDecision: 'deny', outcome: 'rejected', reasonCode: 'CAPABILITY_DENIED'
+    });
     await expect(store.execute({
       command: start as never, requestHash: createHash('sha256').update('start').digest('hex'),
       authorized: true
@@ -167,5 +178,71 @@ describePostgres('delivery journey persistence', () => {
       workspaceId: ids.workspace, workItemId: ids.legacy,
       actorId: ids.owner, at: '2026-07-30T10:00:00.000Z'
     })).resolves.toMatchObject({state: 'not_configured', reason: 'protocol_not_bound'});
+
+    let terminalTask = (await db.select().from(workItems).where(eq(workItems.id, ids.task)))[0]!;
+    let terminalJourney = (await db.select().from(deliveryJourneys)
+      .where(eq(deliveryJourneys.workItemId, ids.task)))[0]!;
+    for (const stage of definition.stages.slice(1, -1)) {
+      await expect(store.execute({
+        command: envelope('delivery_journey.advance', {
+          workItemId: ids.task, expectedWorkItemVersion: terminalTask.version,
+          expectedJourneyVersion: terminalJourney.version,
+          evidenceReferences: stage.requiredEvidence.map((requirement) => ({
+            requirement, reference: `artifact://terminal/${stage.key}/${requirement}`
+          }))
+        }, `to-${stage.key}`) as never,
+        requestHash: createHash('sha256').update(`to-${stage.key}`).digest('hex'), authorized: true
+      })).resolves.toMatchObject({receipt: {result: {ok: true}}});
+      terminalTask = (await db.select().from(workItems).where(eq(workItems.id, ids.task)))[0]!;
+      terminalJourney = (await db.select().from(deliveryJourneys)
+        .where(eq(deliveryJourneys.workItemId, ids.task)))[0]!;
+    }
+    const terminalStage = definition.stages.at(-1)!;
+    expect(terminalTask.status).toBe('done');
+    await expect(store.execute({
+      command: envelope('delivery_journey.advance', {
+        workItemId: ids.task, expectedWorkItemVersion: terminalTask.version,
+        expectedJourneyVersion: terminalJourney.version, evidenceReferences: []
+      }, 'terminal-evidence') as never,
+      requestHash: createHash('sha256').update('terminal-missing').digest('hex'), authorized: true
+    })).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_COMMAND'}}}});
+    await db.update(actors).set({role: 'delivery_lead'}).where(eq(actors.id, ids.contributor));
+    const wrongResponsible = {...envelope('delivery_journey.advance', {
+      workItemId: ids.task, expectedWorkItemVersion: terminalTask.version,
+      expectedJourneyVersion: terminalJourney.version,
+      evidenceReferences: terminalStage.requiredEvidence.map((requirement) => ({
+        requirement, reference: `artifact://wrong-responsible/${requirement}`
+      }))
+    }, 'terminal-wrong-responsible'), actor: {actorId: ids.contributor}};
+    await expect(store.execute({command: wrongResponsible as never,
+      requestHash: createHash('sha256').update('terminal-wrong-responsible').digest('hex'), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}});
+    expect((await db.select().from(auditEvents).where(and(
+      eq(auditEvents.workspaceId, ids.workspace), eq(auditEvents.actorId, ids.contributor),
+      eq(auditEvents.action, 'delivery_journey.advance'))))[0]).toMatchObject({
+      policyDecision: 'deny', outcome: 'rejected', reasonCode: 'CAPABILITY_DENIED'
+    });
+    const terminalCommand = envelope('delivery_journey.advance', {
+        workItemId: ids.task, expectedWorkItemVersion: terminalTask.version,
+        expectedJourneyVersion: terminalJourney.version,
+        evidenceReferences: terminalStage.requiredEvidence.map((requirement) => ({
+          requirement, reference: `artifact://terminal/${terminalStage.key}/${requirement}`
+        }))
+      }, 'terminal-evidence');
+    const finalAcceptance = await store.execute({
+      command: terminalCommand as never,
+      requestHash: createHash('sha256').update('terminal-evidence').digest('hex'), authorized: true
+    });
+    expect(finalAcceptance).toMatchObject({receipt: {result: {ok: true, value: {
+      task: {status: 'done', version: terminalTask.version}, journeyVersion: terminalJourney.version + 1,
+      nextAllowedAction: {kind: 'blocked', reason: 'journey_complete'}
+    }}}});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, ids.task)))[0]).toMatchObject({
+      stageKey: terminalStage.key, version: terminalJourney.version + 1
+    });
+    await expect(store.execute({command: terminalCommand as never,
+      requestHash: createHash('sha256').update('terminal-evidence').digest('hex'), authorized: true}))
+      .resolves.toMatchObject({status: 'replayed', receipt: {result: {ok: true}}});
   });
 });

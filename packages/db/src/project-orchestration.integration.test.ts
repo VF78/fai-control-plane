@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {MVP_AGENT_RUN_RETRY_POLICY} from '@fai-control-plane/domain';
+import {defaultDeliveryProtocolDefinition, MVP_AGENT_RUN_RETRY_POLICY} from '@fai-control-plane/domain';
 import {
   hashAgentProfileConfiguration,
   hashDeliveryProtocolDefinition,
@@ -16,14 +16,15 @@ import {
   canonicalEvents, commandReceipts,
   createDatabase, createPostgresAgentRunRetryContinuationStore,
   createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore,
-  createPostgresAgentRunAcceptanceStore, createPostgresRunnerClaimStore,
+  createPostgresAgentRunAcceptanceStore, createPostgresProjectOutcomeAcceptanceStore, createPostgresRunnerClaimStore,
   deliveryJourneyEvidence, deliveryJourneys,
   outboxEvents, projectExecutionDispatches, projectExecutions,
   loadProjectExecutionProjection,
   projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPlanVersions,
   projectPublicationIntents, projectScopeBaselineVersions, projectTrackerRepositoryScopes,
+  projectScopeOutcomeObservations, projectScopeOutcomes,
   projects, runbooks, runtimeRegistrations, secretRefs, taskPackets, trackerBindings,
-  riskSignals, statusTransitions, workItemDependencies, workItems, workspaces
+  riskSignals, statusTransitions, workItemDependencies, workItemScopeOutcomes, workItems, workspaces
 } from './index';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -207,6 +208,47 @@ describePostgres('governed project orchestration persistence', () => {
     return {...fixture, run, receiptSha256, store, command, idempotencyKey};
   };
 
+  const seedOutcomeAcceptance = async () => {
+    const fixture = await seedAutonomousProject(false);
+    const finalDefinition = defaultDeliveryProtocolDefinition();
+    const finalStage = finalDefinition.stages.at(-1)!;
+    const first = randomUUID(); const second = randomUUID();
+    await db.update(runbooks).set({definition: finalDefinition as never,
+      contentHash: hashDeliveryProtocolDefinition(finalDefinition)})
+      .where(eq(runbooks.id, fixture.ids.protocol));
+    await db.update(workItems).set({status: 'done', version: 2})
+      .where(eq(workItems.id, fixture.ids.task));
+    await db.update(deliveryJourneys).set({stageKey: finalStage.key, version: 3})
+      .where(eq(deliveryJourneys.workItemId, fixture.ids.task));
+    await db.insert(deliveryJourneyEvidence).values(finalStage.requiredEvidence.map((requirement) => ({
+      workItemId: fixture.ids.task, stageKey: finalStage.key, requirement,
+      evidenceReference: `artifact://final/${requirement}`, commandId: randomUUID()
+    })));
+    await db.insert(projectScopeOutcomes).values([
+      {id: first, baselineId: fixture.ids.baseline, sourcePlanVersionId: fixture.ids.planVersion,
+        key: 'outcome_1', title: 'First', weight: 40, state: 'review'},
+      {id: second, baselineId: fixture.ids.baseline, sourcePlanVersionId: fixture.ids.planVersion,
+        key: 'outcome_2', title: 'Second', weight: 60, state: 'review'}
+    ]);
+    await db.insert(workItemScopeOutcomes).values([
+      {workItemId: fixture.ids.task, outcomeId: first, sourcePlanVersionId: fixture.ids.planVersion},
+      {workItemId: fixture.ids.task, outcomeId: second, sourcePlanVersionId: fixture.ids.planVersion}
+    ]);
+    await db.insert(projectExecutions).values({projectId: fixture.ids.project, status: 'blocked',
+      blockReason: 'scope_outcomes_pending', version: 3,
+      startedAt: new Date('2026-08-09T11:30:00.000Z')});
+    const store = createPostgresProjectOutcomeAcceptanceStore(db, {
+      now: () => new Date('2026-08-09T12:00:00.000Z')
+    });
+    const command = (outcomeId: string, expectedExecutionVersion = 3, actorId = fixture.ids.owner, commandId = randomUUID()) => ({
+      commandId, workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `project-outcome-accept:v1:${outcomeId}:${expectedExecutionVersion}:${actorId}`,
+      actor: {actorId}, type: 'project_scope_outcome.accept.v1' as const,
+      payload: {projectId: fixture.ids.project, baselineId: fixture.ids.baseline, outcomeId, expectedExecutionVersion}
+    });
+    return {...fixture, first, second, store, command};
+  };
+
   it('blocks a human-owned autonomous stage with an explicit manager decision', async () => {
     const {ids, store, command} = await seedAutonomousProject(true);
     await expect(store.execute({command: command('project_execution.start', 0, 'human-autonomous') as never,
@@ -294,6 +336,95 @@ describePostgres('governed project orchestration persistence', () => {
       commandReceipts.idempotencyKey, fixture.idempotencyKey))).toHaveLength(1);
     expect(await db.select().from(auditEvents).where(eq(
       auditEvents.action, 'agent_run.accept_result.v1'))).toHaveLength(1);
+  });
+
+  it('records weighted Product Owner decisions atomically and completes only the final accepted outcome', async () => {
+    const fixture = await seedOutcomeAcceptance();
+    await db.update(runbooks).set({active: false, protocolState: 'retired'})
+      .where(eq(runbooks.id, fixture.ids.protocol));
+    await expect(fixture.store.execute({command: fixture.command(fixture.first) as never,
+      requestHash: 'o'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true,
+      value: {outcomeId: fixture.first, acceptedWeight: 40, totalWeight: 100,
+        executionStatus: 'blocked', executionVersion: 3}}}});
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({status: 'blocked', version: 3});
+    expect(await db.select().from(projectScopeOutcomeObservations).where(eq(
+      projectScopeOutcomeObservations.projectId, fixture.ids.project))).toEqual(expect.arrayContaining([
+      expect.objectContaining({acceptedWeight: 40, totalWeight: 100})
+    ]));
+    await expect(fixture.store.execute({command: fixture.command(fixture.second) as never,
+      requestHash: 'p'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true,
+      value: {acceptedWeight: 100, totalWeight: 100, executionStatus: 'completed', executionVersion: 4}}}});
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({status: 'completed', version: 4});
+    expect(await db.select().from(projectScopeOutcomes).where(eq(
+      projectScopeOutcomes.baselineId, fixture.ids.baseline))).toEqual(expect.arrayContaining([
+      expect.objectContaining({id: fixture.first, state: 'accepted', acceptedByActorId: fixture.ids.owner}),
+      expect.objectContaining({id: fixture.second, state: 'accepted', acceptedByActorId: fixture.ids.owner})
+    ]));
+  });
+
+  it('does not count a schema-valid partial accepted row toward final completion', async () => {
+    const fixture = await seedOutcomeAcceptance();
+    await db.update(projectScopeOutcomes).set({state: 'accepted'}).where(eq(
+      projectScopeOutcomes.id, fixture.first));
+    await expect(fixture.store.execute({command: fixture.command(fixture.second) as never,
+      requestHash: 'z'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true,
+      value: {acceptedWeight: 60, totalWeight: 100, executionStatus: 'blocked', executionVersion: 3}}}});
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({status: 'blocked', version: 3});
+  });
+
+  it('keeps denials from poisoning corrected acceptance and rejects non-owner, stale, and cross-project commands', async () => {
+    const fixture = await seedOutcomeAcceptance(); const exact = fixture.command(fixture.first);
+    await expect(fixture.store.execute({command: exact as never, requestHash: 'q'.repeat(64), authorized: false,
+      policyError: {code: 'POLICY_DENIED', message: 'fixture policy'}})).resolves.toMatchObject({receipt: {result: {ok: false,
+      error: {code: 'POLICY_DENIED'}}}});
+    await expect(fixture.store.execute({command: exact as never, requestHash: 'q'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {ok: true, value: {acceptedWeight: 40}}}});
+    const correctedAudits = await db.select().from(auditEvents).where(and(
+      eq(auditEvents.workspaceId, fixture.ids.workspace),
+      eq(auditEvents.action, 'project_scope_outcome.accept.v1'),
+      eq(auditEvents.targetId, fixture.first)
+    ));
+    expect(correctedAudits).toHaveLength(2);
+    expect(correctedAudits).toEqual(expect.arrayContaining([
+      expect.objectContaining({policyDecision: 'deny', outcome: 'rejected', reasonCode: 'POLICY_DENIED'}),
+      expect.objectContaining({commandId: exact.commandId, policyDecision: 'allow', outcome: 'succeeded'})
+    ]));
+    expect(new Set(correctedAudits.map(({commandId}) => commandId)).size).toBe(2);
+    const outsider = randomUUID();
+    await db.insert(actors).values({id: outsider, workspaceId: fixture.ids.workspace, type: 'human',
+      role: 'developer', displayName: 'Outsider', authMode: 'user'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
+      actorId: outsider, role: 'contributor'});
+    await expect(fixture.store.execute({command: fixture.command(fixture.second, 3, outsider) as never,
+      requestHash: 'r'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+      error: {code: 'CAPABILITY_DENIED'}}}});
+    await expect(fixture.store.execute({command: fixture.command(fixture.second, 2) as never,
+      requestHash: 's'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+      error: {code: 'VERSION_CONFLICT'}}}});
+    const foreign = await seedOutcomeAcceptance(); const cross = fixture.command(fixture.second);
+    await expect(fixture.store.execute({command: {...cross, payload: {...cross.payload,
+      baselineId: foreign.ids.baseline, outcomeId: foreign.first}} as never,
+      requestHash: 't'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+      error: {code: 'NOT_FOUND'}}}});
+  });
+
+  it('serializes same and different concurrent outcome commands without premature completion', async () => {
+    const same = await seedOutcomeAcceptance(); const repeated = same.command(same.first, 3, same.ids.owner, randomUUID());
+    const sameResults = await Promise.all([1, 2].map(() => same.store.execute({command: repeated as never,
+      requestHash: 'u'.repeat(64), authorized: true})));
+    expect(sameResults.map(({status}) => status).sort()).toEqual(['completed', 'replayed']);
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, same.ids.project)))[0]).toMatchObject({status: 'blocked', version: 3});
+    const different = await seedOutcomeAcceptance();
+    const results = await Promise.all([different.store.execute({command: different.command(different.first) as never,
+      requestHash: 'v'.repeat(64), authorized: true}), different.store.execute({command: different.command(different.second) as never,
+      requestHash: 'w'.repeat(64), authorized: true})]);
+    expect(results.every((result) => 'receipt' in result && result.receipt.result.ok)).toBe(true);
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, different.ids.project)))[0]).toMatchObject({status: 'completed', version: 4});
   });
 
   it('completes and audits policy denial, Product Owner denial, and a stale selection', async () => {
@@ -859,7 +990,7 @@ describePostgres('governed project orchestration persistence', () => {
     expect(await db.select().from(commandReceipts).where(eq(commandReceipts.workspaceId, ids.workspace))).toHaveLength(7);
   });
 
-  it('does not select ready work behind an unfinished dependency and completes only from persisted done facts', async () => {
+  it('does not select work behind an unfinished dependency or complete from done tasks without scope acceptance', async () => {
     const ids = {workspace: randomUUID(), project: randomUUID(), owner: randomUUID(), plan: randomUUID(),
       planVersion: randomUUID(), baseline: randomUUID(), first: randomUUID(), second: randomUUID()};
     await db.insert(workspaces).values({id: ids.workspace, name: 'Dependencies', slug: `dependencies-${randomUUID()}`});
@@ -896,7 +1027,7 @@ describePostgres('governed project orchestration persistence', () => {
     await db.update(workItems).set({status: 'done'}).where(eq(workItems.projectId, ids.project));
     await expect(store.execute({command: command('project_execution.resume', 2, 'resume') as never,
       requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {value: {
-      status: 'completed', version: 3, selection: null
+      status: 'blocked', blockReason: 'scope_acceptance_required', version: 3, selection: null
     }}}});
   });
 
