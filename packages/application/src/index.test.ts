@@ -137,6 +137,9 @@ class FakeUnitOfWork implements UnitOfWork {
   runtimeAvailable = true;
   accessAdmin = true;
   onboardingConflict: 'project_not_found' | 'duplicate' | null = null;
+  projectSetupContext: {workspaceAdmin: boolean; slugExists: boolean; validProductOwner: boolean;
+    validMembers: boolean; validAgentProfile: boolean} = {workspaceAdmin: true, slugExists: false, validProductOwner: true,
+    validMembers: true, validAgentProfile: true};
 
   async executeCommand<T>(claim: CommandReceiptClaim, work: (
     transaction: CanonicalCommandTransaction, claimToken: ReceiptClaimToken
@@ -189,6 +192,7 @@ class FakeUnitOfWork implements UnitOfWork {
         workspaceAdmin: this.accessAdmin,
         projectRole: null
       }),
+      loadProjectSetupContext: async () => this.projectSetupContext,
       persistAuditedMutation: async ({outcome}) => {
         this.mutations.push(outcome);
         if (this.failure === 'not_found') return {status: 'not_found'} as const;
@@ -257,6 +261,63 @@ class FakeUnitOfWork implements UnitOfWork {
 const serviceFor = (uow: FakeUnitOfWork, clock: Clock = fixedClock) =>
   createCanonicalCommandService({unitOfWork: uow, clock, idGenerator: fixedIds});
 const item = (overrides: Partial<WorkItem> = {}): WorkItem => ({id: id(), projectId, status: 'ready', blocked: false, version: 1, ...overrides});
+
+describe('project intake canonical command', () => {
+  const payload = () => ({
+    projectId: id(), setupId: id(), name: 'Новый проект', slug: `project-${id().slice(0, 8)}`,
+    productOwnerActorId: actorId, productOwnerMembershipId: id(), members: [],
+    repositoryBinding: 'create_managed' as const, trackerBinding: 'link_existing' as const,
+    internalChat: 'create_managed' as const, clientChat: 'none' as const,
+    executionMode: 'manual' as const, agentProfileId: null
+  });
+
+  it('persists one pending provider-neutral setup aggregate and replays by idempotency key', async () => {
+    const uow = new FakeUnitOfWork();
+    const service = serviceFor(uow);
+    const created = command('project.create', payload());
+    const first = await service.execute(created);
+    const second = await service.execute(created);
+    expect(first.status).toBe('completed');
+    expect(second.status).toBe('replayed');
+    expect(uow.mutations).toHaveLength(1);
+    expect(uow.mutations[0]).toMatchObject({mutation: {aggregateType: 'project_setup', aggregate: {
+      state: 'pending', version: 1, configuration: {repositoryBinding: 'create_managed', agentProfileId: null}
+    }}});
+  });
+
+  it('fails closed for duplicate slug and incompatible setup relationships', async () => {
+    const duplicate = new FakeUnitOfWork();
+    duplicate.projectSetupContext = {...duplicate.projectSetupContext, slugExists: true};
+    const conflict = await serviceFor(duplicate).execute(command('project.create', payload()));
+    expect(conflict).toMatchObject({receipt: {result: {ok: false, error: {code: 'VERSION_CONFLICT'}}}});
+    expect(duplicate.mutations).toHaveLength(0);
+
+    const invalid = new FakeUnitOfWork();
+    invalid.projectSetupContext = {...invalid.projectSetupContext, validProductOwner: false};
+    const rejected = await serviceFor(invalid).execute(command('project.create', payload()));
+    expect(rejected).toMatchObject({receipt: {result: {ok: false, error: {code: 'INVALID_COMMAND'}}}});
+    expect(invalid.mutations).toHaveLength(0);
+  });
+
+  it('rejects non-canonical member duplication and provider-shaped extra fields', async () => {
+    const memberId = id();
+    const base = payload();
+    const duplicate = command('project.create', {
+      ...base,
+      members: [
+        {membershipId: id(), actorId: memberId, role: 'contributor' as const},
+        {membershipId: id(), actorId: memberId, role: 'reviewer' as const}
+      ]
+    });
+    await expect(serviceFor(new FakeUnitOfWork()).execute(duplicate)).resolves.toMatchObject({
+      status: 'rejected', error: {code: 'INVALID_COMMAND'}
+    });
+    const malformed = {...command('project.create', base), payload: {...base, providerId: 'github:secret'}} as never;
+    await expect(serviceFor(new FakeUnitOfWork()).execute(malformed)).resolves.toMatchObject({
+      status: 'rejected', error: {code: 'INVALID_COMMAND'}
+    });
+  });
+});
 
 describe('canonical command service', () => {
   it('hashes key ordering deterministically and normalizes actor capabilities', () => {

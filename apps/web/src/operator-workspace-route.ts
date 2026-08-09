@@ -41,6 +41,7 @@ export function workspaceRoute(path: readonly string[], query: WorkspaceQuery): 
   if (path[0] !== 'projects' || slug === undefined || !isOperatorProjectSlug(slug)) return null;
   const tab = path[2];
   if (tab === 'overview' && path.length === 3) return {screen: 'overview', project: slug, taskId: null, runId: null, agentId: null, scope};
+  if (tab === 'setup' && path.length === 3) return {screen: 'setup', project: slug, taskId: null, runId: null, agentId: null, scope};
   if (tab === 'tasks' && path.length === 3) return {screen: 'tasks', project: slug, taskFilters, taskId: null, runId: null, agentId: null, scope};
   if (tab === 'tasks' && path.length === 4 && exact(path[3]) !== null) return {screen: 'task', project: slug, taskId: path[3]!, runId: null, agentId: null, scope};
   if (tab === 'protocol' && path.length === 3) return {screen: 'protocol', project: slug, taskId: null, runId: null, agentId: null, scope};

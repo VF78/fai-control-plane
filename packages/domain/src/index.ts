@@ -775,6 +775,31 @@ export type SetProjectMembershipCommand = CanonicalCommandEnvelope<
     expectedVersion: number | null;
   }>
 >;
+export const projectSetupBindingModes = ['none', 'link_existing', 'create_managed'] as const;
+export type ProjectSetupBindingMode = (typeof projectSetupBindingModes)[number];
+export type ProjectSetupExecutionMode = 'manual' | 'managed_agent';
+export type CreateProjectCommand = CanonicalCommandEnvelope<
+  'project.create',
+  Readonly<{
+    projectId: string;
+    setupId: string;
+    name: string;
+    slug: string;
+    productOwnerActorId: string;
+    productOwnerMembershipId: string;
+    members: readonly Readonly<{
+      membershipId: string;
+      actorId: string;
+      role: ProjectMembershipRole;
+    }>[];
+    repositoryBinding: ProjectSetupBindingMode;
+    trackerBinding: ProjectSetupBindingMode;
+    internalChat: ProjectSetupBindingMode;
+    clientChat: ProjectSetupBindingMode;
+    executionMode: ProjectSetupExecutionMode;
+    agentProfileId: string | null;
+  }>
+>;
 export type OnboardActorCommand = CanonicalCommandEnvelope<
   'actor.onboard',
   Readonly<{
@@ -907,6 +932,7 @@ export type CanonicalCommand =
   | RequestAccessCommand
   | DecideAccessRequestCommand
   | SetProjectMembershipCommand
+  | CreateProjectCommand
   | OnboardActorCommand
   | BindActorExternalIdentityCommand
   | RetireActorCommand
@@ -2388,6 +2414,35 @@ export type ProjectMembershipMutation = Readonly<{
   expectedPersistedVersion: number | null;
   aggregate: ProjectMembership;
 }>;
+export type ProjectSetupAggregate = Readonly<{
+  id: string;
+  project: Readonly<{
+    id: string;
+    workspaceId: string;
+    name: string;
+    slug: string;
+    version: 1;
+  }>;
+  productOwnerActorId: string;
+  memberships: readonly ProjectMembership[];
+  configuration: Readonly<{
+    repositoryBinding: ProjectSetupBindingMode;
+    trackerBinding: ProjectSetupBindingMode;
+    internalChat: ProjectSetupBindingMode;
+    clientChat: ProjectSetupBindingMode;
+    executionMode: ProjectSetupExecutionMode;
+    agentProfileId: string | null;
+  }>;
+  state: 'pending';
+  lastErrorCode: null;
+  version: 1;
+}>;
+export type ProjectSetupMutation = Readonly<{
+  aggregateType: 'project_setup';
+  aggregateId: string;
+  expectedPersistedVersion: null;
+  aggregate: ProjectSetupAggregate;
+}>;
 export type ActorExternalIdentityMutation = Readonly<{
   aggregateType: 'actor_external_identity';
   aggregateId: string;
@@ -2474,6 +2529,7 @@ export type CanonicalMutation =
   | ApprovalUpdateMutation
   | AccessRequestMutation
   | ProjectMembershipMutation
+  | ProjectSetupMutation
   | ActorOnboardingMutation
   | ActorExternalIdentityMutation
   | ActorRetirementMutation
@@ -2578,6 +2634,22 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     membershipId: string
   ): Promise<ProjectMembership | null>;
+  loadProjectSetupContext?(
+    claimToken: ReceiptClaimToken,
+    input: Readonly<{
+      actorId: string;
+      slug: string;
+      productOwnerActorId: string;
+      members: readonly Readonly<{actorId: string; role: ProjectMembershipRole}>[];
+      agentProfileId: string | null;
+    }>
+  ): Promise<Readonly<{
+    workspaceAdmin: boolean;
+    slugExists: boolean;
+    validProductOwner: boolean;
+    validMembers: boolean;
+    validAgentProfile: boolean;
+  }> | null>;
   loadActorOnboardingConflict?(
     claimToken: ReceiptClaimToken,
     projectId: string,

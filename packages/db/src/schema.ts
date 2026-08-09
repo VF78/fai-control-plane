@@ -306,6 +306,35 @@ export const projectMemberships = pgTable(
   ]
 );
 
+export type ProjectSetupConfiguration = Readonly<{
+  repositoryBinding: 'none' | 'link_existing' | 'create_managed';
+  trackerBinding: 'none' | 'link_existing' | 'create_managed';
+  internalChat: 'none' | 'link_existing' | 'create_managed';
+  clientChat: 'none' | 'link_existing' | 'create_managed';
+  executionMode: 'manual' | 'managed_agent';
+  agentProfileId: string | null;
+}>;
+
+export const projectSetups = pgTable(
+  'project_setups',
+  {
+    id: id(),
+    projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'restrict'}),
+    state: text('state').default('pending').notNull(),
+    configuration: jsonb('configuration').$type<ProjectSetupConfiguration>().notNull(),
+    lastErrorCode: text('last_error_code'),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('project_setups_project_unique').on(table.projectId),
+    check('project_setups_state_valid', sql`${table.state} in ('pending', 'in_progress', 'blocked')`),
+    check('project_setups_version_positive', sql`${table.version} > 0`),
+    check('project_setups_error_code_valid', sql`${table.lastErrorCode} is null or ${table.lastErrorCode} ~ '^[a-z][a-z0-9_]{0,63}$'`)
+  ]
+);
+
 export const actorExternalIdentities = pgTable(
   'actor_external_identities',
   {

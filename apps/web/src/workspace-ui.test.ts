@@ -16,9 +16,9 @@ it('maps only canonical workspace routes and preserves scope on deep links', () 
   expect(workspaceRoute(['projects', 'msa', 'tasks', 'task-1'], {
     environment: 'staging', from: '2026-07-01', to: '2026-07-31'
   })).toMatchObject({screen: 'task', project: 'msa', taskId: 'task-1', scope: {environment: 'staging', from: '2026-07-01', to: '2026-07-31'}});
-  expect(workspaceRoute(['projects', 'unknown', 'overview'], {})).toBeNull();
+  expect(workspaceRoute(['projects', 'unknown', 'overview'], {})).toMatchObject({screen: 'overview', project: 'unknown'});
   expect(workspaceRoute(['projects', 'msa', 'runs', ''], {})).toBeNull();
-  expect(workspaceRoute(['tasks'], {project: 'unknown'})).toBeNull();
+  expect(workspaceRoute(['tasks'], {project: 'unknown'})).toMatchObject({screen: 'global_tasks', globalProject: 'unknown'});
   expect(workspaceRoute(['tasks'], {project: 'msa', status: 'qa', attention: 'only', owner: 'Hermes'}))
     .toMatchObject({screen: 'global_tasks', globalProject: 'msa', taskFilters: {status: 'qa', attention: true, owner: 'Hermes'}});
   expect(workspaceRoute(['projects', 'msa', 'tasks'], {}))
@@ -28,6 +28,33 @@ it('maps only canonical workspace routes and preserves scope on deep links', () 
   expect(workspaceRoute(['projects', 'msa', 'runs', 'run-1'], {handoff: 'accepted'}))
     .toMatchObject({screen: 'run', handoffResult: 'accepted'});
   expect(workspaceRoute(['people'], {})).toMatchObject({screen: 'people', project: null});
+});
+
+it('renders a dynamic authorized project card, manager intake, and resumable setup detail', () => {
+  const actorId = '11111111-1111-4111-8111-111111111111';
+  const projectId = '22222222-2222-4222-8222-222222222222';
+  const project = {project: {id: projectId, workspaceId: 'workspace-1', name: 'Dynamic', slug: 'dynamic-project',
+    description: null, defaultBranch: 'main', updatedAt: new Date()}, setup: {id: 'setup-1', state: 'pending',
+    version: 1, lastErrorCode: null, configuration: {repositoryBinding: 'create_managed', trackerBinding: 'link_existing',
+      internalChat: 'none', clientChat: 'none', executionMode: 'manual', agentProfileId: null}},
+    agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: []};
+  const access = {canRetireAgents: false, instructionBaselines: [], actors: [{id: actorId, displayName: 'Manager',
+    type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {'write:control_plane:development': true}}],
+    memberships: [{id: 'membership-1', projectId, project: 'Dynamic', projectSlug: 'dynamic-project', actorId,
+      role: 'project_owner', active: true, version: 1, canManage: true}], externalIdentities: [], resourceGrants: [],
+    agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}};
+  const base = {portfolio: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [project],
+    csrfToken: 'csrf', operatorActorId: actorId, access: {state: 'ready', data: access}} as unknown as WorkspaceData;
+  const projectsMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects'], {})!, data: base}));
+  expect(projectsMarkup).toContain('Dynamic');
+  expect(projectsMarkup).toContain('/projects/dynamic-project/setup');
+  expect(projectsMarkup).toContain('action="/api/projects"');
+  expect(projectsMarkup).toContain('Создать проект');
+  const detailMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'dynamic-project', 'setup'], {})!,
+    data: {...base, project: {state: 'ready', data: project}} as unknown as WorkspaceData}));
+  expect(detailMarkup).toContain('Ожидает настройки');
+  expect(detailMarkup).toContain('Внешние ресурсы не считаются готовыми');
+  expect(detailMarkup).not.toContain('Все обязательные ресурсы подтверждены');
 });
 
 it('renders authenticated, version-checked instruction publication and rollback controls', () => {

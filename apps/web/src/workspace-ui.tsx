@@ -19,7 +19,7 @@ import {RuntimeRegistrationControls} from './runtime-registration-controls';
 import {AgentRetirementControls} from './agent-retirement-controls';
 
 export type WorkspaceRoute = Readonly<{
-  screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'people' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
+  screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'people' | 'setup' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
   project: OperatorProjectSlug | null;
   globalProject?: 'all' | OperatorProjectSlug;
   taskFilters?: Readonly<{
@@ -246,8 +246,43 @@ function Dashboard({route, projects}: {route: WorkspaceUiRoute; projects: readon
     return <Link className="fcp-dashboard-progress-card" href={projectUrl(project.project.slug, 'overview', route.scope)} key={project.project.slug}><header><div><span>{project.project.name}</span><small>Принятый скоп</small></div><ChevronRight aria-hidden="true" size={18}/></header>{progress === null || progress.totalWeight === 0 ? <strong>Не настроено</strong> : <><strong>{progress.acceptedWeight} / {progress.totalWeight}</strong><div className="fcp-dashboard-progress-bar" aria-label={progress.states.map((item) => `${item.label}: ${item.weight}`).join(', ')}>{progress.states.map((item) => <span className={`fcp-scope-${item.key}`} key={item.key} style={{width: `${item.weight / progress.totalWeight * 100}%`}}/>)}</div><ul>{progress.states.map((item) => <li key={item.key} className={`fcp-scope-${item.key}`}><span aria-hidden="true"/>{item.label} {item.weight}</li>)}</ul></>}</Link>;
   })}</section></>;
 }
-function Projects({route, projects}: {route: WorkspaceUiRoute; projects: readonly WorkspaceProjectRef[]}) {
-  return <ProjectChooser route={route} projects={projects} title="Проекты" detail="Выберите доступный проект, чтобы открыть его рабочую область." area="overview"/>;
+const setupLabel = (state: string) => ({
+  pending: 'Ожидает настройки', in_progress: 'Настройка выполняется', blocked: 'Нужно вмешательство'
+}[state] ?? 'Не настроено');
+function Projects({route, projects, access, csrfToken, operatorActorId}: {
+  route: WorkspaceUiRoute; projects: readonly ProjectData[]; access: AccessData | null;
+  csrfToken: string | null; operatorActorId: string | null;
+}) {
+  const operator = access?.actors.find((actor) => actor.id === operatorActorId);
+  const canCreate = csrfToken !== null && operator?.type === 'human' && operator.role === 'workspace_admin' &&
+    operator.capabilities['write:control_plane:development'] === true;
+  const people = access?.actors.filter((actor) => actor.type === 'human' && actor.disabledAt === null) ?? [];
+  const members = access?.actors.filter((actor) => (actor.type === 'human' || actor.type === 'agent') && actor.disabledAt === null) ?? [];
+  const profiles = access?.agentSystems.flatMap((system) => system.profiles.filter((profile) => profile.enabled).map((profile) => ({
+    id: profile.id, actorId: system.actorId, label: `${access.actors.find((actor) => actor.id === system.actorId)?.displayName ?? 'Агент'} · ${profile.runtimeId}/${profile.runtimeProfile}`
+  }))) ?? [];
+  return <><div className="fcp-page-title"><div><h1>Проекты</h1><p>Каждый проект открывается отдельно; смешанной межпроектной панели нет.</p></div></div>
+    <section className="fcp-project-intake-grid" aria-label="Доступные проекты">{projects.length === 0 ? <p className="fcp-empty-line">Нет доступных проектов.</p> : projects.map((item) => {
+      const state = item.setup?.state ?? 'not_configured';
+      const href = item.setup == null ? projectUrl(item.project.slug, 'overview', route.scope) : `/projects/${item.project.slug}/setup${scopeQuery(route.scope)}`;
+      return <Link className="fcp-project-intake-card" href={href} key={item.project.id}><header><div><strong>{item.project.name}</strong><small>{item.project.slug}</small></div><ChevronRight aria-hidden="true" size={18}/></header><Status value={state}/><p>{state === 'blocked' ? 'Откройте детали и устраните зафиксированную причину.' : 'Внешние ресурсы ещё не подтверждены; настройку можно продолжить.'}</p></Link>;
+    })}</section>
+    <section className="fcp-section"><div className="fcp-section-head"><div><h2>Создать проект</h2><span>Проект, роли и план настройки фиксируются одной командой</span></div></div>{!canCreate ? <p className="fcp-empty-line">Нужна авторизованная сессия администратора рабочей области.</p> : <form action="/api/projects" method="post" className="fcp-project-intake-form">
+      <input name="_csrf" type="hidden" value={csrfToken}/><input name="idempotencyKey" type="hidden" value={crypto.randomUUID()}/>
+      <label>Название<input name="name" maxLength={120} required/></label><label>Slug<input name="slug" pattern="[a-z][a-z0-9-]{1,47}" maxLength={48} required/></label>
+      <label>Product Owner<select name="productOwnerActorId" required><option value="">Выберите человека</option>{people.map((actor) => <option value={actor.id} key={actor.id}>{actor.displayName}</option>)}</select></label>
+      <fieldset><legend>Начальные участники и роли</legend>{Array.from({length: 8}, (_, index) => <div className="fcp-project-member-row" key={index}><select aria-label={`Участник ${index + 1}`} name={`memberActorId${index}`}><option value="">Не выбран</option>{members.map((actor) => <option value={actor.id} key={actor.id}>{actor.displayName} · {actor.type === 'agent' ? 'агент' : 'человек'}</option>)}</select><select aria-label={`Роль участника ${index + 1}`} name={`memberRole${index}`}><option value="contributor">Участник</option><option value="reviewer">Ревьюер</option><option value="client_viewer">Клиент</option><option value="agent">Агент</option></select></div>)}</fieldset>
+      {[['repositoryBinding', 'Репозиторий'], ['trackerBinding', 'Трекер'], ['internalChat', 'Внутренний чат'], ['clientChat', 'Клиентский чат']].map(([name, label]) => <label key={name}>{label}<select name={name}><option value="none">Не подключать</option><option value="link_existing">Связать существующий</option><option value="create_managed">Создать управляемый</option></select></label>)}
+      <label>Режим исполнения<select name="executionMode"><option value="manual">Ручной</option><option value="managed_agent">Управляемый агент</option></select></label><label>Профиль агента<select name="agentProfileId"><option value="">Без профиля</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.label}</option>)}</select></label>
+      <button className="fcp-primary-button" type="submit">Создать проект</button><small>Провайдеры не вызываются. После создания статус останется «Ожидает настройки» до подтверждённых наблюдений.</small>
+    </form>}</section></>;
+}
+
+function ProjectSetup({route, project}: {route: WorkspaceUiRoute; project: ProjectData}) {
+  const setup = project.setup ?? null;
+  if (setup === null) return <><ProjectHeader route={route} project={project}/><Blank title="Настройка не заведена">Для этого ранее созданного проекта нет setup-aggregate.</Blank></>;
+  const config = setup.configuration;
+  return <><ProjectHeader route={route} project={project}/><section className="fcp-section fcp-setup-detail"><div className="fcp-section-head"><div><h2>Настройка проекта</h2><span>Версия {setup.version} · {setupLabel(setup.state)}</span></div><Status value={setup.state}/></div><p>Проект создан. Внешние ресурсы не считаются готовыми до будущего observation-backed перехода.</p>{setup.lastErrorCode === null ? null : <p>Причина остановки: <code>{setup.lastErrorCode}</code>. Повторите соответствующий шаг после устранения причины.</p>}<dl><div><dt>Репозиторий</dt><dd>{config.repositoryBinding}</dd></div><div><dt>Трекер</dt><dd>{config.trackerBinding}</dd></div><div><dt>Внутренний чат</dt><dd>{config.internalChat}</dd></div><div><dt>Клиентский чат</dt><dd>{config.clientChat}</dd></div><div><dt>Исполнение</dt><dd>{config.executionMode}</dd></div></dl><Link className="fcp-primary-button" href={projectUrl(project.project.slug, 'overview', route.scope)}>Открыть обзор проекта</Link></section></>;
 }
 function ScopeBurnUp({baseline}: {baseline: NonNullable<ProjectData['scopeBaseline']>}) {
   if (baseline.observations.length < 2) return <p className="fcp-burnup-empty">История принятого скопа ещё не зафиксирована — график появится после двух подтверждённых наблюдений.</p>;
@@ -727,6 +762,7 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
   const access = ready(data.access);
   if (project === null) return <Blank title="Project not observed">This project is not available in the PostgreSQL read model.</Blank>;
   switch (route.screen) {
+    case 'setup': return <ProjectSetup route={route} project={project}/>;
     case 'overview': return <Overview route={route} project={project} runs={runs}/>;
     case 'tasks': return <Tasks route={route} project={project} access={access} operatorActorId={data.operatorActorId ?? null}/>;
     case 'task': return <TaskDetail route={route} project={project} runs={runs} lifecycleLoad={data.lifecycle ?? null} csrfToken={data.csrfToken ?? null} operatorActorId={data.operatorActorId ?? null}/>;
@@ -808,7 +844,7 @@ export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: Work
   };
   const content = !routeAllowed ? <Blank title="Проект недоступен">У текущего пользователя нет активного участия в этом проекте.</Blank>
     : route.screen === 'dashboard' ? <Dashboard route={route} projects={(data.projectIndex ?? []).filter((item) => authorizedSlugs.has(item.project.slug))}/>
-      : route.screen === 'projects' ? <Projects route={route} projects={visibleProjects}/>
+      : route.screen === 'projects' ? <Projects route={route} projects={(data.projectIndex ?? []).filter((item) => authorizedSlugs.has(item.project.slug))} access={scopedAccess} csrfToken={data.csrfToken ?? null} operatorActorId={data.operatorActorId ?? null}/>
         : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={projectSelection(route, visibleProjects)}/>
           : route.screen === 'global_chats' ? <GlobalChats route={route} projects={projectSelection(route, visibleProjects)}/>
             : route.screen === 'people' ? <People route={route} access={scopedAccess} csrfToken={data.csrfToken ?? null}/>
