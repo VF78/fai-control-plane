@@ -50,8 +50,11 @@ export {
 export {createPostgresDeliveryJourneyStore} from './delivery-journey';
 export {createPostgresProjectPlanStore} from './project-plan';
 export {
+  createPostgresProjectExecutionDispatcher,
   createPostgresProjectExecutionStore,
-  loadProjectExecutionProjection
+  loadProjectExecutionProjection,
+  type ProjectExecutionDispatchInput,
+  type ProjectExecutionDispatchResult
 } from './project-orchestration';
 export {
   createPostgresGitHubProjectStatusPublisher,

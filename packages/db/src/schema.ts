@@ -811,6 +811,7 @@ export const runtimeRegistrations = pgTable(
     updatedAt: updatedAt()
   },
   (table) => [
+    uniqueIndex('runtime_registrations_identity_project_unique').on(table.id, table.projectId),
     uniqueIndex('runtime_registrations_binding_unique').on(
       table.projectId,
       table.actorId,
@@ -2034,6 +2035,7 @@ export const taskPackets = pgTable(
     createdAt: createdAt()
   },
   (table) => [
+    uniqueIndex('task_packets_identity_project_unique').on(table.id, table.projectId),
     uniqueIndex('task_packets_content_hash_unique').on(
       table.workItemId,
       table.contentHash
@@ -2105,6 +2107,7 @@ export const agentRuns = pgTable(
     updatedAt: updatedAt()
   },
   (table) => [
+    uniqueIndex('agent_runs_identity_packet_unique').on(table.id, table.taskPacketId),
     uniqueIndex('agent_runs_idempotency_unique').on(table.idempotencyKey),
     uniqueIndex('agent_runs_one_active_attempt_unique')
       .on(table.workItemId, table.repositoryScopeId)
@@ -2145,6 +2148,54 @@ export const agentRuns = pgTable(
       columns: [table.retryOfAgentRunId],
       foreignColumns: [table.id]
     }).onDelete('restrict')
+  ]
+);
+
+/** Immutable linkage between one execution selection version and its isolated runner handoff. */
+export const projectExecutionDispatches = pgTable(
+  'project_execution_dispatches',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    executionVersion: integer('execution_version').notNull(),
+    selectionHash: text('selection_hash').notNull(),
+    taskPacketId: uuid('task_packet_id').notNull(),
+    agentRunId: uuid('agent_run_id').notNull(),
+    runtimeRegistrationId: uuid('runtime_registration_id').notNull(),
+    runtimeRegistrationVersion: integer('runtime_registration_version').notNull(),
+    requestedByActorId: uuid('requested_by_actor_id').notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    foreignKey({name: 'project_execution_dispatches_workspace_project_fk',
+      columns: [table.workspaceId, table.projectId],
+      foreignColumns: [projects.workspaceId, projects.id]}).onDelete('restrict'),
+    foreignKey({name: 'project_execution_dispatches_execution_project_fk',
+      columns: [table.projectId],
+      foreignColumns: [projectExecutions.projectId]}).onDelete('restrict'),
+    foreignKey({name: 'project_execution_dispatches_packet_project_fk',
+      columns: [table.taskPacketId, table.projectId],
+      foreignColumns: [taskPackets.id, taskPackets.projectId]}).onDelete('restrict'),
+    foreignKey({name: 'project_execution_dispatches_run_packet_fk',
+      columns: [table.agentRunId, table.taskPacketId],
+      foreignColumns: [agentRuns.id, agentRuns.taskPacketId]}).onDelete('restrict'),
+    foreignKey({name: 'project_execution_dispatches_runtime_project_fk',
+      columns: [table.runtimeRegistrationId, table.projectId],
+      foreignColumns: [runtimeRegistrations.id, runtimeRegistrations.projectId]}).onDelete('restrict'),
+    foreignKey({name: 'project_execution_dispatches_workspace_requester_fk',
+      columns: [table.workspaceId, table.requestedByActorId],
+      foreignColumns: [actors.workspaceId, actors.id]}).onDelete('restrict'),
+    uniqueIndex('project_execution_dispatches_execution_unique')
+      .on(table.projectId, table.executionVersion),
+    uniqueIndex('project_execution_dispatches_packet_unique').on(table.taskPacketId),
+    uniqueIndex('project_execution_dispatches_run_unique').on(table.agentRunId),
+    check('project_execution_dispatches_execution_version_positive',
+      sql`${table.executionVersion} > 0`),
+    check('project_execution_dispatches_runtime_registration_version_positive',
+      sql`${table.runtimeRegistrationVersion} > 0`),
+    check('project_execution_dispatches_selection_hash_sha256',
+      sql`${table.selectionHash} ~ '^[0-9a-f]{64}$'`)
   ]
 );
 
