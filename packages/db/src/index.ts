@@ -48,6 +48,10 @@ export {
   createPostgresDeliveryProtocolStore
 } from './delivery-protocol';
 export {createPostgresDeliveryJourneyStore} from './delivery-journey';
+export {
+  createPostgresAgentRunAcceptanceStore,
+  type PostgresAgentRunAcceptanceOptions
+} from './agent-run-acceptance';
 export {createPostgresProjectPlanStore} from './project-plan';
 export {
   createPostgresProjectExecutionDispatcher,

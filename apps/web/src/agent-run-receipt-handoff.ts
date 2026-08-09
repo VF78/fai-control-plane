@@ -1,23 +1,19 @@
 import {randomUUID} from 'node:crypto';
 import {and, eq, isNull} from 'drizzle-orm';
 import {
-  createCanonicalCommandService,
+  AGENT_RUN_ACCEPTANCE_COMMAND,
+  createAgentRunAcceptanceService,
+  mapRunnerCompletionToDeliveryEvidence,
   parseRunnerCompletionPayload
 } from '@fai-control-plane/application';
 import {
   actors,
-  agentRunReceipts,
-  agentRuns,
   createDatabase,
-  createPostgresUnitOfWork,
-  projects,
-  taskPackets,
-  workItems
+  createPostgresAgentRunAcceptanceStore
 } from '@fai-control-plane/db';
 import {
   createActorContextIssuer,
-  type Capability,
-  type WorkItemStatus
+  type Capability
 } from '@fai-control-plane/domain';
 import {
   readBoundedForm,
@@ -35,82 +31,40 @@ const enabledCapabilities = (value: Record<string, boolean>): Capability[] =>
     enabled ? [capability as Capability] : []
   );
 
-export type ReceiptHandoffCandidate = Readonly<{
-  runId: string;
-  runStatus: string;
-  runAttempt: number;
-  runCompletedAt: Date | null;
-  runFailureCode: string | null;
-  confirmedPacketHash: string;
-  packetContentHash: string;
-  workItemId: string;
-  workItemStatus: WorkItemStatus;
-  workItemVersion: number;
-  receiptRunnerId: string | null;
-  receiptAttempt: number | null;
-  receiptTerminal: string | null;
-  receiptSha256: string | null;
-  receiptSizeBytes: number | null;
-  receiptMetadata: Record<string, unknown> | null;
-  receiptCompletedAt: Date | null;
-}>;
-
 type ReceiptHandoffResult =
   'accepted' | 'stale' | 'forbidden' | 'not_found' | 'unavailable';
 
+const handoffError = (code: string): ReceiptHandoffResult => {
+  switch (code) {
+    case 'INVALID_COMMAND':
+    case 'INVALID_TRANSITION':
+    case 'VERSION_CONFLICT':
+    case 'WORK_ITEM_BLOCKED':
+    case 'IDEMPOTENCY_KEY_REUSED':
+      return 'stale';
+    case 'NOT_FOUND':
+      return 'not_found';
+    case 'CAPABILITY_DENIED':
+    case 'POLICY_DENIED':
+    case 'INVALID_ACTOR_CONTEXT':
+      return 'forbidden';
+    default:
+      return 'unavailable';
+  }
+};
+
 type ReceiptHandoffRuntime = Readonly<{
-  load(input: Readonly<{
-    workspaceId: string;
-    runId: string;
-  }>): Promise<ReceiptHandoffCandidate | null>;
-  transition(input: Readonly<{
+  execute(input: Readonly<{
     workspaceId: string;
     actorId: string;
     runId: string;
     receiptSha256: string;
-    workItemId: string;
-    expectedVersion: number;
+    expectedWorkItemVersion: number;
   }>): Promise<ReceiptHandoffResult>;
 }>;
 
 const createRuntime = (db: Database): ReceiptHandoffRuntime => ({
-  async load(input) {
-    const [candidate] = await db.select({
-      runId: agentRuns.id,
-      runStatus: agentRuns.status,
-      runAttempt: agentRuns.attempt,
-      runCompletedAt: agentRuns.completedAt,
-      runFailureCode: agentRuns.failureCode,
-      confirmedPacketHash: agentRuns.confirmedPacketHash,
-      packetContentHash: taskPackets.contentHash,
-      workItemId: workItems.id,
-      workItemStatus: workItems.status,
-      workItemVersion: workItems.version,
-      receiptRunnerId: agentRunReceipts.runnerId,
-      receiptAttempt: agentRunReceipts.attempt,
-      receiptTerminal: agentRunReceipts.terminal,
-      receiptSha256: agentRunReceipts.receiptSha256,
-      receiptSizeBytes: agentRunReceipts.receiptSizeBytes,
-      receiptMetadata: agentRunReceipts.metadata,
-      receiptCompletedAt: agentRunReceipts.completedAt
-    }).from(agentRuns)
-      .innerJoin(taskPackets, eq(taskPackets.id, agentRuns.taskPacketId))
-      .innerJoin(projects, eq(projects.id, taskPackets.projectId))
-      .innerJoin(workItems, and(
-        eq(workItems.id, taskPackets.workItemId),
-        eq(workItems.projectId, taskPackets.projectId)
-      ))
-      .leftJoin(agentRunReceipts, eq(agentRunReceipts.agentRunId, agentRuns.id))
-      .where(and(
-        eq(agentRuns.id, input.runId),
-        eq(projects.workspaceId, input.workspaceId),
-        isNull(workItems.deletedAt)
-      ))
-      .limit(1);
-    return candidate ?? null;
-  },
-
-  async transition(input) {
+  async execute(input) {
     const [operator] = await db.select({capabilities: actors.capabilities})
       .from(actors)
       .where(and(
@@ -134,41 +88,31 @@ const createRuntime = (db: Database): ReceiptHandoffRuntime => ({
     const actor = issuer.value.issueUser(input.actorId);
     if (!actor.ok) return 'forbidden';
 
-    const binding = `agent-run-receipt-handoff:${input.runId}:${input.receiptSha256}`;
-    const result = await createCanonicalCommandService({
-      unitOfWork: createPostgresUnitOfWork(db)
-    }).execute({
+    const binding = `agent-run-accept:v1:${input.runId}:${input.receiptSha256}:${input.actorId}`;
+    const result = await createAgentRunAcceptanceService(
+      createPostgresAgentRunAcceptanceStore(db, {
+        parseCompletion: parseRunnerCompletionPayload,
+        evidenceFor: mapRunnerCompletionToDeliveryEvidence
+      })
+    ).execute({
       commandId: randomUUID(),
       workspaceId: input.workspaceId,
-      correlationId: binding,
+      correlationId: randomUUID(),
       idempotencyKey: binding,
       issuedAt: new Date().toISOString(),
       actor: actor.value,
-      type: 'work_item.transition',
+      type: AGENT_RUN_ACCEPTANCE_COMMAND,
       payload: {
-        workItemId: input.workItemId,
-        status: 'qa',
-        expectedVersion: input.expectedVersion
+        runId: input.runId,
+        receiptSha256: input.receiptSha256,
+        expectedWorkItemVersion: input.expectedWorkItemVersion
       }
     });
-    if (result.status === 'key_reused') return 'stale';
-    if (result.status !== 'completed' && result.status !== 'replayed') {
-      return 'unavailable';
+    if (!('receipt' in result)) {
+      return handoffError(result.error.code);
     }
     if (result.receipt.result.ok) return 'accepted';
-    switch (result.receipt.result.error.code) {
-      case 'INVALID_TRANSITION':
-      case 'VERSION_CONFLICT':
-      case 'WORK_ITEM_BLOCKED':
-        return 'stale';
-      case 'NOT_FOUND':
-        return 'not_found';
-      case 'CAPABILITY_DENIED':
-      case 'POLICY_DENIED':
-        return 'forbidden';
-      default:
-        return 'unavailable';
-    }
+    return handoffError(result.receipt.result.error.code);
   }
 });
 
@@ -228,44 +172,6 @@ const parse = (form: URLSearchParams | null): Readonly<{
     : null;
 };
 
-const validCandidate = (
-  candidate: ReceiptHandoffCandidate,
-  input: Readonly<{
-    expectedWorkItemVersion: number;
-    expectedReceiptSha256: string;
-  }>
-): boolean => {
-  const receipt = parseRunnerCompletionPayload(candidate.receiptMetadata);
-  const workItemVersionMatches =
-    (candidate.workItemStatus === 'in_dev' &&
-      candidate.workItemVersion === input.expectedWorkItemVersion) ||
-    (candidate.workItemStatus === 'qa' &&
-      candidate.workItemVersion === input.expectedWorkItemVersion + 1);
-  return (
-    candidate.runStatus === 'done' &&
-    candidate.runFailureCode === null &&
-    candidate.runCompletedAt !== null &&
-    candidate.runAttempt > 0 &&
-    candidate.confirmedPacketHash === candidate.packetContentHash &&
-    candidate.receiptRunnerId !== null &&
-    candidate.receiptRunnerId.length > 0 &&
-    candidate.receiptAttempt === candidate.runAttempt &&
-    candidate.receiptTerminal === 'done' &&
-    candidate.receiptSha256 === input.expectedReceiptSha256 &&
-    candidate.receiptSizeBytes !== null &&
-    candidate.receiptCompletedAt !== null &&
-    candidate.runCompletedAt.getTime() === candidate.receiptCompletedAt.getTime() &&
-    receipt !== null &&
-    receipt.runId === candidate.runId &&
-    receipt.attempt === candidate.runAttempt &&
-    receipt.terminal === 'done' &&
-    receipt.finalStatus === 'succeeded' &&
-    receipt.receiptSha256 === candidate.receiptSha256 &&
-    receipt.receiptSizeBytes === candidate.receiptSizeBytes &&
-    workItemVersionMatches
-  );
-};
-
 const redirectResult = (
   request: Request,
   runId: string,
@@ -300,21 +206,12 @@ export async function acceptAgentRunReceiptCommand(
   }
   try {
     const runtime = await overrides.getRuntime();
-    const candidate = await runtime.load({
-      workspaceId: authorization.runtime.config.workspaceId,
-      runId
-    });
-    if (candidate === null) return redirectResult(request, runId, 'not_found');
-    if (!validCandidate(candidate, input)) {
-      return redirectResult(request, runId, 'stale');
-    }
-    const result = await runtime.transition({
+    const result = await runtime.execute({
       workspaceId: authorization.runtime.config.workspaceId,
       actorId: authorization.session.actorId,
       runId,
       receiptSha256: input.expectedReceiptSha256,
-      workItemId: candidate.workItemId,
-      expectedVersion: input.expectedWorkItemVersion
+      expectedWorkItemVersion: input.expectedWorkItemVersion
     });
     return redirectResult(request, runId, result);
   } catch {

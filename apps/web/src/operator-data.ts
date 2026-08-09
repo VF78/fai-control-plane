@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {and, desc, eq, inArray, isNull, max, or} from 'drizzle-orm';
 import {
   CANONICAL_COMMAND_POLICY,
+  mapRunnerCompletionToDeliveryEvidence,
   parseRunnerCompletionPayload
 } from '@fai-control-plane/application';
 import {
@@ -38,6 +39,8 @@ import {
   projectPlanDrafts,
   projectPlanMaterializations,
   projectPlanVersions,
+  projectExecutionDispatches,
+  projectExecutions,
   projectSourceArtifacts,
   resourceAccessGrants,
   runtimeAvailabilityObservations,
@@ -1142,7 +1145,10 @@ export type RunsData = Readonly<{
     status: 'queued' | 'running' | 'waiting_approval' | 'done' | 'failed'; runtimeProfile: string; attempt: number;
     packetGoal: string; timeboxMinutes: number; startedAt: Date | null; completedAt: Date | null;
     heartbeatAt: Date | null; failureCode: string | null; version: number;
-    workItemVersion: number | null; canAcceptReceipt: boolean;
+    workItemVersion: number | null; workItemStatus?: string | null;
+    canAcceptReceipt: boolean; approverActorId: string;
+    acceptanceTargetStage?: string | null;
+    acceptanceTargetStatus?: string | null;
     receipt: Readonly<{
       terminal: string; completedAt: Date; runtimeId: string | null; runtimeProfile: string | null;
       durationMs: number | null; receiptSha256: string;
@@ -1186,14 +1192,48 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
   const [runs, approvals, packetRows, profiles, repositoryBindings] = await Promise.all([
     db.select({
       id: agentRuns.id, projectId: taskPackets.projectId, workItemId: taskPackets.workItemId, workItem: workItems.title,
-      workItemStatus: workItems.status, workItemVersion: workItems.version,
+      workItemProjectId: workItems.projectId, workItemStatus: workItems.status,
+      workItemVersion: workItems.version, workItemPlanVersionId: workItems.sourcePlanVersionId,
       agent: actors.displayName, runAttempt: agentRuns.attempt,
+      runAgentProfileId: agentRuns.agentProfileId, runProfileActorId: agentProfiles.actorId,
       confirmedPacketHash: agentRuns.confirmedPacketHash, packetContentHash: taskPackets.contentHash,
+      packetId: taskPackets.id, packetAgentProfileId: taskPackets.agentProfileSnapshotId,
+      packetWorkItemVersion: taskPackets.workItemVersion,
+      approverActorId: taskPackets.approverActorId,
+      executionStatus: projectExecutions.status,
+      executionVersion: projectExecutions.version,
+      dispatchExecutionVersion: projectExecutionDispatches.executionVersion,
+      selectedWorkItemId: projectExecutions.selectedWorkItemId,
+      selectedPlanVersionId: projectExecutions.selectedPlanVersionId,
+      selectedWorkItemVersion: projectExecutions.selectedWorkItemVersion,
+      selectedProtocolId: projectExecutions.selectedProtocolId,
+      selectedProtocolVersion: projectExecutions.selectedProtocolVersion,
+      selectedJourneyVersion: projectExecutions.selectedJourneyVersion,
+      selectedStageKey: projectExecutions.selectedStageKey,
+      selectedResponsibleActorId: projectExecutions.selectedResponsibleActorId,
+      selectedAgentProfileId: projectExecutions.selectedAgentProfileId,
+      dispatchWorkspaceId: projectExecutionDispatches.workspaceId,
+      dispatchProjectId: projectExecutionDispatches.projectId,
+      dispatchTaskPacketId: projectExecutionDispatches.taskPacketId,
+      journeyVersion: deliveryJourneys.version,
+      journeyStageKey: deliveryJourneys.stageKey,
+      journeyProtocolId: deliveryJourneys.protocolId,
+      journeyProtocolVersion: deliveryJourneys.protocolVersion,
+      protocolProjectId: runbooks.projectId,
+      protocolState: runbooks.protocolState,
+      protocolActive: runbooks.active,
+      protocolDefinition: runbooks.definition,
       status: agentRuns.status, runtimeProfile: taskPackets.runtimeProfile, packetGoal: taskPackets.goal,
       timeboxMinutes: taskPackets.timeboxMinutes, startedAt: agentRuns.startedAt, completedAt: agentRuns.completedAt,
       heartbeatAt: agentRuns.heartbeatAt, failureCode: agentRuns.failureCode, version: agentRuns.version
     }).from(agentRuns).innerJoin(taskPackets, eq(agentRuns.taskPacketId, taskPackets.id))
-      .leftJoin(workItems, eq(taskPackets.workItemId, workItems.id)).leftJoin(agentProfiles, eq(agentRuns.agentProfileId, agentProfiles.id))
+      .leftJoin(workItems, eq(taskPackets.workItemId, workItems.id))
+      .leftJoin(projectExecutionDispatches, eq(projectExecutionDispatches.agentRunId, agentRuns.id))
+      .leftJoin(projectExecutions, eq(projectExecutions.projectId, taskPackets.projectId))
+      .leftJoin(deliveryJourneys, eq(deliveryJourneys.workItemId, workItems.id))
+      .leftJoin(runbooks, and(eq(runbooks.id, deliveryJourneys.protocolId),
+        eq(runbooks.version, deliveryJourneys.protocolVersion)))
+      .leftJoin(agentProfiles, eq(agentRuns.agentProfileId, agentProfiles.id))
       .leftJoin(actors, eq(agentProfiles.actorId, actors.id)).where(inArray(taskPackets.projectId, projectIds)).orderBy(desc(agentRuns.updatedAt), agentRuns.id),
     db.select({
       id: approvalRequests.id, projectId: approvalRequests.projectId, workItemId: approvalRequests.workItemId, agentRunId: approvalRequests.agentRunId, actionCategory: approvalRequests.actionCategory,
@@ -1253,7 +1293,10 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
       metadata: agentRunReceipts.metadata
     })
       .from(agentRunReceipts).where(inArray(agentRunReceipts.agentRunId, runIds)),
-    db.select({agentRunId: artifacts.agentRunId, kind: artifacts.kind, sizeBytes: artifacts.sizeBytes, redacted: artifacts.redacted, createdAt: artifacts.createdAt})
+    db.select({agentRunId: artifacts.agentRunId, kind: artifacts.kind,
+      storageProvider: artifacts.storageProvider, storageKey: artifacts.storageKey,
+      sha256: artifacts.sha256, sizeBytes: artifacts.sizeBytes,
+      redacted: artifacts.redacted, createdAt: artifacts.createdAt})
       .from(artifacts).where(inArray(artifacts.agentRunId, runIds)).orderBy(desc(artifacts.createdAt), artifacts.id),
     db.select({
       agentRunId: commandReceipts.aggregateId,
@@ -1325,11 +1368,25 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
       const project = projectById.get(run.projectId);
       if (project === undefined) return [];
       const persistedReceipt = receiptByRun.get(run.id);
+      const protocol = validateDeliveryProtocolDefinition(run.protocolDefinition);
+      const stage = protocol.ok ? protocol.value.stages.find(({key, enabled}) =>
+        enabled && key === run.journeyStageKey) : undefined;
+      const nextStage = protocol.ok && stage !== undefined && stage.allowedNextStageKey !== null
+        ? protocol.value.stages.find(({key, enabled}) => enabled && key === stage.allowedNextStageKey)
+        : undefined;
+      const retained = artifactsByRun.get(run.id) ?? [];
+      const evidence = stage === undefined || persistedReceipt?.parsed === null ||
+        persistedReceipt === undefined
+        ? null
+        : mapRunnerCompletionToDeliveryEvidence(stage, persistedReceipt.parsed,
+            retained.filter((artifact): artifact is typeof artifact & {
+              kind: 'receipt' | 'summary' | 'path_manifest'
+            } => ['receipt', 'summary', 'path_manifest'].includes(artifact.kind)));
       const receiptIsValid = persistedReceipt !== undefined &&
         run.status === 'done' &&
         run.failureCode === null &&
         run.completedAt !== null &&
-        run.runAttempt > 0 &&
+        run.runAttempt > 0 && run.runAttempt <= 2 &&
         run.confirmedPacketHash === run.packetContentHash &&
         persistedReceipt.runnerId.length > 0 &&
         persistedReceipt.attempt === run.runAttempt &&
@@ -1341,7 +1398,29 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
         persistedReceipt.parsed.terminal === 'done' &&
         persistedReceipt.parsed.finalStatus === 'succeeded' &&
         persistedReceipt.parsed.receiptSha256 === persistedReceipt.receiptSha256 &&
-        persistedReceipt.parsed.receiptSizeBytes === persistedReceipt.receiptSizeBytes;
+        persistedReceipt.parsed.receiptSizeBytes === persistedReceipt.receiptSizeBytes &&
+        evidence?.ok === true &&
+        stage?.executionMode === 'autonomous' && stage.taskStatus === run.workItemStatus &&
+        nextStage !== undefined &&
+        run.executionStatus === 'running' && run.executionVersion !== null &&
+        run.dispatchExecutionVersion === run.executionVersion &&
+        run.dispatchWorkspaceId === project.workspaceId &&
+        run.dispatchProjectId === run.projectId &&
+        run.dispatchTaskPacketId === run.packetId &&
+        run.workItemProjectId === run.projectId &&
+        run.packetWorkItemVersion === run.workItemVersion &&
+        run.packetAgentProfileId === run.runAgentProfileId &&
+        run.selectedWorkItemId === run.workItemId &&
+        run.selectedPlanVersionId === run.workItemPlanVersionId &&
+        run.selectedWorkItemVersion === run.workItemVersion &&
+        run.selectedProtocolId === run.journeyProtocolId &&
+        run.selectedProtocolVersion === run.journeyProtocolVersion &&
+        run.selectedJourneyVersion === run.journeyVersion &&
+        run.selectedStageKey === run.journeyStageKey &&
+        run.selectedResponsibleActorId === run.runProfileActorId &&
+        run.selectedAgentProfileId === run.runAgentProfileId &&
+        run.protocolProjectId === run.projectId &&
+        run.protocolState === 'published' && run.protocolActive === true;
       const records = ledgerByRun.get(run.id) ?? [];
       const latestCost = records.flatMap((record) =>
         record.kind === 'cost' && record.cost !== undefined
@@ -1359,7 +1438,9 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
         attempt: run.runAttempt,
         project: project.name,
         projectSlug: project.slug,
-        canAcceptReceipt: receiptIsValid && run.workItemStatus === 'in_dev',
+        canAcceptReceipt: receiptIsValid,
+        acceptanceTargetStage: nextStage?.name ?? null,
+        acceptanceTargetStatus: nextStage?.taskStatus ?? null,
         receipt: persistedReceipt === undefined ? null : {
           terminal: persistedReceipt.terminal,
           completedAt: persistedReceipt.completedAt,
