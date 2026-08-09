@@ -757,6 +757,8 @@ export type ProjectData = Readonly<{
     id: string; title: string; summary: string | null; status: (typeof workItemStatuses)[number];
     blocked: boolean; owner: string | null; updatedAt: Date; externalUrl: string | null;
     version?: number;
+    sourcePlanVersionId: string | null; sourcePlanVersion: number | null;
+    sourceTaskKey: string | null; acceptanceEvidence: unknown;
     journey?: Readonly<{
       protocolId: string; protocolVersion: number; stageKey: string; version: number;
       deadlineAt: Date | null;
@@ -863,8 +865,11 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       .from(trackerSnapshotOperations).where(eq(trackerSnapshotOperations.projectId, project.id)).orderBy(desc(trackerSnapshotOperations.createdAt)).limit(1),
     db.select({
       id: workItems.id, title: workItems.title, summary: workItems.summary, status: workItems.status, version: workItems.version,
-      blocked: workItems.blocked, owner: actors.displayName, updatedAt: workItems.updatedAt
+      blocked: workItems.blocked, owner: actors.displayName, updatedAt: workItems.updatedAt,
+      sourcePlanVersionId: workItems.sourcePlanVersionId, sourcePlanVersion: projectPlanVersions.version,
+      sourceTaskKey: workItems.sourceTaskKey, acceptanceEvidence: workItems.acceptanceEvidence
     }).from(workItems).leftJoin(actors, eq(workItems.ownerActorId, actors.id))
+      .leftJoin(projectPlanVersions, eq(workItems.sourcePlanVersionId, projectPlanVersions.id))
       .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt))).orderBy(desc(workItems.updatedAt), workItems.id),
     db.select({
       entityId: trackerBindings.entityId,

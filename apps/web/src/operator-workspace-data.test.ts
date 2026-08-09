@@ -2,12 +2,14 @@ import {beforeEach, expect, it, vi} from 'vitest';
 
 const loaders = vi.hoisted(() => ({
   loadAccessData: vi.fn(),
+  loadPortfolioData: vi.fn(),
   loadProjectData: vi.fn()
 }));
 
 vi.mock('./operator-data', async (importOriginal) => ({
   ...await importOriginal<typeof import('./operator-data')>(),
   loadAccessData: loaders.loadAccessData,
+  loadPortfolioData: loaders.loadPortfolioData,
   loadProjectData: loaders.loadProjectData
 }));
 
@@ -20,6 +22,7 @@ beforeEach(() => {
   loaders.loadProjectData.mockImplementation(async (scope: {projectId: string; slug: string}) => ({
     state: 'ready', data: {project: {id: scope.projectId, slug: scope.slug}}
   }));
+  loaders.loadPortfolioData.mockResolvedValue({state: 'ready', data: {projects: [], attention: []}});
 });
 
 it('loads dashboard project baselines only for the authenticated operator memberships', async () => {
@@ -30,5 +33,6 @@ it('loads dashboard project baselines only for the authenticated operator member
 
   expect(loaders.loadProjectData).toHaveBeenCalledTimes(1);
   expect(loaders.loadProjectData).toHaveBeenCalledWith({projectId: 'msa-id', slug: 'msa'});
+  expect(loaders.loadPortfolioData).toHaveBeenCalledWith([{projectId: 'msa-id', slug: 'msa'}]);
   expect(data.projectIndex).toEqual([{project: {id: 'msa-id', slug: 'msa'}}]);
 });

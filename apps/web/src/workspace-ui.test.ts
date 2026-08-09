@@ -208,7 +208,7 @@ it('renders a separate weighted-scope progress card for every accessible project
   expect(markup).not.toContain('Все проекты');
 });
 
-it('does not expose attention facts through the dashboard', () => {
+it('shows canonical project risk on the dashboard without mixing operational compatibility rows', () => {
   const project = {project: {id: 'msa', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []};
   const data = {
     access: {state: 'unconfigured'}, health: null, project: null, runs: null, projectIndex: [project],
@@ -218,6 +218,9 @@ it('does not expose attention facts through the dashboard', () => {
 
   expect(markup).toContain('Обзор проектов');
   expect(markup).toContain('MSA');
+  expect(markup).toContain('Failed verification');
+  expect(markup).toContain('Canonical owner');
+  expect(markup).toContain('Review failed verification');
   expect(markup).not.toContain('Deployment task');
   expect(markup).not.toContain('Recovery scan');
   expect(markup).not.toContain('Release is blocked');
@@ -854,10 +857,10 @@ it('preserves scope and keeps the run handoff separate from an absent approval',
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'ascon', taskId: 'task-1', runId: null, agentId: null, scope: {environment: 'staging', from: '2026-07-01', to: '2026-07-31'}}, data}));
 
-  expect(markup).toContain('Responsible human</dt><dd>Unknown');
-  expect(markup).toContain('Responsible agent</dt><dd>Unknown');
-  expect(markup).toContain('Execution');
-  expect(markup).toContain('Approval</dt><dd>Not observed');
+  expect(markup).toContain('Ответственный человек</dt><dd>Не определён');
+  expect(markup).toContain('Ответственный агент</dt><dd>Не применяется');
+  expect(markup).toContain('Исполнение');
+  expect(markup).toContain('Подтверждение</dt><dd>Не зафиксировано');
   expect(markup).toContain('href="/projects/ascon/runs/run-1?environment=staging&amp;from=2026-07-01&amp;to=2026-07-31"');
   expect(markup).toContain('href="/projects/ascon/overview?environment=staging&amp;from=2026-07-01&amp;to=2026-07-31"');
 });
@@ -873,23 +876,23 @@ it('renders the task lifecycle rail from recorded packet, approval, run, receipt
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
 
   expect(markup).toContain('aria-label="Delivery lifecycle"');
-  expect(markup).toContain('Event / task');
-  expect(markup).toContain('Immutable packet');
-  expect(markup).toContain('Policy / approval');
-  expect(markup).toContain('Execution / run');
-  expect(markup).toContain('Receipt / evidence');
-  expect(markup).toContain('Write-back / next');
+  expect(markup).toContain('Задача');
+  expect(markup).toContain('Неизменяемый пакет');
+  expect(markup).toContain('Правило и подтверждение');
+  expect(markup).toContain('Исполнение');
+  expect(markup).toContain('Отчёт и подтверждения');
+  expect(markup).toContain('Передача и следующий шаг');
   expect(markup).toContain('Hash aaaaaaaaaaaa');
-  expect(markup).toContain('Policy v3 · staging');
-  expect(markup).toContain('2 artifacts · 1 evidence');
+  expect(markup).toContain('Правило v3 · staging');
+  expect(markup).toContain('2 артефактов · 1 подтверждений');
   expect(markup).toContain('github · published');
 
   const unavailable = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
     data: {...data, lifecycle: {state: 'unavailable'}}
   }));
-  expect(unavailable).toContain('Unavailable');
-  expect(unavailable).toContain('PostgreSQL read unavailable');
+  expect(unavailable).toContain('Недоступно');
+  expect(unavailable).toContain('Чтение PostgreSQL недоступно');
 });
 
 it('keeps the governed task to receipt journey inside project task and run detail', () => {
@@ -928,7 +931,7 @@ it('keeps the governed task to receipt journey inside project task and run detai
     route: taskRoute, data: shellData(baseTask, emptyRuns)
   }));
   expect(taskMarkup).toContain('Build Task Packet');
-  expect(taskMarkup).toContain('Build Task Packet from the current canonical task version.');
+  expect(taskMarkup).toContain('Собрать пакет из текущей канонической версии задачи.');
   expect(taskMarkup).not.toContain('/runs?');
 
   const packet = {
@@ -970,7 +973,7 @@ it('keeps the governed task to receipt journey inside project task and run detai
     route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [queuedRun]})
   }));
   expect(queuedMarkup).toContain('Cancel queued run');
-  expect(queuedMarkup).toContain('Ожидать governed claim или отменить запуск до claim.');
+  expect(queuedMarkup).toContain('Ожидать безопасного получения задания исполнителем или отменить запуск до начала.');
 
   const completedRun = {
     ...queuedRun, status: 'done', completedAt: observedAt, canAcceptReceipt: true,
@@ -981,16 +984,16 @@ it('keeps the governed task to receipt journey inside project task and run detai
   const receiptMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [completedRun]})
   }));
-  expect(receiptMarkup).toContain('Receipt observed');
+  expect(receiptMarkup).toContain('Отчёт сохранён');
   expect(receiptMarkup).toContain('Принять evidence и передать на этап «Peer review»');
   expect(receiptMarkup).toContain('Этап изменится; статус задачи останется прежним.');
-  expect(receiptMarkup).toContain('Product Owner проверяет exact dispatch');
+  expect(receiptMarkup).toContain('Product Owner проверяет точную связь запуска');
 
   const acceptedMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {...runRoute, handoffResult: 'accepted'},
     data: shellData(baseTask, {...emptyRuns, runs: [{...completedRun, canAcceptReceipt: false}]})
   }));
-  expect(acceptedMarkup).toContain('Evidence принято Product Owner; задача переведена на разрешённый следующий этап, исполнение проекта приостановлено.');
+  expect(acceptedMarkup).toContain('Результат принят Product Owner; задача переведена на разрешённый следующий этап, исполнение проекта приостановлено.');
   expect(acceptedMarkup).toContain(`href="/projects/msa/tasks/${taskId}"`);
 
   const qaTask = {
@@ -1005,8 +1008,8 @@ it('keeps the governed task to receipt journey inside project task and run detai
     route: taskRoute,
     data: shellData(qaTask, {...emptyRuns, runs: [{...completedRun, canAcceptReceipt: false, workItemVersion: 4}]})
   }));
-  expect(nextStageMarkup).toContain('Record required evidence: QA result.');
-  expect(nextStageMarkup).toContain('Next required');
+  expect(nextStageMarkup).toContain('Зафиксировать обязательные подтверждения: QA result.');
+  expect(nextStageMarkup).toContain('Ещё требуется');
   expect(nextStageMarkup).toContain('QA result');
 });
 
