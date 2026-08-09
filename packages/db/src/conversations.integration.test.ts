@@ -7,9 +7,11 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
   actorExternalIdentities,
   actors,
+  conversationChannelConfigurations,
   conversationMessages,
   conversationParticipants,
   createDatabase,
+  createPostgresConversationChannelStore,
   projects,
   workspaces
 } from './index';
@@ -33,6 +35,8 @@ describePostgres('canonical conversation persistence', () => {
   const msaId = randomUUID();
   const asconId = randomUUID();
   const activation = new Date('2026-07-30T00:00:00.000Z');
+  const msaChannelId = randomUUID();
+  const asconChannelId = randomUUID();
 
   beforeAll(async () => {
     const adminUrl = new URL(databaseUrl!);
@@ -67,9 +71,13 @@ describePostgres('canonical conversation persistence', () => {
     const store = createPostgresConversationStore(db);
     const msaChat = ref('msa-internal');
     const asconChat = ref('ascon-client');
+    await db.insert(conversationChannelConfigurations).values([
+      {id: msaChannelId, projectId: msaId, conversationClass: 'internal', desiredState: 'active', provider: 'telegram', configurationRef: 'telegram:msa:internal'},
+      {id: asconChannelId, projectId: asconId, conversationClass: 'client', desiredState: 'active', provider: 'telegram', configurationRef: 'telegram:ascon:client'}
+    ]);
     await store.reconcileBindings('telegram', [msaId, asconId], [
-      {projectId: msaId, conversationClass: 'internal', provider: 'telegram', externalRef: msaChat, activatedAt: activation},
-      {projectId: asconId, conversationClass: 'client', provider: 'telegram', externalRef: asconChat, activatedAt: activation}
+      {configurationId: msaChannelId, projectId: msaId, conversationClass: 'internal', provider: 'telegram', configurationRef: 'telegram:msa:internal', externalRef: msaChat, activatedAt: activation},
+      {configurationId: asconChannelId, projectId: asconId, conversationClass: 'client', provider: 'telegram', configurationRef: 'telegram:ascon:client', externalRef: asconChat, activatedAt: activation}
     ]);
     const [vladimir] = await db.insert(actors).values({
       workspaceId,
@@ -126,6 +134,18 @@ describePostgres('canonical conversation persistence', () => {
       .resolves.toBe('before_activation');
     await expect(store.ingest(observation(2))).resolves.toBe('accepted');
     await expect(store.ingest(observation(2))).resolves.toBe('duplicate');
+    await expect(store.observeParticipant({
+      provider: 'telegram', externalBindingRef: msaChat,
+      deliveryRef: ref('member-update-1'), externalSubject: ref('vladimir'),
+      displayName: 'Vladimir', observedLevel: 'admin',
+      observedAt: new Date(activation.getTime() + 2_500)
+    })).resolves.toBe('accepted');
+    await expect(store.observeParticipant({
+      provider: 'telegram', externalBindingRef: msaChat,
+      deliveryRef: ref('member-update-1'), externalSubject: ref('vladimir'),
+      displayName: 'Vladimir', observedLevel: 'none',
+      observedAt: new Date(activation.getTime() + 2_500)
+    })).resolves.toBe('duplicate');
     await expect(store.ingest(observation(3, asconChat))).resolves.toBe('accepted');
     for (let sequence = 4; sequence <= CONVERSATION_MESSAGE_LIMIT + 4; sequence += 1) {
       await store.ingest(observation(sequence));
@@ -142,6 +162,9 @@ describePostgres('canonical conversation persistence', () => {
       displayName: conversationParticipants.displayName
     }).from(conversationParticipants).where(eq(conversationParticipants.externalSubject, ref('vladimir')));
     expect(resolved).toEqual([{actorId: vladimir.id, displayName: 'Provider alias'}]);
+    expect(msaRows.participants.find(({actorId}) => actorId === vladimir.id)).toMatchObject({
+      observedLevel: 'admin', observedAt: new Date(activation.getTime() + 2_500)
+    });
     expect(await db.select({actorId: actorExternalIdentities.actorId})
       .from(actorExternalIdentities).where(eq(actorExternalIdentities.actorId, hermes.id))).toEqual([]);
     expect(await db.select({active: actorExternalIdentities.active})
@@ -167,8 +190,30 @@ describePostgres('canonical conversation persistence', () => {
     expect(await db.select({id: conversationMessages.id}).from(conversationMessages))
       .toHaveLength(CONVERSATION_MESSAGE_LIMIT + 1);
 
+    const channelStore = createPostgresConversationChannelStore(db);
+    const clientChannelId = randomUUID();
+    const command = {
+      commandId: randomUUID(), workspaceId, correlationId: randomUUID(),
+      idempotencyKey: `conversation-channel-set:v1:${clientChannelId}:0:active:${vladimir.id}`,
+      actor: {actorId: vladimir.id}, type: 'conversation_channel.set.v1' as const,
+      payload: {projectId: msaId, channelId: clientChannelId, conversationClass: 'client' as const,
+        desiredState: 'active' as const, provider: 'telegram', configurationRef: 'telegram:msa:client', expectedVersion: null}
+    };
+    const requestHash = createHash('sha256').update('client-channel-request').digest('hex');
+    await expect(channelStore.execute({command, requestHash, authorized: false,
+      policyError: {code: 'POLICY_DENIED', message: 'fixture'}})).resolves.toMatchObject({
+      status: 'completed', receipt: {result: {ok: false}}
+    });
+    await expect(channelStore.execute({...{command: {...command, commandId: randomUUID()}}, requestHash, authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: true, value: {version: 1}}}});
+    await expect(channelStore.execute({...{command: {...command, commandId: randomUUID()}}, requestHash, authorized: true}))
+      .resolves.toMatchObject({status: 'replayed'});
+    expect(await db.select({desiredState: conversationChannelConfigurations.desiredState})
+      .from(conversationChannelConfigurations).where(eq(conversationChannelConfigurations.id, clientChannelId)))
+      .toEqual([{desiredState: 'active'}]);
+
     await store.reconcileBindings('telegram', [msaId, asconId], [
-      {projectId: asconId, conversationClass: 'client', provider: 'telegram', externalRef: asconChat, activatedAt: activation}
+      {configurationId: asconChannelId, projectId: asconId, conversationClass: 'client', provider: 'telegram', configurationRef: 'telegram:ascon:client', externalRef: asconChat, activatedAt: activation}
     ]);
     expect((await loadConversationRows(db, [msaId])).bindings).toEqual([]);
     await expect(store.ingest(observation(CONVERSATION_MESSAGE_LIMIT + 10)))

@@ -1,6 +1,17 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export * from './access-observation.ts';
 export {
+  CONVERSATION_CHANNEL_SET_COMMAND,
+  conversationChannelStates,
+  createConversationChannelService,
+  type ConversationChannelExecution,
+  type ConversationChannelReceipt,
+  type ConversationChannelState,
+  type ConversationChannelStore,
+  type ConversationChannelValue,
+  type SetConversationChannelCommand
+} from './conversation-management.ts';
+export {
   PROJECT_OUTCOME_ACCEPTANCE_COMMAND,
   createProjectOutcomeAcceptanceService,
   type AcceptProjectOutcomeCommand,

@@ -79,6 +79,7 @@ describe('Telegram conversation webhook boundary', () => {
       }
     });
     if (accepted.outcome !== 'accepted') throw new Error('Expected accepted observation.');
+    if (!('messageRef' in accepted.observation)) throw new Error('Expected message observation.');
     for (const ref of [
       accepted.observation.externalBindingRef,
       accepted.observation.deliveryRef,
@@ -101,6 +102,30 @@ describe('Telegram conversation webhook boundary', () => {
     await expect(verify(message(), `${webhookSecret}-wrong`)).resolves.toEqual({
       outcome: 'rejected', code: 'telegram_secret_invalid'
     });
+  });
+
+  it('projects membership changes as access observations without raw identifiers', async () => {
+    const accepted = await verifyAndProjectTelegramWebhook({
+      config,
+      secrets,
+      headers: new Headers({
+        'content-type': 'application/json',
+        'x-telegram-bot-api-secret-token': webhookSecret
+      }),
+      body: new TextEncoder().encode(JSON.stringify({
+        update_id: 900_002,
+        chat_member: {
+          date: 1_785_369_601,
+          chat: {id: chatId, type: 'supergroup'},
+          new_chat_member: {status: 'administrator', user: {id: 700_002, first_name: '<b>Vitaliy</b>'}}
+        }
+      }))
+    });
+    expect(accepted).toMatchObject({outcome: 'accepted', project: 'msa', conversationClass: 'internal', observation: {
+      provider: 'telegram', displayName: 'Vitaliy', observedLevel: 'admin'
+    }});
+    expect(JSON.stringify(accepted)).not.toContain('700002');
+    expect(JSON.stringify(accepted)).not.toContain('<');
   });
 
   it('rejects ambiguous project/class or chat bindings', () => {

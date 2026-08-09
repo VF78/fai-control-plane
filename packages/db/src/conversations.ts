@@ -4,6 +4,7 @@ import {
   actorExternalIdentities,
   actors,
   conversationBindings,
+  conversationChannelConfigurations,
   conversationMessages,
   conversationParticipants,
   type ConversationAttachmentMetadata
@@ -14,9 +15,11 @@ type Database = ReturnType<typeof createDatabase>['db'];
 export const CONVERSATION_MESSAGE_LIMIT = 500;
 
 export type ConversationBindingConfiguration = Readonly<{
+  configurationId: string;
   projectId: string;
   conversationClass: 'internal' | 'client';
   provider: string;
+  configurationRef: string;
   externalRef: string;
   activatedAt: Date;
 }>;
@@ -38,9 +41,20 @@ export type ConversationIdentityConfiguration = Readonly<{
   actorExternalSubject: string;
   externalSubject: string | null;
 }>;
+export type ConversationParticipantObservation = Readonly<{
+  provider: string;
+  externalBindingRef: string;
+  deliveryRef: string;
+  externalSubject: string;
+  displayName: string;
+  observedLevel: 'none' | 'read' | 'write' | 'admin';
+  observedAt: Date;
+}>;
 
 const keyedRef = /^tgid:v1:[0-9a-f]{64}$/;
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const providerKey = /^[a-z][a-z0-9_-]{0,63}$/;
+const configurationKey = /^[a-z][a-z0-9._:-]{0,127}$/;
 const attachmentKinds = new Set([
   'document', 'photo', 'video', 'audio', 'voice', 'sticker', 'animation'
 ]);
@@ -49,13 +63,30 @@ const bounded = (value: string, maximum: number): boolean =>
 
 const validateConfiguration = (configuration: ConversationBindingConfiguration): void => {
   if (
+    !uuid.test(configuration.configurationId) ||
     !providerKey.test(configuration.provider) ||
+    !configurationKey.test(configuration.configurationRef) ||
     !bounded(configuration.externalRef, 128) ||
     Number.isNaN(configuration.activatedAt.getTime())
   ) throw new Error('Conversation binding configuration is invalid.');
   if (configuration.provider === 'telegram' && !keyedRef.test(configuration.externalRef)) {
     throw new Error('Telegram conversation binding reference is invalid.');
   }
+};
+
+const validateParticipantObservation = (observation: ConversationParticipantObservation): void => {
+  if (
+    !providerKey.test(observation.provider) ||
+    !bounded(observation.externalBindingRef, 128) ||
+    !bounded(observation.deliveryRef, 128) ||
+    !bounded(observation.externalSubject, 128) ||
+    !bounded(observation.displayName, 120) ||
+    !['none', 'read', 'write', 'admin'].includes(observation.observedLevel) ||
+    Number.isNaN(observation.observedAt.getTime()) ||
+    (observation.provider === 'telegram' && [
+      observation.externalBindingRef, observation.deliveryRef, observation.externalSubject
+    ].some((value) => !keyedRef.test(value)))
+  ) throw new Error('Conversation participant observation is invalid.');
 };
 
 const validateObservation = (observation: ConversationObservation): void => {
@@ -131,8 +162,21 @@ export const createPostgresConversationStore = (db: Database) => ({
         inArray(conversationBindings.projectId, projectIds)
       ));
       for (const configuration of configurations) {
+        const [desired] = await tx.select({id: conversationChannelConfigurations.id})
+          .from(conversationChannelConfigurations).where(and(
+            eq(conversationChannelConfigurations.id, configuration.configurationId),
+            eq(conversationChannelConfigurations.projectId, configuration.projectId),
+            eq(conversationChannelConfigurations.conversationClass, configuration.conversationClass),
+            eq(conversationChannelConfigurations.desiredState, 'active'),
+            eq(conversationChannelConfigurations.provider, configuration.provider),
+            eq(conversationChannelConfigurations.configurationRef, configuration.configurationRef)
+          )).limit(1).for('update');
+        if (desired === undefined) {
+          throw new Error('Conversation binding has no active canonical configuration.');
+        }
         const [persisted] = await tx.select({
           id: conversationBindings.id,
+          configurationId: conversationBindings.configurationId,
           projectId: conversationBindings.projectId,
           conversationClass: conversationBindings.conversationClass,
           provider: conversationBindings.provider,
@@ -143,10 +187,19 @@ export const createPostgresConversationStore = (db: Database) => ({
           eq(conversationBindings.externalRef, configuration.externalRef)
         )).limit(1).for('update');
         if (persisted === undefined) {
-          await tx.insert(conversationBindings).values({...configuration, active: true});
+          await tx.insert(conversationBindings).values({
+            configurationId: configuration.configurationId,
+            projectId: configuration.projectId,
+            conversationClass: configuration.conversationClass,
+            provider: configuration.provider,
+            externalRef: configuration.externalRef,
+            activatedAt: configuration.activatedAt,
+            active: true
+          });
           continue;
         }
         if (
+          (persisted.configurationId !== null && persisted.configurationId !== configuration.configurationId) ||
           persisted.projectId !== configuration.projectId ||
           persisted.conversationClass !== configuration.conversationClass ||
           persisted.provider !== configuration.provider ||
@@ -154,6 +207,7 @@ export const createPostgresConversationStore = (db: Database) => ({
           persisted.activatedAt.getTime() !== configuration.activatedAt.getTime()
         ) throw new Error('Conversation binding configuration conflicts with canonical state.');
         await tx.update(conversationBindings).set({
+          configurationId: configuration.configurationId,
           active: true,
           updatedAt: new Date()
         }).where(eq(conversationBindings.id, persisted.id));
@@ -255,6 +309,9 @@ export const createPostgresConversationStore = (db: Database) => ({
         externalSubject: observation.authorExternalSubject,
         actorId: identity?.actorId ?? null,
         displayName: observation.authorDisplayName,
+        observedLevel: 'write',
+        observedAt: observation.sentAt,
+        lastObservationRef: observation.deliveryRef,
         firstObservedAt: observation.sentAt,
         lastObservedAt: observation.sentAt
       }).onConflictDoUpdate({
@@ -265,6 +322,25 @@ export const createPostgresConversationStore = (db: Database) => ({
         set: {
           actorId: identity?.actorId ?? null,
           displayName: observation.authorDisplayName,
+          observedLevel: sql`case
+            when ${conversationParticipants.observedLevel} = 'admin' then 'admin'::access_level
+            when ${conversationParticipants.observedAt} > ${observation.sentAt}
+              then ${conversationParticipants.observedLevel}
+            else 'write'::access_level
+          end`,
+          observedAt: sql`case
+            when ${conversationParticipants.observedLevel} = 'admin'
+              then ${conversationParticipants.observedAt}
+            else greatest(coalesce(${conversationParticipants.observedAt}, ${observation.sentAt}), ${observation.sentAt})
+          end`,
+          lastObservationRef: sql`case
+            when ${conversationParticipants.observedLevel} = 'admin'
+              then ${conversationParticipants.lastObservationRef}
+            when ${conversationParticipants.observedAt} is null
+              or ${conversationParticipants.observedAt} <= ${observation.sentAt}
+            then ${observation.deliveryRef}
+            else ${conversationParticipants.lastObservationRef}
+          end`,
           firstObservedAt: sql`least(
             ${conversationParticipants.firstObservedAt},
             ${observation.sentAt}
@@ -323,6 +399,66 @@ export const createPostgresConversationStore = (db: Database) => ({
     });
   },
 
+  async observeParticipant(
+    observation: ConversationParticipantObservation
+  ): Promise<'accepted' | 'duplicate'> {
+    validateParticipantObservation(observation);
+    return db.transaction(async (tx) => {
+      const [binding] = await tx.select().from(conversationBindings).where(and(
+        eq(conversationBindings.provider, observation.provider),
+        eq(conversationBindings.externalRef, observation.externalBindingRef),
+        eq(conversationBindings.active, true)
+      )).limit(1).for('update');
+      if (binding === undefined) throw new Error('Conversation binding is not configured.');
+      const [identity] = await tx.select({actorId: actorExternalIdentities.actorId})
+        .from(actorExternalIdentities).where(and(
+          eq(actorExternalIdentities.provider, observation.provider),
+          eq(actorExternalIdentities.externalSubject, observation.externalSubject),
+          eq(actorExternalIdentities.active, true)
+        )).limit(1);
+      const [current] = await tx.select().from(conversationParticipants).where(and(
+        eq(conversationParticipants.bindingId, binding.id),
+        eq(conversationParticipants.externalSubject, observation.externalSubject)
+      )).limit(1).for('update');
+      if (current?.lastObservationRef === observation.deliveryRef ||
+        (current?.observedAt !== null && current?.observedAt !== undefined &&
+          current.observedAt > observation.observedAt)) return 'duplicate';
+      if (current === undefined) {
+        await tx.insert(conversationParticipants).values({
+          bindingId: binding.id,
+          externalSubject: observation.externalSubject,
+          actorId: identity?.actorId ?? null,
+          displayName: observation.displayName,
+          observedLevel: observation.observedLevel,
+          observedAt: observation.observedAt,
+          lastObservationRef: observation.deliveryRef,
+          firstObservedAt: observation.observedAt,
+          lastObservedAt: observation.observedAt
+        });
+      } else {
+        await tx.update(conversationParticipants).set({
+          actorId: identity?.actorId ?? null,
+          displayName: observation.displayName,
+          observedLevel: observation.observedLevel,
+          observedAt: observation.observedAt,
+          lastObservationRef: observation.deliveryRef,
+          firstObservedAt: current.firstObservedAt < observation.observedAt
+            ? current.firstObservedAt : observation.observedAt,
+          lastObservedAt: current.lastObservedAt > observation.observedAt
+            ? current.lastObservedAt : observation.observedAt,
+          updatedAt: new Date()
+        }).where(eq(conversationParticipants.id, current.id));
+      }
+      await tx.update(conversationBindings).set({
+        lastObservedAt: new Date(),
+        lastFailureAt: null,
+        lastFailureCode: null,
+        updatedAt: new Date()
+      }).where(eq(conversationBindings.id, binding.id));
+      return 'accepted';
+    });
+  },
+
   async recordFailure(provider: string, externalRef: string, code: string): Promise<void> {
     if (!providerKey.test(provider) || !bounded(externalRef, 128) || !/^[a-z0-9_]{1,64}$/.test(code)) {
       throw new Error('Conversation ingestion failure is invalid.');
@@ -343,7 +479,10 @@ export const createPostgresConversationStore = (db: Database) => ({
 export const loadConversationRows = async (
   db: Database,
   projectIds: readonly string[]
-) => projectIds.length === 0 ? {bindings: [], participants: [], messages: []} : {
+) => projectIds.length === 0 ? {configurations: [], bindings: [], participants: [], messages: []} : {
+  configurations: await db.select().from(conversationChannelConfigurations)
+    .where(inArray(conversationChannelConfigurations.projectId, projectIds))
+    .orderBy(conversationChannelConfigurations.projectId, conversationChannelConfigurations.conversationClass),
   bindings: await db.select().from(conversationBindings)
     .where(and(
       inArray(conversationBindings.projectId, projectIds),
@@ -354,6 +493,9 @@ export const loadConversationRows = async (
     id: conversationParticipants.id,
     bindingId: conversationParticipants.bindingId,
     actorId: conversationParticipants.actorId,
+    displayName: conversationParticipants.displayName,
+    observedLevel: conversationParticipants.observedLevel,
+    observedAt: conversationParticipants.observedAt,
     lastObservedAt: conversationParticipants.lastObservedAt
   }).from(conversationParticipants)
     .innerJoin(conversationBindings, eq(conversationParticipants.bindingId, conversationBindings.id))

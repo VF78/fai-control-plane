@@ -1,4 +1,7 @@
-import type {ConversationObservation} from '@fai-control-plane/db';
+import type {
+  ConversationObservation,
+  ConversationParticipantObservation
+} from '@fai-control-plane/db';
 import type {SecretsProvider} from '@fai-control-plane/domain';
 import {
   readTelegramWebhookBody,
@@ -9,6 +12,7 @@ import {
 
 export type TelegramConversationStore = Readonly<{
   ingest(observation: ConversationObservation): Promise<'accepted' | 'duplicate' | 'before_activation'>;
+  observeParticipant(observation: ConversationParticipantObservation): Promise<'accepted' | 'duplicate'>;
   recordFailure(provider: string, externalRef: string, code: string): Promise<void>;
 }>;
 
@@ -56,7 +60,9 @@ export const createTelegramWebhookHandler = (
       : response(status, 'rejected');
   }
   try {
-    const accepted = await dependencies.conversations.ingest(verified.observation);
+    const accepted = 'observedLevel' in verified.observation
+      ? await dependencies.conversations.observeParticipant(verified.observation)
+      : await dependencies.conversations.ingest(verified.observation);
     return response(accepted === 'accepted' ? 202 : 200, accepted);
   } catch {
     await dependencies.conversations.recordFailure(

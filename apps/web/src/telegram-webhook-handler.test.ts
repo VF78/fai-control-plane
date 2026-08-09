@@ -44,11 +44,33 @@ it('persists read-only observations and never dispatches chat commands', async (
   const handler = createTelegramWebhookHandler({
     config,
     secrets,
-    conversations: {ingest, recordFailure: vi.fn()}
+    conversations: {ingest, observeParticipant: vi.fn(), recordFailure: vi.fn()}
   });
   expect((await handler(request('Ready'))).status).toBe(202);
   expect((await handler(request('Ready'))).status).toBe(200);
   expect(ingest).toHaveBeenCalledTimes(2);
   expect((await handler(request('/status msa'))).status).toBe(204);
   expect(ingest).toHaveBeenCalledTimes(2);
+});
+
+it('persists a participant access observation separately from messages', async () => {
+  const observeParticipant = vi.fn().mockResolvedValue('accepted');
+  const ingest = vi.fn();
+  const handler = createTelegramWebhookHandler({
+    config,
+    secrets,
+    conversations: {ingest, observeParticipant, recordFailure: vi.fn()}
+  });
+  const response = await handler(new Request('https://app.test/api/webhooks/telegram', {
+    method: 'POST',
+    headers: {'content-type': 'application/json', 'x-telegram-bot-api-secret-token': webhookSecret},
+    body: JSON.stringify({update_id: 3, chat_member: {
+      date: 1_785_369_601,
+      chat: {id: chatId, type: 'supergroup'},
+      new_chat_member: {status: 'member', user: {id: 4, first_name: 'Vladimir'}}
+    }})
+  }));
+  expect(response.status).toBe(202);
+  expect(observeParticipant).toHaveBeenCalledWith(expect.objectContaining({observedLevel: 'write'}));
+  expect(ingest).not.toHaveBeenCalled();
 });

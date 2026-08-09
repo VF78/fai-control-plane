@@ -27,6 +27,15 @@ export type TelegramAttachmentMetadata = Readonly<{
   mimeType?: string;
   sizeBytes?: number;
 }>;
+export type TelegramParticipantAccessObservation = Readonly<{
+  provider: 'telegram';
+  externalBindingRef: string;
+  deliveryRef: string;
+  externalSubject: string;
+  displayName: string;
+  observedLevel: 'none' | 'read' | 'write' | 'admin';
+  observedAt: Date;
+}>;
 
 export type TelegramWebhookRejectionCode =
   | 'telegram_media_type_invalid'
@@ -59,7 +68,7 @@ export type TelegramWebhookResult =
         threadRef: string | null;
         text: string | null;
         attachments: readonly TelegramAttachmentMetadata[];
-      }>;
+      }> | TelegramParticipantAccessObservation;
     }>
   | Readonly<{outcome: 'rejected'; code: TelegramWebhookRejectionCode}>;
 
@@ -246,6 +255,41 @@ const projectUpdate = (
   const update = parseUpdate(body);
   if (update === null) return reject('telegram_json_invalid');
   if (!positiveInteger(update.update_id)) return reject('telegram_payload_invalid');
+  const memberUpdate = object(update.chat_member ?? update.my_chat_member);
+  if (memberUpdate !== null) {
+    const chat = object(memberUpdate.chat);
+    const membership = object(memberUpdate.new_chat_member);
+    const actor = object(membership?.user);
+    if (
+      !positiveInteger(memberUpdate.date) || chat === null || membership === null || actor === null ||
+      !safeInteger(chat.id) || chat.id === 0 ||
+      (chat.type !== 'group' && chat.type !== 'supergroup') || !positiveInteger(actor.id) ||
+      !['creator', 'administrator', 'member', 'restricted', 'left', 'kicked'].includes(
+        typeof membership.status === 'string' ? membership.status : ''
+      )
+    ) return reject('telegram_payload_invalid');
+    const binding = config.bindings.find(({chatId}) => chatId === chat.id);
+    if (binding === undefined) return reject('telegram_chat_unauthorized');
+    const status = membership.status as string;
+    const observedLevel = status === 'creator' || status === 'administrator' ? 'admin' as const
+      : status === 'member' ? 'write' as const
+        : status === 'restricted' ? membership.can_send_messages === true ? 'write' as const : 'read' as const
+          : 'none' as const;
+    return {
+      outcome: 'accepted',
+      project: binding.project,
+      conversationClass: binding.conversationClass,
+      observation: {
+        provider: 'telegram',
+        externalBindingRef: telegramKeyedIdentifier(identitySecret, 'chat', chat.id),
+        deliveryRef: telegramKeyedIdentifier(identitySecret, 'update', update.update_id),
+        externalSubject: telegramKeyedIdentifier(identitySecret, 'user', actor.id),
+        displayName: sanitizedDisplayName(actor),
+        observedLevel,
+        observedAt: new Date(memberUpdate.date * 1000)
+      }
+    };
+  }
   const message = object(update.message);
   if (message === null) return reject('telegram_update_unsupported');
   const chat = object(message.chat);

@@ -1,5 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import {
+  conversationChannelConfigurations,
   createDatabase,
   createPostgresConversationStore
 } from '@fai-control-plane/db';
@@ -13,6 +14,7 @@ import {
   createTelegramWebhookHandler,
   type TelegramWebhookHandlerDependencies
 } from './telegram-webhook-handler';
+import {and, eq, inArray} from 'drizzle-orm';
 
 const integerPattern = /^-?[1-9][0-9]{0,19}$/;
 const positiveIntegerPattern = /^[1-9][0-9]{0,15}$/;
@@ -136,12 +138,31 @@ const createDependencies = async (): Promise<TelegramWebhookHandlerDependencies>
     optionalBinding('ascon', 'client')
   ].filter((binding): binding is TelegramConversationBinding => binding !== null);
   if (bindings.length === 0) throw new Error('No Telegram conversation binding is configured.');
+  const {db} = createDatabase(required('DATABASE_URL'));
+  const channelConfigurations = await db.select().from(conversationChannelConfigurations).where(and(
+    inArray(conversationChannelConfigurations.projectId, Object.values(projectIds)),
+    eq(conversationChannelConfigurations.provider, 'telegram'),
+    eq(conversationChannelConfigurations.desiredState, 'active')
+  ));
+  const configuredBindings = bindings.map((binding) => {
+    const configurationRef = `telegram:${binding.project}:${binding.conversationClass}`;
+    const configuration = channelConfigurations.find((candidate) =>
+      candidate.projectId === projectIds[binding.project] &&
+      candidate.conversationClass === binding.conversationClass &&
+      candidate.configurationRef === configurationRef);
+    if (configuration === undefined) {
+      throw new Error('Telegram binding is not enabled by canonical desired state.');
+    }
+    return {binding, configuration};
+  });
+  if (configuredBindings.length !== channelConfigurations.length) {
+    throw new Error('Canonical Telegram binding is missing production configuration.');
+  }
   const config = createTelegramWebhookConfig({
     webhookSecretRef,
     identitySecretRef,
-    bindings
+    bindings: configuredBindings.map(({binding}) => binding)
   });
-  const {db} = createDatabase(required('DATABASE_URL'));
   const secrets = createTelegramFileSecretsProvider(webhookSecretRef, identitySecretRef);
   const identitySecret = (await secrets.resolve(
     identitySecretRef, 'telegram.identity.keying'
@@ -169,10 +190,12 @@ const createDependencies = async (): Promise<TelegramWebhookHandlerDependencies>
       ? null
       : telegramKeyedIdentifier(identitySecret, 'user', identity.userId)
   })));
-  await conversations.reconcileBindings('telegram', Object.values(projectIds), bindings.map((binding) => ({
-    projectId: projectIds[binding.project],
-    conversationClass: binding.conversationClass,
+  await conversations.reconcileBindings('telegram', Object.values(projectIds), configuredBindings.map(({binding, configuration}) => ({
+    configurationId: configuration.id,
+    projectId: configuration.projectId,
+    conversationClass: configuration.conversationClass,
     provider: 'telegram',
+    configurationRef: configuration.configurationRef!,
     externalRef: telegramKeyedIdentifier(identitySecret, 'chat', binding.chatId),
     activatedAt: binding.activatedAt
   })));

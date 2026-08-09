@@ -2,6 +2,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {createCanonicalCommandService} from '@fai-control-plane/application';
 import {
   actors,
+  conversationChannelConfigurations,
   createDatabase,
   createPostgresUnitOfWork,
   projectMemberships,
@@ -56,6 +57,17 @@ export type AccessManagementRuntime = Readonly<{
     operatorActorId: string;
     grantId: string;
     expectedVersion: number;
+    desiredLevel: AccessLevel;
+  }>): Promise<MutationStatus>;
+  setConversationAccess(input: Readonly<{
+    workspaceId: string;
+    operatorActorId: string;
+    projectId: string;
+    channelId: string;
+    conversationClass: 'internal' | 'client';
+    subjectActorId: string;
+    grantId: string;
+    expectedVersion: number | null;
     desiredLevel: AccessLevel;
   }>): Promise<MutationStatus>;
 }>;
@@ -194,6 +206,62 @@ const createRuntime = (db: Database): AccessManagementRuntime => {
           subjectActorId: binding.actorId,
           resourceType: binding.resourceType,
           resourceId: binding.resourceId,
+          desiredLevel: input.desiredLevel,
+          expectedVersion: input.expectedVersion
+        }
+      });
+    },
+
+    async setConversationAccess(input) {
+      const [binding] = await db.select({
+        projectId: conversationChannelConfigurations.projectId,
+        conversationClass: conversationChannelConfigurations.conversationClass,
+        desiredState: conversationChannelConfigurations.desiredState
+      }).from(conversationChannelConfigurations)
+        .innerJoin(projects, eq(projects.id, conversationChannelConfigurations.projectId))
+        .innerJoin(projectMemberships, and(
+          eq(projectMemberships.projectId, conversationChannelConfigurations.projectId),
+          eq(projectMemberships.actorId, input.subjectActorId)
+        ))
+        .where(and(
+          eq(conversationChannelConfigurations.id, input.channelId),
+          eq(conversationChannelConfigurations.projectId, input.projectId),
+          eq(conversationChannelConfigurations.conversationClass, input.conversationClass),
+          eq(projects.workspaceId, input.workspaceId),
+          eq(projectMemberships.active, true)
+        )).limit(1);
+      if (binding === undefined || binding.desiredState === 'not_used') return 'not_found';
+      const resourceType = input.conversationClass === 'internal' ? 'internal_chat' : 'client_chat';
+      const [current] = await db.select({
+        id: resourceAccessGrants.id,
+        version: resourceAccessGrants.version
+      }).from(resourceAccessGrants).where(and(
+        eq(resourceAccessGrants.projectId, input.projectId),
+        eq(resourceAccessGrants.actorId, input.subjectActorId),
+        eq(resourceAccessGrants.resourceType, resourceType),
+        eq(resourceAccessGrants.resourceId, input.channelId)
+      )).limit(1);
+      if (
+        (input.expectedVersion === null && current !== undefined) ||
+        (input.expectedVersion !== null && (
+          current?.id !== input.grantId || current.version !== input.expectedVersion
+        ))
+      ) return 'stale';
+      const inputHash = createHash('sha256').update(canonicalJson({
+        channelId: input.channelId,
+        subjectActorId: input.subjectActorId,
+        desiredLevel: input.desiredLevel,
+        expectedVersion: input.expectedVersion
+      })).digest('hex');
+      return execute(input.workspaceId, input.operatorActorId, {
+        idempotencyKey: `conversation-access.set.v1:${input.grantId}:${input.expectedVersion ?? 0}:${inputHash}`,
+        type: 'resource_access_grant.set',
+        payload: {
+          grantId: input.grantId,
+          projectId: input.projectId,
+          subjectActorId: input.subjectActorId,
+          resourceType,
+          resourceId: input.channelId,
           desiredLevel: input.desiredLevel,
           expectedVersion: input.expectedVersion
         }
