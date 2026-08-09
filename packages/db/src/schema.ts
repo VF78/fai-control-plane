@@ -153,6 +153,11 @@ export const conversationClassEnum = pgEnum('conversation_class', [
   'internal',
   'client'
 ]);
+export const conversationChannelStateEnum = pgEnum('conversation_channel_state', [
+  'active',
+  'inactive',
+  'not_used'
+]);
 export const runtimeAvailabilityComponentEnum = pgEnum(
   'runtime_availability_component',
   ['service', 'scheduler', 'delivery']
@@ -478,10 +483,43 @@ export type ConversationAttachmentMetadata = Readonly<{
   sizeBytes?: number;
 }>;
 
+export const conversationChannelConfigurations = pgTable(
+  'conversation_channel_configurations',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    conversationClass: conversationClassEnum('conversation_class').notNull(),
+    desiredState: conversationChannelStateEnum('desired_state').notNull(),
+    provider: text('provider'),
+    configurationRef: text('configuration_ref'),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('conversation_channel_configurations_project_class_unique').on(
+      table.projectId,
+      table.conversationClass
+    ),
+    check(
+      'conversation_channel_configurations_binding_complete',
+      sql`(${table.desiredState} = 'not_used' and ${table.provider} is null and ${table.configurationRef} is null)
+        or (${table.desiredState} in ('active', 'inactive')
+          and ${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'
+          and ${table.configurationRef} ~ '^[a-z][a-z0-9._:-]{0,127}$')`
+    ),
+    check('conversation_channel_configurations_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
 export const conversationBindings = pgTable(
   'conversation_bindings',
   {
     id: id(),
+    configurationId: uuid('configuration_id')
+      .references(() => conversationChannelConfigurations.id, {onDelete: 'restrict'}),
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, {onDelete: 'restrict'}),
@@ -506,6 +544,8 @@ export const conversationBindings = pgTable(
       table.provider,
       table.externalRef
     ),
+    uniqueIndex('conversation_bindings_configuration_unique').on(table.configurationId)
+      .where(sql`${table.configurationId} is not null`),
     check(
       'conversation_bindings_provider_key',
       sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
@@ -534,6 +574,9 @@ export const conversationParticipants = pgTable(
     externalSubject: text('external_subject').notNull(),
     actorId: uuid('actor_id').references(() => actors.id, {onDelete: 'restrict'}),
     displayName: text('display_name').notNull(),
+    observedLevel: accessLevelEnum('observed_level'),
+    observedAt: timestamp('observed_at', {withTimezone: true}),
+    lastObservationRef: text('last_observation_ref'),
     firstObservedAt: timestamp('first_observed_at', {withTimezone: true}).notNull(),
     lastObservedAt: timestamp('last_observed_at', {withTimezone: true}).notNull(),
     createdAt: createdAt(),
@@ -556,6 +599,12 @@ export const conversationParticipants = pgTable(
     check(
       'conversation_participants_observation_order',
       sql`${table.lastObservedAt} >= ${table.firstObservedAt}`
+    ),
+    check(
+      'conversation_participants_access_observation_complete',
+      sql`(${table.observedLevel} is null and ${table.observedAt} is null and ${table.lastObservationRef} is null)
+        or (${table.observedLevel} is not null and ${table.observedAt} is not null
+          and length(${table.lastObservationRef}) between 1 and 128)`
     )
   ]
 );

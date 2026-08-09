@@ -566,6 +566,32 @@ it('keeps the legacy global chats route project-first', () => {
   expect(markup).not.toContain('Not configured. No verified chat binding');
 });
 
+it('renders chat intent, provider observation, read-only messages and manager controls separately', () => {
+  const projectId = '11111111-1111-4111-8111-111111111111';
+  const actorId = '22222222-2222-4222-8222-222222222222';
+  const channelId = '33333333-3333-4333-8333-333333333333';
+  const project = {id: projectId, workspaceId: '44444444-4444-4444-8444-444444444444', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: new Date()};
+  const data = {
+    portfolio: {state: 'unconfigured'}, runs: null, health: null, projectIndex: [], csrfToken: 'csrf', operatorActorId: actorId,
+    project: {state: 'ready', data: {project, agentProfiles: [], snapshot: null, synchronizedAt: null, execution: {status: 'stopped', version: 0}, protocol: null, workItems: []}},
+    access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: actorId, displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {'write:control_plane:development': true}}], memberships: [{projectId, project: 'MSA', projectSlug: 'msa', actorId, role: 'project_owner', active: true, version: 1, canManage: true}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
+    conversations: {state: 'ready', data: {projects: [{id: projectId, name: 'MSA', slug: 'msa', channels: [{
+      conversationClass: 'internal', state: 'ready', configuration: {id: channelId, desiredState: 'active', provider: 'telegram', version: 1}, freshnessAt: new Date('2026-08-09T12:00:00.000Z'), failure: null,
+      access: [{actorId, displayName: 'Vladimir', role: 'project_owner', grantId: null, grantVersion: null, desiredLevel: 'write', observedLevel: 'read', observedAt: new Date('2026-08-09T11:59:00.000Z'), confirmation: 'mismatch'}],
+      participants: [{id: 'p1', displayName: 'Vladimir', resolution: 'resolved', observedLevel: 'read', observedAt: new Date('2026-08-09T11:59:00.000Z'), lastObservedAt: new Date('2026-08-09T12:00:00.000Z')}],
+      messages: [{id: 'm1', participantId: 'p1', author: 'Vladimir', sentAt: new Date('2026-08-09T12:00:00.000Z'), text: 'Готово к проверке', attachmentSummary: null, reply: false, threaded: false}]
+    }, {conversationClass: 'client', state: 'not_used', configuration: {id: '55555555-5555-4555-8555-555555555555', desiredState: 'not_used', provider: null, version: 1}, freshnessAt: null, failure: null, access: [], participants: [], messages: []}]}]}}
+  } as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'msa', 'chats'], {})!, data}));
+  expect(markup).toContain('желаемый: Запись');
+  expect(markup).toContain('факт: Чтение');
+  expect(markup).toContain('Есть расхождение');
+  expect(markup).toContain('Готово к проверке');
+  expect(markup).toContain('action="/api/conversations/access"');
+  expect(markup).toContain('action="/api/conversations/channel"');
+  expect(markup).toContain('Изменение участника выполняется в Telegram');
+});
+
 it('renders persisted agent registrations and authorized new-claim controls without inferring liveness', () => {
   const unavailable = {
     health: 'unknown' as const,

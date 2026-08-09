@@ -11,6 +11,7 @@ import {
   actorExternalIdentities,
   actors,
   agentProfiles,
+  conversationChannelConfigurations,
   conversationBindings,
   conversationMessages,
   conversationParticipants,
@@ -182,10 +183,21 @@ describePostgres('test-operational launch contour', () => {
     const store = createPostgresConversationStore(db);
     const activation = new Date('2026-07-30T10:00:00.000Z');
     const bindingRef = keyedRef('synthetic-msa-internal');
+    const channelId = randomUUID();
+    await db.insert(conversationChannelConfigurations).values({
+      id: channelId,
+      projectId: msa.id,
+      conversationClass: 'internal',
+      desiredState: 'active',
+      provider: 'telegram',
+      configurationRef: 'telegram:msa:internal'
+    });
     await store.reconcileBindings('telegram', [msa.id, ascon.id], [{
+      configurationId: channelId,
       projectId: msa.id,
       conversationClass: 'internal',
       provider: 'telegram',
+      configurationRef: 'telegram:msa:internal',
       externalRef: bindingRef,
       activatedAt: activation
     }]);

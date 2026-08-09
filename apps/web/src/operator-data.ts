@@ -128,14 +128,33 @@ export type ConversationsData = Readonly<{
     slug: OperatorProjectSlug;
     channels: readonly Readonly<{
       conversationClass: 'internal' | 'client';
-      state: 'not_configured' | 'empty' | 'ready' | 'degraded';
+      state: 'not_configured' | 'not_used' | 'inactive' | 'waiting_observation' |
+        'empty' | 'ready' | 'degraded';
+      configuration: Readonly<{
+        id: string;
+        desiredState: 'active' | 'inactive' | 'not_used';
+        provider: string | null;
+        version: number;
+      }> | null;
       freshnessAt: Date | null;
       failure: Readonly<{code: string; at: Date; count: number}> | null;
+      access: readonly Readonly<{
+        actorId: string;
+        displayName: string;
+        role: string;
+        grantId: string | null;
+        grantVersion: number | null;
+        desiredLevel: 'none' | 'read' | 'write' | 'admin' | null;
+        observedLevel: 'none' | 'read' | 'write' | 'admin' | null;
+        observedAt: Date | null;
+        confirmation: 'confirmed' | 'mismatch' | 'unobserved' | 'not_requested';
+      }>[];
       participants: readonly Readonly<{
         id: string;
         displayName: string;
         resolution: 'resolved' | 'unresolved';
-        controlPlaneAccess: string;
+        observedLevel: 'none' | 'read' | 'write' | 'admin' | null;
+        observedAt: Date | null;
         lastObservedAt: Date;
       }>[];
       messages: readonly Readonly<{
@@ -250,13 +269,12 @@ export const loadConversationsData = (
   const configuredProjects = await scopedProjects(db, scopes);
   const projectIds = configuredProjects.map(({id}) => id);
   const rows = await loadConversationRows(db, projectIds);
-  const actorIds = [...new Set(rows.participants.flatMap(({actorId}) =>
-    actorId === null ? [] : [actorId]))];
-  const [resolvedActors, memberships] = actorIds.length === 0
-    ? [[], []]
+  const configurationIds = rows.configurations.map(({id}) => id);
+  const [resolvedActors, memberships, grants] = projectIds.length === 0
+    ? [[], [], []]
     : await Promise.all([
       db.select({id: actors.id, displayName: actors.displayName, disabledAt: actors.disabledAt})
-        .from(actors).where(inArray(actors.id, actorIds)),
+        .from(actors).where(isNull(actors.disabledAt)),
       db.select({
         projectId: projectMemberships.projectId,
         actorId: projectMemberships.actorId,
@@ -264,7 +282,23 @@ export const loadConversationsData = (
         active: projectMemberships.active
       }).from(projectMemberships).where(and(
         inArray(projectMemberships.projectId, projectIds),
-        inArray(projectMemberships.actorId, actorIds)
+        eq(projectMemberships.active, true)
+      )),
+      configurationIds.length === 0 ? Promise.resolve([]) : db.select({
+        id: resourceAccessGrants.id,
+        projectId: resourceAccessGrants.projectId,
+        actorId: resourceAccessGrants.actorId,
+        resourceType: resourceAccessGrants.resourceType,
+        resourceId: resourceAccessGrants.resourceId,
+        desiredLevel: resourceAccessGrants.desiredLevel,
+        version: resourceAccessGrants.version
+      }).from(resourceAccessGrants).where(and(
+        inArray(resourceAccessGrants.projectId, projectIds),
+        inArray(resourceAccessGrants.resourceId, configurationIds),
+        or(
+          eq(resourceAccessGrants.resourceType, 'internal_chat'),
+          eq(resourceAccessGrants.resourceType, 'client_chat')
+        )
       ))
     ]);
   const actorById = new Map(resolvedActors.map((actor) => [actor.id, actor]));
@@ -274,31 +308,24 @@ export const loadConversationsData = (
       name: project.name,
       slug: project.slug,
       channels: (['internal', 'client'] as const).map((conversationClass) => {
+        const configuration = rows.configurations.find((candidate) =>
+          candidate.projectId === project.id && candidate.conversationClass === conversationClass);
         const binding = rows.bindings.find((candidate) =>
           candidate.projectId === project.id &&
           candidate.conversationClass === conversationClass);
-        if (binding === undefined) return {
-          conversationClass,
-          state: 'not_configured' as const,
-          freshnessAt: null,
-          failure: null,
-          participants: [],
-          messages: []
-        };
-        const channelParticipants = rows.participants.filter(({bindingId}) => bindingId === binding.id);
-        const channelMessages = rows.messages.filter(({bindingId}) => bindingId === binding.id);
+        const channelParticipants = binding === undefined ? [] : rows.participants
+          .filter(({bindingId}) => bindingId === binding.id);
+        const channelMessages = binding === undefined ? [] : rows.messages
+          .filter(({bindingId}) => bindingId === binding.id);
         const participantViews = channelParticipants.map((participant) => {
           const actor = participant.actorId === null ? undefined : actorById.get(participant.actorId);
-          const membership = participant.actorId === null ? undefined : memberships.find((candidate) =>
-            candidate.projectId === project.id && candidate.actorId === participant.actorId);
           const resolved = actor !== undefined;
           return {
             id: participant.id,
-            displayName: resolved ? actor.displayName : 'Unresolved',
+            displayName: resolved ? actor.displayName : participant.displayName,
             resolution: resolved ? 'resolved' as const : 'unresolved' as const,
-            controlPlaneAccess: actor?.disabledAt === null && membership?.active === true
-              ? membership.role.replaceAll('_', ' ')
-              : 'No current access',
+            observedLevel: participant.observedLevel,
+            observedAt: participant.observedAt,
             lastObservedAt: participant.lastObservedAt
           };
         });
@@ -320,17 +347,57 @@ export const loadConversationsData = (
             threaded: message.threadRef !== null
           };
         });
+        const access = memberships.filter((membership) => membership.projectId === project.id)
+          .flatMap((membership) => {
+            const actor = actorById.get(membership.actorId);
+            if (actor === undefined) return [];
+            const resourceType = conversationClass === 'internal' ? 'internal_chat' : 'client_chat';
+            const grant = configuration === undefined ? undefined : grants.find((candidate) =>
+              candidate.projectId === project.id && candidate.actorId === actor.id &&
+              candidate.resourceType === resourceType && candidate.resourceId === configuration.id);
+            const observed = participantViews.find((participant) =>
+              channelParticipants.find((candidate) => candidate.id === participant.id)?.actorId === actor.id);
+            const desiredLevel = grant?.desiredLevel ?? null;
+            const observedLevel = observed?.observedLevel ?? null;
+            const ranks = {none: 0, read: 1, write: 2, admin: 3} as const;
+            const confirmation = desiredLevel === null || desiredLevel === 'none'
+              ? 'not_requested' as const
+              : observedLevel === null ? 'unobserved' as const
+                : ranks[observedLevel] >= ranks[desiredLevel] ? 'confirmed' as const : 'mismatch' as const;
+            return [{
+              actorId: actor.id,
+              displayName: actor.displayName,
+              role: membership.role,
+              grantId: grant?.id ?? null,
+              grantVersion: grant?.version ?? null,
+              desiredLevel,
+              observedLevel,
+              observedAt: observed?.observedAt ?? null,
+              confirmation
+            }];
+          });
+        const state = configuration === undefined ? 'not_configured' as const
+          : configuration.desiredState === 'not_used' ? 'not_used' as const
+            : configuration.desiredState === 'inactive' ? 'inactive' as const
+              : binding === undefined ? 'waiting_observation' as const
+                : binding.lastFailureAt !== null ? 'degraded' as const
+                  : messages.length === 0 ? 'empty' as const : 'ready' as const;
         return {
           conversationClass,
-          state: binding.lastFailureAt !== null
-            ? 'degraded' as const
-            : messages.length === 0 ? 'empty' as const : 'ready' as const,
-          freshnessAt: binding.lastObservedAt,
-          failure: binding.lastFailureAt === null || binding.lastFailureCode === null ? null : {
+          state,
+          configuration: configuration === undefined ? null : {
+            id: configuration.id,
+            desiredState: configuration.desiredState,
+            provider: configuration.provider,
+            version: configuration.version
+          },
+          freshnessAt: binding?.lastObservedAt ?? null,
+          failure: binding?.lastFailureAt == null || binding.lastFailureCode === null ? null : {
             code: binding.lastFailureCode,
             at: binding.lastFailureAt,
             count: binding.failureCount
           },
+          access,
           participants: participantViews,
           messages
         };

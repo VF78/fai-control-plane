@@ -36,8 +36,10 @@ export {
   loadConversationRows,
   type ConversationBindingConfiguration,
   type ConversationIdentityConfiguration,
-  type ConversationObservation
+  type ConversationObservation,
+  type ConversationParticipantObservation
 } from './conversations';
+export {createPostgresConversationChannelStore} from './conversation-management';
 export {createPostgresUnitOfWork} from './persistence';
 export {
   isRuntimeAvailable,
