@@ -1,6 +1,17 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export * from './access-observation.ts';
 export {
+  AGENT_RUN_ACCEPTANCE_COMMAND,
+  createAgentRunAcceptanceService,
+  mapRunnerCompletionToDeliveryEvidence,
+  type AcceptAgentRunResultCommand,
+  type AgentRunAcceptanceExecution,
+  type AgentRunAcceptanceReceipt,
+  type AgentRunAcceptanceStore,
+  type AgentRunAcceptanceValue,
+  type RetainedRunnerArtifact
+} from './agent-run-acceptance.ts';
+export {
   createProjectPlanService,
   type ApproveProjectPlanCommand,
   type GenerateProjectPlanDraftCommand,

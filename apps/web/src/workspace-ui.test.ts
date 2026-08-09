@@ -963,30 +963,34 @@ it('keeps the governed task to receipt journey inside project task and run detai
     id: runId, project: 'MSA', projectSlug: 'msa', workItemId: taskId, workItem: 'Governed delivery',
     agent: 'Hermes', status: 'queued', runtimeProfile: 'read_safe', attempt: 1, packetGoal: 'Implement bounded change',
     timeboxMinutes: 30, startedAt: null, completedAt: null, heartbeatAt: null, failureCode: null,
-    version: 2, workItemVersion: 3, canAcceptReceipt: false, receipt: null, artifacts: []
+    version: 2, workItemVersion: 3, canAcceptReceipt: false, approverActorId: actorId,
+    receipt: null, artifacts: []
   };
   const queuedMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [queuedRun]})
   }));
   expect(queuedMarkup).toContain('Cancel queued run');
-  expect(queuedMarkup).toContain('Wait for a governed claim or cancel this queued run.');
+  expect(queuedMarkup).toContain('Ожидать governed claim или отменить запуск до claim.');
 
   const completedRun = {
     ...queuedRun, status: 'done', completedAt: observedAt, canAcceptReceipt: true,
+    workItemStatus: 'in_dev', acceptanceTargetStage: 'Peer review',
+    acceptanceTargetStatus: 'in_dev',
     receipt: {terminal: 'done', completedAt: observedAt, runtimeId: 'hermes', runtimeProfile: 'read_safe', durationMs: 1000, receiptSha256: 'e'.repeat(64), cost: null, usage: null}
   };
   const receiptMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [completedRun]})
   }));
   expect(receiptMarkup).toContain('Receipt observed');
-  expect(receiptMarkup).toContain('Accept receipt and move to QA');
-  expect(receiptMarkup).toContain('Accept the persisted receipt to move the task to QA.');
+  expect(receiptMarkup).toContain('Принять evidence и передать на этап «Peer review»');
+  expect(receiptMarkup).toContain('Этап изменится; статус задачи останется прежним.');
+  expect(receiptMarkup).toContain('Product Owner проверяет exact dispatch');
 
   const acceptedMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {...runRoute, handoffResult: 'accepted'},
     data: shellData(baseTask, {...emptyRuns, runs: [{...completedRun, canAcceptReceipt: false}]})
   }));
-  expect(acceptedMarkup).toContain('Receipt accepted. The task moved to QA.');
+  expect(acceptedMarkup).toContain('Evidence принято Product Owner; задача переведена на разрешённый следующий этап, исполнение проекта приостановлено.');
   expect(acceptedMarkup).toContain(`href="/projects/msa/tasks/${taskId}"`);
 
   const qaTask = {

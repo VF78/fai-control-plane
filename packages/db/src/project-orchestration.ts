@@ -2,7 +2,6 @@ import {createHash, randomUUID} from 'node:crypto';
 import {
   canonicalJson,
   createTaskPacket,
-  firstEnabledDeliveryStage,
   OPERATOR_CANCELLED_BEFORE_CLAIM,
   simulateAgentRunQueuePolicy,
   validateDeliveryProtocolDefinition,
@@ -101,15 +100,12 @@ const selectionFor = async (
       eq(schema.runbooks.version, schema.deliveryJourneys.protocolVersion)))
     .where(and(eq(schema.workItems.id, workItemId), eq(schema.workItems.projectId, projectId),
       eq(schema.projects.workspaceId, workspaceId), isNull(schema.workItems.deletedAt))).limit(1);
-  if (record === undefined || record.planVersionId === null || record.workItemStatus !== 'ready' || record.workItemBlocked ||
+  if (record === undefined || record.planVersionId === null || record.workItemBlocked ||
     record.protocolState !== 'published' || !record.active) return null;
   const definition = validateDeliveryProtocolDefinition(record.definition);
   if (!definition.ok) return null;
-  const stage = firstEnabledDeliveryStage({
-    id: record.protocolId, projectId, name: '', version: record.protocolVersion, revision: 1,
-    state: 'published', active: true, definition: definition.value, contentHash: ''
-  });
-  if (stage === null || stage.key !== record.stageKey) return null;
+  const stage = definition.value.stages.find(({key, enabled}) => enabled && key === record.stageKey) ?? null;
+  if (stage === null || stage.taskStatus !== record.workItemStatus) return null;
   const actor = await responsibleActor(tx, workspaceId, projectId, stage.responsibility);
   if (actor === null) return null;
   const boundary = stage.executionMode === 'autonomous'
@@ -142,11 +138,12 @@ const hasHumanOwnedAutonomousStage = async (
   if (record === undefined || typeof record.definition !== 'object' || record.definition === null) return false;
   const stages = (record.definition as {stages?: unknown}).stages;
   if (!Array.isArray(stages)) return false;
-  const first = stages.find((stage) => typeof stage === 'object' && stage !== null &&
-    (stage as {enabled?: unknown}).enabled === true) as Record<string, unknown> | undefined;
-  if (first === undefined || first.key !== record.stageKey || first.executionMode !== 'autonomous' ||
-    typeof first.responsibility !== 'object' || first.responsibility === null) return false;
-  const responsibility = first.responsibility as Record<string, unknown>;
+  const current = stages.find((stage) => typeof stage === 'object' && stage !== null &&
+    (stage as {enabled?: unknown; key?: unknown}).enabled === true &&
+    (stage as {key?: unknown}).key === record.stageKey) as Record<string, unknown> | undefined;
+  if (current === undefined || current.executionMode !== 'autonomous' ||
+    typeof current.responsibility !== 'object' || current.responsibility === null) return false;
+  const responsibility = current.responsibility as Record<string, unknown>;
   return responsibility.kind !== 'actor' || responsibility.actorType !== 'agent';
 };
 
@@ -203,6 +200,15 @@ const decisionQueue = async (
     workItemId: run.workItemId, targetId: run.id,
     summary: run.failureCode === null ? 'Последний запуск завершился ошибкой.' : `Последний запуск завершился ошибкой: ${run.failureCode}.`,
     nextAction: 'Проверить receipt и выбрать безопасное следующее действие.', createdAt: run.updatedAt.toISOString()
+  })));
+  decisions.push(...[...latestRunByItem.values()].filter((run) =>
+    run.status === 'done' && selection?.workItemId === run.workItemId
+  ).map((run) => ({
+    id: `agent_run:${run.id}:receipt_review`, kind: 'approval' as const,
+    source: 'agent_run' as const, workItemId: run.workItemId, targetId: run.id,
+    summary: 'Runner сохранил результат; прогресс ещё не принят Product Owner.',
+    nextAction: 'Открыть run, проверить полный receipt и required evidence. Автоповтор и автопереход запрещены.',
+    createdAt: run.updatedAt.toISOString()
   })));
   if (selection?.boundary === 'human_confirmation_required') decisions.push({
     id: `protocol:${selection.workItemId}:${selection.stageKey}:approval`, kind: 'approval', source: 'delivery_protocol',
@@ -417,7 +423,7 @@ const nextState = async (tx: Transaction, workspaceId: string, projectId: string
     dependsOnWorkItemId: schema.workItemDependencies.dependsOnWorkItemId
   }).from(schema.workItemDependencies).where(inArray(schema.workItemDependencies.workItemId, items.map(({id}) => id)));
   const statusById = new Map(items.map(({id, status}) => [id, status]));
-  const candidates = items.filter((item) => item.status === 'ready' && !item.blocked &&
+  const candidates = items.filter((item) => item.status !== 'backlog' && item.status !== 'done' && !item.blocked &&
     dependencies.filter(({workItemId}) => workItemId === item.id)
       .every(({dependsOnWorkItemId}) => statusById.get(dependsOnWorkItemId) === 'done'));
   for (const candidate of candidates) {

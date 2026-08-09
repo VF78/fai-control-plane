@@ -1,21 +1,27 @@
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {hashAgentProfileConfiguration, hashDeliveryProtocolDefinition} from '@fai-control-plane/domain';
+import {
+  hashAgentProfileConfiguration,
+  hashDeliveryProtocolDefinition,
+  validateDeliveryEvidenceReferences
+} from '@fai-control-plane/domain';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {and, eq} from 'drizzle-orm';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
-  actors, agentProfiles, agentRuns, approvalRequests, auditEvents, canonicalEvents, commandReceipts,
+  actors, agentProfiles, agentRunReceipts, agentRuns, approvalRequests, artifacts, auditEvents,
+  canonicalEvents, commandReceipts,
   createDatabase, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore,
-  createPostgresRunnerClaimStore, deliveryJourneys,
+  createPostgresAgentRunAcceptanceStore, createPostgresRunnerClaimStore,
+  deliveryJourneyEvidence, deliveryJourneys,
   outboxEvents, projectExecutionDispatches, projectExecutions,
   loadProjectExecutionProjection,
   projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPlanVersions,
   projectPublicationIntents, projectScopeBaselineVersions, projectTrackerRepositoryScopes,
   projects, runbooks, runtimeRegistrations, secretRefs, taskPackets, trackerBindings,
-  workItemDependencies, workItems, workspaces
+  statusTransitions, workItemDependencies, workItems, workspaces
 } from './index';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -38,7 +44,7 @@ describePostgres('governed project orchestration persistence', () => {
     if (adminPool !== undefined) { try { await dropDatabaseWhenDisconnected(adminPool, databaseName); } finally { await adminPool.end(); } }
   }, 30_000);
 
-  const seedAutonomousProject = async (humanOwned: boolean) => {
+  const seedAutonomousProject = async (humanOwned: boolean, sameStatusNext = false) => {
     const ids = {workspace: randomUUID(), project: randomUUID(), owner: randomUUID(), agent: randomUUID(),
       profile: randomUUID(), plan: randomUUID(), planVersion: randomUUID(), baseline: randomUUID(),
       protocol: randomUUID(), task: randomUUID(), secret: randomUUID(), repository: randomUUID()};
@@ -83,16 +89,24 @@ describePostgres('governed project orchestration persistence', () => {
     const responsibility = humanOwned
       ? {kind: 'project_role' as const, role: 'project_owner' as const}
       : {kind: 'actor' as const, actorId: ids.agent, actorType: 'agent' as const, agentProfileId: ids.profile};
-    const definition = {schemaVersion: 1 as const, stages: [{key: 'execute', name: 'Execute', enabled: true,
-      taskStatus: 'ready' as const, responsibility, executionMode: 'autonomous' as const,
-      entryCriteria: ['Ready'], requiredEvidence: ['Receipt'], allowedNextStageKey: null}]};
+    const definition = {schemaVersion: 1 as const, stages: [
+      {key: 'development', name: 'Development', enabled: true,
+        taskStatus: 'in_dev' as const, responsibility, executionMode: 'autonomous' as const,
+        entryCriteria: ['Ready'], requiredEvidence: ['Implementation change', 'Relevant checks'],
+        allowedNextStageKey: 'qa'},
+      {key: 'qa', name: sameStatusNext ? 'Peer review' : 'QA', enabled: true,
+        taskStatus: sameStatusNext ? 'in_dev' as const : 'qa' as const,
+        responsibility: {kind: 'project_role' as const, role: 'project_owner' as const},
+        executionMode: 'human_approval' as const, entryCriteria: ['Evidence accepted'],
+        requiredEvidence: ['QA result'], allowedNextStageKey: null}
+    ]};
     await db.insert(runbooks).values({id: ids.protocol, projectId: ids.project, name: 'Autonomous', version: 1,
       definition, active: true, protocolState: 'published', revision: 1, contentHash: hashDeliveryProtocolDefinition(definition)});
-    await db.insert(workItems).values({id: ids.task, projectId: ids.project, title: 'Autonomous task', status: 'ready',
+    await db.insert(workItems).values({id: ids.task, projectId: ids.project, title: 'Autonomous task', status: 'in_dev',
       sourcePlanVersionId: ids.planVersion, sourceTaskKey: 'task_1',
       acceptanceEvidence: planDefinition.tasks[0]!.acceptanceEvidence});
     await db.insert(deliveryJourneys).values({workItemId: ids.task, protocolId: ids.protocol,
-      protocolVersion: 1, stageKey: 'execute'});
+      protocolVersion: 1, stageKey: 'development'});
     await db.insert(secretRefs).values({id: ids.secret, workspaceId: ids.workspace,
       provider: 'fixture', reference: `dispatch/${ids.project}`});
     await db.insert(projectTrackerRepositoryScopes).values({id: ids.repository, projectId: ids.project,
@@ -108,6 +122,87 @@ describePostgres('governed project orchestration persistence', () => {
       payload: {projectId: ids.project, expectedVersion}
     });
     return {ids, store, command};
+  };
+
+  const seedCompletedAcceptance = async (sameStatusNext = false) => {
+    const fixture = await seedAutonomousProject(false, sameStatusNext);
+    await fixture.store.execute({
+      command: fixture.command('project_execution.start', 0, `accept-start-${randomUUID()}`) as never,
+      requestHash: '1'.repeat(64), authorized: true
+    });
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+      workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner
+    });
+    const [run] = await db.select().from(agentRuns)
+      .where(eq(agentRuns.workItemId, fixture.ids.task));
+    if (run === undefined) throw new Error('acceptance run fixture missing');
+    const completedAt = new Date('2026-08-09T11:00:00.000Z');
+    const receiptSha256 = 'a'.repeat(64);
+    const summarySha256 = 'b'.repeat(64);
+    const manifestSha256 = 'c'.repeat(64);
+    const reference = `runs/${run.id}`;
+    const metadata = {
+      runId: run.id, attempt: 1, terminal: 'done' as const,
+      receiptSha256, receiptSizeBytes: 512, finalStatus: 'succeeded' as const,
+      runtimeId: 'codex-cli', runtimeProfile: 'read_safe' as const, durationMs: 2_000,
+      cost: {state: 'unknown' as const, reason: 'runtime_usage_not_available' as const},
+      usage: {state: 'unknown' as const, reason: 'runtime_usage_not_available' as const},
+      summaryArtifact: {name: 'structured-summary.json',
+        reference: `${reference}/structured-summary.json`, sha256: summarySha256, sizeBytes: 200},
+      artifactStore: {provider: 'fixture', reference, correlationId: `artifact-run-${run.id}`},
+      receiptArtifact: {name: 'agent-run-receipt.json',
+        reference: `${reference}/agent-run-receipt.json`, sha256: receiptSha256, sizeBytes: 512},
+      pathManifest: {name: 'observed-path-manifest.json',
+        reference: `${reference}/observed-path-manifest.json`, sha256: manifestSha256, sizeBytes: 100},
+      changedFiles: ['src/result.ts'],
+      checks: [{name: 'pnpm vitest run result.test.ts', status: 'passed' as const}],
+      riskCount: 0, nextAction: 'review_receipt' as const
+    };
+    await db.update(agentRuns).set({status: 'done', attempt: 1, failureCode: null,
+      completedAt, version: run.version + 1, updatedAt: completedAt})
+      .where(eq(agentRuns.id, run.id));
+    await db.insert(agentRunReceipts).values({agentRunId: run.id, runnerId: 'isolated-runner',
+      attempt: 1, terminal: 'done', receiptSha256, receiptSizeBytes: 512,
+      completionReplayHash: 'd'.repeat(64), metadata, completedAt});
+    await db.insert(artifacts).values([
+      {id: randomUUID(), agentRunId: run.id, kind: 'receipt', storageProvider: 'fixture',
+        storageKey: metadata.receiptArtifact.reference, contentType: 'application/json',
+        sha256: receiptSha256, sizeBytes: 512},
+      {id: randomUUID(), agentRunId: run.id, kind: 'summary', storageProvider: 'fixture',
+        storageKey: metadata.summaryArtifact.reference, contentType: 'application/json',
+        sha256: summarySha256, sizeBytes: 200},
+      {id: randomUUID(), agentRunId: run.id, kind: 'path_manifest', storageProvider: 'fixture',
+        storageKey: metadata.pathManifest.reference, contentType: 'application/json',
+        sha256: manifestSha256, sizeBytes: 100}
+    ]);
+    const store = createPostgresAgentRunAcceptanceStore(db, {
+      parseCompletion: (value) => value as never,
+      evidenceFor: (stage, payload, retained) => {
+        if (payload.summaryArtifact === undefined || !retained.some((artifact) =>
+          artifact.kind === 'summary' && !artifact.redacted &&
+          artifact.storageKey === payload.summaryArtifact!.reference &&
+          artifact.sha256 === payload.summaryArtifact!.sha256)) return {
+            ok: false, error: {code: 'INVALID_COMMAND', message: 'summary not retained'}
+          };
+        return validateDeliveryEvidenceReferences(stage, stage.requiredEvidence.map((requirement) => ({
+          requirement, reference: `agent-run-receipt:${payload.runId}:${payload.receiptSha256}`
+        })));
+      },
+      now: () => new Date('2026-08-09T11:01:00.000Z')
+    });
+    const idempotencyKey = `agent-run-accept:v1:${run.id}:${receiptSha256}:${fixture.ids.owner}`;
+    const command = (
+      actorId = fixture.ids.owner,
+      expectedReceiptSha256 = receiptSha256,
+      expectedWorkItemVersion = 1
+    ) => ({
+      commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `agent-run-accept:v1:${run.id}:${expectedReceiptSha256}:${actorId}`,
+      actor: {actorId}, type: 'agent_run.accept_result.v1' as const,
+      payload: {runId: run.id, receiptSha256: expectedReceiptSha256, expectedWorkItemVersion}
+    });
+    return {...fixture, run, receiptSha256, store, command, idempotencyKey};
   };
 
   it('blocks a human-owned autonomous stage with an explicit manager decision', async () => {
@@ -139,9 +234,10 @@ describePostgres('governed project orchestration persistence', () => {
     const [link] = await db.select().from(projectExecutionDispatches)
       .where(eq(projectExecutionDispatches.projectId, ids.project));
     expect(packet).toMatchObject({workItemVersion: 1, agentProfileSnapshotId: ids.profile,
-      createdByActorId: ids.owner, acceptanceCriteria: ['Focused checks pass', 'Receipt']});
+      createdByActorId: ids.owner,
+      acceptanceCriteria: ['Focused checks pass', 'Implementation change', 'Relevant checks']});
     expect(packet?.dataPolicy).toMatchObject({planVersionId: ids.planVersion, protocolId: ids.protocol,
-      protocolRequiredEvidence: ['Receipt']});
+      protocolRequiredEvidence: ['Implementation change', 'Relevant checks']});
     expect(run).toMatchObject({status: 'queued', taskPacketId: packet?.id, agentProfileId: ids.profile,
       repositoryScopeId: ids.repository, confirmedPacketHash: packet?.contentHash, baseCommit: 'a'.repeat(40)});
     expect(link).toMatchObject({executionVersion: 1, taskPacketId: packet?.id, agentRunId: run?.id,
@@ -167,6 +263,246 @@ describePostgres('governed project orchestration persistence', () => {
       }}}});
     expect((await db.select().from(agentRuns).where(eq(agentRuns.id, run!.id)))[0])
       .toMatchObject({status: 'failed', failureCode: 'operator_cancelled_before_claim'});
+  });
+
+  it('accepts one exact AgentRun result atomically and replays concurrent Product Owner commands', async () => {
+    const fixture = await seedCompletedAcceptance();
+    const commands = [fixture.command(), fixture.command()];
+    const results = await Promise.all(commands.map((command) => fixture.store.execute({
+      command, requestHash: 'e'.repeat(64), authorized: true
+    })));
+    expect(results.map(({status}) => status).sort()).toEqual(['completed', 'replayed']);
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, fixture.ids.task))).toEqual(expect.arrayContaining([
+      expect.objectContaining({stageKey: 'development', requirement: 'Implementation change'}),
+      expect.objectContaining({stageKey: 'development', requirement: 'Relevant checks'})
+    ]));
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'qa', version: 2});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0])
+      .toMatchObject({stageKey: 'qa', version: 2});
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({
+      status: 'paused', version: 2, selectedWorkItemId: null,
+      selectedJourneyVersion: null, selectedStageKey: null,
+      blockReason: null, pausedAt: new Date('2026-08-09T11:01:00.000Z')
+    });
+    expect(await db.select().from(commandReceipts).where(eq(
+      commandReceipts.idempotencyKey, fixture.idempotencyKey))).toHaveLength(1);
+    expect(await db.select().from(auditEvents).where(eq(
+      auditEvents.action, 'agent_run.accept_result.v1'))).toHaveLength(1);
+  });
+
+  it('completes and audits policy denial, Product Owner denial, and a stale selection', async () => {
+    const policy = await seedCompletedAcceptance();
+    const policyCommand = policy.command();
+    await expect(policy.store.execute({command: policyCommand, requestHash: '0'.repeat(64),
+      authorized: false, policyError: {code: 'POLICY_DENIED', message: 'fixture policy denial'}}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: false,
+        error: {code: 'POLICY_DENIED'}}}});
+    expect((await db.select().from(commandReceipts).where(eq(
+      commandReceipts.commandId, policyCommand.commandId)))[0]).toMatchObject({state: 'completed',
+      result: {ok: false, error: {code: 'POLICY_DENIED'}}});
+    expect((await db.select().from(auditEvents).where(eq(
+      auditEvents.commandId, policyCommand.commandId)))[0]).toMatchObject({
+      policyDecision: 'deny', outcome: 'rejected', reasonCode: 'POLICY_DENIED'
+    });
+
+    const authority = await seedCompletedAcceptance();
+    const outsider = randomUUID();
+    await db.insert(actors).values({id: outsider, workspaceId: authority.ids.workspace,
+      type: 'human', role: 'developer', displayName: 'Other member', authMode: 'user'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: authority.ids.project,
+      actorId: outsider, role: 'project_owner'});
+    const authorityCommand = authority.command(outsider);
+    await expect(authority.store.execute({command: authorityCommand,
+      requestHash: 'f'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: false,
+        error: {code: 'CAPABILITY_DENIED'}}}});
+    expect((await db.select().from(auditEvents).where(eq(
+      auditEvents.commandId, authorityCommand.commandId)))[0]).toMatchObject({
+      projectId: authority.ids.project, actorId: outsider, policyDecision: 'deny',
+      outcome: 'rejected', reasonCode: 'CAPABILITY_DENIED'
+    });
+
+    const stale = await seedCompletedAcceptance();
+    const staleCommand = stale.command(stale.ids.owner, stale.receiptSha256, 2);
+    await expect(stale.store.execute({command: staleCommand,
+      requestHash: '1'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: false,
+        error: {code: 'VERSION_CONFLICT'}}}});
+    expect((await db.select().from(auditEvents).where(eq(
+      auditEvents.commandId, staleCommand.commandId)))[0]).toMatchObject({
+      projectId: stale.ids.project, policyDecision: 'allow', outcome: 'failed',
+      reasonCode: 'VERSION_CONFLICT', expectedVersion: 2, resultVersion: null
+    });
+  });
+
+  it('completes exact workspace, receipt, and retained-evidence guard failures without mutation', async () => {
+    const foreign = await seedCompletedAcceptance();
+    const foreignWorkspace = randomUUID();
+    await db.insert(workspaces).values({id: foreignWorkspace, name: 'Foreign',
+      slug: `foreign-${randomUUID()}`});
+    const foreignCommand = {...foreign.command(), workspaceId: foreignWorkspace};
+    await expect(foreign.store.execute({command: foreignCommand,
+      requestHash: '0'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: false,
+        error: {code: 'NOT_FOUND'}}}});
+
+    const receiptFixture = await seedCompletedAcceptance();
+    const wrongReceipt = receiptFixture.command(receiptFixture.ids.owner, '9'.repeat(64));
+    await expect(receiptFixture.store.execute({command: wrongReceipt,
+      requestHash: '9'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: false,
+        error: {code: 'INVALID_COMMAND'}}}});
+
+    const evidenceFixture = await seedCompletedAcceptance();
+    await db.delete(artifacts).where(and(eq(artifacts.agentRunId, evidenceFixture.run.id),
+      eq(artifacts.kind, 'summary')));
+    await expect(evidenceFixture.store.execute({command: evidenceFixture.command(),
+      requestHash: '8'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: false,
+        error: {code: 'INVALID_COMMAND'}}}});
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, evidenceFixture.ids.task))).toHaveLength(0);
+    expect((await db.select().from(workItems).where(eq(workItems.id, evidenceFixture.ids.task)))[0])
+      .toMatchObject({status: 'in_dev', version: 1});
+    expect((await db.select().from(auditEvents).where(eq(
+      auditEvents.commandId, wrongReceipt.commandId)))[0]).toMatchObject({
+      policyDecision: 'allow', outcome: 'failed', reasonCode: 'INVALID_COMMAND'
+    });
+  });
+
+  it('lets the exact Product Owner succeed after a hostile contributor attempt', async () => {
+    const fixture = await seedCompletedAcceptance();
+    const contributor = randomUUID();
+    await db.insert(actors).values({id: contributor, workspaceId: fixture.ids.workspace,
+      type: 'human', role: 'developer', displayName: 'Contributor', authMode: 'user'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
+      actorId: contributor, role: 'contributor'});
+    const hostile = fixture.command(contributor);
+    await expect(fixture.store.execute({command: hostile,
+      requestHash: '3'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {idempotencyKey:
+        expect.stringMatching(/^agent-run-accept-attempt:v1:/), result: {ok: false,
+          error: {code: 'CAPABILITY_DENIED'}}}});
+    const accepted = fixture.command();
+    await expect(fixture.store.execute({command: accepted,
+      requestHash: '4'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {
+        idempotencyKey: fixture.idempotencyKey, result: {ok: true}}});
+    expect((await db.select().from(commandReceipts).where(eq(
+      commandReceipts.commandId, hostile.commandId)))[0]?.idempotencyKey)
+      .toMatch(/^agent-run-accept-attempt:v1:/);
+    expect((await db.select().from(commandReceipts).where(eq(
+      commandReceipts.idempotencyKey, fixture.idempotencyKey)))[0])
+      .toMatchObject({commandId: accepted.commandId, result: {ok: true}});
+  });
+
+  it('lets the same Product Owner succeed after stale and policy-denied attempts', async () => {
+    const stale = await seedCompletedAcceptance();
+    const staleCommand = stale.command(stale.ids.owner, stale.receiptSha256, 2);
+    await expect(stale.store.execute({command: staleCommand,
+      requestHash: '5'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {idempotencyKey:
+        expect.stringMatching(/^agent-run-accept-attempt:v1:/), result: {ok: false,
+          error: {code: 'VERSION_CONFLICT'}}}});
+    const corrected = stale.command();
+    await expect(stale.store.execute({command: corrected,
+      requestHash: '6'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {
+        idempotencyKey: stale.idempotencyKey, result: {ok: true}}});
+
+    const policy = await seedCompletedAcceptance();
+    const denied = policy.command();
+    await expect(policy.store.execute({command: denied,
+      requestHash: '7'.repeat(64), authorized: false,
+      policyError: {code: 'POLICY_DENIED', message: 'capability missing'}}))
+      .resolves.toMatchObject({status: 'completed', receipt: {idempotencyKey:
+        expect.stringMatching(/^agent-run-accept-attempt:v1:/), result: {ok: false,
+          error: {code: 'POLICY_DENIED'}}}});
+    const restored = policy.command();
+    await expect(policy.store.execute({command: restored,
+      requestHash: '7'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {
+        idempotencyKey: policy.idempotencyKey, result: {ok: true}}});
+    expect(await db.select().from(auditEvents).where(and(
+      eq(auditEvents.workspaceId, policy.ids.workspace),
+      eq(auditEvents.action, 'agent_run.accept_result.v1')))).toHaveLength(2);
+  });
+
+  it('revalidates current Product Owner authority before a completed replay', async () => {
+    const fixture = await seedCompletedAcceptance();
+    const accepted = fixture.command();
+    await expect(fixture.store.execute({command: accepted,
+      requestHash: 'e'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: true}}});
+    await db.update(actors).set({disabledAt: new Date('2026-08-09T11:02:00.000Z')})
+      .where(eq(actors.id, fixture.ids.owner));
+    const replay = fixture.command();
+    await expect(fixture.store.execute({command: replay,
+      requestHash: 'e'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {idempotencyKey:
+        expect.stringMatching(/^agent-run-accept-attempt:v1:/), result: {ok: false,
+          error: {code: 'CAPABILITY_DENIED'}}}});
+    expect(await db.select().from(commandReceipts).where(eq(
+      commandReceipts.idempotencyKey, fixture.idempotencyKey))).toEqual([
+      expect.objectContaining({commandId: accepted.commandId,
+        result: expect.objectContaining({ok: true})})
+    ]);
+    expect((await db.select().from(auditEvents).where(eq(
+      auditEvents.commandId, replay.commandId)))[0]).toMatchObject({
+      projectId: fixture.ids.project, actorId: fixture.ids.owner,
+      policyDecision: 'deny', outcome: 'rejected', reasonCode: 'CAPABILITY_DENIED'
+    });
+  });
+
+  it('accepts consecutive same-status stages without a WorkItem transition', async () => {
+    const fixture = await seedCompletedAcceptance(true);
+    const command = fixture.command();
+    await expect(fixture.store.execute({command,
+      requestHash: '2'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: true, value: {
+        workItemStatus: 'in_dev', workItemVersion: 1, journeyStageKey: 'qa',
+        journeyVersion: 2, executionStatus: 'paused', executionVersion: 2
+      }}}});
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'in_dev', version: 1});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0]).toMatchObject({stageKey: 'qa', version: 2});
+    expect(await db.select().from(statusTransitions).where(eq(
+      statusTransitions.idempotencyKey, fixture.idempotencyKey))).toHaveLength(0);
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, fixture.ids.task))).toHaveLength(2);
+    expect((await db.select().from(commandReceipts).where(eq(
+      commandReceipts.commandId, command.commandId)))[0]).toMatchObject({
+      resultVersion: 1, result: {ok: true}
+    });
+  });
+
+  it('rolls back evidence, task, journey, execution, receipt, and audit on a late write failure', async () => {
+    const fixture = await seedCompletedAcceptance();
+    await db.insert(statusTransitions).values({workItemId: fixture.ids.task,
+      fromStatus: 'in_dev', toStatus: 'qa', actorId: fixture.ids.owner,
+      reason: 'collision fixture', idempotencyKey: fixture.idempotencyKey});
+    await expect(fixture.store.execute({command: fixture.command(),
+      requestHash: '7'.repeat(64), authorized: true})).rejects.toBeDefined();
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, fixture.ids.task))).toHaveLength(0);
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'in_dev', version: 1});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0])
+      .toMatchObject({stageKey: 'development', version: 1});
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0])
+      .toMatchObject({status: 'running', version: 1, selectedWorkItemId: fixture.ids.task});
+    expect(await db.select().from(commandReceipts).where(eq(
+      commandReceipts.idempotencyKey, fixture.idempotencyKey))).toHaveLength(0);
+    expect(await db.select().from(auditEvents).where(and(
+      eq(auditEvents.projectId, fixture.ids.project),
+      eq(auditEvents.action, 'agent_run.accept_result.v1')))).toHaveLength(0);
   });
 
   it('denies and audits a hostile requester before checking an existing dispatch', async () => {
@@ -287,7 +623,7 @@ describePostgres('governed project orchestration persistence', () => {
       leaseExpiresAt: new Date(claimedAt.getTime() + 60_000)}, (record) => record);
     expect(claim).toMatchObject({attempt: 1, runtimeId: 'codex-cli', runtimeProfile: 'read_safe',
       repository: {owner: 'owner', name: 'repository'}, baseCommit: 'a'.repeat(40),
-      promptFields: {acceptanceCriteria: ['Focused checks pass', 'Receipt']}});
+      promptFields: {acceptanceCriteria: ['Focused checks pass', 'Implementation change', 'Relevant checks']}});
     expect(JSON.stringify(claim)).not.toContain(ids.secret);
     expect((await db.select().from(agentRuns).where(eq(agentRuns.id, claim!.runId)))[0])
       .toMatchObject({status: 'running', runnerId: 'isolated-runner', attempt: 1});

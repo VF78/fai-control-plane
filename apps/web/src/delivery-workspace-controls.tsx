@@ -71,10 +71,12 @@ export function TaskPacketPreview({
 
 export function RunActionControls({
   run,
-  csrfToken
+  csrfToken,
+  operatorActorId
 }: Readonly<{
   run: Run;
   csrfToken: string | null;
+  operatorActorId: string | null;
 }>) {
   if (csrfToken === null) return null;
   return <div className="packet-build-actions" aria-label="Run actions">
@@ -83,11 +85,15 @@ export function RunActionControls({
       <input name="expectedVersion" type="hidden" value={run.version}/>
       <button type="submit">Cancel queued run</button>
     </form>}
-    {!run.canAcceptReceipt || run.receipt === null || run.workItemVersion === null ? null : <form action={`/api/agent-runs/${run.id}/accept-receipt?project=${run.projectSlug}`} method="post">
+    {!run.canAcceptReceipt || run.receipt === null || run.workItemVersion === null || operatorActorId !== run.approverActorId ? null : <form action={`/api/agent-runs/${run.id}/accept-receipt?project=${run.projectSlug}`} method="post">
       <input name="_csrf" type="hidden" value={csrfToken}/>
       <input name="expectedWorkItemVersion" type="hidden" value={run.workItemVersion}/>
       <input name="expectedReceiptSha256" type="hidden" value={run.receipt.receiptSha256}/>
-      <button type="submit">Accept receipt and move to QA</button>
+      <button type="submit">Принять evidence и передать на этап «{run.acceptanceTargetStage ?? 'следующий'}»</button>
+      {run.workItemStatus === run.acceptanceTargetStatus
+        ? <small>Этап изменится; статус задачи останется прежним.</small> : null}
     </form>}
+    {run.canAcceptReceipt && operatorActorId !== run.approverActorId
+      ? <small>Решение доступно только записанному Product Owner.</small> : null}
   </div>;
 }
