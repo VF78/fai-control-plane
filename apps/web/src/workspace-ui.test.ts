@@ -9,6 +9,7 @@ import {
 } from './operator-data';
 import {workspaceRoute} from './operator-workspace-route';
 import {WorkspaceShell, type WorkspaceData} from './workspace-ui';
+import {ProjectPlanControls} from './project-plan-controls';
 
 vi.mock('next/navigation', () => ({useRouter: () => ({refresh: vi.fn()})}));
 
@@ -28,6 +29,35 @@ it('maps only canonical workspace routes and preserves scope on deep links', () 
   expect(workspaceRoute(['projects', 'msa', 'runs', 'run-1'], {handoff: 'accepted'}))
     .toMatchObject({screen: 'run', handoffResult: 'accepted'});
   expect(workspaceRoute(['people'], {})).toMatchObject({screen: 'people', project: null});
+});
+
+it('renders the Russian source-draft-approval lifecycle under project setup', () => {
+  const now = new Date('2026-08-09T10:00:00.000Z');
+  const project = {
+    project: {id: '22222222-2222-4222-8222-222222222222', workspaceId: '11111111-1111-4111-8111-111111111111', name: 'Проект', slug: 'project', description: null, defaultBranch: 'main', updatedAt: now},
+    setup: {id: '33333333-3333-4333-8333-333333333333', state: 'pending', version: 1, lastErrorCode: null, configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none', clientChat: 'none', executionMode: 'manual', agentProfileId: null}},
+    plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSimulation: null},
+    agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []
+  };
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'setup', project: 'project', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data: {
+    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf', project: {state: 'ready', data: project}
+  } as unknown as WorkspaceData}));
+  expect(markup).toContain('План проекта');
+  expect(markup).toContain('Исходные материалы');
+  expect(markup).toContain('Черновик плана');
+  expect(markup).toContain('Утверждение Product Owner');
+  expect(markup).not.toContain('Сгенерировать');
+});
+
+it('distinguishes edit-only delivery authority from Product Owner approval', () => {
+  const markup = renderToStaticMarkup(createElement(ProjectPlanControls, {
+    projectId: '22222222-2222-4222-8222-222222222222',
+    csrfToken: 'csrf', canEdit: true, canApprove: false,
+    plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSimulation: null}
+  }));
+  expect(markup).toContain('Редактирование доступно');
+  expect(markup).toContain('активный Product Owner');
+  expect(markup).not.toContain('Утвердить версию');
 });
 
 it('renders a dynamic authorized project card, manager intake, and resumable setup detail', () => {

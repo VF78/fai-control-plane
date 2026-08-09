@@ -17,6 +17,7 @@ import type {
 import {ProjectShareControls} from './project-share-controls';
 import {RuntimeRegistrationControls} from './runtime-registration-controls';
 import {AgentRetirementControls} from './agent-retirement-controls';
+import {ProjectPlanControls} from './project-plan-controls';
 
 export type WorkspaceRoute = Readonly<{
   screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'people' | 'setup' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
@@ -278,11 +279,11 @@ function Projects({route, projects, access, csrfToken, operatorActorId}: {
     </form>}</section></>;
 }
 
-function ProjectSetup({route, project}: {route: WorkspaceUiRoute; project: ProjectData}) {
+function ProjectSetup({route, project, csrfToken, canEditPlan, canApprovePlan}: {route: WorkspaceUiRoute; project: ProjectData; csrfToken: string | null; canEditPlan: boolean; canApprovePlan: boolean}) {
   const setup = project.setup ?? null;
   if (setup === null) return <><ProjectHeader route={route} project={project}/><Blank title="Настройка не заведена">Для этого ранее созданного проекта нет setup-aggregate.</Blank></>;
   const config = setup.configuration;
-  return <><ProjectHeader route={route} project={project}/><section className="fcp-section fcp-setup-detail"><div className="fcp-section-head"><div><h2>Настройка проекта</h2><span>Версия {setup.version} · {setupLabel(setup.state)}</span></div><Status value={setup.state}/></div><p>Проект создан. Внешние ресурсы не считаются готовыми до будущего observation-backed перехода.</p>{setup.lastErrorCode === null ? null : <p>Причина остановки: <code>{setup.lastErrorCode}</code>. Повторите соответствующий шаг после устранения причины.</p>}<dl><div><dt>Репозиторий</dt><dd>{config.repositoryBinding}</dd></div><div><dt>Трекер</dt><dd>{config.trackerBinding}</dd></div><div><dt>Внутренний чат</dt><dd>{config.internalChat}</dd></div><div><dt>Клиентский чат</dt><dd>{config.clientChat}</dd></div><div><dt>Исполнение</dt><dd>{config.executionMode}</dd></div></dl><Link className="fcp-primary-button" href={projectUrl(project.project.slug, 'overview', route.scope)}>Открыть обзор проекта</Link></section></>;
+  return <><ProjectHeader route={route} project={project}/><section className="fcp-section fcp-setup-detail"><div className="fcp-section-head"><div><h2>Настройка проекта</h2><span>Версия {setup.version} · {setupLabel(setup.state)}</span></div><Status value={setup.state}/></div><p>Проект создан. Внешние ресурсы не считаются готовыми до будущего observation-backed перехода.</p>{setup.lastErrorCode === null ? null : <p>Причина остановки: <code>{setup.lastErrorCode}</code>. Повторите соответствующий шаг после устранения причины.</p>}<dl><div><dt>Репозиторий</dt><dd>{config.repositoryBinding}</dd></div><div><dt>Трекер</dt><dd>{config.trackerBinding}</dd></div><div><dt>Внутренний чат</dt><dd>{config.internalChat}</dd></div><div><dt>Клиентский чат</dt><dd>{config.clientChat}</dd></div><div><dt>Исполнение</dt><dd>{config.executionMode}</dd></div></dl><Link className="fcp-primary-button" href={projectUrl(project.project.slug, 'overview', route.scope)}>Открыть обзор проекта</Link></section><section className="fcp-section" id="plan"><div className="fcp-section-head"><div><h2>План проекта</h2><span>Источники → черновик → проверка → неизменяемая версия</span></div></div>{project.plan === undefined ? <p className="fcp-empty-line">Планирование недоступно.</p> : <ProjectPlanControls projectId={project.project.id} plan={project.plan} csrfToken={csrfToken} canEdit={canEditPlan} canApprove={canApprovePlan}/>}</section></>;
 }
 function ScopeBurnUp({baseline}: {baseline: NonNullable<ProjectData['scopeBaseline']>}) {
   if (baseline.observations.length < 2) return <p className="fcp-burnup-empty">История принятого скопа ещё не зафиксирована — график появится после двух подтверждённых наблюдений.</p>;
@@ -762,7 +763,13 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
   const access = ready(data.access);
   if (project === null) return <Blank title="Project not observed">This project is not available in the PostgreSQL read model.</Blank>;
   switch (route.screen) {
-    case 'setup': return <ProjectSetup route={route} project={project}/>;
+    case 'setup': {
+      const membership = access?.memberships.find((item) => item.projectId === project.project.id && item.actorId === data.operatorActorId && item.active);
+      const operator = access?.actors.find((item) => item.id === data.operatorActorId && item.type === 'human' && item.disabledAt === null);
+      const canApprovePlan = membership?.role === 'project_owner';
+      const canEditPlan = canApprovePlan || membership?.role === 'workspace_owner' || operator?.role === 'workspace_admin' || operator?.role === 'delivery_lead';
+      return <ProjectSetup route={route} project={project} csrfToken={data.csrfToken ?? null} canEditPlan={canEditPlan} canApprovePlan={canApprovePlan}/>;
+    }
     case 'overview': return <Overview route={route} project={project} runs={runs}/>;
     case 'tasks': return <Tasks route={route} project={project} access={access} operatorActorId={data.operatorActorId ?? null}/>;
     case 'task': return <TaskDetail route={route} project={project} runs={runs} lifecycleLoad={data.lifecycle ?? null} csrfToken={data.csrfToken ?? null} operatorActorId={data.operatorActorId ?? null}/>;

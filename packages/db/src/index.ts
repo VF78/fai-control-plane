@@ -48,6 +48,7 @@ export {
   createPostgresDeliveryProtocolStore
 } from './delivery-protocol';
 export {createPostgresDeliveryJourneyStore} from './delivery-journey';
+export {createPostgresProjectPlanStore} from './project-plan';
 export {
   createPostgresGitHubProjectStatusPublisher,
 } from './github-project-status-writeback';

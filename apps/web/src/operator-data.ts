@@ -35,6 +35,9 @@ import {
   projects,
   projectSetups,
   projectMemberships,
+  projectPlanDrafts,
+  projectPlanVersions,
+  projectSourceArtifacts,
   resourceAccessGrants,
   runtimeAvailabilityObservations,
   runtimeRecoveryPolicies,
@@ -74,7 +77,10 @@ import {
   policyMatrix,
   policySurfaces,
   validateDeliveryProtocolDefinition,
+  validateProjectPlanDefinition,
   type DeliveryProtocol,
+  type ProjectPlan,
+  type ProjectPlanSimulation,
   type CanonicalJson,
   type PolicyDecision,
   type RuntimeAvailabilityProjection
@@ -725,6 +731,13 @@ export type ProjectData = Readonly<{
     observations: readonly Readonly<{acceptedWeight: number; totalWeight: number; observedAt: Date}>[];
   }> | null;
   protocol?: DeliveryProtocol | null;
+  plan?: Readonly<{
+    artifacts: readonly Readonly<{id: string; name: string; mediaType: string; content: string; sizeBytes: number; sha256: string; provenance: Readonly<{kind: string; label: string; capturedAt: string}>}>[];
+    draft: ProjectPlan | null;
+    approved: ProjectPlan | null;
+    approvedSourceManifest: readonly Readonly<{artifactId: string; version: number; sha256: string}>[];
+    approvedSimulation: ProjectPlanSimulation | null;
+  }>;
   workItems: readonly Readonly<{
     id: string; title: string; summary: string | null; status: (typeof workItemStatuses)[number];
     blocked: boolean; owner: string | null; updatedAt: Date; externalUrl: string | null;
@@ -930,6 +943,17 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       .where(eq(projectScopeOutcomeObservations.projectId, project.id))
       .orderBy(projectScopeOutcomeObservations.observedAt, projectScopeOutcomeObservations.id)
   ]);
+  const [planArtifactRows, planDraftRows, planVersionRows] = await Promise.all([
+    db.select({id: projectSourceArtifacts.id, name: projectSourceArtifacts.name, mediaType: projectSourceArtifacts.mediaType,
+      content: projectSourceArtifacts.content, sizeBytes: projectSourceArtifacts.sizeBytes, sha256: projectSourceArtifacts.sha256,
+      provenance: projectSourceArtifacts.provenance})
+      .from(projectSourceArtifacts).where(and(eq(projectSourceArtifacts.workspaceId, project.workspaceId), eq(projectSourceArtifacts.projectId, project.id)))
+      .orderBy(desc(projectSourceArtifacts.createdAt)).limit(100),
+    db.select().from(projectPlanDrafts).where(and(eq(projectPlanDrafts.workspaceId, project.workspaceId), eq(projectPlanDrafts.projectId, project.id), eq(projectPlanDrafts.state, 'draft')))
+      .orderBy(desc(projectPlanDrafts.updatedAt)).limit(1),
+    db.select().from(projectPlanVersions).where(and(eq(projectPlanVersions.workspaceId, project.workspaceId), eq(projectPlanVersions.projectId, project.id)))
+      .orderBy(desc(projectPlanVersions.version)).limit(1)
+  ]);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
   const workItemByRunId = new Map(runFacts.map((run) => [run.id, run.workItemId]));
@@ -966,6 +990,18 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     }] : [];
   });
   const protocol = protocols[0] ?? null;
+  const draftRow = planDraftRows[0];
+  const draftDefinition = draftRow === undefined ? null : validateProjectPlanDefinition(draftRow.definition);
+  const planDraft: ProjectPlan | null = draftRow === undefined || draftDefinition === null || !draftDefinition.ok ? null : {
+    id: draftRow.id, projectId: draftRow.projectId, revision: draftRow.revision, state: 'draft', definition: draftDefinition.value,
+    contentHash: draftRow.contentHash, approvedVersion: null, approvedByActorId: null, approvedAt: null
+  };
+  const approvedRow = planVersionRows[0];
+  const approvedDefinition = approvedRow === undefined ? null : validateProjectPlanDefinition(approvedRow.definition);
+  const approvedPlan: ProjectPlan | null = approvedRow === undefined || approvedDefinition === null || !approvedDefinition.ok ? null : {
+    id: approvedRow.planId, projectId: approvedRow.projectId, revision: approvedRow.sourceRevision, state: 'approved', definition: approvedDefinition.value,
+    contentHash: approvedRow.contentHash, approvedVersion: approvedRow.version, approvedByActorId: approvedRow.approvedByActorId, approvedAt: approvedRow.approvedAt.toISOString()
+  };
   const baseline = scopeBaselines[0] ?? null;
   const protocolByJourney = new Map(protocols.map((item) => [`${item.id}:${item.version}`, item]));
   const memberById = new Map(members.flatMap((member) => member.type === 'human' || member.type === 'agent'
@@ -1028,6 +1064,13 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
         .map((observation) => ({acceptedWeight: observation.acceptedWeight, totalWeight: observation.totalWeight, observedAt: observation.observedAt}))
     },
     protocol,
+    plan: {
+      artifacts: planArtifactRows,
+      draft: planDraft,
+      approved: approvedPlan,
+      approvedSourceManifest: approvedRow?.sourceManifest ?? [],
+      approvedSimulation: approvedRow?.simulation ?? null
+    },
     workItems: items.flatMap((item) => {
       if (!workItemStatuses.includes(item.status)) return [];
       const approval = pendingApprovalByItem.get(item.id);
