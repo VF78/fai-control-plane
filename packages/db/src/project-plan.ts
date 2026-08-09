@@ -1,9 +1,11 @@
 import {randomUUID} from 'node:crypto';
 import {
   deterministicProjectPlanUuid,
+  generateProjectPlanDraft,
   hashProjectPlanSourceManifest,
   hashProjectPlanDefinition,
   projectSetupBindingModes,
+  projectPlanGenerationLimits,
   sourceArtifactDigest,
   simulateDeliveryProtocol,
   simulateProjectPlan,
@@ -96,7 +98,7 @@ const citationsValid = async (tx: Transaction, workspaceId: string, projectId: s
   const citations = evidenceIn(definition).flatMap((item) => item.kind === 'citation' ? [item] : []);
   const ids = [...new Set(citations.map(({artifactId}) => artifactId))];
   if (ids.length === 0) return true;
-  const rows = await tx.select({id: schema.projectSourceArtifacts.id, mediaType: schema.projectSourceArtifacts.mediaType, content: schema.projectSourceArtifacts.content})
+  const rows = await tx.select({id: schema.projectSourceArtifacts.id, content: schema.projectSourceArtifacts.content})
     .from(schema.projectSourceArtifacts).where(and(
       eq(schema.projectSourceArtifacts.workspaceId, workspaceId), eq(schema.projectSourceArtifacts.projectId, projectId),
       inArray(schema.projectSourceArtifacts.id, ids)
@@ -106,7 +108,7 @@ const citationsValid = async (tx: Transaction, workspaceId: string, projectId: s
     const artifact = byId.get(citation.artifactId); if (artifact === undefined) return false;
     if (citation.locator.kind === 'whole_artifact') return true;
     if (citation.locator.kind === 'line_range') return citation.locator.endLine <= artifact.content.split(/\r?\n/).length;
-    return artifact.mediaType === 'application/json' && pointerExists(artifact.content, citation.locator.pointer);
+    return pointerExists(artifact.content, citation.locator.pointer);
   });
 };
 
@@ -159,7 +161,7 @@ const validSourceManifest = (value: unknown): value is ProjectPlanSourceManifest
     typeof entry === 'object' && entry !== null && !Array.isArray(entry) &&
     Object.keys(entry).length === 3 && Object.hasOwn(entry, 'artifactId') &&
     Object.hasOwn(entry, 'version') && Object.hasOwn(entry, 'sha256') &&
-    typeof entry.artifactId === 'string' &&
+    typeof entry.artifactId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(entry.artifactId) &&
     typeof entry.version === 'number' && Number.isSafeInteger(entry.version) && entry.version === 1 &&
     typeof entry.sha256 === 'string' && /^[0-9a-f]{64}$/.test(entry.sha256));
 
@@ -486,21 +488,63 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         eq(schema.projectPlanDrafts.id, command.payload.planId), eq(schema.projectPlanDrafts.workspaceId, command.workspaceId)
       )).limit(1).for('update');
       if (currentRow !== undefined) projectId = currentRow.projectId;
-      const requestedProjectId = command.type === 'project_plan.draft.save' ? command.payload.projectId : projectId;
+      const requestedProjectId = command.type === 'project_plan.draft.save' || command.type === 'project_plan.draft.generate' ? command.payload.projectId : projectId;
       if (requestedProjectId === null) { result = fail('NOT_FOUND', 'Project plan was not found.'); return complete(); }
+      const [lockedProject] = await tx.select({id: schema.projects.id}).from(schema.projects).where(and(
+        eq(schema.projects.id, requestedProjectId), eq(schema.projects.workspaceId, command.workspaceId)
+      )).limit(1).for('update');
+      if (lockedProject === undefined) { result = fail('NOT_FOUND', 'Project was not found.'); return complete(); }
       const rights = await authority(tx, command.workspaceId, requestedProjectId, command.actor.actorId);
       if (rights === null || !rights.canEdit) { result = fail(rights === null ? 'NOT_FOUND' : 'CAPABILITY_DENIED', 'Only the project Product Owner can edit or approve the plan.'); return complete(); }
 
-      if (command.type === 'project_plan.draft.save') {
+      if (command.type === 'project_plan.draft.save' || command.type === 'project_plan.draft.generate') {
         expectedVersion = command.payload.expectedRevision ?? undefined;
         const current = currentRow === undefined ? null : draftFrom(currentRow);
         if ((command.payload.expectedRevision === null) !== (current === null) || current !== null && current.revision !== command.payload.expectedRevision) {
           resultVersion = current?.revision; result = fail('VERSION_CONFLICT', 'Project plan draft revision conflicts.'); return complete();
         }
-        if (current !== null && (current.state !== 'draft' || current.projectId !== command.payload.projectId)) {
-          result = fail(current.state !== 'draft' ? 'INVALID_TRANSITION' : 'INVALID_COMMAND', 'Approved plans are immutable.'); return complete();
+        if (current !== null && current.state !== 'draft') { result = fail('INVALID_TRANSITION', 'Approved plans are immutable.'); return complete(); }
+        if (current !== null && current.projectId !== command.payload.projectId) {
+          result = fail('INVALID_COMMAND', 'Project plan does not belong to the requested project.'); return complete();
         }
-        const definition = validateProjectPlanDefinition(command.payload.definition); if (!definition.ok) { result = definition; return complete(); }
+        if (current === null) {
+          const [approved] = await tx.select({id: schema.projectPlanVersions.id}).from(schema.projectPlanVersions).where(and(
+            eq(schema.projectPlanVersions.workspaceId, command.workspaceId), eq(schema.projectPlanVersions.projectId, command.payload.projectId)
+          )).limit(1);
+          if (approved !== undefined) {
+            result = fail('INVALID_TRANSITION', 'У проекта уже есть утверждённый план. Для нового черновика требуется явный scope-delta re-plan.'); return complete();
+          }
+        }
+        let generatedDefinition: ProjectPlanDefinition | null = null;
+        if (command.type === 'project_plan.draft.generate') {
+          if (!validSourceManifest(command.payload.sourceManifest) || command.payload.sourceManifest.length < 1 ||
+            command.payload.sourceManifest.length > projectPlanGenerationLimits.artifactCount ||
+            new Set(command.payload.sourceManifest.map(({artifactId}) => artifactId)).size !== command.payload.sourceManifest.length) {
+            result = fail('INVALID_COMMAND', 'Корпус источников некорректен или превышает допустимый размер.'); return complete();
+          }
+          const requestedArtifactIds = command.payload.sourceManifest.map(({artifactId}) => artifactId);
+          const artifactRows = await tx.select().from(schema.projectSourceArtifacts).where(and(
+            eq(schema.projectSourceArtifacts.workspaceId, command.workspaceId), eq(schema.projectSourceArtifacts.projectId, command.payload.projectId),
+            inArray(schema.projectSourceArtifacts.id, requestedArtifactIds)
+          )).orderBy(schema.projectSourceArtifacts.id).for('share');
+          const actualManifest = artifactRows.map(({id: artifactId, version, sha256}) => ({artifactId, version, sha256}));
+          const requestedManifest = [...command.payload.sourceManifest].sort((left, right) => left.artifactId.localeCompare(right.artifactId));
+          if (hashProjectPlanSourceManifest(actualManifest) !== hashProjectPlanSourceManifest(requestedManifest)) {
+            result = fail('VERSION_CONFLICT', 'Выбранные источники изменились или недоступны. Обновите страницу и соберите черновик повторно.'); return complete();
+          }
+          const artifacts = artifactRows.flatMap((row) => {
+            const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, mediaType: row.mediaType,
+              content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, provenance: row.provenance, version: row.version});
+            return artifact.ok ? [artifact.value] : [];
+          });
+          if (artifacts.length !== artifactRows.length || artifacts.reduce((total, artifact) => total + artifact.sizeBytes, 0) > projectPlanGenerationLimits.totalBytes) {
+            result = fail('INVALID_COMMAND', 'Записанные источники некорректны или превышают лимит 32 материала / 512 КБ.'); return complete();
+          }
+          const generated = generateProjectPlanDraft(artifacts); if (!generated.ok) { result = generated; return complete(); }
+          generatedDefinition = generated.value;
+        }
+        const definition = validateProjectPlanDefinition(command.type === 'project_plan.draft.save' ? command.payload.definition : generatedDefinition);
+        if (!definition.ok) { result = definition; return complete(); }
         if (!await citationsValid(tx, command.workspaceId, command.payload.projectId, definition.value)) {
           result = fail('INVALID_COMMAND', 'Plan citations must resolve inside this project and bounded source content.'); return complete();
         }
@@ -508,7 +552,8 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         if (current === null) {
           const inserted = await tx.insert(schema.projectPlanDrafts).values({id: command.payload.planId, workspaceId: command.workspaceId, projectId: command.payload.projectId,
             definition: definition.value, contentHash, revision: 1, createdByActorId: command.actor.actorId}).onConflictDoNothing().returning();
-          if (inserted.length !== 1) { result = fail('VERSION_CONFLICT', 'Another draft already exists for this project.'); return complete(); }
+          if (inserted.length !== 1) { result = fail('VERSION_CONFLICT', command.type === 'project_plan.draft.generate'
+            ? 'Черновик проекта уже изменён. Обновите страницу перед повторной сборкой.' : 'Another draft already exists for this project.'); return complete(); }
           resultVersion = 1;
         } else {
           resultVersion = current.revision + 1;

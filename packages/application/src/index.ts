@@ -3,6 +3,7 @@ export * from './access-observation.ts';
 export {
   createProjectPlanService,
   type ApproveProjectPlanCommand,
+  type GenerateProjectPlanDraftCommand,
   type MaterializeProjectPlanCommand,
   type ProjectPlanExecution,
   type ProjectPlanMutationCommand,

@@ -73,6 +73,8 @@ it('renders a truthful materialization summary without an execution start action
   expect(markup).toContain('План материализован');
   expect(markup).toContain('Внешние bindings не настроены');
   expect(markup).toContain('Запуск исполнения остаётся отдельным решением');
+  expect(markup).toContain('Новый черновик заблокирован');
+  expect(markup).toContain('scope-delta re-plan');
   expect(markup).not.toContain('Start execution');
 });
 

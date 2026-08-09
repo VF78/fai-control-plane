@@ -1,7 +1,7 @@
 'use client';
 
 import {useMemo, useState} from 'react';
-import {CheckCircle2, FilePlus2, PackageCheck, Save, ShieldCheck} from 'lucide-react';
+import {CheckCircle2, FilePlus2, ListTree, PackageCheck, Save, ShieldCheck} from 'lucide-react';
 import type {ProjectPlanDefinition, ProjectPlanMaterialization, ProjectPlanSimulation} from '@fai-control-plane/domain';
 import type {ProjectData} from './operator-data';
 
@@ -13,19 +13,36 @@ export const postProjectPlan = async (body: Record<string, unknown>) => {
   if (!response.ok) throw new Error(result.message ?? result.status ?? 'Команда не принята сервером.');
   return result;
 };
+export const defaultGenerationArtifactIds = (artifacts: PlanData['artifacts']) => {
+  const allBytes = artifacts.reduce((total, artifact) => total + artifact.sizeBytes, 0);
+  if (artifacts.length <= 32 && allBytes <= 512 * 1024) return artifacts.map(({id}) => id);
+  let bytes = 0;
+  return artifacts.flatMap((artifact) => {
+    if (bytes + artifact.sizeBytes > 512 * 1024) return [];
+    bytes += artifact.sizeBytes; return [artifact.id];
+  }).slice(0, 32);
+};
 
 export function ProjectPlanControls({projectId, plan, csrfToken, canEdit, canApprove}: Readonly<{projectId: string; plan: PlanData; csrfToken: string | null; canEdit: boolean; canApprove: boolean}>) {
   const [sourceName, setSourceName] = useState(''); const [sourceLabel, setSourceLabel] = useState(''); const [sourceContent, setSourceContent] = useState('');
   const [artifactId, setArtifactId] = useState(() => crypto.randomUUID());
   const [mediaType, setMediaType] = useState('text/markdown');
-  const initial = plan.draft?.definition ?? null;
+  const initial = plan.draft?.definition ?? plan.approved?.definition ?? null;
   const [draftText, setDraftText] = useState(initial === null ? '' : JSON.stringify(initial, null, 2));
   const [simulation, setSimulation] = useState<ProjectPlanSimulation | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null); const [busy, setBusy] = useState(false);
   const [planId] = useState(() => plan.draft?.id ?? crypto.randomUUID());
+  const [selectedArtifactIds, setSelectedArtifactIds] = useState(() => defaultGenerationArtifactIds(plan.artifacts));
   const editable = csrfToken !== null && canEdit;
+  const draftEditable = editable && plan.approved === null;
   const approvable = csrfToken !== null && canApprove;
   const parsed = useMemo(() => { try { return JSON.parse(draftText) as ProjectPlanDefinition; } catch { return null; } }, [draftText]);
+  const selectedArtifacts = useMemo(() => plan.artifacts.filter(({id}) => selectedArtifactIds.includes(id)), [plan.artifacts, selectedArtifactIds]);
+  const sourceBytes = selectedArtifacts.reduce((total, artifact) => total + artifact.sizeBytes, 0);
+  const generationReady = selectedArtifacts.length > 0 && selectedArtifacts.length <= 32 && sourceBytes <= 512 * 1024;
+  const generationAllowed = generationReady && plan.approved === null;
+  const toggleArtifact = (artifactId: string) => setSelectedArtifactIds((current) => current.includes(artifactId)
+    ? current.filter((id) => id !== artifactId) : [...current, artifactId]);
   const run = async (operation: () => Promise<{receipt?: unknown; simulation?: ProjectPlanSimulation; materialization?: ProjectPlanMaterialization}>) => {
     setBusy(true); setNotice(null);
     try {
@@ -42,9 +59,11 @@ export function ProjectPlanControls({projectId, plan, csrfToken, canEdit, canApp
       <details className="fcp-plan-compose"><summary><FilePlus2 aria-hidden="true" size={16}/>Добавить заметку или текстовый источник</summary><div className="fcp-plan-source-form"><label>Название<input disabled={!editable} maxLength={160} value={sourceName} onChange={(event) => {setSourceName(event.target.value); setArtifactId(crypto.randomUUID());}}/></label><label>Происхождение<input disabled={!editable} maxLength={160} placeholder="Например: интервью с заказчиком 09.08" value={sourceLabel} onChange={(event) => {setSourceLabel(event.target.value); setArtifactId(crypto.randomUUID());}}/></label><label>Формат<select disabled={!editable} value={mediaType} onChange={(event) => {setMediaType(event.target.value); setArtifactId(crypto.randomUUID());}}><option value="text/markdown">Markdown</option><option value="text/plain">Обычный текст</option><option value="application/json">JSON</option></select></label><label>Содержимое<textarea disabled={!editable} maxLength={262144} rows={8} value={sourceContent} onChange={(event) => {setSourceContent(event.target.value); setArtifactId(crypto.randomUUID());}}/></label><button className="fcp-primary-button" disabled={!editable || busy || sourceName.trim() === '' || sourceLabel.trim() === '' || sourceContent === ''} onClick={() => void run(() => postProjectPlan({_csrf: csrfToken!, action: 'record_source', projectId, artifactId, name: sourceName.trim(), mediaType, content: sourceContent, provenanceLabel: sourceLabel.trim()}))}><FilePlus2 aria-hidden="true" size={16}/>Зафиксировать источник</button></div></details>
     </section>
     <section className="fcp-plan-step"><header><span>2</span><div><h3>Черновик плана</h3><p>5–10 результатов, сумма весов 100, milestones, risks, DAG и acceptance evidence.</p></div></header>
-      <label className="fcp-plan-json">Структура плана JSON<textarea disabled={!editable} spellCheck={false} rows={22} placeholder={'{"title":"…","outcomes":[…],"milestones":[…],"risks":[…],"tasks":[…]}'} value={draftText} onChange={(event) => {setDraftText(event.target.value); setSimulation(null);}}/></label>
+      <div className="fcp-plan-approval"><div><strong>Систематическая сборка черновика</strong><span>Использует только выбранные записанные источники и явные допущения; до 32 материалов и 512 КБ. Результат остаётся редактируемым и не запускает утверждение или исполнение.</span><span>Выбрано: {selectedArtifacts.length} · {sourceBytes} байт</span>{plan.approved !== null ? <span>Новый черновик заблокирован: для утверждённого плана сначала нужен явный scope-delta re-plan.</span> : !generationReady ? <span>{selectedArtifacts.length === 0 ? 'Выберите хотя бы один источник.' : 'Выбор превышает лимит. Оставьте не более 32 источников общим объёмом до 512 КБ.'}</span> : null}</div><button className="fcp-secondary" disabled={!editable || busy || !generationAllowed} onClick={() => void run(() => postProjectPlan({_csrf: csrfToken!, action: 'generate_draft', projectId, planId, expectedRevision: plan.draft?.revision ?? null, sourceManifest: selectedArtifacts.map(({id: artifactId, version, sha256}) => ({artifactId, version, sha256}))}))}><ListTree aria-hidden="true" size={16}/>Собрать черновик из источников</button></div>
+      {plan.artifacts.length === 0 ? null : <details className="fcp-plan-help"><summary>Выбрать источники для черновика</summary><div className="fcp-plan-source-selection">{plan.artifacts.map((artifact) => <label key={artifact.id}><input type="checkbox" checked={selectedArtifactIds.includes(artifact.id)} disabled={!editable || busy || plan.approved !== null} onChange={() => toggleArtifact(artifact.id)}/><span><strong>{artifact.name}</strong><small>{artifact.sizeBytes} байт · {artifact.sha256.slice(0, 12)}</small></span></label>)}</div></details>}
+      <label className="fcp-plan-json">{plan.approved === null ? 'Структура плана JSON' : 'Утверждённая структура плана · только чтение'}<textarea disabled={!draftEditable} spellCheck={false} rows={22} placeholder={'{"title":"…","outcomes":[…],"milestones":[…],"risks":[…],"tasks":[…]}'} value={draftText} onChange={(event) => {setDraftText(event.target.value); setSimulation(null);}}/></label>
       <details className="fcp-plan-help"><summary>Формат citation и assumption</summary><pre>{JSON.stringify({citation: {kind: 'citation', artifactId: '<UUID выше>', locator: {kind: 'line_range', startLine: 1, endLine: 3}}, assumption: {kind: 'assumption', statement: 'Что именно должен подтвердить Product Owner'}}, null, 2)}</pre></details>
-      <div className="fcp-plan-actions"><button className="fcp-secondary" disabled={!editable || busy || parsed === null} onClick={() => void run(() => postProjectPlan({_csrf: csrfToken!, action: 'simulate', projectId, planId, expectedRevision: plan.draft?.revision ?? null, definition: parsed}))}><CheckCircle2 aria-hidden="true" size={16}/>Проверить последствия</button><button className="fcp-primary-button" disabled={!editable || busy || parsed === null} onClick={() => void run(() => postProjectPlan({_csrf: csrfToken!, action: 'save_draft', projectId, planId, expectedRevision: plan.draft?.revision ?? null, definition: parsed}))}><Save aria-hidden="true" size={16}/>Сохранить черновик</button></div>
+      <div className="fcp-plan-actions"><button className="fcp-secondary" disabled={!draftEditable || busy || parsed === null} onClick={() => void run(() => postProjectPlan({_csrf: csrfToken!, action: 'simulate', projectId, planId, expectedRevision: plan.draft?.revision ?? null, definition: parsed}))}><CheckCircle2 aria-hidden="true" size={16}/>Проверить последствия</button><button className="fcp-primary-button" disabled={!draftEditable || busy || parsed === null} onClick={() => void run(() => postProjectPlan({_csrf: csrfToken!, action: 'save_draft', projectId, planId, expectedRevision: plan.draft?.revision ?? null, definition: parsed}))}><Save aria-hidden="true" size={16}/>Сохранить черновик</button></div>
       {simulation === null ? null : <div className={`fcp-plan-simulation ${simulation.readyForApproval ? 'ready' : 'blocked'}`}><strong>{simulation.readyForApproval ? 'Готов к утверждению' : 'Есть блокеры'}</strong><span>Protocol: {simulation.protocol.state} · edit {String(simulation.capabilities.canEdit)} · approve {String(simulation.capabilities.canApprove)}</span>{simulation.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}
     </section>
     <section className="fcp-plan-step"><header><span>3</span><div><h3>Утверждение Product Owner</h3><p>Утверждённая версия неизменяема. Baseline и задачи создаются отдельной подтверждённой командой ниже.</p></div></header>

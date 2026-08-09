@@ -9,6 +9,7 @@ import {
   type ProjectPlan,
   type ProjectPlanDefinition,
   type ProjectPlanMaterialization,
+  type ProjectPlanSourceManifest,
   type ProjectPlanSimulation,
   type SourceArtifact,
   type SourceArtifactMediaType,
@@ -31,6 +32,12 @@ export type SaveProjectPlanDraftCommand = CanonicalCommandEnvelope<'project_plan
   expectedRevision: number | null;
   definition: ProjectPlanDefinition;
 }>>;
+export type GenerateProjectPlanDraftCommand = CanonicalCommandEnvelope<'project_plan.draft.generate', Readonly<{
+  planId: string;
+  projectId: string;
+  expectedRevision: number | null;
+  sourceManifest: ProjectPlanSourceManifest;
+}>>;
 export type ApproveProjectPlanCommand = CanonicalCommandEnvelope<'project_plan.approve', Readonly<{
   planId: string;
   expectedRevision: number;
@@ -44,7 +51,7 @@ export type MaterializeProjectPlanCommand = CanonicalCommandEnvelope<'project_pl
   expectedPlanHash: string;
   expectedSourceManifestHash: string;
 }>>;
-export type ProjectPlanMutationCommand = RecordSourceArtifactCommand | SaveProjectPlanDraftCommand | ApproveProjectPlanCommand | MaterializeProjectPlanCommand;
+export type ProjectPlanMutationCommand = RecordSourceArtifactCommand | GenerateProjectPlanDraftCommand | SaveProjectPlanDraftCommand | ApproveProjectPlanCommand | MaterializeProjectPlanCommand;
 
 export type ProjectPlanWorkspace = Readonly<{
   artifacts: readonly SourceArtifact[];
@@ -114,6 +121,13 @@ export const createProjectPlanService = (store: ProjectPlanStore): ProjectPlanSe
       }
       const definition = validateProjectPlanDefinition(command.payload.definition);
       if (!definition.ok) return {status: 'rejected', error: definition.error};
+    } else if (command.type === 'project_plan.draft.generate') {
+      if (!UUID.test(command.payload.projectId) || !(command.payload.expectedRevision === null || Number.isSafeInteger(command.payload.expectedRevision) && command.payload.expectedRevision > 0) ||
+        !Array.isArray(command.payload.sourceManifest) || command.payload.sourceManifest.length < 1 || command.payload.sourceManifest.length > 32 ||
+        command.payload.sourceManifest.some((entry) => !UUID.test(entry.artifactId) || entry.version !== 1 || !SHA.test(entry.sha256)) ||
+        new Set(command.payload.sourceManifest.map(({artifactId}) => artifactId)).size !== command.payload.sourceManifest.length) {
+        return rejected('INVALID_COMMAND', 'Draft generation preconditions are invalid.');
+      }
     } else if (command.type === 'project_plan.approve' && (!Number.isSafeInteger(command.payload.expectedRevision) || command.payload.expectedRevision < 1 ||
       !SHA.test(command.payload.expectedPlanHash) || !SHA.test(command.payload.expectedSimulationHash))) {
       return rejected('INVALID_COMMAND', 'Plan approval preconditions are invalid.');

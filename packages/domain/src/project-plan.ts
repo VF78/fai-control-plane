@@ -104,6 +104,15 @@ export type ProjectPlanSourceManifest = readonly Readonly<{
   sha256: string;
 }>[];
 
+export const projectPlanGenerationLimits = Object.freeze({
+  artifactCount: 32,
+  totalBytes: 512 * 1024,
+  candidateCount: 10,
+  linesPerArtifact: 10_000,
+  jsonDepth: 8,
+  jsonCandidatesPerArtifact: 200
+});
+
 export type ProjectPlanMaterialization = Readonly<{
   id: string;
   projectId: string;
@@ -268,6 +277,88 @@ export const hashProjectPlanDefinition = (definition: ProjectPlanDefinition) =>
 
 export const hashProjectPlanSourceManifest = (manifest: ProjectPlanSourceManifest) =>
   createHash('sha256').update(canonicalJson(manifest as never)).digest('hex');
+
+type PlanningCandidate = Readonly<{text: string; evidence: PlanEvidence}>;
+const stableTextOrder = (left: string, right: string) => left === right ? 0 : left < right ? -1 : 1;
+const cleanCandidate = (value: string) => value.trim().replace(/^#{1,6}\s+|^[-*+]\s+|^\d+[.)]\s+/u, '').replace(/\s+/gu, ' ').slice(0, 180).trim();
+const escapePointer = (value: string) => value.replace(/~/g, '~0').replace(/\//g, '~1');
+const jsonCandidates = (artifact: SourceArtifact): PlanningCandidate[] | null => {
+  const found: PlanningCandidate[] = [];
+  const visit = (value: unknown, pointer: string, depth: number) => {
+    if (found.length >= projectPlanGenerationLimits.jsonCandidatesPerArtifact || depth > projectPlanGenerationLimits.jsonDepth) return;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      if (pointer === '') return;
+      const text = cleanCandidate(String(value));
+      if (text.length >= 4) found.push({text, evidence: {kind: 'citation', artifactId: artifact.id, locator: {kind: 'json_pointer', pointer}}});
+      return;
+    }
+    if (Array.isArray(value)) value.forEach((nested, index) => visit(nested, `${pointer}/${index}`, depth + 1));
+    else if (isObject(value)) Object.entries(value).forEach(([key, nested]) => visit(nested, `${pointer}/${escapePointer(key)}`, depth + 1));
+  };
+  try {
+    const parsed: unknown = JSON.parse(artifact.content);
+    if (!Array.isArray(parsed) && !isObject(parsed)) return null;
+    visit(parsed, '', 0);
+  } catch { return null; }
+  return found.length > 0 ? found : null;
+};
+const lineCandidates = (artifact: SourceArtifact): PlanningCandidate[] => artifact.content.split(/\r?\n/)
+  .slice(0, projectPlanGenerationLimits.linesPerArtifact).flatMap((line, index) => {
+    const text = cleanCandidate(line);
+    return text.length < 4 || line.trim().startsWith('```') ? [] : [{text, evidence: {kind: 'citation' as const, artifactId: artifact.id,
+      locator: {kind: 'line_range' as const, startLine: index + 1, endLine: index + 1}}}];
+  });
+
+/** Deterministic, source-derived scaffold. It does not infer domain facts beyond the cited snippets. */
+export const generateProjectPlanDraft = (artifacts: readonly SourceArtifact[]): CommandResult<ProjectPlanDefinition> => {
+  if (artifacts.length < 1) return invalid('Сначала зафиксируйте хотя бы один источник.');
+  if (artifacts.length > projectPlanGenerationLimits.artifactCount ||
+    artifacts.reduce((total, artifact) => total + Buffer.byteLength(artifact.content, 'utf8'), 0) > projectPlanGenerationLimits.totalBytes) {
+    return invalid(`Корпус ограничен ${projectPlanGenerationLimits.artifactCount} источниками и ${projectPlanGenerationLimits.totalBytes} байтами.`);
+  }
+  const ordered = [...artifacts].sort((left, right) => stableTextOrder(left.id, right.id));
+  const candidatesByArtifact = ordered.map((artifact) => jsonCandidates(artifact) ?? lineCandidates(artifact));
+  const seen = new Set<string>();
+  const unique: PlanningCandidate[] = [];
+  for (let candidateIndex = 0; unique.length < projectPlanGenerationLimits.candidateCount; candidateIndex += 1) {
+    let found = false;
+    for (const candidates of candidatesByArtifact) {
+      const candidate = candidates[candidateIndex]; if (candidate === undefined) continue;
+      found = true; const key = candidate.text.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); unique.push(candidate); }
+      if (unique.length >= projectPlanGenerationLimits.candidateCount) break;
+    }
+    if (!found) break;
+  }
+  const selected: PlanningCandidate[] = unique.slice(0, Math.min(10, Math.max(5, unique.length)));
+  while (selected.length < 5) selected.push({
+    text: `Уточнить ожидаемый результат ${selected.length + 1}`,
+    evidence: {kind: 'assumption', statement: 'Product Owner должен уточнить ожидаемый результат: в записанных источниках недостаточно самостоятельных утверждений.'}
+  });
+  const baseWeight = Math.floor(100 / selected.length); const remainder = 100 - baseWeight * selected.length;
+  const outcomes = selected.map((candidate, index) => ({key: `outcome_${index + 1}`, title: candidate.text,
+    weight: baseWeight + (index < remainder ? 1 : 0), evidence: candidate.evidence}));
+  const milestones = [
+    {key: 'source_review', title: 'Проверка трактовки источников', checkpoint: 'Product Owner сверяет каждый результат с указанной цитатой или явно подтверждает допущение.', targetAt: null,
+      evidence: {kind: 'assumption' as const, statement: 'Процедура проверки источников введена системно и должна быть подтверждена Product Owner.'}},
+    {key: 'plan_acceptance', title: 'Приёмка границ плана', checkpoint: 'Product Owner подтверждает результаты, веса, зависимости и критерии приёмки.', targetAt: null,
+      evidence: {kind: 'assumption' as const, statement: 'Дата и процедура приёмки не заданы источниками и должны быть определены Product Owner.'}}
+  ];
+  const tasks = selected.map((candidate, index) => ({key: `task_${index + 1}`, title: `Подготовить результат: ${candidate.text}`.slice(0, 240),
+    outcomeKeys: [`outcome_${index + 1}`], milestoneKey: 'plan_acceptance', dependsOn: index === 0 ? [] : [`task_${index}`],
+    acceptanceEvidence: [
+      {description: candidate.evidence.kind === 'citation' ? 'Результат проверен по точной ссылке на исходный материал.' : 'Product Owner явно подтвердил допущение.', evidence: candidate.evidence},
+      ...(index === 0 ? [] : [{description: 'Product Owner подтвердил предложенный порядок выполнения.', evidence: {kind: 'assumption' as const, statement: 'Последовательная зависимость задач предложена системно и не следует из источников.'}}])
+    ]}));
+  const definition: ProjectPlanDefinition = {
+    title: 'Черновой план по выбранным источникам', outcomes, milestones,
+    risks: [
+      {key: 'interpretation_risk', statement: 'Краткий фрагмент источника может быть истолкован вне контекста.', mitigation: 'Product Owner проверяет цитаты и редактирует черновик до симуляции и утверждения.', evidence: {kind: 'assumption', statement: 'Риск трактовки введён системно и не является фактом из источников.'}},
+      {key: 'source_change_risk', statement: 'Новые исходные материалы могут изменить границы плана.', mitigation: 'При добавлении источников собрать новый черновик и повторить проверку.', evidence: {kind: 'assumption', statement: 'Риск появления новых материалов введён системно и требует проверки Product Owner.'}}
+    ], tasks
+  };
+  return validateProjectPlanDefinition(definition);
+};
 
 export const deterministicProjectPlanUuid = (
   planVersionId: string,

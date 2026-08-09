@@ -32,4 +32,18 @@ describe('project plan service', () => {
     expect(execute.mock.calls[1]![0].requestHash).toBe(firstHash);
     await expect(service.execute({...command, payload: {...command.payload, expectedPlanVersion: 0}})).resolves.toMatchObject({status: 'rejected', error: {code: 'INVALID_COMMAND'}});
   });
+
+  it('accepts only a bounded exact manifest for authenticated draft generation', async () => {
+    if (!actor.ok) throw new Error('issuer');
+    const user = actor.value.issueUser('10000000-0000-4000-8000-000000000001'); if (!user.ok) throw new Error('actor');
+    const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: '20000000-0000-4000-8000-000000000001', commandType: 'project_plan.draft.generate', result: {ok: true, value: {}}}});
+    const service = createProjectPlanService({execute, inspect: vi.fn(), simulate: vi.fn()} as unknown as ProjectPlanStore);
+    const command = {commandId: '20000000-0000-4000-8000-000000000001', workspaceId: '20000000-0000-4000-8000-000000000002', correlationId: '20000000-0000-4000-8000-000000000003',
+      idempotencyKey: 'generate:1', issuedAt: '2026-08-09T10:00:00.000Z', actor: user.value, type: 'project_plan.draft.generate' as const,
+      payload: {projectId: '20000000-0000-4000-8000-000000000004', planId: '20000000-0000-4000-8000-000000000005', expectedRevision: null,
+        sourceManifest: [{artifactId: '20000000-0000-4000-8000-000000000006', version: 1, sha256: 'a'.repeat(64)}]}};
+    await expect(service.execute(command)).resolves.toMatchObject({status: 'completed'});
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({authorized: true, requestHash: expect.stringMatching(/^[0-9a-f]{64}$/)}));
+    await expect(service.execute({...command, payload: {...command.payload, sourceManifest: []}})).resolves.toMatchObject({status: 'rejected', error: {code: 'INVALID_COMMAND'}});
+  });
 });

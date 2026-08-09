@@ -1,5 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {validateProjectPlanDefinition, type ProjectPlanDefinition, type SourceArtifactMediaType} from '@fai-control-plane/domain';
+import {hashProjectPlanSourceManifest, validateProjectPlanDefinition, type ProjectPlanDefinition, type ProjectPlanSourceManifest, type SourceArtifactMediaType} from '@fai-control-plane/domain';
 import {requireOperatorSession} from './operator-auth-runtime';
 import {getDeliveryRuntime} from './delivery-runtime';
 
@@ -42,6 +42,10 @@ const body = async (request: Request) => {
   try { return JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)) as unknown; } catch { return null; }
 };
 const parsedDefinition = (value: unknown): ProjectPlanDefinition | null => { const result = validateProjectPlanDefinition(value); return result.ok ? result.value : null; };
+const parsedManifest = (value: unknown): ProjectPlanSourceManifest | null => Array.isArray(value) && value.length >= 1 && value.length <= 32 && value.every((entry) =>
+  isObject(entry) && exact(entry, ['artifactId', 'version', 'sha256']) && typeof entry.artifactId === 'string' && UUID.test(entry.artifactId) &&
+  entry.version === 1 && typeof entry.sha256 === 'string' && /^[0-9a-f]{64}$/.test(entry.sha256))
+  ? value as ProjectPlanSourceManifest : null;
 export type ProjectPlanCommandDependencies = Readonly<{requireSession: typeof requireOperatorSession; getRuntime: typeof getDeliveryRuntime; nextId(): string; now(): Date}>;
 const dependencies: ProjectPlanCommandDependencies = {requireSession: requireOperatorSession, getRuntime: getDeliveryRuntime, nextId: randomUUID, now: () => new Date()};
 
@@ -74,6 +78,17 @@ export async function projectPlanCommand(request: Request, overrides: ProjectPla
       }
       const result = await runtime.plan.execute({...base, idempotencyKey: `project_plan.draft.save.v1:${value.planId}:${value.expectedRevision ?? 0}:${createHash('sha256').update(JSON.stringify(definition)).digest('hex')}`,
         type: 'project_plan.draft.save', payload: {planId: value.planId, projectId: value.projectId, expectedRevision: value.expectedRevision as number | null, definition}});
+      return mutationResponse(result);
+    }
+    if (value.action === 'generate_draft' && exact(value, ['_csrf', 'action', 'projectId', 'planId', 'expectedRevision', 'sourceManifest']) &&
+      typeof value.planId === 'string' && UUID.test(value.planId) && (value.expectedRevision === null || Number.isSafeInteger(value.expectedRevision) && (value.expectedRevision as number) > 0)) {
+      const sourceManifest = parsedManifest(value.sourceManifest); if (sourceManifest === null) return invalid('invalid_source_corpus', 422);
+      const stableManifest = [...sourceManifest].sort((left, right) => left.artifactId.localeCompare(right.artifactId));
+      const manifestHash = hashProjectPlanSourceManifest(stableManifest);
+      const result = await runtime.plan.execute({...base,
+        idempotencyKey: `project_plan.draft.generate.v1:${value.planId}:${value.expectedRevision ?? 0}:${manifestHash}`,
+        type: 'project_plan.draft.generate', payload: {planId: value.planId, projectId: value.projectId,
+          expectedRevision: value.expectedRevision as number | null, sourceManifest: stableManifest}});
       return mutationResponse(result);
     }
     if (value.action === 'approve' && exact(value, ['_csrf', 'action', 'projectId', 'planId', 'expectedRevision', 'expectedPlanHash', 'expectedSimulationHash']) &&
