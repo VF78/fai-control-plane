@@ -1,4 +1,8 @@
-import {accessLevels, projectMembershipRoles} from '@fai-control-plane/domain';
+import {
+  accessLevels,
+  containsHighConfidenceSecretContent,
+  projectMembershipRoles
+} from '@fai-control-plane/domain';
 import {requireOperatorSession} from './operator-auth-runtime';
 import {getAccessManagementRuntime} from './access-management-runtime';
 
@@ -56,7 +60,53 @@ const responseFor = (request: Request, status: Awaited<ReturnType<Runtime['setMe
   status === 'updated' || status === 'replayed' ? redirect(request) :
     status === 'forbidden' ? json(status, 403) :
       status === 'not_found' ? json(status, 404) :
-        status === 'stale' ? json(status, 409) : json(status, 400);
+      status === 'stale' ? json(status, 409) : json(status, 400);
+
+export async function onboardActorCommand(
+  request: Request,
+  overrides: AccessManagementCommandDependencies = dependencies
+): Promise<Response> {
+  const form = await readForm(request);
+  const kind = form?.get('actorType');
+  const keys = kind === 'human'
+    ? ['_csrf', 'idempotencyKey', 'projectId', 'actorType', 'displayName', 'actorRole', 'membershipRole']
+    : ['_csrf', 'idempotencyKey', 'projectId', 'actorType', 'displayName', 'runtimeId', 'runtimeProfile', 'runtimeKey'];
+  const values = exact(form, keys);
+  const authorization = await overrides.requireSession(request, {csrfToken: values?._csrf ?? null});
+  if (!authorization.ok) return authorization.response;
+  const bounded = (value: string | undefined, maximum: number): value is string =>
+    value !== undefined && value.trim() === value && value.length > 0 && value.length <= maximum &&
+    !/[\u0000-\u001f\u007f]/.test(value) && !containsHighConfidenceSecretContent(value);
+  if (values === null || !uuidPattern.test(values.idempotencyKey ?? '') ||
+    !uuidPattern.test(values.projectId ?? '') || !bounded(values.displayName, 120) ||
+    (kind !== 'human' && kind !== 'agent')) return json('invalid_request', 400);
+  if (kind === 'human' && (
+    !['delivery_lead', 'developer'].includes(values.actorRole ?? '') ||
+    !['project_owner', 'contributor', 'reviewer', 'client_viewer'].includes(values.membershipRole ?? '')
+  )) return json('invalid_request', 400);
+  if (kind === 'agent' && (
+    !bounded(values.runtimeId, 64) || !bounded(values.runtimeProfile, 64) ||
+    !bounded(values.runtimeKey, 256)
+  )) return json('invalid_request', 400);
+  try {
+    const status = await (await overrides.getRuntime()).onboardActor({
+      workspaceId: authorization.runtime.config.workspaceId,
+      operatorActorId: authorization.session.actorId,
+      idempotencyKey: values.idempotencyKey!,
+      projectId: values.projectId!,
+      actorType: kind,
+      displayName: values.displayName,
+      actorRole: kind === 'agent' ? 'agent_operator' : values.actorRole as 'delivery_lead' | 'developer',
+      membershipRole: kind === 'agent' ? 'agent' : values.membershipRole as (typeof projectMembershipRoles)[number],
+      ...(kind === 'agent' ? {
+        runtimeId: values.runtimeId, runtimeProfile: values.runtimeProfile, runtimeKey: values.runtimeKey
+      } : {})
+    });
+    return responseFor(request, status);
+  } catch {
+    return json('unavailable', 503);
+  }
+}
 
 export async function setMembershipCommand(
   request: Request,
