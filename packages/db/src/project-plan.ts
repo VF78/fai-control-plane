@@ -1,6 +1,10 @@
 import {randomUUID} from 'node:crypto';
 import {
+  deterministicProjectPlanUuid,
+  hashProjectPlanSourceManifest,
   hashProjectPlanDefinition,
+  projectSetupBindingModes,
+  sourceArtifactDigest,
   simulateDeliveryProtocol,
   simulateProjectPlan,
   validateDeliveryProtocolDefinition,
@@ -10,6 +14,8 @@ import {
   type PlanEvidence,
   type ProjectPlan,
   type ProjectPlanDefinition,
+  type ProjectPlanMaterialization,
+  type ProjectPlanSourceManifest,
   type ProjectPlanSimulation,
   type SourceArtifact
 } from '@fai-control-plane/domain';
@@ -127,6 +133,49 @@ const approvedFrom = (row: typeof schema.projectPlanVersions.$inferSelect): Proj
     contentHash: row.contentHash, approvedVersion: row.version, approvedByActorId: row.approvedByActorId, approvedAt: row.approvedAt.toISOString()};
 };
 
+const materializationFrom = (
+  row: typeof schema.projectPlanMaterializations.$inferSelect,
+  planId: string
+): ProjectPlanMaterialization => ({
+  id: row.id,
+  projectId: row.projectId,
+  planId,
+  planVersionId: row.planVersionId,
+  planVersion: row.planVersion,
+  planHash: row.planHash,
+  sourceManifestHash: row.sourceManifestHash,
+  baselineId: row.baselineId,
+  outcomeCount: row.outcomeCount,
+  milestoneCount: row.milestoneCount,
+  workItemCount: row.workItemCount,
+  dependencyCount: row.dependencyCount,
+  journeyCount: row.journeyCount,
+  publicationIntentCount: row.publicationIntentCount,
+  createdAt: row.createdAt.toISOString()
+});
+
+const validSourceManifest = (value: unknown): value is ProjectPlanSourceManifest =>
+  Array.isArray(value) && value.length <= 100 && value.every((entry) =>
+    typeof entry === 'object' && entry !== null && !Array.isArray(entry) &&
+    Object.keys(entry).length === 3 && Object.hasOwn(entry, 'artifactId') &&
+    Object.hasOwn(entry, 'version') && Object.hasOwn(entry, 'sha256') &&
+    typeof entry.artifactId === 'string' &&
+    typeof entry.version === 'number' && Number.isSafeInteger(entry.version) && entry.version === 1 &&
+    typeof entry.sha256 === 'string' && /^[0-9a-f]{64}$/.test(entry.sha256));
+
+const validSetupConfiguration = (value: unknown): value is schema.ProjectSetupConfiguration => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) ||
+    Object.keys(value).length !== 6) return false;
+  const configuration = value as Record<string, unknown>;
+  if (!['repositoryBinding', 'trackerBinding', 'internalChat', 'clientChat', 'executionMode', 'agentProfileId']
+    .every((key) => Object.hasOwn(configuration, key))) return false;
+  if (!['repositoryBinding', 'trackerBinding', 'internalChat', 'clientChat'].every((key) =>
+    projectSetupBindingModes.includes(configuration[key] as (typeof projectSetupBindingModes)[number]))) return false;
+  return (configuration.executionMode === 'manual' && configuration.agentProfileId === null) ||
+    (configuration.executionMode === 'managed_agent' && typeof configuration.agentProfileId === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(configuration.agentProfileId));
+};
+
 export const createPostgresProjectPlanStore = (db: Database) => ({
   async execute(input: StoreInput) {
     return db.transaction(async (tx) => {
@@ -146,7 +195,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
       let projectId: string | null = command.type === 'project_plan.approve' ? null : command.payload.projectId;
       let expectedVersion: number | undefined;
       let resultVersion: number | undefined;
-      let result: {ok: true; value: {artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation}} | ReturnType<typeof fail>;
+      let result: {ok: true; value: {artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation; materialization?: ProjectPlanMaterialization}} | ReturnType<typeof fail>;
       const complete = async () => {
         const now = new Date();
         await tx.insert(schema.auditEvents).values({id: randomUUID(), workspaceId: command.workspaceId, projectId, actorId: command.actor.actorId,
@@ -185,6 +234,252 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           .onConflictDoNothing({target: schema.projectSourceArtifacts.id}).returning({id: schema.projectSourceArtifacts.id});
         if (inserted.length !== 1) { result = fail('VERSION_CONFLICT', 'Source artifact identifier is already used.'); return complete(); }
         resultVersion = 1; result = {ok: true, value: {artifact: artifact.value}}; return complete();
+      }
+
+      if (command.type === 'project_plan.materialize') {
+        expectedVersion = command.payload.expectedPlanVersion;
+        const rights = await authority(tx, command.workspaceId, command.payload.projectId, command.actor.actorId);
+        if (rights === null || !rights.canApprove) {
+          result = fail(rights === null ? 'NOT_FOUND' : 'CAPABILITY_DENIED',
+            'Only an active project Product Owner can materialize the approved plan.');
+          return complete();
+        }
+        const [lockedProject] = await tx.select({id: schema.projects.id}).from(schema.projects).where(and(
+          eq(schema.projects.id, command.payload.projectId),
+          eq(schema.projects.workspaceId, command.workspaceId)
+        )).limit(1).for('update');
+        if (lockedProject === undefined) {
+          result = fail('NOT_FOUND', 'Project was not found for plan materialization.');
+          return complete();
+        }
+        const [versionRow] = await tx.select().from(schema.projectPlanVersions).where(and(
+          eq(schema.projectPlanVersions.workspaceId, command.workspaceId),
+          eq(schema.projectPlanVersions.projectId, command.payload.projectId),
+          eq(schema.projectPlanVersions.planId, command.payload.planId),
+          eq(schema.projectPlanVersions.version, command.payload.expectedPlanVersion)
+        )).limit(1).for('update');
+        if (versionRow === undefined) {
+          result = fail('VERSION_CONFLICT', 'Approved plan version does not match the materialization request.');
+          return complete();
+        }
+        projectId = versionRow.projectId;
+        resultVersion = versionRow.version;
+        const definition = validateProjectPlanDefinition(versionRow.definition);
+        const manifest = versionRow.sourceManifest;
+        if (!definition.ok || hashProjectPlanDefinition(definition.ok ? definition.value : versionRow.definition as ProjectPlanDefinition) !== versionRow.contentHash ||
+          versionRow.contentHash !== command.payload.expectedPlanHash || !validSourceManifest(manifest) ||
+          hashProjectPlanSourceManifest(manifest) !== command.payload.expectedSourceManifestHash) {
+          result = fail('INVALID_COMMAND', 'Approved plan or frozen source manifest failed integrity validation.');
+          return complete();
+        }
+        const manifestIds = manifest.map(({artifactId}) => artifactId);
+        const artifactRows = manifestIds.length === 0 ? [] : await tx.select({
+          artifactId: schema.projectSourceArtifacts.id,
+          version: schema.projectSourceArtifacts.version,
+          sha256: schema.projectSourceArtifacts.sha256,
+          content: schema.projectSourceArtifacts.content
+        }).from(schema.projectSourceArtifacts).where(and(
+          eq(schema.projectSourceArtifacts.workspaceId, command.workspaceId),
+          eq(schema.projectSourceArtifacts.projectId, command.payload.projectId),
+          inArray(schema.projectSourceArtifacts.id, manifestIds)
+        )).orderBy(schema.projectSourceArtifacts.id).for('share');
+        if (artifactRows.length !== manifest.length || artifactRows.some((artifact, index) => {
+          const expected = manifest[index];
+          return expected === undefined || artifact.artifactId !== expected.artifactId ||
+            artifact.version !== expected.version || artifact.sha256 !== expected.sha256 ||
+            sourceArtifactDigest(artifact.content) !== artifact.sha256;
+        }) || !await citationsValid(tx, command.workspaceId, command.payload.projectId, definition.value)) {
+          result = fail('INVALID_COMMAND', 'Frozen source artifacts no longer match the approved plan.');
+          return complete();
+        }
+        const [existingMaterialization] = await tx.select().from(schema.projectPlanMaterializations).where(
+          eq(schema.projectPlanMaterializations.planVersionId, versionRow.id)
+        ).limit(1);
+        if (existingMaterialization !== undefined) {
+          result = {ok: true, value: {materialization: materializationFrom(existingMaterialization, versionRow.planId)}};
+          return complete();
+        }
+        const [existingBaseline] = await tx.select({id: schema.projectScopeBaselineVersions.id}).from(
+          schema.projectScopeBaselineVersions
+        ).where(eq(schema.projectScopeBaselineVersions.projectId, versionRow.projectId)).limit(1).for('update');
+        if (existingBaseline !== undefined) {
+          result = fail('INVALID_TRANSITION',
+            'A scope baseline already exists. Approve an explicit re-plan delta before creating another baseline.');
+          return complete();
+        }
+        const [setup] = await tx.select({configuration: schema.projectSetups.configuration}).from(
+          schema.projectSetups
+        ).where(eq(schema.projectSetups.projectId, versionRow.projectId)).limit(1);
+        if (setup !== undefined && !validSetupConfiguration(setup.configuration)) {
+          result = fail('INVALID_COMMAND', 'Project setup configuration is not canonical.');
+          return complete();
+        }
+        const [latestBaseline] = await tx.select({version: max(schema.projectScopeBaselineVersions.version)}).from(
+          schema.projectScopeBaselineVersions
+        ).where(eq(schema.projectScopeBaselineVersions.projectId, versionRow.projectId));
+        const baselineVersion = (latestBaseline?.version ?? 0) + 1;
+        const baselineId = deterministicProjectPlanUuid(versionRow.id, 'baseline');
+        const materializationId = deterministicProjectPlanUuid(versionRow.id, 'materialization');
+        const now = new Date();
+        const firstMilestone = definition.value.milestones[0]!;
+
+        await tx.insert(schema.projectScopeBaselineVersions).values({
+          id: baselineId,
+          projectId: versionRow.projectId,
+          version: baselineVersion,
+          active: true,
+          approvedByActorId: command.actor.actorId,
+          approvedAt: versionRow.approvedAt,
+          sourcePlanVersionId: versionRow.id,
+          sourcePlanHash: versionRow.contentHash,
+          checkpointTitle: firstMilestone.checkpoint,
+          checkpointStatus: 'backlog',
+          checkpointTargetAt: firstMilestone.targetAt === null ? null : new Date(`${firstMilestone.targetAt}T00:00:00.000Z`)
+        });
+
+        const outcomeIds = new Map(definition.value.outcomes.map((outcome) => [
+          outcome.key,
+          deterministicProjectPlanUuid(versionRow.id, 'outcome', outcome.key)
+        ]));
+        await tx.insert(schema.projectScopeOutcomes).values(definition.value.outcomes.map((outcome) => ({
+          id: outcomeIds.get(outcome.key)!,
+          baselineId,
+          sourcePlanVersionId: versionRow.id,
+          key: outcome.key,
+          title: outcome.title,
+          weight: outcome.weight,
+          state: 'not_started' as const,
+          evidenceReference: `approved-plan:${versionRow.id}:outcome:${outcome.key}`
+        })));
+        await tx.insert(schema.projectScopeOutcomeObservations).values({
+          id: deterministicProjectPlanUuid(versionRow.id, 'baseline', 'initial-observation'),
+          projectId: versionRow.projectId,
+          baselineId,
+          acceptedWeight: 0,
+          totalWeight: 100,
+          observedAt: now,
+          evidenceReference: `approved-plan:${versionRow.id}:materialized`
+        });
+
+        const milestoneIds = new Map(definition.value.milestones.map((milestone) => [
+          milestone.key,
+          deterministicProjectPlanUuid(versionRow.id, 'milestone', milestone.key)
+        ]));
+        await tx.insert(schema.milestones).values(definition.value.milestones.map((milestone) => ({
+          id: milestoneIds.get(milestone.key)!,
+          projectId: versionRow.projectId,
+          title: milestone.title,
+          description: milestone.checkpoint,
+          targetAt: milestone.targetAt === null ? null : new Date(`${milestone.targetAt}T00:00:00.000Z`),
+          sourcePlanVersionId: versionRow.id,
+          sourceKey: milestone.key,
+          checkpoint: milestone.checkpoint,
+          sourceEvidence: milestone.evidence
+        })));
+
+        const [protocolRow] = await tx.select({
+          id: schema.runbooks.id,
+          version: schema.runbooks.version,
+          definition: schema.runbooks.definition
+        }).from(schema.runbooks).where(and(
+          eq(schema.runbooks.projectId, versionRow.projectId),
+          eq(schema.runbooks.active, true),
+          eq(schema.runbooks.protocolState, 'published')
+        )).limit(1);
+        const protocolDefinition = protocolRow === undefined ? null : validateDeliveryProtocolDefinition(protocolRow.definition);
+        const protocolReadiness = protocolRow === undefined ? null : await protocolSimulation(tx, command.workspaceId, versionRow.projectId);
+        const firstStage = protocolDefinition?.ok === true && protocolReadiness?.valid === true
+          ? protocolDefinition.value.stages.find((stage) => stage.enabled) ?? null
+          : null;
+        const journeyReady = firstStage !== null && (firstStage.taskStatus === 'backlog' || firstStage.taskStatus === 'ready');
+        const workItemIds = new Map(definition.value.tasks.map((task) => [
+          task.key,
+          deterministicProjectPlanUuid(versionRow.id, 'work_item', task.key)
+        ]));
+        await tx.insert(schema.workItems).values(definition.value.tasks.map((task) => ({
+          id: workItemIds.get(task.key)!,
+          projectId: versionRow.projectId,
+          milestoneId: milestoneIds.get(task.milestoneKey)!,
+          title: task.title,
+          summary: `Approved plan ${versionRow.version} · ${task.key}`,
+          status: journeyReady && task.dependsOn.length === 0 ? firstStage.taskStatus : 'backlog',
+          blocked: false,
+          sourcePlanVersionId: versionRow.id,
+          sourceTaskKey: task.key,
+          acceptanceEvidence: task.acceptanceEvidence
+        })));
+        const dependencyRows = definition.value.tasks.flatMap((task) => task.dependsOn.map((dependencyKey) => ({
+          workItemId: workItemIds.get(task.key)!,
+          dependsOnWorkItemId: workItemIds.get(dependencyKey)!,
+          sourcePlanVersionId: versionRow.id
+        })));
+        if (dependencyRows.length > 0) await tx.insert(schema.workItemDependencies).values(dependencyRows);
+        const taskOutcomeRows = definition.value.tasks.flatMap((task) => task.outcomeKeys.map((outcomeKey) => ({
+          workItemId: workItemIds.get(task.key)!,
+          outcomeId: outcomeIds.get(outcomeKey)!,
+          sourcePlanVersionId: versionRow.id
+        })));
+        await tx.insert(schema.workItemScopeOutcomes).values(taskOutcomeRows);
+
+        const journeyWorkItems = journeyReady
+          ? definition.value.tasks.filter((task) => task.dependsOn.length === 0)
+          : [];
+        if (protocolRow !== undefined && firstStage !== null && journeyWorkItems.length > 0) {
+          await tx.insert(schema.deliveryJourneys).values(journeyWorkItems.map((task) => ({
+            workItemId: workItemIds.get(task.key)!,
+            protocolId: protocolRow.id,
+            protocolVersion: protocolRow.version!,
+            stageKey: firstStage.key,
+            version: 1
+          })));
+        }
+
+        const desiredSurfaces = setup === undefined ? [] : [
+          {surface: 'repository' as const, mode: setup.configuration.repositoryBinding},
+          {surface: 'tracker' as const, mode: setup.configuration.trackerBinding}
+        ].filter((binding) => binding.mode !== 'none');
+        const publicationResources = [
+          {kind: 'baseline', canonicalId: baselineId},
+          ...definition.value.outcomes.map((outcome) => ({kind: 'outcome', canonicalId: outcomeIds.get(outcome.key)!})),
+          ...definition.value.milestones.map((milestone) => ({kind: 'milestone', canonicalId: milestoneIds.get(milestone.key)!})),
+          ...definition.value.tasks.map((task) => ({kind: 'work_item', canonicalId: workItemIds.get(task.key)!}))
+        ];
+        const publicationRows = desiredSurfaces.flatMap((binding) => publicationResources.map((resource) => ({
+          id: deterministicProjectPlanUuid(versionRow.id, 'materialization', `${binding.surface}:${resource.kind}:${resource.canonicalId}`),
+          workspaceId: command.workspaceId,
+          projectId: versionRow.projectId,
+          planVersionId: versionRow.id,
+          surface: binding.surface,
+          mode: binding.mode as 'link_existing' | 'create_managed',
+          resourceKind: resource.kind,
+          canonicalId: resource.canonicalId,
+          state: 'desired' as const,
+          idempotencyKey: `${versionRow.id}:${binding.surface}:${resource.kind}:${resource.canonicalId}`,
+        })));
+        if (publicationRows.length > 0) await tx.insert(schema.projectPublicationIntents).values(publicationRows);
+
+        const [materialized] = await tx.insert(schema.projectPlanMaterializations).values({
+          id: materializationId,
+          workspaceId: command.workspaceId,
+          projectId: versionRow.projectId,
+          planVersionId: versionRow.id,
+          baselineId,
+          commandId: command.commandId,
+          planVersion: versionRow.version,
+          planHash: versionRow.contentHash,
+          sourceManifestHash: command.payload.expectedSourceManifestHash,
+          outcomeCount: definition.value.outcomes.length,
+          milestoneCount: definition.value.milestones.length,
+          workItemCount: definition.value.tasks.length,
+          dependencyCount: dependencyRows.length,
+          journeyCount: journeyWorkItems.length,
+          publicationIntentCount: publicationRows.length,
+          createdByActorId: command.actor.actorId,
+          createdAt: now
+        }).returning();
+        if (materialized === undefined) throw new Error('project_plan_materialization_missing');
+        result = {ok: true, value: {materialization: materializationFrom(materialized, versionRow.planId)}};
+        return complete();
       }
 
       const [currentRow] = await tx.select().from(schema.projectPlanDrafts).where(and(
@@ -272,7 +567,18 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
       const draft = draftRows[0] === undefined ? null : draftFrom(draftRows[0]);
       const approved = approvedRows[0] === undefined ? null : approvedFrom(approvedRows[0]);
       const simulation = draft === null ? null : await simulateIn(tx, {...input, definition: draft.definition});
-      return {artifacts, draft, approved, simulation};
+      const [materializationRow] = approvedRows[0] === undefined ? [] : await tx.select().from(
+        schema.projectPlanMaterializations
+      ).where(eq(schema.projectPlanMaterializations.planVersionId, approvedRows[0].id)).limit(1);
+      return {
+        artifacts,
+        draft,
+        approved,
+        simulation,
+        materialization: materializationRow === undefined || approvedRows[0] === undefined
+          ? null
+          : materializationFrom(materializationRow, approvedRows[0].planId)
+      };
     });
   },
   async simulate(input: {workspaceId: string; projectId: string; actorId: string; definition: ProjectPlanDefinition}) {

@@ -425,6 +425,10 @@ export const projectPlanVersions = pgTable(
     foreignKey({columns: [table.workspaceId, table.projectId], foreignColumns: [projects.workspaceId, projects.id], name: 'project_plan_versions_workspace_project_fk'}).onDelete('restrict'),
     foreignKey({columns: [table.planId, table.workspaceId, table.projectId], foreignColumns: [projectPlanDrafts.id, projectPlanDrafts.workspaceId, projectPlanDrafts.projectId], name: 'project_plan_versions_plan_scope_fk'}).onDelete('restrict'),
     foreignKey({columns: [table.workspaceId, table.approvedByActorId], foreignColumns: [actors.workspaceId, actors.id], name: 'project_plan_versions_workspace_actor_fk'}).onDelete('restrict'),
+    uniqueIndex('project_plan_versions_identity_scope_version_unique').on(table.id, table.workspaceId, table.projectId, table.version),
+    uniqueIndex('project_plan_versions_identity_scope_unique').on(table.id, table.workspaceId, table.projectId),
+    uniqueIndex('project_plan_versions_project_identity_unique').on(table.projectId, table.id),
+    uniqueIndex('project_plan_versions_identity_project_unique').on(table.id, table.projectId),
     uniqueIndex('project_plan_versions_project_version_unique').on(table.projectId, table.version),
     uniqueIndex('project_plan_versions_plan_unique').on(table.planId),
     index('project_plan_versions_project_created_idx').on(table.projectId, table.createdAt),
@@ -724,10 +728,19 @@ export const milestones = pgTable(
     description: text('description'),
     targetAt: timestamp('target_at', {withTimezone: true}),
     closedAt: timestamp('closed_at', {withTimezone: true}),
+    sourcePlanVersionId: uuid('source_plan_version_id'),
+    sourceKey: text('source_key'),
+    checkpoint: text('checkpoint'),
+    sourceEvidence: jsonb('source_evidence').$type<import('@fai-control-plane/domain').PlanEvidence>(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
-  (table) => [index('milestones_project_idx').on(table.projectId)]
+  (table) => [
+    index('milestones_project_idx').on(table.projectId),
+    foreignKey({columns: [table.projectId, table.sourcePlanVersionId], foreignColumns: [projectPlanVersions.projectId, projectPlanVersions.id], name: 'milestones_project_plan_version_fk'}).onDelete('restrict'),
+    uniqueIndex('milestones_plan_source_key_unique').on(table.sourcePlanVersionId, table.sourceKey),
+    check('milestones_plan_source_complete', sql`(${table.sourcePlanVersionId} is null and ${table.sourceKey} is null and ${table.checkpoint} is null and ${table.sourceEvidence} is null) or (${table.sourcePlanVersionId} is not null and ${table.sourceKey} is not null and ${table.checkpoint} is not null and ${table.sourceEvidence} is not null)`)
+  ]
 );
 
 export const agentProfiles = pgTable(
@@ -1044,10 +1057,17 @@ export const workItems = pgTable(
     version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
-    deletedAt: timestamp('deleted_at', {withTimezone: true})
+    deletedAt: timestamp('deleted_at', {withTimezone: true}),
+    sourcePlanVersionId: uuid('source_plan_version_id'),
+    sourceTaskKey: text('source_task_key'),
+    acceptanceEvidence: jsonb('acceptance_evidence').$type<import('@fai-control-plane/domain').ProjectPlanDefinition['tasks'][number]['acceptanceEvidence']>()
   },
   (table) => [
     index('work_items_project_status_idx').on(table.projectId, table.status),
+    foreignKey({columns: [table.projectId, table.sourcePlanVersionId], foreignColumns: [projectPlanVersions.projectId, projectPlanVersions.id], name: 'work_items_project_plan_version_fk'}).onDelete('restrict'),
+    uniqueIndex('work_items_identity_source_plan_unique').on(table.id, table.sourcePlanVersionId),
+    uniqueIndex('work_items_plan_source_key_unique').on(table.sourcePlanVersionId, table.sourceTaskKey),
+    check('work_items_plan_source_complete', sql`(${table.sourcePlanVersionId} is null and ${table.sourceTaskKey} is null and ${table.acceptanceEvidence} is null) or (${table.sourcePlanVersionId} is not null and ${table.sourceTaskKey} is not null and ${table.acceptanceEvidence} is not null)`),
     check('work_items_version_positive', sql`${table.version} > 0`)
   ]
 );
@@ -1057,19 +1077,32 @@ export const projectScopeBaselineVersions = pgTable('project_scope_baseline_vers
   id: id(), projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
   version: integer('version').notNull(), active: boolean('active').default(true).notNull(),
   approvedByActorId: uuid('approved_by_actor_id').references(() => actors.id, {onDelete: 'set null'}), approvedAt: timestamp('approved_at', {withTimezone: true}),
+  sourcePlanVersionId: uuid('source_plan_version_id'),
+  sourcePlanHash: text('source_plan_hash'),
   checkpointTitle: text('checkpoint_title'), checkpointStatus: workItemStatusEnum('checkpoint_status'), checkpointOwnerActorId: uuid('checkpoint_owner_actor_id').references(() => actors.id, {onDelete: 'set null'}), checkpointTargetAt: timestamp('checkpoint_target_at', {withTimezone: true}), updatedAt: updatedAt()
 }, (table) => [
   uniqueIndex('project_scope_baseline_versions_project_version_unique').on(table.projectId, table.version),
+  foreignKey({columns: [table.projectId, table.sourcePlanVersionId], foreignColumns: [projectPlanVersions.projectId, projectPlanVersions.id], name: 'project_scope_baseline_versions_project_plan_fk'}).onDelete('restrict'),
+  uniqueIndex('project_scope_baseline_versions_identity_project_source_unique').on(table.id, table.projectId, table.sourcePlanVersionId),
+  uniqueIndex('project_scope_baseline_versions_identity_source_unique').on(table.id, table.sourcePlanVersionId),
   uniqueIndex('project_scope_baseline_versions_one_active_per_project').on(table.projectId).where(sql`${table.active}`),
+  uniqueIndex('project_scope_baseline_versions_source_plan_unique').on(table.sourcePlanVersionId),
   check('project_scope_baseline_versions_version_positive', sql`${table.version} > 0`),
-  check('project_scope_baseline_versions_checkpoint_complete', sql`(${table.checkpointTitle} IS NULL AND ${table.checkpointStatus} IS NULL AND ${table.checkpointOwnerActorId} IS NULL AND ${table.checkpointTargetAt} IS NULL) OR (${table.checkpointTitle} IS NOT NULL AND ${table.checkpointStatus} IS NOT NULL)`)
+  check('project_scope_baseline_versions_checkpoint_complete', sql`(${table.checkpointTitle} IS NULL AND ${table.checkpointStatus} IS NULL AND ${table.checkpointOwnerActorId} IS NULL AND ${table.checkpointTargetAt} IS NULL) OR (${table.checkpointTitle} IS NOT NULL AND ${table.checkpointStatus} IS NOT NULL)`),
+  check('project_scope_baseline_versions_source_complete', sql`(${table.sourcePlanVersionId} is null and ${table.sourcePlanHash} is null) or (${table.sourcePlanVersionId} is not null and ${table.sourcePlanHash} ~ '^[0-9a-f]{64}$')`)
 ]);
 export const projectScopeOutcomes = pgTable('project_scope_outcomes', {
   id: id(), baselineId: uuid('baseline_id').notNull().references(() => projectScopeBaselineVersions.id, {onDelete: 'cascade'}),
+  sourcePlanVersionId: uuid('source_plan_version_id'),
   key: text('key').notNull(), title: text('title').notNull(), weight: integer('weight').notNull(),
   state: scopeOutcomeStateEnum('state').notNull(), acceptedByActorId: uuid('accepted_by_actor_id').references(() => actors.id, {onDelete: 'set null'}),
   acceptedAt: timestamp('accepted_at', {withTimezone: true}), evidenceReference: text('evidence_reference'), createdAt: createdAt()
-}, (table) => [uniqueIndex('project_scope_outcomes_baseline_key_unique').on(table.baselineId, table.key), check('project_scope_outcomes_weight_positive', sql`${table.weight} > 0`)]);
+}, (table) => [
+  foreignKey({columns: [table.baselineId, table.sourcePlanVersionId], foreignColumns: [projectScopeBaselineVersions.id, projectScopeBaselineVersions.sourcePlanVersionId], name: 'project_scope_outcomes_baseline_plan_fk'}).onDelete('cascade'),
+  uniqueIndex('project_scope_outcomes_baseline_key_unique').on(table.baselineId, table.key),
+  uniqueIndex('project_scope_outcomes_identity_source_plan_unique').on(table.id, table.sourcePlanVersionId),
+  check('project_scope_outcomes_weight_positive', sql`${table.weight} > 0`)
+]);
 
 /** Immutable observations are the sole source for the scope burn-up graphic. */
 export const projectScopeOutcomeObservations = pgTable(
@@ -1093,6 +1126,83 @@ export const projectScopeOutcomeObservations = pgTable(
     check('project_scope_outcome_observations_evidence_bounded', sql`length(${table.evidenceReference}) BETWEEN 1 AND 500`)
   ]
 );
+
+export const workItemDependencies = pgTable('work_item_dependencies', {
+  workItemId: uuid('work_item_id').notNull(),
+  dependsOnWorkItemId: uuid('depends_on_work_item_id').notNull(),
+  sourcePlanVersionId: uuid('source_plan_version_id').notNull(),
+  createdAt: createdAt()
+}, (table) => [
+  primaryKey({name: 'work_item_dependencies_pk', columns: [table.workItemId, table.dependsOnWorkItemId]}),
+  foreignKey({columns: [table.workItemId, table.sourcePlanVersionId], foreignColumns: [workItems.id, workItems.sourcePlanVersionId], name: 'work_item_dependencies_item_plan_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.dependsOnWorkItemId, table.sourcePlanVersionId], foreignColumns: [workItems.id, workItems.sourcePlanVersionId], name: 'work_item_dependencies_dependency_plan_fk'}).onDelete('restrict'),
+  check('work_item_dependencies_not_self', sql`${table.workItemId} <> ${table.dependsOnWorkItemId}`)
+]);
+
+export const workItemScopeOutcomes = pgTable('work_item_scope_outcomes', {
+  workItemId: uuid('work_item_id').notNull(),
+  outcomeId: uuid('outcome_id').notNull(),
+  sourcePlanVersionId: uuid('source_plan_version_id').notNull(),
+  createdAt: createdAt()
+}, (table) => [
+  primaryKey({name: 'work_item_scope_outcomes_pk', columns: [table.workItemId, table.outcomeId]}),
+  foreignKey({columns: [table.workItemId, table.sourcePlanVersionId], foreignColumns: [workItems.id, workItems.sourcePlanVersionId], name: 'work_item_scope_outcomes_item_plan_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.outcomeId, table.sourcePlanVersionId], foreignColumns: [projectScopeOutcomes.id, projectScopeOutcomes.sourcePlanVersionId], name: 'work_item_scope_outcomes_outcome_plan_fk'}).onDelete('restrict')
+]);
+
+export const projectPlanMaterializations = pgTable('project_plan_materializations', {
+  id: id(),
+  workspaceId: uuid('workspace_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  planVersionId: uuid('plan_version_id').notNull(),
+  baselineId: uuid('baseline_id').notNull(),
+  commandId: uuid('command_id').notNull(),
+  planVersion: integer('plan_version').notNull(),
+  planHash: text('plan_hash').notNull(),
+  sourceManifestHash: text('source_manifest_hash').notNull(),
+  outcomeCount: integer('outcome_count').notNull(),
+  milestoneCount: integer('milestone_count').notNull(),
+  workItemCount: integer('work_item_count').notNull(),
+  dependencyCount: integer('dependency_count').notNull(),
+  journeyCount: integer('journey_count').notNull(),
+  publicationIntentCount: integer('publication_intent_count').notNull(),
+  createdByActorId: uuid('created_by_actor_id').notNull(),
+  createdAt: createdAt()
+}, (table) => [
+  uniqueIndex('project_plan_materializations_plan_version_unique').on(table.planVersionId),
+  uniqueIndex('project_plan_materializations_baseline_unique').on(table.baselineId),
+  uniqueIndex('project_plan_materializations_command_unique').on(table.commandId),
+  foreignKey({columns: [table.workspaceId, table.projectId], foreignColumns: [projects.workspaceId, projects.id], name: 'project_plan_materializations_workspace_project_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.planVersionId, table.workspaceId, table.projectId, table.planVersion], foreignColumns: [projectPlanVersions.id, projectPlanVersions.workspaceId, projectPlanVersions.projectId, projectPlanVersions.version], name: 'project_plan_materializations_plan_scope_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.baselineId, table.projectId, table.planVersionId], foreignColumns: [projectScopeBaselineVersions.id, projectScopeBaselineVersions.projectId, projectScopeBaselineVersions.sourcePlanVersionId], name: 'project_plan_materializations_baseline_scope_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.workspaceId, table.createdByActorId], foreignColumns: [actors.workspaceId, actors.id], name: 'project_plan_materializations_workspace_actor_fk'}).onDelete('restrict'),
+  check('project_plan_materializations_hashes_valid', sql`${table.planHash} ~ '^[0-9a-f]{64}$' and ${table.sourceManifestHash} ~ '^[0-9a-f]{64}$'`),
+  check('project_plan_materializations_plan_version_positive', sql`${table.planVersion} > 0`),
+  check('project_plan_materializations_counts_nonnegative', sql`${table.outcomeCount} > 0 and ${table.milestoneCount} > 0 and ${table.workItemCount} > 0 and ${table.dependencyCount} >= 0 and ${table.journeyCount} >= 0 and ${table.publicationIntentCount} >= 0`)
+]);
+
+/** Provider-neutral desired publication state. A future adapter may observe and reconcile it. */
+export const projectPublicationIntents = pgTable('project_publication_intents', {
+  id: id(),
+  workspaceId: uuid('workspace_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  planVersionId: uuid('plan_version_id').notNull(),
+  surface: text('surface').notNull(),
+  mode: text('mode').notNull(),
+  resourceKind: text('resource_kind').notNull(),
+  canonicalId: uuid('canonical_id').notNull(),
+  state: text('state').default('desired').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  createdAt: createdAt()
+}, (table) => [
+  foreignKey({columns: [table.planVersionId, table.workspaceId, table.projectId], foreignColumns: [projectPlanVersions.id, projectPlanVersions.workspaceId, projectPlanVersions.projectId], name: 'project_publication_intents_plan_scope_fk'}).onDelete('restrict'),
+  uniqueIndex('project_publication_intents_idempotency_unique').on(table.idempotencyKey),
+  index('project_publication_intents_project_state_idx').on(table.projectId, table.state),
+  check('project_publication_intents_surface', sql`${table.surface} in ('repository', 'tracker')`),
+  check('project_publication_intents_mode', sql`${table.mode} in ('link_existing', 'create_managed')`),
+  check('project_publication_intents_resource_kind', sql`${table.resourceKind} in ('baseline', 'outcome', 'milestone', 'work_item')`),
+  check('project_publication_intents_state', sql`${table.state} = 'desired'`)
+]);
 
 export const deliveryJourneys = pgTable(
   'delivery_journeys',

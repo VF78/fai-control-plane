@@ -36,6 +36,7 @@ import {
   projectSetups,
   projectMemberships,
   projectPlanDrafts,
+  projectPlanMaterializations,
   projectPlanVersions,
   projectSourceArtifacts,
   resourceAccessGrants,
@@ -78,9 +79,11 @@ import {
   policySurfaces,
   validateDeliveryProtocolDefinition,
   validateProjectPlanDefinition,
+  hashProjectPlanSourceManifest,
   type DeliveryProtocol,
   type ProjectPlan,
   type ProjectPlanSimulation,
+  type ProjectPlanMaterialization,
   type CanonicalJson,
   type PolicyDecision,
   type RuntimeAvailabilityProjection
@@ -736,7 +739,9 @@ export type ProjectData = Readonly<{
     draft: ProjectPlan | null;
     approved: ProjectPlan | null;
     approvedSourceManifest: readonly Readonly<{artifactId: string; version: number; sha256: string}>[];
+    approvedSourceManifestHash: string | null;
     approvedSimulation: ProjectPlanSimulation | null;
+    materialization: ProjectPlanMaterialization | null;
   }>;
   workItems: readonly Readonly<{
     id: string; title: string; summary: string | null; status: (typeof workItemStatuses)[number];
@@ -1002,6 +1007,18 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     id: approvedRow.planId, projectId: approvedRow.projectId, revision: approvedRow.sourceRevision, state: 'approved', definition: approvedDefinition.value,
     contentHash: approvedRow.contentHash, approvedVersion: approvedRow.version, approvedByActorId: approvedRow.approvedByActorId, approvedAt: approvedRow.approvedAt.toISOString()
   };
+  const materializationRows = approvedRow === undefined ? [] : await db.select().from(projectPlanMaterializations)
+    .where(eq(projectPlanMaterializations.planVersionId, approvedRow.id)).limit(1);
+  const materialized = materializationRows[0];
+  const materialization: ProjectPlanMaterialization | null = approvedRow === undefined || materialized === undefined ? null : {
+    id: materialized.id, projectId: materialized.projectId, planId: approvedRow.planId,
+    planVersionId: materialized.planVersionId, planVersion: materialized.planVersion,
+    planHash: materialized.planHash, sourceManifestHash: materialized.sourceManifestHash,
+    baselineId: materialized.baselineId, outcomeCount: materialized.outcomeCount,
+    milestoneCount: materialized.milestoneCount, workItemCount: materialized.workItemCount,
+    dependencyCount: materialized.dependencyCount, journeyCount: materialized.journeyCount,
+    publicationIntentCount: materialized.publicationIntentCount, createdAt: materialized.createdAt.toISOString()
+  };
   const baseline = scopeBaselines[0] ?? null;
   const protocolByJourney = new Map(protocols.map((item) => [`${item.id}:${item.version}`, item]));
   const memberById = new Map(members.flatMap((member) => member.type === 'human' || member.type === 'agent'
@@ -1069,7 +1086,9 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       draft: planDraft,
       approved: approvedPlan,
       approvedSourceManifest: approvedRow?.sourceManifest ?? [],
-      approvedSimulation: approvedRow?.simulation ?? null
+      approvedSourceManifestHash: approvedRow === undefined ? null : hashProjectPlanSourceManifest(approvedRow.sourceManifest),
+      approvedSimulation: approvedRow?.simulation ?? null,
+      materialization
     },
     workItems: items.flatMap((item) => {
       if (!workItemStatuses.includes(item.status)) return [];

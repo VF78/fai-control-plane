@@ -43,7 +43,10 @@ const requiredTables = [
   schema.dashboardSnapshots,
   schema.projectScopeBaselineVersions,
   schema.projectScopeOutcomes,
-  schema.projectScopeOutcomeObservations
+  schema.projectScopeOutcomeObservations,
+  schema.projectPlanMaterializations,
+  schema.workItemDependencies,
+  schema.workItemScopeOutcomes
 ];
 
 describe('canonical schema foundation', () => {
@@ -89,7 +92,10 @@ describe('canonical schema foundation', () => {
       'dashboard_snapshots',
       'project_scope_baseline_versions',
       'project_scope_outcomes',
-      'project_scope_outcome_observations'
+      'project_scope_outcome_observations',
+      'project_plan_materializations',
+      'work_item_dependencies',
+      'work_item_scope_outcomes'
     ]);
   });
 

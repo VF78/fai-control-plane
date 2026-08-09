@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {simulateProjectPlan, sourceArtifactDigest, validateProjectPlanDefinition, validateSourceArtifact} from './project-plan';
+import {deterministicProjectPlanUuid, hashProjectPlanSourceManifest, simulateProjectPlan, sourceArtifactDigest, validateProjectPlanDefinition, validateSourceArtifact} from './project-plan';
 
 const assumption = {kind: 'assumption' as const, statement: 'Требует проверки Product Owner'};
 const definition = {
@@ -44,5 +44,17 @@ describe('project plan', () => {
 
   it('reports protocol readiness without treating it as generated plan evidence', () => {
     expect(simulateProjectPlan({definition, citationsValid: true, canEdit: true, canApprove: true, protocol: null})).toMatchObject({readyForApproval: true, protocol: {state: 'not_configured'}, warnings: [expect.any(String)]});
+  });
+});
+
+describe('project plan materialization identity', () => {
+  it('derives stable, resource-separated UUIDs and a canonical frozen-manifest hash', () => {
+    const versionId = '10000000-0000-4000-8000-000000000001';
+    expect(deterministicProjectPlanUuid(versionId, 'work_item', 'task-a'))
+      .toBe(deterministicProjectPlanUuid(versionId, 'work_item', 'task-a'));
+    expect(deterministicProjectPlanUuid(versionId, 'work_item', 'task-a'))
+      .not.toBe(deterministicProjectPlanUuid(versionId, 'milestone', 'task-a'));
+    expect(hashProjectPlanSourceManifest([{artifactId: versionId, version: 1, sha256: 'a'.repeat(64)}]))
+      .toMatch(/^[0-9a-f]{64}$/);
   });
 });
