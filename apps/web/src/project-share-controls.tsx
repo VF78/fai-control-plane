@@ -90,7 +90,7 @@ export function ProjectShareControls({
         !('shareUrl' in payload) ||
         typeof payload.shareUrl !== 'string'
       ) {
-        setMessage('Share link was not created.');
+        setMessage('Не удалось создать ссылку.');
         return;
       }
       setOneTimeUrl(payload.shareUrl);
@@ -98,7 +98,7 @@ export function ProjectShareControls({
       setExpiresAt('');
       router.refresh();
     } catch {
-      setMessage('Share link was not created.');
+      setMessage('Не удалось создать ссылку.');
     } finally {
       setPending(false);
     }
@@ -118,12 +118,12 @@ export function ProjectShareControls({
         }
       );
       if (!response.ok) {
-        setMessage('Share link was not revoked.');
+        setMessage('Не удалось отозвать ссылку.');
         return;
       }
       router.refresh();
     } catch {
-      setMessage('Share link was not revoked.');
+      setMessage('Не удалось отозвать ссылку.');
     } finally {
       setPending(false);
     }
@@ -133,23 +133,23 @@ export function ProjectShareControls({
     if (oneTimeUrl === null) return;
     try {
       await navigator.clipboard.writeText(oneTimeUrl);
-      setCopyMessage('Share URL copied.');
+      setCopyMessage('Ссылка скопирована.');
     } catch {
-      setCopyMessage('Share URL could not be copied.');
+      setCopyMessage('Не удалось скопировать ссылку.');
     }
   };
 
   return <section className="share-manager" aria-labelledby="shares-title">
     <header>
-      <p className="eyebrow">Scoped client access</p>
-      <h2 id="shares-title">Project share links</h2>
+      <p className="eyebrow">Временный доступ клиента</p>
+      <h2 id="shares-title">Ссылки на задачи проекта</h2>
     </header>
-    {!enabled ? <p className="muted">Public sharing is unavailable.</p>
-      : csrfToken === null ? <p className="muted">An authenticated operator session is required.</p>
-      : availableProjects.length === 0 ? <p className="muted">No configured project is available for sharing.</p>
+    {!enabled ? <p className="muted">Внешний доступ отключён.</p>
+      : csrfToken === null ? <p className="muted">Нужна авторизованная сессия оператора.</p>
+      : availableProjects.length === 0 ? <p className="muted">Нет проекта, которым можно поделиться.</p>
       : <form className="share-form" onSubmit={createShare}>
           {fixedProject === undefined ? <label className="share-field">
-            <span>Project</span>
+            <span>Проект</span>
             <select
               disabled={pending}
               onChange={(event) =>
@@ -159,9 +159,9 @@ export function ProjectShareControls({
               {availableProjects.map((item) =>
                 <option key={item.slug} value={item.slug}>{item.name}</option>)}
             </select>
-          </label> : <p className="share-project-scope">Sharing applies only to {fixedProject.name}.</p>}
+          </label> : <p className="share-project-scope">Ссылка ограничена проектом {fixedProject.name}.</p>}
           <label className="share-field">
-            <span>Expires</span>
+            <span>Действует до</span>
             <input
               disabled={pending}
               max={bounds.max}
@@ -173,9 +173,9 @@ export function ProjectShareControls({
             />
           </label>
           <fieldset className="share-task-scope">
-            <legend>Shared tasks</legend>
+            <legend>Доступные задачи</legend>
             {project === undefined || project.workItems.length === 0
-              ? <p className="muted">No active WorkItems are available.</p>
+              ? <p className="muted">Активных задач для публичного доступа нет.</p>
               : <div className="share-task-list">{project.workItems.map((item) =>
                   <label className="share-task-option" key={item.id}>
                     <input
@@ -190,30 +190,30 @@ export function ProjectShareControls({
                   </label>)}</div>}
           </fieldset>
           <div className="share-submit">
-            <span>{selectedIds.length} selected</span>
+            <span>Выбрано: {selectedIds.length}</span>
             <button
               disabled={pending || selectedIds.length === 0 || expiresAt === ''}
               type="submit"
-            >Create link</button>
+            >Создать ссылку</button>
           </div>
         </form>}
     {oneTimeUrl === null ? null : <div className="one-time-share">
-      <strong>Copy this URL now. It will not be shown again.</strong>
-      <input aria-label="One-time project share URL" readOnly value={oneTimeUrl} />
-      <button onClick={() => void copyOneTimeUrl()} type="button">Copy</button>
-      {copyMessage === null ? null : <p aria-live="polite" className={copyMessage === 'Share URL copied.' ? 'share-copy-message' : 'share-copy-message failed'}>{copyMessage}</p>}
+      <strong>Скопируйте ссылку сейчас: повторно она не будет показана.</strong>
+      <input aria-label="Одноразовая ссылка на проект" readOnly value={oneTimeUrl} />
+      <button onClick={() => void copyOneTimeUrl()} type="button">Скопировать</button>
+      {copyMessage === null ? null : <p aria-live="polite" className={copyMessage === 'Ссылка скопирована.' ? 'share-copy-message' : 'share-copy-message failed'}>{copyMessage}</p>}
     </div>}
     {message === null ? null : <p aria-live="polite" className="share-message">{message}</p>}
-    {visibleGrants.length === 0 ? <p className="muted share-empty">No share grants are recorded for this project.</p>
+    {visibleGrants.length === 0 ? <p className="muted share-empty">Действующие ссылки не зафиксированы.</p>
       : <div className="share-grant-list">{visibleGrants.map((grant) => {
           return <article className="share-grant-row" key={grant.shareId}>
-            <strong>{fixedProject === undefined ? grant.project : 'Share link'}</strong>
-            <span>{grant.scopedItemCount} scoped tasks</span>
-            <span>Created: {stamp(grant.createdAt)}</span>
-            <span>Expires: {stamp(grant.expiresAt)}</span>
-            <span>{grant.accessCount} recorded views</span>
+            <strong>{fixedProject === undefined ? grant.project : 'Ссылка для клиента'}</strong>
+            <span>Задач: {grant.scopedItemCount}</span>
+            <span>Создана: {stamp(grant.createdAt)}</span>
+            <span>Истекает: {stamp(grant.expiresAt)}</span>
+            <span>Просмотров: {grant.accessCount}</span>
             <span className={`state ${grant.active ? 'active' : 'expired'}`}>
-              {grant.revokedAt !== null ? 'revoked' : grant.active ? 'active' : 'expired'}
+              {grant.revokedAt !== null ? 'Отозвана' : grant.active ? 'Активна' : 'Истекла'}
             </span>
             {grant.active && canMutate
               ? <button
@@ -221,7 +221,7 @@ export function ProjectShareControls({
                   disabled={pending}
                   onClick={() => void revokeShare(grant.shareId)}
                   type="button"
-                >Revoke</button>
+                >Отозвать</button>
               : null}
           </article>;
         })}</div>}
