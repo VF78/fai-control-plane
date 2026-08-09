@@ -52,6 +52,11 @@ export type DeliveryJourneyProjection =
             expectedJourneyVersion: number;
           }>
         | Readonly<{
+            kind: 'record_terminal_evidence';
+            expectedWorkItemVersion: number;
+            expectedJourneyVersion: number;
+          }>
+        | Readonly<{
             kind: 'blocked';
             reason: 'work_item_blocked' | 'responsibility_unresolved' |
               'journey_complete';

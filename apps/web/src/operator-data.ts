@@ -57,6 +57,7 @@ import {
   workspaceInstructionVersions,
   statusTransitions,
   VALUE_LEDGER_COMMAND,
+  workItemScopeOutcomes,
   workItems,
   ledgerRoi,
   loadConversationRows,
@@ -723,6 +724,7 @@ export type ProjectData = Readonly<{
     approvedAt: Date | null;
     updatedAt: Date;
     outcomes: readonly Readonly<{
+      id: string;
       key: string;
       title: string;
       weight: number;
@@ -730,6 +732,8 @@ export type ProjectData = Readonly<{
       acceptedBy: string | null;
       acceptedAt: Date | null;
       evidenceReference: string | null;
+      acceptanceReady: boolean;
+      acceptanceBlockReason: string | null;
     }>[];
     checkpoint: Readonly<{
       title: string;
@@ -759,7 +763,8 @@ export type ProjectData = Readonly<{
       stage: Readonly<{
         name: string; taskStatus: (typeof workItemStatuses)[number]; executionMode: string;
         responsibility: string; nextStage: string | null;
-        actor: Readonly<{displayName: string; type: 'human' | 'agent'}> | null;
+        terminal: boolean; terminalEvidenceComplete: boolean; protocolFinalizable: boolean;
+        actor: Readonly<{id: string; displayName: string; type: 'human' | 'agent'}> | null;
       }> | null;
       evidence: readonly Readonly<{stageKey: string; requirement: string; reference: string}>[];
       requiredEvidence: readonly string[];
@@ -932,6 +937,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       .where(and(eq(projectScopeBaselineVersions.projectId, project.id), eq(projectScopeBaselineVersions.active, true)))
       .orderBy(desc(projectScopeBaselineVersions.version)).limit(1),
     db.select({
+      id: projectScopeOutcomes.id,
       baselineId: projectScopeOutcomes.baselineId,
       key: projectScopeOutcomes.key,
       title: projectScopeOutcomes.title,
@@ -955,6 +961,13 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       .orderBy(projectScopeOutcomeObservations.observedAt, projectScopeOutcomeObservations.id),
     loadProjectExecutionProjection(db, project.workspaceId, project.id)
   ]);
+  const scopeLinks = scopeOutcomes.length === 0 ? [] : await db.select({
+    outcomeId: workItemScopeOutcomes.outcomeId,
+    workItemId: workItemScopeOutcomes.workItemId
+  }).from(workItemScopeOutcomes).where(inArray(
+    workItemScopeOutcomes.outcomeId,
+    scopeOutcomes.map(({id}) => id)
+  ));
   const [planArtifactRows, planDraftRows, planVersionRows] = await Promise.all([
     db.select({id: projectSourceArtifacts.id, name: projectSourceArtifacts.name, mediaType: projectSourceArtifacts.mediaType,
       content: projectSourceArtifacts.content, sizeBytes: projectSourceArtifacts.sizeBytes, sha256: projectSourceArtifacts.sha256, version: projectSourceArtifacts.version,
@@ -1029,11 +1042,11 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   const baseline = scopeBaselines[0] ?? null;
   const protocolByJourney = new Map(protocols.map((item) => [`${item.id}:${item.version}`, item]));
   const memberById = new Map(members.flatMap((member) => member.type === 'human' || member.type === 'agent'
-    ? [[member.actorId, {displayName: member.displayName, type: member.type}] as const] : []));
-  const memberByRole = new Map<string, Readonly<{displayName: string; type: 'human' | 'agent'}>>();
+    ? [[member.actorId, {id: member.actorId, displayName: member.displayName, type: member.type}] as const] : []));
+  const memberByRole = new Map<string, Readonly<{id: string; displayName: string; type: 'human' | 'agent'}>>();
   for (const member of members) {
     if ((member.type === 'human' || member.type === 'agent') && !memberByRole.has(member.role)) {
-      memberByRole.set(member.role, {displayName: member.displayName, type: member.type});
+      memberByRole.set(member.role, {id: member.actorId, displayName: member.displayName, type: member.type});
     }
   }
   const evidenceByJourney = new Map<string, Readonly<{stageKey: string; requirement: string; reference: string}>[]>();
@@ -1052,12 +1065,18 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       : memberById.get(stage.responsibility.actorId) ?? null;
     const nextStage = stage?.allowedNextStageKey === null || stage === null ? null
       : boundProtocol?.definition.stages.find((item) => item.key === stage.allowedNextStageKey)?.name ?? null;
+    const currentEvidence = (evidenceByJourney.get(journey.workItemId) ?? [])
+      .filter((entry) => entry.stageKey === journey.stageKey);
     return [journey.workItemId, {
       ...journey,
       stage: stage === null ? null : {
         name: stage.name, taskStatus: stage.taskStatus, executionMode: stage.executionMode,
         responsibility: stage.responsibility.kind === 'project_role' ? stage.responsibility.role : stage.responsibility.actorType,
-        nextStage, actor
+        nextStage, terminal: stage.allowedNextStageKey === null,
+        protocolFinalizable: boundProtocol !== null &&
+          ['published', 'retired'].includes(boundProtocol.state),
+        terminalEvidenceComplete: stage.requiredEvidence.every((requirement) =>
+          currentEvidence.some((entry) => entry.requirement === requirement)), actor
       },
       evidence: evidenceByJourney.get(journey.workItemId) ?? [],
       requiredEvidence: stage?.requiredEvidence ?? []
@@ -1077,7 +1096,21 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       version: baseline.version,
       approvedAt: baseline.approvedAt,
       updatedAt: baseline.updatedAt,
-      outcomes: scopeOutcomes.filter((outcome) => outcome.baselineId === baseline.id),
+      outcomes: scopeOutcomes.filter((outcome) => outcome.baselineId === baseline.id).map((outcome) => {
+        const linkedItemIds = scopeLinks.filter((link) => link.outcomeId === outcome.id)
+          .map((link) => link.workItemId);
+        const linkedItems = linkedItemIds.map((id) => ({
+          item: items.find((candidate) => candidate.id === id),
+          journey: journeyByItem.get(id)
+        }));
+        const acceptanceReady = linkedItems.length > 0 && linkedItems.every(({item, journey}) =>
+          item?.status === 'done' && journey?.stage?.taskStatus === 'done' &&
+          journey.stage.protocolFinalizable && journey.stage.terminal && journey.stage.terminalEvidenceComplete);
+        return {...outcome, acceptanceReady,
+          acceptanceBlockReason: acceptanceReady ? null : linkedItems.length === 0
+            ? 'Нет связанных задач утверждённого плана.'
+            : 'Нужны завершённые задачи и обязательные evidence терминальной стадии.'};
+      }),
       checkpoint: baseline.checkpointTitle === null || baseline.checkpointStatus === null ? null : {
         title: baseline.checkpointTitle,
         status: baseline.checkpointStatus as (typeof workItemStatuses)[number],

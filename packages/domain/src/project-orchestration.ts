@@ -12,7 +12,7 @@ export type ProjectExecutionStatus = (typeof projectExecutionStatuses)[number];
 export type ProjectDecisionQueueItem = Readonly<{
   id: string;
   kind: 'approval' | 'failure' | 'provider_handoff';
-  source: 'delivery_protocol' | 'approval' | 'agent_run' | 'publication';
+  source: 'delivery_protocol' | 'approval' | 'agent_run' | 'publication' | 'scope';
   workItemId: string | null;
   targetId: string;
   summary: string;
@@ -70,7 +70,7 @@ const transitions: Readonly<Record<ProjectExecutionStatus, readonly ProjectExecu
   stopped: ['running', 'blocked', 'completed'],
   running: ['paused'],
   paused: ['running', 'blocked', 'completed'],
-  blocked: ['paused'],
+  blocked: ['paused', 'completed'],
   completed: []
 };
 

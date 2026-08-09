@@ -252,6 +252,13 @@ const decisionQueue = async (
     summary: 'Сохранённый выбор больше не соответствует плану, протоколу, пути или ответственному.',
     nextAction: 'Повторить Resume с актуальной версией после проверки новых условий; работа не считается запущенной.', createdAt: null
   });
+  if (blockReason === 'scope_acceptance_required') decisions.push({
+    id: `scope:${projectId}:acceptance`, kind: 'approval', source: 'scope',
+    workItemId: null, targetId: projectId,
+    summary: 'Все задачи завершены, но утверждённый weighted scope ещё не принят полностью.',
+    nextAction: 'Проверить финальные evidence и явно принять готовые результаты в разделе «Принятый скоп».',
+    createdAt: null
+  });
   const dispatchBoundaries: Readonly<Record<string, Readonly<{summary: string; nextAction: string}>>> = {
     runner_queue_unavailable: {
       summary: 'Изолированная очередь запуска сейчас недоступна.',
@@ -756,7 +763,28 @@ const nextState = async (tx: Transaction, workspaceId: string, projectId: string
       eq(schema.workItems.sourcePlanVersionId, materialization.planVersionId), isNull(schema.workItems.deletedAt)))
     .orderBy(asc(schema.workItems.sourceTaskKey), asc(schema.workItems.id)).for('update');
   if (items.length > 0 && items.every(({status}) => status === 'done')) {
-    return {status: 'completed' as const, selection: null, blockReason: null};
+    const [baseline] = await tx.select({id: schema.projectScopeBaselineVersions.id})
+      .from(schema.projectScopeBaselineVersions).where(and(
+        eq(schema.projectScopeBaselineVersions.projectId, projectId),
+        eq(schema.projectScopeBaselineVersions.sourcePlanVersionId, materialization.planVersionId),
+        eq(schema.projectScopeBaselineVersions.active, true)
+      )).limit(1).for('update');
+    const outcomes = baseline === undefined ? [] : await tx.select({
+      weight: schema.projectScopeOutcomes.weight,
+      state: schema.projectScopeOutcomes.state,
+      acceptedByActorId: schema.projectScopeOutcomes.acceptedByActorId,
+      acceptedAt: schema.projectScopeOutcomes.acceptedAt,
+      evidenceReference: schema.projectScopeOutcomes.evidenceReference
+    }).from(schema.projectScopeOutcomes)
+      .where(eq(schema.projectScopeOutcomes.baselineId, baseline.id))
+      .orderBy(schema.projectScopeOutcomes.id).for('update');
+    const totalWeight = outcomes.reduce((total, outcome) => total + outcome.weight, 0);
+    const accepted = outcomes.length > 0 && totalWeight === 100 && outcomes.every((outcome) =>
+      outcome.state === 'accepted' && outcome.acceptedByActorId !== null &&
+      outcome.acceptedAt !== null && outcome.evidenceReference !== null);
+    return accepted
+      ? {status: 'completed' as const, selection: null, blockReason: null}
+      : {status: 'blocked' as const, selection: null, blockReason: 'scope_acceptance_required'};
   }
   const dependencies = items.length === 0 ? [] : await tx.select({
     workItemId: schema.workItemDependencies.workItemId,

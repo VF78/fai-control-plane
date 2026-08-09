@@ -104,6 +104,7 @@ describe('delivery protocol', () => {
         allowedNextStageKey: null
       }]
     };
+    expect(validateDeliveryProtocolDefinition(definition)).toMatchObject({ok: true});
     const missing = simulateDeliveryProtocol(definition, {
       projectExists: true,
       memberships: [],
@@ -144,7 +145,10 @@ describe('delivery protocol', () => {
       agentRegistrations: [{profileId, actorId, enabled: true}]
     });
     expect(complete).toMatchObject({
-      valid: true,
+      valid: false,
+      violations: [
+        'The enabled terminal stage must be Product Owner human approval with done status.'
+      ],
       stages: [{autonomousPermission: true, missingContext: []}]
     });
     expect(complete.simulationHash).not.toBe(missing.simulationHash);

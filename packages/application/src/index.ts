@@ -1,6 +1,15 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export * from './access-observation.ts';
 export {
+  PROJECT_OUTCOME_ACCEPTANCE_COMMAND,
+  createProjectOutcomeAcceptanceService,
+  type AcceptProjectOutcomeCommand,
+  type ProjectOutcomeAcceptanceExecution,
+  type ProjectOutcomeAcceptanceReceipt,
+  type ProjectOutcomeAcceptanceStore,
+  type ProjectOutcomeAcceptanceValue
+} from './project-outcome-acceptance.ts';
+export {
   AGENT_RUN_RETRY_CONTINUATION_COMMAND,
   MVP_AGENT_RUN_RETRY_POLICY,
   createAgentRunRetryContinuationService,

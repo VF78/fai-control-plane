@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {
   firstEnabledDeliveryStage,
   nextEnabledDeliveryStage,
@@ -38,6 +38,14 @@ const errorResult = (code: CommandError['code'], message: string) => ({
 });
 type StoreResult = ReturnType<typeof errorResult> |
   Readonly<{ok: true; value: DeliveryJourneyProjection}>;
+const attemptReceiptKey = (command: Command, requestHash: string): string =>
+  `delivery-journey-attempt:v1:${createHash('sha256')
+    .update(`${command.actor.actorId}:${requestHash}:${command.commandId}`)
+    .digest('hex')}`;
+const attemptAuditCommandId = (command: Command, requestHash: string, reason: string): string =>
+  `delivery-journey-attempt:v1:${createHash('sha256')
+    .update(`${command.commandId}:${requestHash}:${reason}`)
+    .digest('hex')}`;
 const known = <T>(value: T) => ({availability: 'known' as const, value});
 const unknown = () => ({availability: 'unknown' as const});
 const notConfigured = () => ({availability: 'not_configured' as const});
@@ -171,12 +179,17 @@ const readProjection = async (
     eq(schema.deliveryJourneyEvidence.stageKey, stage.key)
   ));
   const next = nextEnabledDeliveryStage(protocol, stage.key);
+  const evidenceComplete = stage.requiredEvidence.every((requirement) =>
+    evidence.some((row) => row.requirement === requirement));
   const nextAllowedAction = task.blocked
     ? {kind: 'blocked' as const, reason: 'work_item_blocked' as const}
     : !responsibility.resolved
       ? {kind: 'blocked' as const, reason: 'responsibility_unresolved' as const}
-      : next === null
+      : next === null && evidenceComplete
         ? {kind: 'blocked' as const, reason: 'journey_complete' as const}
+        : next === null
+          ? {kind: 'record_terminal_evidence' as const,
+              expectedWorkItemVersion: task.version, expectedJourneyVersion: journey.version}
         : {kind: 'advance' as const, toStageKey: next.key,
             expectedWorkItemVersion: task.version, expectedJourneyVersion: journey.version};
   return {
@@ -212,60 +225,70 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
   async execute(input: StoreInput) {
     return db.transaction(async (tx) => {
       const command = input.command;
-      const [claimed] = await tx.insert(schema.commandReceipts).values({
-        workspaceId: command.workspaceId, idempotencyKey: command.idempotencyKey,
-        requestHash: input.requestHash, commandId: command.commandId,
-        correlationId: command.correlationId, commandType: command.type
-      }).onConflictDoNothing({
-        target: [schema.commandReceipts.workspaceId, schema.commandReceipts.idempotencyKey]
-      }).returning();
-      if (claimed === undefined) {
-        const [existing] = await tx.select().from(schema.commandReceipts).where(and(
-          eq(schema.commandReceipts.workspaceId, command.workspaceId),
-          eq(schema.commandReceipts.idempotencyKey, command.idempotencyKey)
-        )).for('update');
-        if (existing === undefined || existing.requestHash !== input.requestHash) {
-          return {status: 'key_reused' as const, existingRequestHash: existing?.requestHash ?? ''};
-        }
-        if (existing.state !== 'completed' || existing.result === null) {
-          throw new Error('delivery_journey_receipt_incomplete');
-        }
-        return {status: 'replayed' as const, receipt: {
-          commandId: existing.commandId, workspaceId: command.workspaceId,
-          correlationId: existing.correlationId, idempotencyKey: command.idempotencyKey,
-          requestHash: existing.requestHash, commandType: command.type,
-          result: existing.result as never, createdAt: existing.createdAt.toISOString()
-        }};
-      }
       let result: StoreResult;
       let projectId: string | null = null;
       let resultVersion: number | undefined;
-      const complete = async () => {
+      const complete = async (successReceipt?: typeof schema.commandReceipts.$inferSelect,
+        policyDecision: 'allow' | 'deny' = input.authorized ? 'allow' : 'deny') => {
         const now = new Date();
+        let stored = successReceipt;
+        let idempotencyKey = command.idempotencyKey;
+        if (!result.ok) {
+          idempotencyKey = attemptReceiptKey(command, input.requestHash);
+          const [inserted] = await tx.insert(schema.commandReceipts).values({
+            workspaceId: command.workspaceId, idempotencyKey,
+            requestHash: input.requestHash, commandId: command.commandId,
+            correlationId: command.correlationId, commandType: command.type,
+            state: 'completed', aggregateType: 'delivery_journey',
+            aggregateId: command.payload.workItemId,
+            expectedVersion: command.type === 'delivery_journey.advance'
+              ? command.payload.expectedJourneyVersion : undefined,
+            resultVersion, result, completedAt: now
+          }).onConflictDoNothing({
+            target: [schema.commandReceipts.workspaceId, schema.commandReceipts.idempotencyKey]
+          }).returning();
+          [stored] = inserted === undefined ? await tx.select().from(schema.commandReceipts).where(and(
+            eq(schema.commandReceipts.workspaceId, command.workspaceId),
+            eq(schema.commandReceipts.idempotencyKey, idempotencyKey)
+          )).limit(1).for('update') : [inserted];
+          if (stored === undefined || stored.state !== 'completed' || stored.result === null ||
+            stored.requestHash !== input.requestHash) {
+            throw new Error('delivery_journey_attempt_receipt_incomplete');
+          }
+        } else {
+          if (stored === undefined) throw new Error('delivery_journey_success_receipt_unclaimed');
+          await tx.update(schema.commandReceipts).set({
+            state: 'completed', aggregateType: 'delivery_journey',
+            aggregateId: command.payload.workItemId,
+            expectedVersion: command.type === 'delivery_journey.advance'
+              ? command.payload.expectedJourneyVersion : undefined,
+            resultVersion, result, completedAt: now
+          }).where(eq(schema.commandReceipts.id, stored.id));
+        }
+        const completedResult = stored.result === null ? result : stored.result as StoreResult;
         await tx.insert(schema.auditEvents).values({
           id: randomUUID(), workspaceId: command.workspaceId, projectId,
-          actorId: command.actor.actorId, commandId: command.commandId,
+          actorId: command.actor.actorId,
+          commandId: completedResult.ok ? command.commandId : attemptAuditCommandId(
+            command, input.requestHash, completedResult.error.code
+          ),
           actionCategory: 'write', action: command.type, targetType: 'delivery_journey',
           targetId: command.payload.workItemId,
-          policyDecision: input.authorized ? 'allow' : 'deny',
-          outcome: result.ok ? 'succeeded' : input.authorized ? 'failed' : 'rejected',
-          ...(!result.ok ? {reasonCode: result.error.code} : {}),
+          policyDecision,
+          outcome: completedResult.ok ? 'succeeded' : policyDecision === 'allow' ? 'failed' : 'rejected',
+          ...(!completedResult.ok ? {reasonCode: completedResult.error.code} : {}),
           expectedVersion: command.type === 'delivery_journey.advance'
             ? command.payload.expectedJourneyVersion : undefined,
           resultVersion, correlationId: command.correlationId, occurredAt: now
+        }).onConflictDoNothing({
+          target: [schema.auditEvents.workspaceId, schema.auditEvents.commandId]
         });
-        await tx.update(schema.commandReceipts).set({
-          state: 'completed', aggregateType: 'delivery_journey',
-          aggregateId: command.payload.workItemId,
-          expectedVersion: command.type === 'delivery_journey.advance'
-            ? command.payload.expectedJourneyVersion : undefined,
-          resultVersion, result, completedAt: now
-        }).where(eq(schema.commandReceipts.id, claimed.id));
         return {status: 'completed' as const, receipt: {
-          commandId: command.commandId, workspaceId: command.workspaceId,
-          correlationId: command.correlationId, idempotencyKey: command.idempotencyKey,
-          requestHash: input.requestHash, commandType: command.type, result,
-          createdAt: claimed.createdAt.toISOString()
+          commandId: stored.commandId, workspaceId: command.workspaceId,
+          correlationId: stored.correlationId, idempotencyKey,
+          requestHash: stored.requestHash, commandType: command.type,
+          result: completedResult,
+          createdAt: stored.createdAt.toISOString()
         }};
       };
       if (!input.authorized) {
@@ -286,7 +309,27 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
       projectId = item.projectId;
       if (!await authority(tx, command.workspaceId, command.actor.actorId, projectId, true)) {
         result = errorResult('CAPABILITY_DENIED', 'Actor is not a task owner for this project.');
-        return complete();
+        return complete(undefined, 'deny');
+      }
+      const [existingSuccess] = await tx.select().from(schema.commandReceipts).where(and(
+        eq(schema.commandReceipts.workspaceId, command.workspaceId),
+        eq(schema.commandReceipts.idempotencyKey, command.idempotencyKey)
+      )).limit(1).for('update');
+      if (existingSuccess !== undefined) {
+        if (existingSuccess.requestHash !== input.requestHash) {
+          return {status: 'key_reused' as const, existingRequestHash: existingSuccess.requestHash};
+        }
+        if (existingSuccess.state !== 'completed' || existingSuccess.result === null) {
+          throw new Error('delivery_journey_receipt_incomplete');
+        }
+        return {status: 'replayed' as const, receipt: {
+          commandId: existingSuccess.commandId, workspaceId: command.workspaceId,
+          correlationId: existingSuccess.correlationId,
+          idempotencyKey: command.idempotencyKey,
+          requestHash: existingSuccess.requestHash, commandType: command.type,
+          result: existingSuccess.result as never,
+          createdAt: existingSuccess.createdAt.toISOString()
+        }};
       }
       if (item.version !== command.payload.expectedWorkItemVersion) {
         result = errorResult('VERSION_CONFLICT', 'Work item version conflicts.');
@@ -349,11 +392,24 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
       }
       const next = command.type === 'delivery_journey.start'
         ? stage : nextEnabledDeliveryStage(protocol, stage.key);
-      if (next === null) {
+      const terminalEvidenceOnly = command.type === 'delivery_journey.advance' && next === null;
+      if (next === null && !terminalEvidenceOnly) {
         result = errorResult('INVALID_TRANSITION', 'Delivery journey has no enabled next stage.');
         return complete();
       }
-      if (next.key !== stage.key) {
+      if (terminalEvidenceOnly && (
+        stage.executionMode !== 'human_approval' ||
+        responsibility.actor.availability !== 'known' ||
+        responsibility.actor.value.type !== 'human' ||
+        responsibility.actor.value.id !== command.actor.actorId
+      )) {
+        result = errorResult(
+          'CAPABILITY_DENIED',
+          'Terminal delivery evidence requires the exact responsible Product Owner.'
+        );
+        return complete(undefined, 'deny');
+      }
+      if (next !== null && next.key !== stage.key) {
         const nextResponsibility = await responsibilityProjection(tx, item.projectId, next);
         if (!nextResponsibility.resolved) {
           result = errorResult(
@@ -365,6 +421,28 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
       }
       let acceptedEvidence: readonly Readonly<{requirement: string; reference: string}>[] = [];
       if (command.type === 'delivery_journey.advance') {
+        const existingEvidence = await tx.select({
+          requirement: schema.deliveryJourneyEvidence.requirement,
+          reference: schema.deliveryJourneyEvidence.evidenceReference
+        }).from(schema.deliveryJourneyEvidence).where(and(
+          eq(schema.deliveryJourneyEvidence.workItemId, item.id),
+          eq(schema.deliveryJourneyEvidence.stageKey, stage.key)
+        )).for('update');
+        if (terminalEvidenceOnly && existingEvidence.length > 0) {
+          const completeTerminalEvidence = stage.requiredEvidence.every((requirement) =>
+            existingEvidence.some((entry) => entry.requirement === requirement));
+          result = errorResult(
+            completeTerminalEvidence ? 'INVALID_TRANSITION' : 'VERSION_CONFLICT',
+            completeTerminalEvidence
+              ? 'Terminal delivery evidence is already complete.'
+              : 'Terminal delivery evidence is partially recorded and requires operator remediation.'
+          );
+          return complete();
+        }
+        if (terminalEvidenceOnly && stage.requiredEvidence.length === 0) {
+          result = errorResult('INVALID_TRANSITION', 'Terminal delivery evidence is already complete.');
+          return complete();
+        }
         const evidence = validateDeliveryEvidenceReferences(stage, command.payload.evidenceReferences);
         if (!evidence.ok) {
           result = evidence;
@@ -372,7 +450,7 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
         }
         acceptedEvidence = evidence.value;
       }
-      const targetStatus = next.taskStatus;
+      const targetStatus = terminalEvidenceOnly ? item.status : next!.taskStatus;
       let updated: WorkItem = {
         id: item.id, projectId: item.projectId, status: item.status,
         blocked: item.blocked, version: item.version
@@ -384,6 +462,31 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
           return complete();
         }
         updated = transitioned.value;
+      }
+      const claimed = (await tx.insert(schema.commandReceipts).values({
+        workspaceId: command.workspaceId, idempotencyKey: command.idempotencyKey,
+        requestHash: input.requestHash, commandId: command.commandId,
+        correlationId: command.correlationId, commandType: command.type
+      }).onConflictDoNothing({
+        target: [schema.commandReceipts.workspaceId, schema.commandReceipts.idempotencyKey]
+      }).returning())[0];
+      if (claimed === undefined) {
+        const [concurrent] = await tx.select().from(schema.commandReceipts).where(and(
+          eq(schema.commandReceipts.workspaceId, command.workspaceId),
+          eq(schema.commandReceipts.idempotencyKey, command.idempotencyKey)
+        )).limit(1).for('update');
+        if (concurrent === undefined || concurrent.requestHash !== input.requestHash) {
+          return {status: 'key_reused' as const, existingRequestHash: concurrent?.requestHash ?? ''};
+        }
+        if (concurrent.state !== 'completed' || concurrent.result === null) {
+          throw new Error('delivery_journey_receipt_incomplete');
+        }
+        return {status: 'replayed' as const, receipt: {
+          commandId: concurrent.commandId, workspaceId: command.workspaceId,
+          correlationId: concurrent.correlationId, idempotencyKey: command.idempotencyKey,
+          requestHash: concurrent.requestHash, commandType: command.type,
+          result: concurrent.result as never, createdAt: concurrent.createdAt.toISOString()
+        }};
       }
       if (acceptedEvidence.length > 0) {
         await tx.insert(schema.deliveryJourneyEvidence).values(acceptedEvidence.map((entry) => ({
@@ -409,20 +512,21 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
         }).returning();
       } else {
         [journey] = await tx.update(schema.deliveryJourneys).set({
-          stageKey: next.key, version: command.payload.expectedJourneyVersion + 1,
+          stageKey: terminalEvidenceOnly ? stage.key : next!.key, version: command.payload.expectedJourneyVersion + 1,
           updatedAt: new Date()
         }).where(and(
           eq(schema.deliveryJourneys.workItemId, item.id),
           eq(schema.deliveryJourneys.version, command.payload.expectedJourneyVersion)
         )).returning();
       }
+      if (journey === undefined) throw new Error('delivery_journey_cas_failed');
       resultVersion = journey!.version;
       const projection = await readProjection(
         tx, command.workspaceId, item.id, command.actor.actorId, new Date()
       );
       if (projection === null) throw new Error('delivery_journey_projection_missing');
       result = {ok: true as const, value: projection};
-      return complete();
+      return complete(claimed);
     });
   },
   async read(input: Readonly<{

@@ -313,7 +313,19 @@ export const simulateDeliveryProtocol = (
   const contextHash = createHash('sha256')
     .update(stableJson(canonicalContext as unknown as CanonicalJson))
     .digest('hex');
-  const violations = validated.ok ? [] : [validated.error.message];
+  const terminalFinalizable = validated.ok && (() => {
+    const terminal = validated.value.stages.filter((stage) =>
+      stage.enabled && stage.allowedNextStageKey === null);
+    return terminal.length === 1 && terminal.every((stage) =>
+      stage.taskStatus === 'done' && stage.executionMode === 'human_approval' &&
+      stage.responsibility.kind === 'project_role' &&
+      stage.responsibility.role === 'project_owner');
+  })();
+  const violations = validated.ok
+    ? terminalFinalizable ? [] : [
+        'The enabled terminal stage must be Product Owner human approval with done status.'
+      ]
+    : [validated.error.message];
   const stages = validated.ok
     ? validated.value.stages.map((stage): DeliveryProtocolStageSimulation => {
         const owner = stage.responsibility;
@@ -376,7 +388,7 @@ export const simulateDeliveryProtocol = (
   const stable = {
     definitionHash,
     contextHash,
-    valid: validated.ok && context.projectExists && stages.every((stage) =>
+    valid: validated.ok && terminalFinalizable && context.projectExists && stages.every((stage) =>
       stage.responsibilityResolved &&
       stage.agentProfileResolved &&
       !stage.missingContext.includes('missing.runtime_registration')
