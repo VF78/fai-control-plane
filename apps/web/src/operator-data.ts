@@ -811,6 +811,7 @@ export type ProjectData = Readonly<{
     observations: readonly Readonly<{acceptedWeight: number; totalWeight: number; observedAt: Date}>[];
   }> | null;
   protocol?: DeliveryProtocol | null;
+  protocolRevision?: DeliveryProtocol | null;
   plan?: Readonly<{
     artifacts: readonly Readonly<{id: string; name: string; mediaType: string; content: string; sizeBytes: number; sha256: string; version: number; provenance: Readonly<{kind: string; label: string; capturedAt: string}>}>[];
     draft: ProjectPlan | null;
@@ -1086,7 +1087,9 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       definition: definition.value, contentHash: row.contentHash
     }] : [];
   });
-  const protocol = protocols[0] ?? null;
+  const protocol = protocols.find((item) => item.state === 'published' && item.active) ?? null;
+  const protocolRevision = protocols.find((item) => item.state === 'draft') ??
+    protocols.find((item) => item.state === 'published' && !item.active) ?? null;
   const draftRow = planDraftRows[0];
   const draftDefinition = draftRow === undefined ? null : validateProjectPlanDefinition(draftRow.definition);
   const planDraft: ProjectPlan | null = draftRow === undefined || draftDefinition === null || !draftDefinition.ok ? null : {
@@ -1194,6 +1197,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
         .map((observation) => ({acceptedWeight: observation.acceptedWeight, totalWeight: observation.totalWeight, observedAt: observation.observedAt}))
     },
     protocol,
+    protocolRevision,
     plan: {
       artifacts: planArtifactRows,
       draft: planDraft,
@@ -1212,7 +1216,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       const failedRun = latestRun?.status === 'failed' ? latestRun : undefined;
       const packet = unconfirmedPacketByItem.get(item.id);
       const handoff = approval !== undefined
-        ? {label: 'Approval pending', state: 'pending' as const, kind: 'approval' as const, targetId: approval.id, href: `/projects/${slug}/tasks/${item.id}`}
+        ? {label: 'Ожидает решения', state: 'pending' as const, kind: 'approval' as const, targetId: approval.id, href: `/projects/${slug}/tasks/${item.id}`}
         : activeRun !== undefined
           ? {
               label: activeRun.status === 'waiting_approval'
@@ -1226,7 +1230,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
               href: `/projects/${slug}/runs/${activeRun.id}`
             }
           : completedRun !== undefined
-            ? {label: 'Run completed', state: 'done' as const, kind: 'run' as const, targetId: completedRun.id, href: `/projects/${slug}/runs/${completedRun.id}`}
+            ? {label: 'Запуск завершён', state: 'done' as const, kind: 'run' as const, targetId: completedRun.id, href: `/projects/${slug}/runs/${completedRun.id}`}
           : failedRun !== undefined && (packet === undefined || failedRun.updatedAt >= packet.createdAt)
             ? {label: 'Run failed', state: 'failed' as const, kind: 'run' as const, targetId: failedRun.id, href: `/projects/${slug}/runs/${failedRun.id}`}
             : packet !== undefined

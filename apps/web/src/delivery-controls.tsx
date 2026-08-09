@@ -63,13 +63,13 @@ export function DeliveryProtocolEditor({projectId, protocol, csrfToken}: {
   const update = (index: number, patch: Partial<DeliveryProtocolDefinition['stages'][number]>) => setDefinition((current) => current === null ? null : {
     ...current, stages: current.stages.map((stage, candidate) => candidate === index ? {...stage, ...patch} : stage)
   });
-  const request = async (action: 'create_default' | 'draft' | 'simulate' | 'publish' | 'activate') => {
+  const request = async (action: 'create_default' | 'create_revision' | 'draft' | 'simulate' | 'publish' | 'activate') => {
     if (csrfToken === null) return setNotice({tone: 'error', text: 'Нужна авторизованная сессия руководителя.'});
     setBusy(true); setNotice(null);
     try {
       const result = await mutate('/api/delivery-protocol', action === 'create_default'
         ? {_csrf: csrfToken, action, projectId}
-        : action === 'publish' || action === 'activate'
+        : action === 'create_revision' || action === 'publish' || action === 'activate'
           ? {_csrf: csrfToken, action, projectId, protocolId: protocol!.id, expectedRevision: protocol!.revision}
           : {_csrf: csrfToken, action, projectId, ...(protocol === null ? {} : {protocolId: protocol.id, expectedRevision: protocol.revision}), definition});
       if (result.simulation !== undefined) setSimulation(result.simulation);
@@ -105,7 +105,7 @@ export function DeliveryProtocolEditor({projectId, protocol, csrfToken}: {
       <button className="fcp-secondary" disabled={!editable || busy || !changed} onClick={() => void request('draft')}><Save aria-hidden="true" size={16}/>Сохранить черновик</button>
       <button className="fcp-secondary" disabled={!editable || busy} onClick={() => void request('simulate')}><CheckCircle2 aria-hidden="true" size={16}/>Проверить</button>
       <button className="fcp-primary-button" disabled={!editable || busy || simulation?.valid !== true} onClick={() => void request('publish')}><Send aria-hidden="true" size={16}/>Опубликовать</button>
-    </> : protocol.state === 'published' && !protocol.active ? <button className="fcp-primary-button" disabled={csrfToken === null || busy} onClick={() => void request('activate')}><Play aria-hidden="true" size={16}/>Активировать</button> : <p className="fcp-muted">Опубликованная версия неизменяема и используется как текущая.</p>}</div>
+    </> : protocol.state === 'published' && !protocol.active ? <button className="fcp-primary-button" disabled={csrfToken === null || busy} onClick={() => void request('activate')}><Play aria-hidden="true" size={16}/>Активировать</button> : protocol.state === 'published' ? <><button className="fcp-primary-button" disabled={csrfToken === null || busy} onClick={() => void request('create_revision')}><Save aria-hidden="true" size={16}/>Создать черновик изменений</button><p className="fcp-muted">Активная версия останется неизменной до публикации и активации новой.</p></> : <p className="fcp-muted">Архивная версия доступна только для чтения.</p>}</div>
     {changed ? <p className="fcp-diff"><strong>Изменения</strong> {definition?.stages.filter((stage, index) => !same(stage, original?.stages[index])).map((stage) => stage.name).join(', ') || 'Нет изменений этапов'}</p> : null}
     {simulation === undefined ? null : <p className={`fcp-command-notice ${simulation.valid ? 'success' : 'error'}`}>{simulation.valid ? `Проверка пройдена · ${simulation.simulationHash.slice(0, 12)}` : simulation.violations.join(' ')}</p>}
     {notice === null ? null : <p className={`fcp-command-notice ${notice.tone}`}>{notice.text}</p>}

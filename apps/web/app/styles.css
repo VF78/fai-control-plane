@@ -374,6 +374,8 @@ code { color: #4f5a4f; }
 .fcp-board-card > div span { color: #424a53; font-size: 11px; font-weight: 600; }
 .fcp-board-card > div small { color: #656d76; font-size: 11px; line-height: 1.35; }
 .fcp-board-empty { color: #8c959f; font-size: 11px; padding: 10px 4px; text-align: center; }
+.fcp-board-more { background: #f6f8fa; border: 1px dashed #afb8c1; border-radius: 6px; color: #0969da; font-size: 11px; line-height: 1.45; padding: 9px 10px; text-align: center; text-decoration: none; }
+.fcp-board-more:hover { border-color: #0969da; text-decoration: none; }
 
 .fcp-protocol-flow { display: grid; gap: 12px; grid-auto-columns: minmax(180px, 240px); grid-auto-flow: column; grid-template-rows: 1fr; list-style: none; margin: 0; overflow-x: auto; padding: 2px 1px 14px; }
 .fcp-protocol-flow > li { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; display: flex; flex-direction: column; min-height: 260px; min-width: 180px; padding: 13px; position: relative; }
@@ -411,7 +413,7 @@ code { color: #4f5a4f; }
 .fcp-main { margin: 0; max-width: 1440px; padding: 24px; width: 100%; }.fcp-page-title, .fcp-project-title { margin-bottom: 20px; }.fcp-page-title h1, .fcp-project-title h1 { font-size: 28px; }.fcp-tabs { background: #fff; margin-left: -24px; margin-right: -24px; padding-left: 24px; padding-right: 24px; }.fcp-tabs a[aria-current='page'] { border-bottom-color: #0969da; color: #1f2328; }
 .fcp-list, .fcp-summary, .fcp-portfolio-metrics, .fcp-blank { background: #fff; border-color: #d0d7de; border-radius: 6px; box-shadow: 0 1px 0 rgba(27, 31, 36, .04); }.fcp-row:hover, .fcp-portfolio-metrics > header { background: #f6f8fa; }.fcp-crumbs { margin-bottom: 10px; }
 @media (max-width: 1023px) { .fcp-shell-layout { display: block; }.fcp-sidebar { display: none; }.fcp-topbar { gap: 14px; padding: 0 20px; }.fcp-mobile-brand { color: #1f2328; display: inline-flex; flex: 0 0 auto; font-size: 14px; font-weight: 600; text-decoration: none; }.fcp-mobile-projects { display: grid; margin-left: auto; width: 202px; }.fcp-mobile-menu { display: block; position: relative; }.fcp-mobile-menu summary { align-items: center; border: 1px solid #d0d7de; border-radius: 6px; cursor: pointer; display: flex; height: 32px; justify-content: center; list-style: none; width: 32px; }.fcp-mobile-menu summary::-webkit-details-marker { display: none; }.fcp-mobile-menu[open] summary { background: #f6f8fa; }.fcp-mobile-menu nav { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; box-shadow: 0 8px 24px rgba(140, 149, 159, .2); display: grid; gap: 2px; padding: 6px; position: absolute; right: 0; top: 40px; width: 240px; }.fcp-mobile-menu nav a { align-items: center; border-radius: 6px; color: #1f2328; display: flex; font-size: 14px; gap: 9px; min-height: 34px; padding: 4px 7px; text-decoration: none; }.fcp-mobile-menu nav a:hover, .fcp-mobile-menu nav a[aria-current='page'] { background: #f6f8fa; text-decoration: none; }.fcp-mobile-menu nav a[aria-current='page'] { color: #0969da; font-weight: 600; }.fcp-main { padding: 20px; }.fcp-tabs { margin-left: -20px; margin-right: -20px; padding-left: 20px; padding-right: 20px; } }
-@media (max-width: 480px) { .fcp-topbar { gap: 8px; padding: 0 12px; }.fcp-topbar > strong { display: none; }.fcp-mobile-brand { font-size: 0; width: 24px; }.fcp-mobile-brand::before { content: 'f(AI)'; font-size: 13px; }.fcp-mobile-projects { flex: 1; max-width: 216px; width: auto; }.fcp-main { padding: 16px 12px 28px; }.fcp-page-title h1, .fcp-project-title h1 { font-size: 24px; }.fcp-tabs { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; } }
+@media (max-width: 480px) { .fcp-topbar { gap: 8px; padding: 0 12px; }.fcp-topbar > strong { display: none; }.fcp-mobile-brand { font-size: 0; justify-content: center; width: 32px; }.fcp-mobile-brand::before { content: 'f(AI)'; font-size: 13px; white-space: nowrap; }.fcp-mobile-projects { flex: 1; max-width: 216px; width: auto; }.fcp-main { padding: 16px 12px 28px; }.fcp-page-title h1, .fcp-project-title h1 { font-size: 24px; }.fcp-tabs { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; } }
 
 /* Final shell precedence for the approved project-first hierarchy. */
 .fcp-shell-layout { grid-template-columns: 236px minmax(0, 1fr); }
@@ -533,6 +535,13 @@ code { color: #4f5a4f; }
 .fcp-project-intake-form { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .fcp-project-intake-form > label, .fcp-project-intake-form fieldset { display: grid; gap: 6px; min-width: 0; }
 .fcp-project-intake-form fieldset { border: 1px solid #d0d7de; border-radius: 6px; grid-column: 1 / -1; padding: 12px; }
+.fcp-project-intake-details { border: 1px solid #d0d7de; border-radius: 6px; grid-column: 1 / -1; overflow: hidden; }
+.fcp-project-intake-details > summary { align-items: center; background: #f6f8fa; cursor: pointer; display: flex; font-size: 13px; font-weight: 600; gap: 10px; justify-content: space-between; list-style-position: inside; padding: 11px 12px; }
+.fcp-project-intake-details > summary span { color: #656d76; font-size: 11px; font-weight: 400; }
+.fcp-project-intake-details[open] > summary { border-bottom: 1px solid #d0d7de; }
+.fcp-project-intake-details fieldset { border: 0; border-radius: 0; padding: 12px; }
+.fcp-project-intake-options { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; }
+.fcp-project-intake-options label { display: grid; gap: 6px; min-width: 0; }
 .fcp-project-member-row { display: grid; gap: 8px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
 .fcp-project-intake-form > button, .fcp-project-intake-form > small { grid-column: 1 / -1; }
 .fcp-setup-detail dl { display: grid; gap: 1px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin: 20px 0; }
@@ -554,6 +563,8 @@ code { color: #4f5a4f; }
 @media (max-width: 480px) {
   .fcp-project-intake-grid, .fcp-project-intake-form { grid-template-columns: 1fr; }
   .fcp-project-member-row { grid-template-columns: 1fr; }
+  .fcp-project-intake-options { grid-template-columns: 1fr; }
+  .fcp-project-intake-details > summary { align-items: flex-start; flex-direction: column; gap: 2px; }
   .fcp-plan-source-form { grid-template-columns: minmax(0, 1fr); }.fcp-plan-source-form label, .fcp-plan-source-form label:last-of-type, .fcp-plan-source-form button { grid-column: 1; }.fcp-plan-sources summary, .fcp-plan-approval, .fcp-plan-approved { align-items: flex-start; flex-direction: column; }.fcp-plan-actions button, .fcp-plan-approval button { justify-content: center; width: 100%; }.fcp-plan-json textarea { font-size: 11px; }.fcp-plan-step > header { gap: 9px; }
 }
 

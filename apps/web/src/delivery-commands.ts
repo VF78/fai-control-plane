@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {defaultDeliveryProtocolDefinition, validateDeliveryProtocolDefinition, type DeliveryEvidenceReference, type DeliveryProtocolDefinition} from '@fai-control-plane/domain';
 import {requireOperatorSession} from './operator-auth-runtime';
 import {getDeliveryRuntime} from './delivery-runtime';
@@ -19,6 +19,13 @@ const protocolDefinition = (value: unknown): DeliveryProtocolDefinition | null =
   const parsed = validateDeliveryProtocolDefinition(value); return parsed.ok ? parsed.value : null;
 };
 const receipt = (value: {receipt: {commandId: string; commandType: string}}) => ({receipt: {commandId: value.receipt.commandId, commandType: value.receipt.commandType}});
+const revisionProtocolId = (projectId: string, protocolId: string, revision: number): string => {
+  const value = createHash('sha256').update(`delivery-protocol-revision:v1:${projectId}:${protocolId}:${revision}`).digest('hex').slice(0, 32).split('');
+  value[12] = '4';
+  value[16] = ((Number.parseInt(value[16]!, 16) & 3) | 8).toString(16);
+  const hex = value.join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
 export type DeliveryCommandDependencies = Readonly<{
   requireSession: typeof requireOperatorSession;
   getRuntime: typeof getDeliveryRuntime;
@@ -40,6 +47,15 @@ export async function deliveryProtocolCommand(request: Request, overrides: Deliv
   try {
     if (body.action === 'create_default' && exact(body, ['_csrf', 'action', 'projectId'])) {
       const result = await runtime.protocol.execute({...base, idempotencyKey: `delivery_protocol.draft.v1:${body.projectId}`, type: 'delivery_protocol.draft', payload: {protocolId: overrides.nextId(), projectId: body.projectId, name: 'Default delivery protocol', expectedRevision: null, definition: defaultDeliveryProtocolDefinition()}});
+      return 'receipt' in result ? Response.json(receipt(result), {headers: noStore}) : invalid(result.error.message, 409);
+    }
+    if (body.action === 'create_revision' && exact(body, ['_csrf', 'action', 'projectId', 'protocolId', 'expectedRevision']) && typeof body.protocolId === 'string' && UUID.test(body.protocolId) && Number.isInteger(body.expectedRevision) && (body.expectedRevision as number) > 0) {
+      const expectedRevision = body.expectedRevision as number;
+      const current = await runtime.protocol.get({workspaceId: base.workspaceId, protocolId: body.protocolId, actor: actor.value});
+      if (current === null || current.projectId !== body.projectId) return invalid('not_found', 404);
+      if (current.state !== 'published' || !current.active || current.revision !== expectedRevision) return invalid('active_protocol_changed', 409);
+      const protocolId = revisionProtocolId(body.projectId, current.id, current.revision);
+      const result = await runtime.protocol.execute({...base, idempotencyKey: `delivery_protocol.revision.v1:${current.id}:${current.revision}`, type: 'delivery_protocol.draft', payload: {protocolId, projectId: body.projectId, name: current.name, expectedRevision: null, definition: current.definition}});
       return 'receipt' in result ? Response.json(receipt(result), {headers: noStore}) : invalid(result.error.message, 409);
     }
     if ((body.action === 'draft' || body.action === 'simulate') && exact(body, ['_csrf', 'action', 'projectId', 'protocolId', 'expectedRevision', 'definition']) && typeof body.protocolId === 'string' && UUID.test(body.protocolId) && Number.isInteger(body.expectedRevision) && (body.expectedRevision as number) > 0) {

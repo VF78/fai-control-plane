@@ -6,6 +6,7 @@ import type {PolicySimulationResult} from '@fai-control-plane/domain';
 import type {RunsData} from './operator-data';
 
 type Packet = RunsData['packets'][number];
+const decisionLabel = (value: string) => ({allow: 'Разрешено', ask: 'Нужно подтверждение', deny: 'Запрещено'}[value] ?? value);
 
 export function TaskPacketConfirmationControls({
   packet,
@@ -46,12 +47,12 @@ export function TaskPacketConfirmationControls({
         }
       );
       if (!response.ok) {
-        setMessage('The policy simulation was not available.');
+        setMessage('Симуляция правила недоступна.');
         return;
       }
       setSimulation(await response.json() as PolicySimulationResult);
     } catch {
-      setMessage('The policy simulation was not available.');
+      setMessage('Симуляция правила недоступна.');
     } finally {
       setSimulationPending(false);
     }
@@ -80,10 +81,10 @@ export function TaskPacketConfirmationControls({
         return;
       }
       setMessage(response.status === 409
-        ? 'The queue action changed. Refresh and review the current policy preview.'
-        : 'The packet was not queued.');
+        ? 'Условия запуска изменились. Обновите страницу и снова проверьте решение.'
+        : 'Пакет не поставлен в очередь.');
     } catch {
-      setMessage('The packet was not queued.');
+      setMessage('Пакет не поставлен в очередь.');
     } finally {
       setPending(false);
     }
@@ -93,11 +94,11 @@ export function TaskPacketConfirmationControls({
     return packet.nonRunnableReason === null ? null : <p className="packet-state">{packet.nonRunnableReason}</p>;
   }
   if (!enabled || csrfToken === null) {
-    return <p className="packet-state">An authenticated operator session is required.</p>;
+    return <p className="packet-state">Нужна авторизованная сессия оператора.</p>;
   }
   return <>{packet.runnable || packet.nonRunnableReason === null ? null : <p className="packet-state">{packet.nonRunnableReason}</p>}
   <div className="packet-confirmation">
-    <label className="packet-profile"><span>Enabled runtime profile</span><select
+    <label className="packet-profile"><span>Профиль исполнителя</span><select
       disabled={pending}
       onChange={(event) => {
         setAgentProfileId(event.target.value);
@@ -109,34 +110,34 @@ export function TaskPacketConfirmationControls({
       {profile.name} · {profile.runtimeId}
     </option>)}</select></label>
     <button disabled={!canSimulate} onClick={() => void simulate()} type="button">
-      {simulationPending ? 'Simulating' : 'Simulate policy'}
+      {simulationPending ? 'Проверяем…' : 'Проверить правило'}
     </button>
     {simulation === null ? null : <dl className="packet-facts simulation-result" style={{gridColumn: '1 / -1'}}>
-      <div><dt>Decision</dt><dd>{simulation.decision}</dd></div>
-      <div><dt>Evaluator</dt><dd>{simulation.evaluatorVersion}</dd></div>
-      <div><dt>Policy</dt><dd>v{simulation.policyVersion}</dd></div>
-      <div><dt>Simulation hash</dt><dd><code>{simulation.simulationHash}</code></dd></div>
-      <div><dt>Context hash</dt><dd><code>{simulation.contextHash}</code></dd></div>
-      <div><dt>Missing context</dt><dd>{simulation.missingContext.length === 0 ? 'None' : simulation.missingContext.join(', ')}</dd></div>
+      <div><dt>Решение</dt><dd>{decisionLabel(simulation.decision)}</dd></div>
+      <div><dt>Версия проверки</dt><dd>{simulation.evaluatorVersion}</dd></div>
+      <div><dt>Правило</dt><dd>v{simulation.policyVersion}</dd></div>
+      <div><dt>Hash симуляции</dt><dd><code>{simulation.simulationHash}</code></dd></div>
+      <div><dt>Hash контекста</dt><dd><code>{simulation.contextHash}</code></dd></div>
+      <div><dt>Недостающий контекст</dt><dd>{simulation.missingContext.length === 0 ? 'Всё зафиксировано' : simulation.missingContext.join(', ')}</dd></div>
     </dl>}
     {preview == null ? null : <><dl className="packet-facts" style={{gridColumn: '1 / -1'}}>
-      <div><dt>Decision</dt><dd>{preview.decision}</dd></div>
-      <div><dt>Policy version</dt><dd>v{preview.policyVersion}</dd></div>
-      <div><dt>Policy tuple</dt><dd>{preview.actorType} · {preview.actionCategory} · {preview.surface} · {preview.environment}</dd></div>
-      <div><dt>Action hash</dt><dd><code>{preview.actionHash}</code></dd></div>
-      <div><dt>Base commit</dt><dd><code>{preview.baseCommit}</code></dd></div>
-      <div><dt>Stop factors</dt><dd>{preview.stopFactors.length === 0 ? 'None' : preview.stopFactors.join(' ')}</dd></div>
+      <div><dt>Решение</dt><dd>{decisionLabel(preview.decision)}</dd></div>
+      <div><dt>Версия правила</dt><dd>v{preview.policyVersion}</dd></div>
+      <div><dt>Контекст</dt><dd>{preview.actorType} · {preview.actionCategory} · {preview.surface} · {preview.environment}</dd></div>
+      <div><dt>Hash действия</dt><dd><code>{preview.actionHash}</code></dd></div>
+      <div><dt>Базовый commit</dt><dd><code>{preview.baseCommit}</code></dd></div>
+      <div><dt>Стоп-факторы</dt><dd>{preview.stopFactors.length === 0 ? 'Нет' : preview.stopFactors.join(' ')}</dd></div>
     </dl>
     <label className="packet-acknowledgement"><input
       checked={acknowledged}
       disabled={pending}
       onChange={(event) => setAcknowledged(event.target.checked)}
       type="checkbox"
-    /><span>Required human confirmation: I confirm the exact packet hash <code>{preview.requiredHumanPacketHash}</code>.</span></label>
+    /><span>Подтверждаю точный hash пакета <code>{preview.requiredHumanPacketHash}</code>.</span></label>
     <button disabled={!canConfirm} onClick={() => void confirm()} type="button">
-      {pending ? 'Queueing' : 'Confirm and queue'}
+      {pending ? 'Ставим в очередь…' : 'Подтвердить и поставить в очередь'}
     </button>
-    {!canQueue ? <p className="packet-message">Only the recorded packet approver can queue this packet.</p> : null}
+    {!canQueue ? <p className="packet-message">Пакет может запустить только зафиксированный утверждающий.</p> : null}
     </>}
     {message === null ? null : <p aria-live="polite" className="packet-message">{message}</p>}
   </div></>;

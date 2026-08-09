@@ -49,3 +49,30 @@ it('returns a receipt only when the canonical draft command persisted', async ()
   await expect(success.json()).resolves.toEqual({receipt: {commandId, commandType: 'delivery_protocol.draft'}});
   expect(failure.status).toBe(409);
 });
+
+it('creates an immutable-source draft revision without mutating the active protocol', async () => {
+  const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId, commandType: 'delivery_protocol.draft'}});
+  const get = vi.fn().mockResolvedValue({
+    id: commandId, projectId, name: 'Delivery', version: 3, revision: 5,
+    state: 'published', active: true,
+    definition: {schemaVersion: 1, stages: []}
+  });
+  const deps: DeliveryCommandDependencies = {
+    requireSession: authorized(), nextId: () => commandId,
+    getRuntime: async () => ({
+      actor: async () => ({ok: true, value: {} as never}),
+      protocol: {execute, get, simulate: vi.fn()}, journey: {} as never
+    } as never)
+  };
+  const response = await deliveryProtocolCommand(request({
+    _csrf: 'csrf', action: 'create_revision', projectId, protocolId: commandId, expectedRevision: 5
+  }), deps);
+  expect(response.status).toBe(200);
+  expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+    type: 'delivery_protocol.draft',
+    payload: expect.objectContaining({
+      projectId, name: 'Delivery', expectedRevision: null,
+      protocolId: expect.stringMatching(/^[0-9a-f-]{36}$/)
+    })
+  }));
+});

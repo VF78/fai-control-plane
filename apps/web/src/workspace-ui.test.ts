@@ -110,13 +110,17 @@ it('renders a dynamic authorized project card, manager intake, and resumable set
   expect(projectsMarkup).toContain('/projects/dynamic-project/setup');
   expect(projectsMarkup).toContain('action="/api/projects"');
   expect(projectsMarkup).toContain('Создать проект');
+  expect(projectsMarkup).toContain('Участники и роли');
+  expect(projectsMarkup).toContain('Можно настроить позже');
   const detailMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'dynamic-project', 'setup'], {})!,
     data: {...base, project: {state: 'ready', data: project}} as unknown as WorkspaceData}));
   expect(detailMarkup).toContain('Владелец продукта');
   expect(detailMarkup).toContain('Состояние: Неизвестно');
   expect(detailMarkup).not.toContain('PO + Developer');
   expect(detailMarkup).toContain('Ожидает настройки');
-  expect(detailMarkup).toContain('Внешние ресурсы не считаются готовыми');
+  expect(detailMarkup).toContain('Создать управляемый');
+  expect(detailMarkup).toContain('Связать существующий');
+  expect(detailMarkup).not.toContain('observation-backed');
   expect(detailMarkup).not.toContain('Все обязательные ресурсы подтверждены');
 });
 
@@ -251,6 +255,7 @@ it('keeps the web-first workspace IA and honest unavailable state', () => {
   expect(markup).toContain('Рабочие разделы');
   expect(markup).toContain('Контроль');
   expect(markup).toContain('Настройки');
+  expect(markup).not.toContain('Изменение проекта и интеграций — следующий этап');
   expect(markup).not.toContain('Все проекты');
   expect(markup).toContain('Нет доступных проектов');
   expect(markup).not.toContain('Provider ID');
@@ -454,6 +459,27 @@ it('renders a project-specific board with journey responsibility and no cross-pr
   expect(markup).toContain('href="/projects/msa/tasks/task-active"');
   expect(markup).not.toContain('name="project"');
   expect(markup).not.toContain('All projects');
+});
+
+it('bounds the completed column by default and keeps an explicit full completed view', () => {
+  const observedAt = new Date('2026-07-30T12:00:00.000Z');
+  const workItems = Array.from({length: 25}, (_, index) => ({
+    id: `done-${index}`, title: `Completed task ${index}`, summary: null, status: 'done' as const,
+    blocked: false, owner: 'Vladimir', updatedAt: observedAt, externalUrl: null,
+    canBuildPacket: false, handoff: null
+  }));
+  const project = {project: {id: 'msa', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const,
+    description: null, defaultBranch: 'main', updatedAt: observedAt}, agentProfiles: [], snapshot: null,
+    synchronizedAt: observedAt, protocol: null, workItems};
+  const data = {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'},
+    project: {state: 'ready', data: project}, runs: null, health: null, projectIndex: [project]} as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'tasks'], {})!, data
+  }));
+  expect(markup).toContain('Completed task 19');
+  expect(markup).not.toContain('Completed task 20');
+  expect(markup).toContain('Показаны последние 20 из 25');
+  expect(markup).toContain('/projects/msa/tasks?status=done');
 });
 
 it('derives unassigned task responsibility from the active protocol without fabricating a provider assignee', () => {
@@ -848,7 +874,7 @@ it('renders project membership and provider-confirmed grant facts in the access 
   expect(markup).toContain('github');
   expect(markup).toContain('href="/projects/msa/access/actor-1"');
   expect(markup).toContain('Доступ клиента');
-  expect(markup).toContain('Sharing applies only to MSA');
+  expect(markup).toContain('Ссылка ограничена проектом MSA');
   expect(markup).toContain('Запросы доступа');
   expect(markup).toContain('Управляемые заявки рабочей области');
   expect(markup).toContain('action="/api/access/memberships/membership-1"');
@@ -971,7 +997,7 @@ it('keeps the governed task to receipt journey inside project task and run detai
   const taskMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: taskRoute, data: shellData(baseTask, emptyRuns)
   }));
-  expect(taskMarkup).toContain('Build Task Packet');
+  expect(taskMarkup).toContain('Собрать пакет задачи');
   expect(taskMarkup).toContain('Собрать пакет из текущей канонической версии задачи.');
   expect(taskMarkup).not.toContain('/runs?');
 
@@ -998,10 +1024,10 @@ it('keeps the governed task to receipt journey inside project task and run detai
     route: taskRoute,
     data: shellData({...baseTask, canBuildPacket: false, handoff: {label: 'Packet needs confirmation', state: 'queued', kind: 'packet', targetId: packetId, href: `/projects/msa/tasks/${taskId}#packet-${packetId}`}}, {...emptyRuns, packets: [packet]})
   }));
-  expect(packetMarkup).toContain('Frozen task version');
-  expect(packetMarkup).toContain('Simulate policy');
-  expect(packetMarkup).toContain('Required human confirmation');
-  expect(packetMarkup).toContain('Confirm and queue');
+  expect(packetMarkup).toContain('зафиксирована v3');
+  expect(packetMarkup).toContain('Проверить правило');
+  expect(packetMarkup).toContain('Подтверждаю точный hash пакета');
+  expect(packetMarkup).toContain('Подтвердить и поставить в очередь');
 
   const queuedRun = {
     id: runId, project: 'MSA', projectSlug: 'msa', workItemId: taskId, workItem: 'Governed delivery',
@@ -1013,7 +1039,7 @@ it('keeps the governed task to receipt journey inside project task and run detai
   const queuedMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [queuedRun]})
   }));
-  expect(queuedMarkup).toContain('Cancel queued run');
+  expect(queuedMarkup).toContain('Отменить запуск в очереди');
   expect(queuedMarkup).toContain('Ожидать безопасного получения задания исполнителем или отменить запуск до начала.');
 
   const completedRun = {
@@ -1061,7 +1087,8 @@ it('renders immutable protocol stages and persisted journey responsibility/evide
   } as unknown as WorkspaceData;
   const protocol = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'protocol', project: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
   const task = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
-  expect(protocol).toContain('Опубликованная версия неизменяема');
+  expect(protocol).toContain('Активная версия останется неизменной');
+  expect(protocol).toContain('Создать черновик изменений');
   expect(protocol).toContain('Разработка');
   expect(protocol).toContain('Изменения реализации');
   expect(protocol).not.toContain('canonical commands');

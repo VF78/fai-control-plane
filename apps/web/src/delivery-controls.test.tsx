@@ -50,6 +50,8 @@ describe('manager protocol terminology', () => {
     expect(markup).toContain('Исполнитель');
     expect(markup).toContain('Изменения реализации');
     expect(markup).toContain('Завершение');
+    expect(markup).toContain('Создать черновик изменений');
+    expect(markup).toContain('Активная версия останется неизменной');
     expect(markup).not.toContain('Published delivery protocol stages');
     expect(markup).not.toContain('Configured agent');
   });
