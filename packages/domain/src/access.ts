@@ -10,6 +10,16 @@ export const projectMembershipRoles = [
 ] as const;
 export type ProjectMembershipRole = (typeof projectMembershipRoles)[number];
 
+export const actorOnboardingRolesAreCompatible = (input: Readonly<{
+  actorType: 'human' | 'agent';
+  actorRole: 'delivery_lead' | 'developer' | 'agent_operator';
+  membershipRole: ProjectMembershipRole;
+  hasAgentProfile: boolean;
+}>): boolean => input.actorType === 'agent'
+  ? input.actorRole === 'agent_operator' && input.membershipRole === 'agent' && input.hasAgentProfile
+  : input.actorRole !== 'agent_operator' &&
+    !['agent', 'workspace_owner'].includes(input.membershipRole) && !input.hasAgentProfile;
+
 export const accessResourceTypes = [
   'repository',
   'tracker',

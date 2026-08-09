@@ -134,6 +134,7 @@ class FakeUnitOfWork implements UnitOfWork {
   approvalCalls = 0;
   runtimeAvailable = true;
   accessAdmin = true;
+  onboardingConflict: 'project_not_found' | 'duplicate' | null = null;
 
   async executeCommand<T>(claim: CommandReceiptClaim, work: (
     transaction: CanonicalCommandTransaction, claimToken: ReceiptClaimToken
@@ -171,6 +172,7 @@ class FakeUnitOfWork implements UnitOfWork {
       loadAccessRequest: async (_token, value) => this.accessRequests.get(value) ?? null,
       loadProjectMembership: async (_token, value) =>
         this.projectMemberships.get(value) ?? null,
+      loadActorOnboardingConflict: async () => this.onboardingConflict,
       loadActorExternalIdentity: async (_token, value) =>
         this.actorExternalIdentities.get(value) ?? null,
       loadRetirableAgent: async (_token, value) =>
@@ -1169,5 +1171,84 @@ describe('canonical command service', () => {
     });
     expect(uow.retirableAgents.get(agentId)?.disabledAt).toBeNull();
     expect(uow.mutations).toHaveLength(0);
+  });
+
+  it('authorizes and atomically describes agent onboarding with replay and duplicate denial', async () => {
+    const uow = new FakeUnitOfWork();
+    const payload = {
+      actorId: id(), membershipId: id(), projectId, actorType: 'agent' as const,
+      displayName: 'Codex QA', actorRole: 'agent_operator' as const,
+      membershipRole: 'agent' as const,
+      agentProfile: {
+        profileId: id(), registrationId: id(), runtimeId: 'codex',
+        runtimeProfile: 'read_safe', runtimeKey: 'codex-qa',
+        configHash: hashAgentProfileConfiguration({
+          runtimeId: 'codex', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [],
+          instructions: DEFAULT_AGENT_INSTRUCTIONS, settings: DEFAULT_AGENT_SETTINGS,
+          enabled: true, version: 1
+        })
+      }
+    };
+    const onboard = command('actor.onboard', payload);
+    const service = serviceFor(uow);
+    await expect(service.execute(onboard)).resolves.toMatchObject({
+      status: 'completed', receipt: {aggregateType: 'actor_onboarding', resultVersion: 1, result: {ok: true}}
+    });
+    await expect(service.execute(onboard)).resolves.toMatchObject({status: 'replayed'});
+    expect(uow.mutations).toHaveLength(1);
+    expect(uow.mutations[0]).toMatchObject({mutation: {aggregate: {
+      actorType: 'agent', membership: {role: 'agent'},
+      agentProfile: {
+        configHash: payload.agentProfile.configHash,
+        registration: {provider: 'provider_neutral'}
+      }
+    }}});
+
+    const duplicate = new FakeUnitOfWork();
+    duplicate.onboardingConflict = 'duplicate';
+    await expect(serviceFor(duplicate).execute(command('actor.onboard', {...payload, actorId: id()})))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    duplicate.accessAdmin = false;
+    duplicate.onboardingConflict = null;
+    await expect(serviceFor(duplicate).execute(command('actor.onboard', {...payload, actorId: id()})))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}});
+    expect(duplicate.mutations).toHaveLength(0);
+  });
+
+  it.each([
+    ['runtime id over 128', {runtimeId: 'r'.repeat(129)}],
+    ['runtime profile over 128', {runtimeProfile: 'p'.repeat(129)}],
+    ['runtime key over 256', {runtimeKey: 'k'.repeat(257)}],
+    ['secret-like runtime key', {runtimeKey: `github_pat_${'a'.repeat(24)}`}],
+    ['non-canonical runtime key', {runtimeKey: 'codex qa'}]
+  ])('rejects onboarding with %s at the canonical boundary', async (_label, runtimeOverride) => {
+    const profile = {runtimeId: 'codex', runtimeProfile: 'read_safe', runtimeKey: 'codex-qa', ...runtimeOverride};
+    const configHash = hashAgentProfileConfiguration({
+      runtimeId: profile.runtimeId, runtimeProfile: profile.runtimeProfile,
+      allowedTools: [], forbiddenSurfaces: [], instructions: DEFAULT_AGENT_INSTRUCTIONS,
+      settings: DEFAULT_AGENT_SETTINGS, enabled: true, version: 1
+    });
+    const uow = new FakeUnitOfWork();
+    await expect(serviceFor(uow).execute(command('actor.onboard', {
+      actorId: id(), membershipId: id(), projectId, actorType: 'agent',
+      displayName: 'Bounded agent', actorRole: 'agent_operator', membershipRole: 'agent',
+      agentProfile: {profileId: id(), registrationId: id(), ...profile, configHash}
+    }))).resolves.toMatchObject({status: 'rejected'});
+    expect(uow.executions).toBe(0);
+    expect(uow.mutations).toHaveLength(0);
+  });
+
+  it('rejects an onboarding profile hash that omits the initial version', async () => {
+    const uow = new FakeUnitOfWork();
+    await expect(serviceFor(uow).execute(command('actor.onboard', {
+      actorId: id(), membershipId: id(), projectId, actorType: 'agent',
+      displayName: 'Unversioned hash', actorRole: 'agent_operator', membershipRole: 'agent',
+      agentProfile: {
+        profileId: id(), registrationId: id(), runtimeId: 'codex',
+        runtimeProfile: 'read_safe', runtimeKey: 'codex-unversioned',
+        configHash: 'a'.repeat(64)
+      }
+    }))).resolves.toMatchObject({status: 'rejected'});
+    expect(uow.executions).toBe(0);
   });
 });

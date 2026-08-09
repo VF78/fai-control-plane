@@ -248,6 +248,27 @@ it('renders only the fixed MSA and ASCON roster memberships in People & Access',
   expect(markup).not.toContain('Add person');
 });
 
+it('renders real authenticated onboarding forms only inside People and Agents management disclosure', () => {
+  const access = {
+    canRetireAgents: false,
+    actors: [{id: 'owner', displayName: 'Owner', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}],
+    memberships: [{projectId: '11111111-1111-4111-8111-111111111111', project: 'MSA', projectSlug: 'msa', actorId: 'owner', role: 'project_owner', active: true, version: 1, canManage: true}],
+    externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [],
+    sharing: {enabled: false, projects: [], grants: []}
+  };
+  const data = {portfolio: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [], csrfToken: 'csrf', access: {state: 'ready', data: access}} as unknown as WorkspaceData;
+  const people = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['people'], {})!, data}));
+  const agents = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['agents'], {project: 'msa'})!, data}));
+  for (const markup of [people, agents]) {
+    expect(markup).toContain('action="/api/access/onboarding"');
+    expect(markup).toContain('type="hidden" name="_csrf" value="csrf"');
+    expect(markup).not.toContain('подключение новых агентов запланировано');
+  }
+  expect(people).toContain('Добавить человека');
+  expect(agents).toContain('Управление · добавить агента');
+  expect(agents).toContain('Секреты и настройки провайдера не принимаются');
+});
+
 it('renders a project-specific board with journey responsibility and no cross-project task pile', () => {
   const observedAt = new Date('2026-07-30T12:00:00.000Z');
   const baseProject = {workspaceId: 'workspace-1', description: null, defaultBranch: 'main', updatedAt: observedAt};

@@ -11,6 +11,9 @@ import {
 import {
   canonicalJson,
   createActorContextIssuer,
+  DEFAULT_AGENT_INSTRUCTIONS,
+  DEFAULT_AGENT_SETTINGS,
+  hashAgentProfileConfiguration,
   type AccessLevel,
   type Capability,
   type ProjectMembershipRole
@@ -27,6 +30,19 @@ const enabledCapabilities = (capabilities: Record<string, boolean>): Capability[
 type MutationStatus = 'updated' | 'replayed' | 'forbidden' | 'not_found' | 'stale' | 'invalid';
 
 export type AccessManagementRuntime = Readonly<{
+  onboardActor(input: Readonly<{
+    workspaceId: string;
+    operatorActorId: string;
+    idempotencyKey: string;
+    projectId: string;
+    actorType: 'human' | 'agent';
+    displayName: string;
+    actorRole: 'delivery_lead' | 'developer' | 'agent_operator';
+    membershipRole: ProjectMembershipRole;
+    runtimeId?: string;
+    runtimeProfile?: string;
+    runtimeKey?: string;
+  }>): Promise<MutationStatus>;
   setMembership(input: Readonly<{
     workspaceId: string;
     operatorActorId: string;
@@ -50,7 +66,7 @@ const createRuntime = (db: Database): AccessManagementRuntime => {
     operatorActorId: string,
     input: Readonly<{
       idempotencyKey: string;
-      type: 'project_membership.set' | 'resource_access_grant.set';
+      type: 'project_membership.set' | 'resource_access_grant.set' | 'actor.onboard';
       payload: Record<string, unknown>;
     }>
   ): Promise<MutationStatus> => {
@@ -98,6 +114,33 @@ const createRuntime = (db: Database): AccessManagementRuntime => {
   };
 
   return {
+    async onboardActor(input) {
+      const seed = `${input.workspaceId}:${input.idempotencyKey}`;
+      const id = (kind: string): string => {
+        const hex = createHash('sha256').update(`${kind}:${seed}`).digest('hex').slice(0, 32);
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
+      };
+      const portable = input.actorType === 'agent' ? {
+        runtimeId: input.runtimeId!, runtimeProfile: input.runtimeProfile!,
+        allowedTools: [], forbiddenSurfaces: [], instructions: DEFAULT_AGENT_INSTRUCTIONS,
+        settings: DEFAULT_AGENT_SETTINGS, enabled: true, version: 1
+      } : null;
+      const agentProfile = portable === null ? null : {
+        profileId: id('profile'), registrationId: id('registration'),
+        runtimeId: portable.runtimeId, runtimeProfile: portable.runtimeProfile,
+        runtimeKey: input.runtimeKey!,
+        configHash: hashAgentProfileConfiguration(portable)
+      };
+      const payload = {
+        actorId: id('actor'), membershipId: id('membership'), projectId: input.projectId,
+        actorType: input.actorType, displayName: input.displayName,
+        actorRole: input.actorRole, membershipRole: input.membershipRole, agentProfile
+      };
+      return execute(input.workspaceId, input.operatorActorId, {
+        idempotencyKey: `actor.onboard.v1:${input.idempotencyKey}`,
+        type: 'actor.onboard', payload
+      });
+    },
     async setMembership(input) {
       const [binding] = await db.select({
         id: projectMemberships.id,

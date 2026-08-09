@@ -1,6 +1,8 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {
   computeApprovalActionHash,
+  DEFAULT_AGENT_INSTRUCTIONS,
+  DEFAULT_AGENT_SETTINGS,
   OPERATOR_CANCELLED_BEFORE_CLAIM,
   OPERATOR_RECOVERED_EXPIRED_LEASE
 } from '@fai-control-plane/domain';
@@ -344,6 +346,33 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.actorId, 'projectMembership.actorId');
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
+    case 'actor_onboarding':
+      uuid(mutation.aggregate.id, 'actorOnboarding.id');
+      uuid(mutation.aggregate.workspaceId, 'actorOnboarding.workspaceId');
+      uuid(mutation.aggregate.projectId, 'actorOnboarding.projectId');
+      uuid(mutation.aggregate.membership.id, 'actorOnboarding.membership.id');
+      invariant(mutation.expectedPersistedVersion === null && mutation.aggregate.version === 1,
+        'Actor onboarding must use insert mode.');
+      invariant(mutation.aggregate.membership.actorId === mutation.aggregate.id &&
+        mutation.aggregate.membership.projectId === mutation.aggregate.projectId &&
+        mutation.aggregate.membership.version === 1 && mutation.aggregate.membership.active,
+      'Actor onboarding membership must be active and bound to the actor and project.');
+      invariant(
+        (mutation.aggregate.actorType === 'human' && mutation.aggregate.agentProfile === null &&
+          mutation.aggregate.membership.role !== 'agent') ||
+        (mutation.aggregate.actorType === 'agent' && mutation.aggregate.actorRole === 'agent_operator' &&
+          mutation.aggregate.membership.role === 'agent' && mutation.aggregate.agentProfile !== null),
+        'Actor onboarding role and profile must match actor type.'
+      );
+      if (mutation.aggregate.agentProfile !== null) {
+        uuid(mutation.aggregate.agentProfile.id, 'actorOnboarding.profile.id');
+        uuid(mutation.aggregate.agentProfile.registration.id, 'actorOnboarding.registration.id');
+        invariant(mutation.aggregate.agentProfile.registration.actorId === mutation.aggregate.id &&
+          mutation.aggregate.agentProfile.registration.projectId === mutation.aggregate.projectId &&
+          mutation.aggregate.agentProfile.registration.agentProfileId === mutation.aggregate.agentProfile.id,
+        'Actor onboarding registration must be bound to its actor, project, and profile.');
+      }
+      break;
     case 'actor_external_identity':
       uuid(mutation.aggregate.id, 'actorExternalIdentity.id');
       uuid(mutation.aggregate.actorId, 'actorExternalIdentity.actorId');
@@ -457,7 +486,8 @@ const expectedAuditTarget = (
 });
 
 const mutationResultVersion = (mutation: CanonicalMutation): number =>
-  mutation.aggregateType === 'task_packet' || mutation.aggregateType === 'actor'
+  mutation.aggregateType === 'task_packet' || mutation.aggregateType === 'actor' ||
+    mutation.aggregateType === 'actor_onboarding'
     ? 1
     : mutation.aggregate.version;
 
@@ -733,6 +763,12 @@ const currentVersion = async (
           eq(schema.projects.workspaceId, workspaceId)
         ));
       return row?.version ?? null;
+    }
+    case 'actor_onboarding': {
+      const [row] = await tx.select({id: schema.actors.id}).from(schema.actors).where(and(
+        eq(schema.actors.id, mutation.aggregateId), eq(schema.actors.workspaceId, workspaceId)
+      ));
+      return row === undefined ? null : 1;
     }
     case 'actor_external_identity': {
       const [row] = await tx
@@ -1419,6 +1455,65 @@ const persistProjectMembership = async (
       };
 };
 
+const persistActorOnboarding = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'actor_onboarding'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  if (aggregate.workspaceId !== workspaceId ||
+    !await workspaceHasProject(tx, workspaceId, aggregate.projectId)) return {status: 'not_found'};
+  await tx.insert(schema.actors).values({
+    id: aggregate.id,
+    workspaceId,
+    type: aggregate.actorType,
+    role: aggregate.actorRole,
+    displayName: aggregate.displayName,
+    authMode: aggregate.actorType === 'human' ? 'user' : 'agent',
+    capabilities: {}
+  });
+  await tx.insert(schema.projectMemberships).values({
+    id: aggregate.membership.id,
+    projectId: aggregate.projectId,
+    actorId: aggregate.id,
+    role: aggregate.membership.role,
+    active: true,
+    version: 1
+  });
+  if (aggregate.agentProfile !== null) {
+    const profile = aggregate.agentProfile;
+    await tx.insert(schema.agentProfiles).values({
+      id: profile.id,
+      workspaceId,
+      actorId: aggregate.id,
+      runtimeId: profile.runtimeId,
+      runtimeProfile: profile.runtimeProfile,
+      allowedTools: [],
+      forbiddenSurfaces: [],
+      instructions: DEFAULT_AGENT_INSTRUCTIONS,
+      settings: DEFAULT_AGENT_SETTINGS,
+      enabled: true,
+      version: 1,
+      configHash: profile.configHash
+    });
+    await tx.insert(schema.runtimeRegistrations).values({
+      id: profile.registration.id,
+      projectId: aggregate.projectId,
+      actorId: aggregate.id,
+      agentProfileId: profile.id,
+      provider: profile.registration.provider,
+      runtimeKey: profile.registration.runtimeKey,
+      enabled: true,
+      version: 1
+    });
+  }
+  return {
+    status: 'persisted',
+    cas: {expectedPersistedVersion: null, persistedVersion: 1},
+    projectId: aggregate.projectId
+  };
+};
+
 const persistActorExternalIdentity = async (
   tx: Transaction,
   workspaceId: string,
@@ -1808,6 +1903,8 @@ const persistAggregate = (
       return persistAccessRequest(tx, workspaceId, mutation);
     case 'project_membership':
       return persistProjectMembership(tx, workspaceId, mutation);
+    case 'actor_onboarding':
+      return persistActorOnboarding(tx, workspaceId, mutation);
     case 'actor_external_identity':
       return persistActorExternalIdentity(tx, workspaceId, mutation);
     case 'actor':
@@ -2270,6 +2367,24 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             eq(schema.projects.workspaceId, state.claim.workspaceId)
           ));
           return row ?? null;
+        },
+
+        async loadActorOnboardingConflict(token, projectId, actorType, displayName) {
+          const state = requireClaim(token);
+          if (!isUuid(projectId) || !['human', 'agent'].includes(actorType) ||
+            displayName.length < 1 || displayName.length > 120) return 'project_not_found';
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtext(
+            ${state.claim.workspaceId} || ':' || ${actorType} || ':' || lower(${displayName})
+          ))`);
+          if (!await workspaceHasProject(tx, state.claim.workspaceId, projectId)) {
+            return 'project_not_found';
+          }
+          const [duplicate] = await tx.select({id: schema.actors.id}).from(schema.actors).where(and(
+            eq(schema.actors.workspaceId, state.claim.workspaceId),
+            eq(schema.actors.type, actorType),
+            sql`lower(${schema.actors.displayName}) = lower(${displayName})`
+          )).limit(1);
+          return duplicate === undefined ? null : 'duplicate';
         },
 
         async loadActorExternalIdentity(

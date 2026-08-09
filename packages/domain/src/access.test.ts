@@ -1,6 +1,16 @@
 import {randomUUID} from 'node:crypto';
 import {describe, expect, it} from 'vitest';
-import {explainEffectiveAccess} from './access.ts';
+import {actorOnboardingRolesAreCompatible, explainEffectiveAccess} from './access.ts';
+
+describe('actor onboarding role compatibility', () => {
+  it('requires agent-only role/profile pairing and rejects it for humans', () => {
+    expect(actorOnboardingRolesAreCompatible({actorType: 'agent', actorRole: 'agent_operator', membershipRole: 'agent', hasAgentProfile: true})).toBe(true);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'agent', actorRole: 'developer', membershipRole: 'agent', hasAgentProfile: true})).toBe(false);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'developer', membershipRole: 'agent', hasAgentProfile: false})).toBe(false);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'delivery_lead', membershipRole: 'workspace_owner', hasAgentProfile: false})).toBe(false);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'developer', membershipRole: 'contributor', hasAgentProfile: false})).toBe(true);
+  });
+});
 
 const id = () => randomUUID();
 
@@ -95,4 +105,3 @@ describe('effective access explanation', () => {
       .toEqual({level: 'none', allowed: false, reasons: ['policy_denied']});
   });
 });
-

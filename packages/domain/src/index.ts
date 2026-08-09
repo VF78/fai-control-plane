@@ -773,6 +773,26 @@ export type SetProjectMembershipCommand = CanonicalCommandEnvelope<
     expectedVersion: number | null;
   }>
 >;
+export type OnboardActorCommand = CanonicalCommandEnvelope<
+  'actor.onboard',
+  Readonly<{
+    actorId: string;
+    membershipId: string;
+    projectId: string;
+    actorType: 'human' | 'agent';
+    displayName: string;
+    actorRole: 'delivery_lead' | 'developer' | 'agent_operator';
+    membershipRole: ProjectMembershipRole;
+    agentProfile: null | Readonly<{
+      profileId: string;
+      registrationId: string;
+      runtimeId: string;
+      runtimeProfile: string;
+      runtimeKey: string;
+      configHash: string;
+    }>;
+  }>
+>;
 export type BindActorExternalIdentityCommand = CanonicalCommandEnvelope<
   'actor_external_identity.bind',
   Readonly<{
@@ -863,6 +883,7 @@ export type CanonicalCommand =
   | RequestAccessCommand
   | DecideAccessRequestCommand
   | SetProjectMembershipCommand
+  | OnboardActorCommand
   | BindActorExternalIdentityCommand
   | RetireActorCommand
   | SetResourceAccessGrantCommand
@@ -2344,6 +2365,29 @@ export type ActorExternalIdentityMutation = Readonly<{
   expectedPersistedVersion: number | null;
   aggregate: ActorExternalIdentity;
 }>;
+export type ActorOnboarding = Readonly<{
+  id: string;
+  workspaceId: string;
+  projectId: string;
+  actorType: 'human' | 'agent';
+  actorRole: 'delivery_lead' | 'developer' | 'agent_operator';
+  displayName: string;
+  membership: ProjectMembership;
+  agentProfile: null | Readonly<{
+    id: string;
+    runtimeId: string;
+    runtimeProfile: string;
+    configHash: string;
+    registration: RuntimeRegistration;
+  }>;
+  version: 1;
+}>;
+export type ActorOnboardingMutation = Readonly<{
+  aggregateType: 'actor_onboarding';
+  aggregateId: string;
+  expectedPersistedVersion: null;
+  aggregate: ActorOnboarding;
+}>;
 export type RetirableAgent = Readonly<{
   id: string;
   workspaceId: string;
@@ -2380,6 +2424,7 @@ export type CanonicalMutation =
   | ApprovalUpdateMutation
   | AccessRequestMutation
   | ProjectMembershipMutation
+  | ActorOnboardingMutation
   | ActorExternalIdentityMutation
   | ActorRetirementMutation
   | ResourceAccessGrantMutation
@@ -2481,6 +2526,12 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     membershipId: string
   ): Promise<ProjectMembership | null>;
+  loadActorOnboardingConflict?(
+    claimToken: ReceiptClaimToken,
+    projectId: string,
+    actorType: 'human' | 'agent',
+    displayName: string
+  ): Promise<'project_not_found' | 'duplicate' | null>;
   loadActorExternalIdentity(
     claimToken: ReceiptClaimToken,
     identityId: string

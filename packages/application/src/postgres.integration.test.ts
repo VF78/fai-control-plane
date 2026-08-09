@@ -2,8 +2,11 @@ import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {
   CURRENT_POLICY_VERSION,
+  DEFAULT_AGENT_INSTRUCTIONS,
+  DEFAULT_AGENT_SETTINGS,
   createActorContextIssuer,
   createTaskPacket,
+  hashAgentProfileConfiguration,
   type CanonicalCommand,
   type TaskPacketContent,
   type TrustedUserActorContext
@@ -1462,6 +1465,74 @@ describePostgres(
         eq(auditEvents.action, 'actor.retire'),
         eq(auditEvents.outcome, 'succeeded')
       ))).resolves.toHaveLength(1);
+    });
+
+    it('atomically onboards humans and agents, replays, rejects duplicates, and rolls back a late failure', async () => {
+      const onboardPayload = (name: string, overrides: Record<string, unknown> = {}) => ({
+        actorId: randomUUID(), membershipId: randomUUID(), projectId: fixture.projectId,
+        actorType: 'agent' as const, displayName: name, actorRole: 'agent_operator' as const,
+        membershipRole: 'agent' as const,
+        agentProfile: {
+          profileId: randomUUID(), registrationId: randomUUID(), runtimeId: 'codex',
+          runtimeProfile: 'read_safe', runtimeKey: name.toLowerCase().replaceAll(' ', '-'),
+          configHash: hashAgentProfileConfiguration({
+            runtimeId: 'codex', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [],
+            instructions: DEFAULT_AGENT_INSTRUCTIONS, settings: DEFAULT_AGENT_SETTINGS,
+            enabled: true, version: 1
+          })
+        },
+        ...overrides
+      });
+      const payload = onboardPayload(`Onboard ${randomUUID()}`);
+      const humanActorId = randomUUID();
+      const humanMembershipId = randomUUID();
+      await expect(service().execute(command(fixture.workspaceId, primaryActor, 'actor.onboard', {
+        actorId: humanActorId, membershipId: humanMembershipId, projectId: fixture.projectId,
+        actorType: 'human', displayName: `Human ${randomUUID()}`, actorRole: 'developer',
+        membershipRole: 'contributor', agentProfile: null
+      }))).resolves.toMatchObject({status: 'completed', receipt: {result: {ok: true, value: {profileId: null, registrationId: null}}}});
+      await expect(testDb.select({id: actors.id, type: actors.type}).from(actors).where(eq(actors.id, humanActorId)))
+        .resolves.toEqual([{id: humanActorId, type: 'human'}]);
+      await expect(testDb.select({id: projectMemberships.id}).from(projectMemberships).where(eq(projectMemberships.id, humanMembershipId)))
+        .resolves.toEqual([{id: humanMembershipId}]);
+      await expect(testDb.select({id: agentProfiles.id}).from(agentProfiles).where(eq(agentProfiles.actorId, humanActorId)))
+        .resolves.toEqual([]);
+      const first = command(fixture.workspaceId, primaryActor, 'actor.onboard', payload, `onboard-${randomUUID()}`);
+      await expect(service().execute(first)).resolves.toMatchObject({status: 'completed', receipt: {result: {ok: true}}});
+      await expect(service().execute(first)).resolves.toMatchObject({status: 'replayed'});
+      await expect(testDb.select({id: actors.id}).from(actors).where(eq(actors.id, payload.actorId))).resolves.toHaveLength(1);
+      await expect(testDb.select({id: projectMemberships.id}).from(projectMemberships).where(eq(projectMemberships.id, payload.membershipId))).resolves.toHaveLength(1);
+      await expect(testDb.select({
+        id: agentProfiles.id, instructions: agentProfiles.instructions,
+        version: agentProfiles.version, configHash: agentProfiles.configHash
+      }).from(agentProfiles).where(eq(agentProfiles.id, payload.agentProfile.profileId))).resolves.toEqual([{
+        id: payload.agentProfile.profileId,
+        instructions: DEFAULT_AGENT_INSTRUCTIONS,
+        version: 1,
+        configHash: hashAgentProfileConfiguration({
+          runtimeId: 'codex', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [],
+          instructions: DEFAULT_AGENT_INSTRUCTIONS, settings: DEFAULT_AGENT_SETTINGS,
+          enabled: true, version: 1
+        })
+      }]);
+      await expect(testDb.select({id: runtimeRegistrations.id}).from(runtimeRegistrations).where(eq(runtimeRegistrations.id, payload.agentProfile.registrationId))).resolves.toHaveLength(1);
+
+      const duplicate = onboardPayload(payload.displayName);
+      expect(receiptErrorCode(await service().execute(command(
+        fixture.workspaceId, primaryActor, 'actor.onboard', duplicate
+      )))).toBe('VERSION_CONFLICT');
+
+      const rollbackActorId = randomUUID();
+      const rollbackMembershipId = randomUUID();
+      const rollback = onboardPayload(`Rollback ${randomUUID()}`, {
+        actorId: rollbackActorId,
+        membershipId: rollbackMembershipId,
+        agentProfile: {...onboardPayload('unused').agentProfile, profileId: fixture.profileId}
+      });
+      await expect(service().execute(command(fixture.workspaceId, primaryActor, 'actor.onboard', rollback)))
+        .rejects.toThrow();
+      await expect(testDb.select({id: actors.id}).from(actors).where(eq(actors.id, rollbackActorId))).resolves.toEqual([]);
+      await expect(testDb.select({id: projectMemberships.id}).from(projectMemberships).where(eq(projectMemberships.id, rollbackMembershipId))).resolves.toEqual([]);
     });
   }
 );

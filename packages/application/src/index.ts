@@ -48,6 +48,7 @@ export {
 } from './project-share.ts';
 import {
   actionCategories,
+  actorOnboardingRolesAreCompatible,
   accessLevels,
   accessResourceTypes,
   accessRequestStatuses,
@@ -55,10 +56,14 @@ import {
   CURRENT_POLICY_VERSION,
   authorize,
   canonicalJson,
+  containsHighConfidenceSecretContent,
+  DEFAULT_AGENT_INSTRUCTIONS,
+  DEFAULT_AGENT_SETTINGS,
   createApprovalBinding,
   createTaskPacket,
   environments,
   isTrustedActorContext,
+  hashAgentProfileConfiguration,
   OPERATOR_CANCELLED_BEFORE_CLAIM,
   OPERATOR_RECOVERED_EXPIRED_LEASE,
   policySurfaces,
@@ -73,6 +78,7 @@ import {
   updateAgentProfile,
   workItemStatuses,
   type AccessRequest,
+  type ActorOnboarding,
   type ActorExternalIdentity,
   type ActionCategory,
   type AgentRun,
@@ -789,6 +795,7 @@ const commandTypes = new Set<CanonicalCommand['type']>([
   'access_request.request',
   'access_request.decide',
   'project_membership.set',
+  'actor.onboard',
   'actor_external_identity.bind',
   'actor.retire',
   'resource_access_grant.set',
@@ -1725,6 +1732,42 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         isUuid(payload.subjectActorId) && isOneOf(projectMembershipRoles, payload.role) &&
         typeof payload.active === 'boolean' &&
         (payload.expectedVersion === null || isVersion(payload.expectedVersion));
+    case 'actor.onboard': {
+      if (!hasExactKeys(payload, [
+        'actorId', 'membershipId', 'projectId', 'actorType', 'displayName',
+        'actorRole', 'membershipRole', 'agentProfile'
+      ]) || !isUuid(payload.actorId) || !isUuid(payload.membershipId) ||
+        !isUuid(payload.projectId) || !isOneOf(['human', 'agent'] as const, payload.actorType) ||
+        typeof payload.displayName !== 'string' || payload.displayName.trim() !== payload.displayName ||
+        payload.displayName.length < 1 || payload.displayName.length > 120 ||
+        /[\u0000-\u001f\u007f]/.test(payload.displayName) ||
+        !isOneOf(['delivery_lead', 'developer', 'agent_operator'] as const, payload.actorRole) ||
+        !isOneOf(projectMembershipRoles, payload.membershipRole)) return false;
+      if (payload.actorType === 'human') {
+        return actorOnboardingRolesAreCompatible({
+          actorType: payload.actorType, actorRole: payload.actorRole,
+          membershipRole: payload.membershipRole, hasAgentProfile: false
+        }) && payload.agentProfile === null;
+      }
+      if (payload.actorRole !== 'agent_operator' || payload.membershipRole !== 'agent' ||
+        !isPlainObject(payload.agentProfile) || !hasExactKeys(payload.agentProfile, [
+          'profileId', 'registrationId', 'runtimeId', 'runtimeProfile', 'runtimeKey', 'configHash'
+        ])) return false;
+      return actorOnboardingRolesAreCompatible({
+        actorType: payload.actorType, actorRole: payload.actorRole,
+        membershipRole: payload.membershipRole, hasAgentProfile: true
+      }) && isUuid(payload.agentProfile.profileId) && isUuid(payload.agentProfile.registrationId) &&
+        isOnboardingRuntimeIdentifier(payload.agentProfile.runtimeId, 128) &&
+        isOnboardingRuntimeIdentifier(payload.agentProfile.runtimeProfile, 128) &&
+        isOnboardingRuntimeIdentifier(payload.agentProfile.runtimeKey, 256) &&
+        typeof payload.agentProfile.configHash === 'string' && sha256Pattern.test(payload.agentProfile.configHash) &&
+        payload.agentProfile.configHash === hashAgentProfileConfiguration({
+          runtimeId: payload.agentProfile.runtimeId,
+          runtimeProfile: payload.agentProfile.runtimeProfile,
+          allowedTools: [], forbiddenSurfaces: [], instructions: DEFAULT_AGENT_INSTRUCTIONS,
+          settings: DEFAULT_AGENT_SETTINGS, enabled: true, version: 1
+        });
+    }
     case 'actor_external_identity.bind':
       return hasExactKeys(payload, [
         'identityId', 'subjectActorId', 'provider', 'externalSubject', 'active', 'expectedVersion'
@@ -1785,6 +1828,9 @@ const isProviderKey = (value: unknown): value is string =>
 const isExternalReference = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= 256 &&
   !/[\u0000-\u001f\u007f]/.test(value);
+const isOnboardingRuntimeIdentifier = (value: unknown, maximumLength: number): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= maximumLength &&
+  identifierPattern.test(value) && !containsHighConfidenceSecretContent(value);
 const isCanonicalTimestamp = (value: unknown): value is string => {
   if (typeof value !== 'string') return false;
   const parsed = new Date(value);
@@ -1984,6 +2030,7 @@ export const createCanonicalCommandService = (
       case 'access_request.request': return accessRequestCreate(transaction, claimToken, claim, command);
       case 'access_request.decide': return accessRequestDecide(transaction, claimToken, claim, command);
       case 'project_membership.set': return projectMembershipSet(transaction, claimToken, claim, command);
+      case 'actor.onboard': return actorOnboard(transaction, claimToken, claim, command);
       case 'actor_external_identity.bind': return actorExternalIdentityBind(transaction, claimToken, claim, command);
       case 'actor.retire': return actorRetire(transaction, claimToken, claim, command);
       case 'resource_access_grant.set': return resourceAccessGrantSet(transaction, claimToken, claim, command);
@@ -2648,6 +2695,66 @@ export const createCanonicalCommandService = (
     }, resultTarget, value);
   }
 
+  async function actorOnboard(
+    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
+    command: Extract<CanonicalCommand, {type: 'actor.onboard'}>
+  ) {
+    const payload = command.payload;
+    const target = targetFor('actor_onboarding', payload.actorId);
+    const authorization = await accessAuthority(transaction, token, command, payload.projectId);
+    if (!authorization.ok) return completeNoMutation(
+      transaction, token, claim, command, target, authorization, 'access_change'
+    );
+    const conflict = transaction.loadActorOnboardingConflict === undefined
+      ? 'project_not_found'
+      : await transaction.loadActorOnboardingConflict(
+        token, payload.projectId, payload.actorType, payload.displayName
+      );
+    if (conflict !== null) return completeNoMutation(
+      transaction, token, claim, command, target,
+      failed(conflict === 'project_not_found' ? 'NOT_FOUND' : 'VERSION_CONFLICT',
+        conflict === 'project_not_found' ? 'Resource was not found.' : 'Actor already exists in this workspace.'),
+      'access_change'
+    );
+    const profile = payload.agentProfile;
+    const aggregate: ActorOnboarding = {
+      id: payload.actorId,
+      workspaceId: command.workspaceId,
+      projectId: payload.projectId,
+      actorType: payload.actorType,
+      actorRole: payload.actorRole,
+      displayName: payload.displayName,
+      membership: {
+        id: payload.membershipId, projectId: payload.projectId, actorId: payload.actorId,
+        role: payload.membershipRole, active: true, version: 1
+      },
+      agentProfile: profile === null ? null : {
+        id: profile.profileId,
+        runtimeId: profile.runtimeId,
+        runtimeProfile: profile.runtimeProfile,
+        configHash: profile.configHash,
+        registration: {
+          id: profile.registrationId, projectId: payload.projectId, actorId: payload.actorId,
+          agentProfileId: profile.profileId, provider: 'provider_neutral',
+          runtimeKey: profile.runtimeKey, enabled: true, version: 1
+        }
+      },
+      version: 1
+    };
+    const resultTarget = targetFor('actor_onboarding', aggregate.id, undefined, 1);
+    const value = succeeded({
+      actorId: aggregate.id, membershipId: aggregate.membership.id,
+      profileId: aggregate.agentProfile?.id ?? null,
+      registrationId: aggregate.agentProfile?.registration.id ?? null,
+      version: 1
+    });
+    return completeMutation(transaction, token, claim, command, {
+      kind: 'non_approval',
+      mutation: {aggregateType: 'actor_onboarding', aggregateId: aggregate.id, expectedPersistedVersion: null, aggregate},
+      audit: audit(claim, ids, clock, resultTarget, command.actor.actorId, command.type, 'access_change', value, 'allow')
+    }, resultTarget, value);
+  }
+
   async function actorRetire(
     transaction: CanonicalCommandTransaction,
     token: ReceiptClaimToken,
@@ -3087,6 +3194,8 @@ const commandTarget = (command: CanonicalCommand): Target => {
     case 'access_request.decide': return targetFor('access_request', command.payload.requestId, command.payload.expectedVersion);
     case 'project_membership.set':
       return targetFor('project_membership', command.payload.membershipId, command.payload.expectedVersion ?? undefined);
+    case 'actor.onboard':
+      return targetFor('actor_onboarding', command.payload.actorId);
     case 'actor_external_identity.bind':
       return targetFor('actor_external_identity', command.payload.identityId, command.payload.expectedVersion ?? undefined);
     case 'actor.retire':

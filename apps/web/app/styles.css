@@ -6,6 +6,20 @@
   color: #20231f;
 }
 
+.fcp-profile-form input {
+  background: #fff;
+  border: 1px solid var(--fcp-rule);
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--fcp-ink);
+  font: inherit;
+  min-width: 0;
+  padding: 8px;
+  width: 100%;
+}
+.fcp-profile-form input[type='hidden'] { display: none; }
+.fcp-system-details > .fcp-profile-form { border-top: 1px solid var(--fcp-rule); padding: 13px; }
+
 * { box-sizing: border-box; }
 body { margin: 0; }
 button, input, select, textarea { font: inherit; }
