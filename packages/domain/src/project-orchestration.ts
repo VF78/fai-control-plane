@@ -45,6 +45,19 @@ export type ProjectExecutionProjection = Readonly<{
   status: ProjectExecutionStatus;
   version: number;
   selection: ProjectExecutionSelection | null;
+  dispatch: Readonly<{
+    selectionHash: string;
+    taskPacketId: string;
+    taskPacketHash: string;
+    agentRunId: string;
+    agentRunStatus: 'queued' | 'running' | 'waiting_approval' | 'failed' | 'done';
+    attempt: number;
+    failureCode: string | null;
+    queuedAt: string;
+    claimedAt: string | null;
+    completedAt: string | null;
+    nextAction: string;
+  }> | null;
   blockReason: string | null;
   decisions: readonly ProjectDecisionQueueItem[];
   startedAt: string | null;

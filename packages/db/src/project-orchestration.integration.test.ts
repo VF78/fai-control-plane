@@ -1,18 +1,21 @@
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {hashDeliveryProtocolDefinition} from '@fai-control-plane/domain';
+import {hashAgentProfileConfiguration, hashDeliveryProtocolDefinition} from '@fai-control-plane/domain';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
-import {eq} from 'drizzle-orm';
+import {and, eq} from 'drizzle-orm';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
-  actors, agentProfiles, agentRuns, approvalRequests, canonicalEvents, commandReceipts,
-  createDatabase, createPostgresProjectExecutionStore, deliveryJourneys, projectExecutions,
+  actors, agentProfiles, agentRuns, approvalRequests, auditEvents, canonicalEvents, commandReceipts,
+  createDatabase, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore,
+  createPostgresRunnerClaimStore, deliveryJourneys,
+  outboxEvents, projectExecutionDispatches, projectExecutions,
   loadProjectExecutionProjection,
   projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPlanVersions,
   projectPublicationIntents, projectScopeBaselineVersions, projectTrackerRepositoryScopes,
-  projects, runbooks, runtimeRegistrations, secretRefs, taskPackets, workItemDependencies, workItems, workspaces
+  projects, runbooks, runtimeRegistrations, secretRefs, taskPackets, trackerBindings,
+  workItemDependencies, workItems, workspaces
 } from './index';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -38,26 +41,37 @@ describePostgres('governed project orchestration persistence', () => {
   const seedAutonomousProject = async (humanOwned: boolean) => {
     const ids = {workspace: randomUUID(), project: randomUUID(), owner: randomUUID(), agent: randomUUID(),
       profile: randomUUID(), plan: randomUUID(), planVersion: randomUUID(), baseline: randomUUID(),
-      protocol: randomUUID(), task: randomUUID()};
+      protocol: randomUUID(), task: randomUUID(), secret: randomUUID(), repository: randomUUID()};
     await db.insert(workspaces).values({id: ids.workspace, name: 'Autonomous', slug: `autonomous-${randomUUID()}`});
     await db.insert(projects).values({id: ids.project, workspaceId: ids.workspace, name: 'Project', slug: `project-${randomUUID()}`});
     await db.insert(actors).values([
-      {id: ids.owner, workspaceId: ids.workspace, type: 'human', role: 'workspace_admin', displayName: 'Owner', authMode: 'user'},
+      {id: ids.owner, workspaceId: ids.workspace, type: 'human', role: 'workspace_admin', displayName: 'Owner', authMode: 'user',
+        capabilities: {'write:control_plane:development': true}},
       {id: ids.agent, workspaceId: ids.workspace, type: 'agent', role: 'agent_operator', displayName: 'Agent', authMode: 'agent'}
     ]);
     await db.insert(projectMemberships).values([
       {id: randomUUID(), projectId: ids.project, actorId: ids.owner, role: 'project_owner'},
       {id: randomUUID(), projectId: ids.project, actorId: ids.agent, role: 'agent'}
     ]);
+    const profile = {runtimeId: 'codex-cli', runtimeProfile: 'read_safe', allowedTools: ['repository_read'],
+      forbiddenSurfaces: ['production'], instructions: 'Complete only the immutable task packet.',
+      settings: {resultFormat: 'structured_v1' as const, includeEvidence: true}, enabled: true, version: 1};
     await db.insert(agentProfiles).values({id: ids.profile, workspaceId: ids.workspace, actorId: ids.agent,
-      runtimeId: 'fixture', runtimeProfile: 'read_safe'});
+      ...profile, configHash: hashAgentProfileConfiguration(profile)});
     await db.insert(runtimeRegistrations).values({projectId: ids.project, actorId: ids.agent,
       agentProfileId: ids.profile, provider: 'fixture', runtimeKey: `runtime-${randomUUID()}`});
+    const planDefinition = {title: 'Autonomous plan', outcomes: [{key: 'outcome_1', title: 'Result', weight: 100,
+      evidence: {kind: 'assumption' as const, statement: 'Approved by the project owner.'}}],
+      milestones: [{key: 'milestone_1', title: 'Done', checkpoint: 'Owner review', targetAt: null,
+        evidence: {kind: 'assumption' as const, statement: 'Owner checkpoint.'}}], risks: [],
+      tasks: [{key: 'task_1', title: 'Autonomous task', outcomeKeys: ['outcome_1'], milestoneKey: 'milestone_1',
+        dependsOn: [], acceptanceEvidence: [{description: 'Focused checks pass',
+          evidence: {kind: 'assumption' as const, statement: 'Verification is required.'}}]}]};
     await db.insert(projectPlanDrafts).values({id: ids.plan, workspaceId: ids.workspace, projectId: ids.project,
-      state: 'approved', definition: {} as never, contentHash: 'a'.repeat(64), revision: 1,
+      state: 'approved', definition: planDefinition, contentHash: 'a'.repeat(64), revision: 1,
       createdByActorId: ids.owner, approvedByActorId: ids.owner, approvedAt: new Date()});
     await db.insert(projectPlanVersions).values({id: ids.planVersion, workspaceId: ids.workspace,
-      projectId: ids.project, planId: ids.plan, version: 1, sourceRevision: 1, definition: {} as never,
+      projectId: ids.project, planId: ids.plan, version: 1, sourceRevision: 1, definition: planDefinition,
       contentHash: 'a'.repeat(64), sourceManifest: [], simulation: {} as never,
       approvedByActorId: ids.owner, approvedAt: new Date()});
     await db.insert(projectScopeBaselineVersions).values({id: ids.baseline, projectId: ids.project,
@@ -75,9 +89,18 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(runbooks).values({id: ids.protocol, projectId: ids.project, name: 'Autonomous', version: 1,
       definition, active: true, protocolState: 'published', revision: 1, contentHash: hashDeliveryProtocolDefinition(definition)});
     await db.insert(workItems).values({id: ids.task, projectId: ids.project, title: 'Autonomous task', status: 'ready',
-      sourcePlanVersionId: ids.planVersion, sourceTaskKey: 'task_1', acceptanceEvidence: []});
+      sourcePlanVersionId: ids.planVersion, sourceTaskKey: 'task_1',
+      acceptanceEvidence: planDefinition.tasks[0]!.acceptanceEvidence});
     await db.insert(deliveryJourneys).values({workItemId: ids.task, protocolId: ids.protocol,
       protocolVersion: 1, stageKey: 'execute'});
+    await db.insert(secretRefs).values({id: ids.secret, workspaceId: ids.workspace,
+      provider: 'fixture', reference: `dispatch/${ids.project}`});
+    await db.insert(projectTrackerRepositoryScopes).values({id: ids.repository, projectId: ids.project,
+      provider: 'fixture', repositoryOwner: 'owner', repositoryName: 'repository',
+      repositoryExternalId: `repository-${ids.project}`, credentialRefId: ids.secret});
+    await db.insert(trackerBindings).values({projectId: ids.project, provider: 'fixture', surface: 'repository',
+      externalId: `repository-${ids.project}`, entityType: 'project', entityId: ids.project,
+      metadata: {defaultBranch: 'main', headSha: 'a'.repeat(40)}});
     const store = createPostgresProjectExecutionStore(db);
     const command = (type: 'project_execution.start' | 'project_execution.pause', expectedVersion: number, key: string) => ({
       commandId: randomUUID(), workspaceId: ids.workspace, correlationId: randomUUID(), idempotencyKey: key,
@@ -98,6 +121,222 @@ describePostgres('governed project orchestration persistence', () => {
     }}}});
     expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId, ids.project)))[0])
       .toMatchObject({status: 'blocked', selectedWorkItemId: null, selectedAgentProfileId: null});
+  });
+
+  it('atomically freezes one exact autonomous selection and queues one runner-compatible AgentRun', async () => {
+    const {ids, store, command} = await seedAutonomousProject(false);
+    await store.execute({command: command('project_execution.start', 0, 'dispatch-start') as never,
+      requestHash: 'd'.repeat(64), authorized: true});
+    const dispatcher = createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
+      now: () => new Date('2026-08-09T10:01:00.000Z')});
+    const outcomes = await Promise.all([dispatcher.run({workspaceId: ids.workspace, projectId: ids.project, expectedVersion: 1,
+      requestedByActorId: ids.owner}), dispatcher.run({projectId: ids.project, expectedVersion: 1,
+      workspaceId: ids.workspace, requestedByActorId: ids.owner})]);
+    expect(outcomes.reduce((sum, outcome) => sum + outcome.dispatched, 0)).toBe(1);
+    expect(outcomes.reduce((sum, outcome) => sum + outcome.replayed, 0)).toBe(1);
+    const [packet] = await db.select().from(taskPackets).where(eq(taskPackets.workItemId, ids.task));
+    const [run] = await db.select().from(agentRuns).where(eq(agentRuns.workItemId, ids.task));
+    const [link] = await db.select().from(projectExecutionDispatches)
+      .where(eq(projectExecutionDispatches.projectId, ids.project));
+    expect(packet).toMatchObject({workItemVersion: 1, agentProfileSnapshotId: ids.profile,
+      createdByActorId: ids.owner, acceptanceCriteria: ['Focused checks pass', 'Receipt']});
+    expect(packet?.dataPolicy).toMatchObject({planVersionId: ids.planVersion, protocolId: ids.protocol,
+      protocolRequiredEvidence: ['Receipt']});
+    expect(run).toMatchObject({status: 'queued', taskPacketId: packet?.id, agentProfileId: ids.profile,
+      repositoryScopeId: ids.repository, confirmedPacketHash: packet?.contentHash, baseCommit: 'a'.repeat(40)});
+    expect(link).toMatchObject({executionVersion: 1, taskPacketId: packet?.id, agentRunId: run?.id,
+      requestedByActorId: ids.owner, runtimeRegistrationVersion: 1,
+      selectionHash: expect.stringMatching(/^[0-9a-f]{64}$/)});
+    await expect(loadProjectExecutionProjection(db, ids.workspace, ids.project)).resolves.toMatchObject({
+      status: 'running', dispatch: {taskPacketId: packet?.id, agentRunId: run?.id,
+        agentRunStatus: 'queued', nextAction: expect.stringContaining('isolated runner')}});
+    expect((await db.select().from(commandReceipts).where(eq(commandReceipts.aggregateId, run!.id)))[0])
+      .toMatchObject({commandType: 'project_execution.dispatch.v1', expectedVersion: 1, resultVersion: 1,
+        idempotencyKey: `project-execution-dispatch:v1:${ids.project}:1`});
+    expect((await db.select().from(auditEvents).where(eq(auditEvents.targetId, run!.id)))[0])
+      .toMatchObject({actorId: ids.owner, action: 'project_execution.dispatch.v1', expectedVersion: 1,
+        resultVersion: 1, policyDecision: 'allow', outcome: 'succeeded'});
+    expect((await db.select().from(canonicalEvents).where(and(
+      eq(canonicalEvents.projectId, ids.project),
+      eq(canonicalEvents.eventType, 'project_execution.dispatch_requested.v1'))))[0])
+      .toMatchObject({payload: {executionVersion: 1, requestedByActorId: ids.owner}});
+    expect(await db.select().from(outboxEvents).where(eq(outboxEvents.projectId, ids.project))).toHaveLength(0);
+    await expect(store.execute({command: command('project_execution.pause', 1, 'dispatch-pause') as never,
+      requestHash: '2'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {value: {
+        status: 'paused', version: 2, dispatch: null
+      }}}});
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, run!.id)))[0])
+      .toMatchObject({status: 'failed', failureCode: 'operator_cancelled_before_claim'});
+  });
+
+  it('denies and audits a hostile requester before checking an existing dispatch', async () => {
+    const {ids, store, command} = await seedAutonomousProject(false);
+    await store.execute({command: command('project_execution.start', 0, 'authority-start') as never,
+      requestHash: 'c'.repeat(64), authorized: true});
+    const dispatcher = createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true});
+    await dispatcher.run({workspaceId: ids.workspace, projectId: ids.project, expectedVersion: 1,
+      requestedByActorId: ids.owner});
+    const hostileActorId = randomUUID();
+    await db.insert(actors).values({id: hostileActorId, workspaceId: ids.workspace, type: 'human',
+      role: 'developer', displayName: 'Hostile project member', authMode: 'user',
+      capabilities: {'write:control_plane:development': true}});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: ids.project,
+      actorId: hostileActorId, role: 'contributor'});
+    await expect(dispatcher.run({workspaceId: ids.workspace, projectId: ids.project,
+      expectedVersion: 1, requestedByActorId: hostileActorId}))
+      .resolves.toEqual({dispatched: 0, blocked: 0, replayed: 0, denied: 1});
+    expect(await db.select().from(projectExecutionDispatches)
+      .where(eq(projectExecutionDispatches.projectId, ids.project))).toHaveLength(1);
+    expect((await db.select().from(auditEvents).where(and(
+      eq(auditEvents.projectId, ids.project), eq(auditEvents.actorId, hostileActorId),
+      eq(auditEvents.action, 'project_execution.dispatch.v1'))))[0])
+      .toMatchObject({policyDecision: 'deny', outcome: 'rejected', reasonCode: 'CAPABILITY_DENIED',
+        expectedVersion: 1, resultVersion: null});
+    expect((await db.select().from(commandReceipts).where(and(
+      eq(commandReceipts.workspaceId, ids.workspace),
+      eq(commandReceipts.aggregateId, ids.project),
+      eq(commandReceipts.commandType, 'project_execution.dispatch.v1'))))[0])
+      .toMatchObject({commandType: 'project_execution.dispatch.v1', result: {ok: false,
+        error: {code: 'CAPABILITY_DENIED'}}});
+  });
+
+  it('does not dispatch a paused selection and records an unavailable queue as a canonical decision', async () => {
+    const paused = await seedAutonomousProject(false);
+    await paused.store.execute({command: paused.command('project_execution.start', 0, 'pause-start') as never,
+      requestHash: 'e'.repeat(64), authorized: true});
+    await paused.store.execute({command: paused.command('project_execution.pause', 1, 'pause-before-dispatch') as never,
+      requestHash: 'f'.repeat(64), authorized: true});
+    const dispatcher = createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true});
+    await expect(dispatcher.run({workspaceId: paused.ids.workspace, projectId: paused.ids.project, expectedVersion: 1,
+      requestedByActorId: paused.ids.owner}))
+      .resolves.toEqual({dispatched: 0, blocked: 0, replayed: 1, denied: 0});
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.workItemId, paused.ids.task))).toHaveLength(0);
+
+    const unavailable = await seedAutonomousProject(false);
+    await unavailable.store.execute({command: unavailable.command('project_execution.start', 0, 'unavailable-start') as never,
+      requestHash: '1'.repeat(64), authorized: true});
+    await expect(createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: false})
+      .run({workspaceId: unavailable.ids.workspace, projectId: unavailable.ids.project, expectedVersion: 1,
+        requestedByActorId: unavailable.ids.owner}))
+      .resolves.toEqual({dispatched: 0, blocked: 1, replayed: 0, denied: 0});
+    await expect(loadProjectExecutionProjection(db, unavailable.ids.workspace, unavailable.ids.project))
+      .resolves.toMatchObject({status: 'blocked', blockReason: 'runner_queue_unavailable',
+        decisions: expect.arrayContaining([expect.objectContaining({id: expect.stringContaining('runner_queue_unavailable')})])});
+    expect((await db.select().from(auditEvents).where(and(
+      eq(auditEvents.projectId, unavailable.ids.project),
+      eq(auditEvents.action, 'project_execution.dispatch.v1'))))[0])
+      .toMatchObject({policyDecision: 'deny', outcome: 'rejected', reasonCode: 'runner_queue_unavailable'});
+
+    const denied = await seedAutonomousProject(false);
+    await denied.store.execute({command: denied.command('project_execution.start', 0, 'denied-start') as never,
+      requestHash: '6'.repeat(64), authorized: true});
+    await db.update(actors).set({capabilities: {}}).where(eq(actors.id, denied.ids.owner));
+    await expect(createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true})
+      .run({workspaceId: denied.ids.workspace, projectId: denied.ids.project, expectedVersion: 1,
+        requestedByActorId: denied.ids.owner}))
+      .resolves.toEqual({dispatched: 0, blocked: 1, replayed: 0, denied: 0});
+    await expect(loadProjectExecutionProjection(db, denied.ids.workspace, denied.ids.project))
+      .resolves.toMatchObject({status: 'blocked', blockReason: 'dispatch_policy_denied'});
+
+    const mismatchedRepository = await seedAutonomousProject(false);
+    await mismatchedRepository.store.execute({command: mismatchedRepository.command(
+      'project_execution.start', 0, 'repository-mismatch-start') as never,
+    requestHash: '8'.repeat(64), authorized: true});
+    await db.update(trackerBindings).set({externalId: `other-${randomUUID()}`})
+      .where(eq(trackerBindings.projectId, mismatchedRepository.ids.project));
+    await expect(createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+      workspaceId: mismatchedRepository.ids.workspace, projectId: mismatchedRepository.ids.project, expectedVersion: 1,
+      requestedByActorId: mismatchedRepository.ids.owner
+    })).resolves.toEqual({dispatched: 0, blocked: 1, replayed: 0, denied: 0});
+    expect(await db.select().from(agentRuns).where(eq(
+      agentRuns.workItemId, mismatchedRepository.ids.task))).toHaveLength(0);
+    await expect(loadProjectExecutionProjection(db, mismatchedRepository.ids.workspace,
+      mismatchedRepository.ids.project)).resolves.toMatchObject({
+      status: 'blocked', blockReason: 'repository_base_commit_unavailable'
+    });
+
+    const stale = await seedAutonomousProject(false);
+    await stale.store.execute({command: stale.command('project_execution.start', 0, 'stale-start') as never,
+      requestHash: '7'.repeat(64), authorized: true});
+    await db.update(workItems).set({version: 2}).where(eq(workItems.id, stale.ids.task));
+    await expect(createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true})
+      .run({workspaceId: stale.ids.workspace, projectId: stale.ids.project, expectedVersion: 1,
+        requestedByActorId: stale.ids.owner}))
+      .resolves.toEqual({dispatched: 0, blocked: 1, replayed: 0, denied: 0});
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.workItemId, stale.ids.task))).toHaveLength(0);
+    await expect(loadProjectExecutionProjection(db, stale.ids.workspace, stale.ids.project))
+      .resolves.toMatchObject({status: 'blocked', blockReason: 'selection_preconditions_stale'});
+    expect((await db.select().from(auditEvents).where(and(
+      eq(auditEvents.projectId, stale.ids.project),
+      eq(auditEvents.action, 'project_execution.dispatch.v1'))))[0])
+      .toMatchObject({policyDecision: 'allow', outcome: 'failed', reasonCode: 'selection_preconditions_stale'});
+  });
+
+  it('queues the existing isolated-runner claim contract without exposing provider credentials', async () => {
+    const {ids, store, command} = await seedAutonomousProject(false);
+    await store.execute({command: command('project_execution.start', 0, 'claim-start') as never,
+      requestHash: '3'.repeat(64), authorized: true});
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true})
+      .run({workspaceId: ids.workspace, projectId: ids.project, expectedVersion: 1,
+        requestedByActorId: ids.owner});
+    const claimedAt = new Date('2026-08-09T10:02:00.000Z');
+    const claim = await createPostgresRunnerClaimStore(db).claim({workspaceId: ids.workspace,
+      runnerId: 'isolated-runner', projectIds: [ids.project],
+      repositories: [{owner: 'owner', name: 'repository'}], runtimeIds: ['codex-cli'],
+      leaseTokenHash: 'f'.repeat(64), claimedAt,
+      leaseExpiresAt: new Date(claimedAt.getTime() + 60_000)}, (record) => record);
+    expect(claim).toMatchObject({attempt: 1, runtimeId: 'codex-cli', runtimeProfile: 'read_safe',
+      repository: {owner: 'owner', name: 'repository'}, baseCommit: 'a'.repeat(40),
+      promptFields: {acceptanceCriteria: ['Focused checks pass', 'Receipt']}});
+    expect(JSON.stringify(claim)).not.toContain(ids.secret);
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, claim!.runId)))[0])
+      .toMatchObject({status: 'running', runnerId: 'isolated-runner', attempt: 1});
+  });
+
+  it('rolls back a late persistence failure and retries without duplicate packet or run', async () => {
+    const {ids, store, command} = await seedAutonomousProject(false);
+    await store.execute({command: command('project_execution.start', 0, 'retry-start') as never,
+      requestHash: '4'.repeat(64), authorized: true});
+    const idempotencyKey = `project-execution-dispatch:v1:${ids.project}:1`;
+    await db.insert(commandReceipts).values({workspaceId: ids.workspace, idempotencyKey,
+      requestHash: '5'.repeat(64), commandId: randomUUID(), correlationId: randomUUID(),
+      state: 'completed', commandType: 'test.collision', result: {ok: false}, completedAt: new Date()});
+    const dispatcher = createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true});
+    await expect(dispatcher.run({workspaceId: ids.workspace, projectId: ids.project, expectedVersion: 1,
+      requestedByActorId: ids.owner})).rejects.toBeDefined();
+    expect(await db.select().from(taskPackets).where(eq(taskPackets.workItemId, ids.task))).toHaveLength(0);
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.workItemId, ids.task))).toHaveLength(0);
+    await db.delete(commandReceipts).where(eq(commandReceipts.idempotencyKey, idempotencyKey));
+    await expect(dispatcher.run({workspaceId: ids.workspace, projectId: ids.project, expectedVersion: 1,
+      requestedByActorId: ids.owner}))
+      .resolves.toEqual({dispatched: 1, blocked: 0, replayed: 0, denied: 0});
+    expect(await db.select().from(taskPackets).where(eq(taskPackets.workItemId, ids.task))).toHaveLength(1);
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.workItemId, ids.task))).toHaveLength(1);
+  });
+
+  it('rejects a dispatch link assembled from another project packet, run, or runtime', async () => {
+    const target = await seedAutonomousProject(false);
+    const foreign = await seedAutonomousProject(false);
+    await target.store.execute({command: target.command('project_execution.start', 0, 'cross-target') as never,
+      requestHash: '9'.repeat(64), authorized: true});
+    await foreign.store.execute({command: foreign.command('project_execution.start', 0, 'cross-foreign') as never,
+      requestHash: 'a'.repeat(64), authorized: true});
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+      workspaceId: foreign.ids.workspace, projectId: foreign.ids.project, expectedVersion: 1,
+      requestedByActorId: foreign.ids.owner
+    });
+    const [foreignLink] = await db.select().from(projectExecutionDispatches)
+      .where(eq(projectExecutionDispatches.projectId, foreign.ids.project));
+    if (foreignLink === undefined) throw new Error('foreign dispatch fixture missing');
+    await db.delete(projectExecutionDispatches).where(eq(projectExecutionDispatches.id, foreignLink.id));
+    await expect(db.insert(projectExecutionDispatches).values({workspaceId: target.ids.workspace,
+      projectId: target.ids.project, executionVersion: 1, selectionHash: 'b'.repeat(64),
+      taskPacketId: foreignLink.taskPacketId, agentRunId: foreignLink.agentRunId,
+      runtimeRegistrationId: foreignLink.runtimeRegistrationId,
+      runtimeRegistrationVersion: foreignLink.runtimeRegistrationVersion,
+      requestedByActorId: target.ids.owner})).rejects.toBeDefined();
+    expect(await db.select().from(projectExecutionDispatches)
+      .where(eq(projectExecutionDispatches.projectId, target.ids.project))).toHaveLength(0);
   });
 
   it.each(['journey_advanced', 'protocol_inactive', 'actor_disabled', 'old_plan'] as const)(

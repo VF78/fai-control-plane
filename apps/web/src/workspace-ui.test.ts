@@ -245,7 +245,7 @@ it('renders the persisted weighted scope baseline without deriving progress from
     project: {state: 'ready', data: {
       project: {id: 'msa-id', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: observedAt},
       agentProfiles: [], snapshot: {health: 'yellow', capturedAt: observedAt}, synchronizedAt: observedAt, protocol: null,
-      execution: {projectId: 'msa-id', status: 'stopped', version: 0, selection: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null},
+      execution: {projectId: 'msa-id', status: 'stopped', version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null},
       workItems: [],
       scopeBaseline: {id: 'baseline-1', version: 1, approvedAt: observedAt, updatedAt: observedAt, outcomes: [
         {key: 'accepted', title: 'Принятый результат', weight: 45, state: 'accepted', acceptedBy: 'Vladimir', acceptedAt: observedAt, evidenceReference: '#91'},
@@ -266,8 +266,51 @@ it('renders the persisted weighted scope baseline without deriving progress from
   expect(markup).not.toContain('Task lifecycle');
 });
 
+it('does not offer agent activation to a project owner without the exact write capability', () => {
+  const previousRunner = process.env.RUNNER_ENABLED;
+  const previousTransport = process.env.LOCAL_RUNNER_TRANSPORT_ENABLED;
+  process.env.RUNNER_ENABLED = 'true';
+  process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = 'true';
+  try {
+    const actorId = '00000000-0000-4000-8000-000000000090';
+    const selection = {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Автономная работа', workItemVersion: 1,
+      protocolId: 'protocol-1', protocolVersion: 1, journeyVersion: 1, stageKey: 'execute', stageName: 'Исполнение',
+      executionMode: 'autonomous' as const, responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent' as const, agentProfileId: 'profile-1'},
+      boundary: 'autonomous_ready' as const};
+    const accessData = {actors: [{id: actorId, displayName: 'Owner', type: 'human' as const,
+      role: 'developer', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1',
+      project: 'MSA', projectSlug: 'msa', actorId, role: 'project_owner', active: true, version: 1}],
+    externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [],
+    sharing: {enabled: false, projects: [], grants: []}};
+    const data = {portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
+      csrfToken: 'csrf', operatorActorId: actorId,
+      access: {state: 'ready', data: accessData},
+      project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1',
+        name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()},
+      agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: [],
+      execution: {projectId: 'project-1', status: 'running', version: 1, selection, dispatch: null,
+        blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}}}
+    } as unknown as WorkspaceData;
+    const route = {screen: 'overview' as const, project: 'msa' as const, taskId: null, runId: null,
+      agentId: null, scope: {environment: null, from: null, to: null}};
+    const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route, data}));
+    expect(markup).not.toContain('Подготовить запуск агента');
+    expect(markup).toContain('Нужна capability write:control_plane:development');
+    const permitted = renderToStaticMarkup(createElement(WorkspaceShell, {route, data: {
+      ...data, access: {state: 'ready', data: {...accessData, actors: [{...accessData.actors[0]!,
+        capabilities: {'write:control_plane:development': true}}]}}
+    } as unknown as WorkspaceData}));
+    expect(permitted).toContain('Подготовить запуск агента');
+  } finally {
+    if (previousRunner === undefined) delete process.env.RUNNER_ENABLED;
+    else process.env.RUNNER_ENABLED = previousRunner;
+    if (previousTransport === undefined) delete process.env.LOCAL_RUNNER_TRANSPORT_ENABLED;
+    else process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = previousTransport;
+  }
+});
+
 it('keeps the selected workspace area when changing between authorized projects', () => {
-  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, execution: {projectId: slug, status: 'stopped' as const, version: 0, selection: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}, workItems: []});
+  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, execution: {projectId: slug, status: 'stopped' as const, version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}, workItems: []});
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'global_tasks', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
     data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [project('MSA', 'msa'), project('ASCON', 'ascon')]}

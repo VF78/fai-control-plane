@@ -1,7 +1,8 @@
 import {createDeliveryJourneyService, createDeliveryProtocolService, createProjectExecutionService, createProjectPlanService} from '@fai-control-plane/application';
-import {actors, createDatabase, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresProjectExecutionStore, createPostgresProjectPlanStore} from '@fai-control-plane/db';
+import {actors, createDatabase, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore, createPostgresProjectPlanStore, loadProjectExecutionProjection} from '@fai-control-plane/db';
 import {createActorContextIssuer, type Capability, type CommandResult, type TrustedUserActorContext} from '@fai-control-plane/domain';
 import {and, eq, isNull} from 'drizzle-orm';
+import {runnerActivationEnabled} from './runner-activation-policy';
 
 type Database = ReturnType<typeof createDatabase>['db'];
 const capabilities = (value: Record<string, boolean>): Capability[] => Object.entries(value)
@@ -12,6 +13,8 @@ export type DeliveryRuntime = Readonly<{
   journey: ReturnType<typeof createDeliveryJourneyService>;
   plan: ReturnType<typeof createProjectPlanService>;
   projectExecution: ReturnType<typeof createProjectExecutionService>;
+  projectExecutionDispatch: ReturnType<typeof createPostgresProjectExecutionDispatcher>;
+  projectExecutionProjection(workspaceId: string, projectId: string): ReturnType<typeof loadProjectExecutionProjection>;
   actor(workspaceId: string, actorId: string): Promise<CommandResult<TrustedUserActorContext>>;
 }>;
 
@@ -20,6 +23,10 @@ const createRuntime = (db: Database): DeliveryRuntime => ({
   journey: createDeliveryJourneyService(createPostgresDeliveryJourneyStore(db)),
   plan: createProjectPlanService(createPostgresProjectPlanStore(db)),
   projectExecution: createProjectExecutionService(createPostgresProjectExecutionStore(db)),
+  projectExecutionDispatch: createPostgresProjectExecutionDispatcher(db, {
+    runnerQueueEnabled: runnerActivationEnabled(), runtimeEnvironment: process.env
+  }),
+  projectExecutionProjection: (workspaceId, projectId) => loadProjectExecutionProjection(db, workspaceId, projectId),
   async actor(workspaceId, actorId) {
     const [operator] = await db.select({capabilities: actors.capabilities}).from(actors).where(and(
       eq(actors.id, actorId), eq(actors.workspaceId, workspaceId), eq(actors.type, 'human'),
