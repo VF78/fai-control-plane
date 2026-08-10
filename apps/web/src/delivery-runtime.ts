@@ -3,6 +3,7 @@ import {actors, createDatabase, createPostgresAgentRunRetryContinuationStore, cr
 import {createActorContextIssuer, type Capability, type CommandResult, type TrustedUserActorContext} from '@fai-control-plane/domain';
 import {and, eq, isNull} from 'drizzle-orm';
 import {runnerActivationEnabled} from './runner-activation-policy';
+import {createHermesSemanticPlanner} from './hermes-semantic-planner';
 
 type Database = ReturnType<typeof createDatabase>['db'];
 const capabilities = (value: Record<string, boolean>): Capability[] => Object.entries(value)
@@ -23,7 +24,7 @@ export type DeliveryRuntime = Readonly<{
 const createRuntime = (db: Database): DeliveryRuntime => ({
   protocol: createDeliveryProtocolService(createPostgresDeliveryProtocolStore(db)),
   journey: createDeliveryJourneyService(createPostgresDeliveryJourneyStore(db)),
-  plan: createProjectPlanService(createPostgresProjectPlanStore(db)),
+  plan: createProjectPlanService(createPostgresProjectPlanStore(db), createHermesSemanticPlanner()),
   projectExecution: createProjectExecutionService(createPostgresProjectExecutionStore(db)),
   agentRunRetryContinuation: createAgentRunRetryContinuationService(
     createPostgresAgentRunRetryContinuationStore(db, {

@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {deterministicProjectPlanUuid, generateProjectPlanDraft, hashProjectPlanSourceManifest, projectDossierReadiness, simulateProjectPlan, sourceArtifactDigest, validateProjectPlanDefinition, validateSourceArtifact} from './project-plan';
+import {deterministicProjectPlanUuid, hashProjectPlanSourceManifest, projectDossierReadiness, simulateProjectPlan, sourceArtifactDigest, validateProjectPlanDefinition, validateSourceArtifact} from './project-plan';
 
 const assumption = {kind: 'assumption' as const, statement: 'Требует проверки Product Owner'};
 const definition = {
@@ -49,48 +49,6 @@ describe('project plan', () => {
     expect(simulateProjectPlan({definition, citationsValid: true, canEdit: true, canApprove: true, protocol: null})).toMatchObject({readyForApproval: true, protocol: {state: 'not_configured'}, warnings: [expect.any(String)]});
   });
 
-  it('assembles a deterministic editable scaffold from exact bounded evidence and explicit assumptions', () => {
-    const content = '# Цель\nСократить время проверки\nПодтвердить критерии\nЗафиксировать границы';
-    const artifact = validateSourceArtifact({id: '10000000-0000-4000-8000-000000000001', projectId: '10000000-0000-4000-8000-000000000002', name: 'Brief', sourceKind: 'project_passport', mediaType: 'text/markdown', content,
-      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1});
-    if (!artifact.ok) throw new Error('fixture');
-    const generated = generateProjectPlanDraft([artifact.value]);
-    expect(generated).toMatchObject({ok: true, value: {outcomes: {length: 5}, milestones: {length: 2}, risks: {length: 2}, tasks: {length: 5}}});
-    if (!generated.ok) throw new Error('generation');
-    expect(generated.value.outcomes.reduce((sum, outcome) => sum + outcome.weight, 0)).toBe(100);
-    expect(generated.value.outcomes.slice(0, 4).every(({evidence}) => evidence.kind === 'citation')).toBe(true);
-    expect(generated.value.outcomes[4]?.evidence).toMatchObject({kind: 'assumption'});
-    expect(generateProjectPlanDraft([artifact.value])).toEqual(generated);
-    expect(generateProjectPlanDraft([])).toMatchObject({ok: false});
-
-    const repeatedContent = Array.from({length: 100}, () => 'Одинаковый факт').join('\n');
-    const repeated = validateSourceArtifact({...artifact.value, content: repeatedContent, sizeBytes: Buffer.byteLength(repeatedContent), sha256: sourceArtifactDigest(repeatedContent)});
-    if (!repeated.ok) throw new Error('repeated fixture');
-    const deduplicated = generateProjectPlanDraft([repeated.value]); if (!deduplicated.ok) throw new Error('deduplicated generation');
-    expect(deduplicated.value.outcomes.filter(({evidence}) => evidence.kind === 'citation')).toHaveLength(1);
-
-    const scalarContent = '"корневое значение"';
-    const scalar = validateSourceArtifact({...artifact.value, mediaType: 'application/json', content: scalarContent, sizeBytes: Buffer.byteLength(scalarContent), sha256: sourceArtifactDigest(scalarContent)});
-    if (!scalar.ok) throw new Error('scalar fixture');
-    const scalarPlan = generateProjectPlanDraft([scalar.value]);
-    expect(scalarPlan).toMatchObject({ok: true});
-    if (scalarPlan.ok) expect(scalarPlan.value.outcomes[0]?.evidence).toMatchObject({kind: 'citation', locator: {kind: 'line_range'}});
-  });
-
-  it('round-robins candidates across sources with a generic stable title', () => {
-    const projectId = '10000000-0000-4000-8000-000000000003';
-    const makeArtifact = (id: string, name: string, content: string) => validateSourceArtifact({id, projectId, name, sourceKind: 'other', mediaType: 'text/plain', content,
-      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1});
-    const long = makeArtifact('10000000-0000-4000-8000-000000000004', 'Альфа', Array.from({length: 20}, (_, index) => `Факт Альфа ${index + 1}`).join('\n'));
-    const short = makeArtifact('10000000-0000-4000-8000-000000000005', 'Бета', 'Факт Бета');
-    if (!long.ok || !short.ok) throw new Error('fixtures');
-    const generated = generateProjectPlanDraft([short.value, long.value]); if (!generated.ok) throw new Error('generation');
-    const citedIds = generated.value.outcomes.flatMap(({evidence}) => evidence.kind === 'citation' ? [evidence.artifactId] : []);
-    expect(citedIds).toContain(long.value.id); expect(citedIds).toContain(short.value.id);
-    expect(generated.value.title).toBe('Черновой план по выбранным источникам');
-    expect(generateProjectPlanDraft([long.value, short.value])).toEqual(generated);
-  });
-
   it('reports exactly the missing required dossier categories', () => {
     expect(projectDossierReadiness([])).toMatchObject({ready: false, required: [
       {kind: 'project_passport', present: false, remediation: 'Добавьте источник: паспорт проекта.'},
@@ -102,14 +60,6 @@ describe('project plan', () => {
     ])).toMatchObject({ready: true});
   });
 
-  it('depends only on manifest-bound artifact id and content', () => {
-    const content = JSON.stringify({result: 'Подтверждённый результат', acceptance: 'Проверка Product Owner'});
-    const base = {id: '10000000-0000-4000-8000-000000000006', projectId: '10000000-0000-4000-8000-000000000007', name: 'Исходное имя', sourceKind: 'other', mediaType: 'application/json', content,
-      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1};
-    const original = validateSourceArtifact(base); const metadataChanged = validateSourceArtifact({...base, name: 'Другое имя', mediaType: 'text/plain'});
-    if (!original.ok || !metadataChanged.ok) throw new Error('fixtures');
-    expect(generateProjectPlanDraft([metadataChanged.value])).toEqual(generateProjectPlanDraft([original.value]));
-  });
 });
 
 describe('project plan materialization identity', () => {

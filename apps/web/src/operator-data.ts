@@ -1054,6 +1054,31 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     db.select().from(projectPlanVersions).where(and(eq(projectPlanVersions.workspaceId, project.workspaceId), eq(projectPlanVersions.projectId, project.id)))
       .orderBy(desc(projectPlanVersions.version)).limit(1)
   ]);
+  const setup = setups[0];
+  const configuredPlannerProfileId = setup !== undefined && setup.configuration.executionMode === 'managed_agent' ? setup.configuration.agentProfileId : null;
+  const plannerEligibility = configuredPlannerProfileId === null
+    ? {eligible: false, remediation: 'Hermes planning недоступен: настройте для проекта managed Hermes profile.'}
+    : await (async (profileId: string) => {
+      const [profile] = await db.select({id: agentProfiles.id}).from(agentProfiles)
+        .innerJoin(runtimeRegistrations, and(
+          eq(runtimeRegistrations.agentProfileId, agentProfiles.id),
+          eq(runtimeRegistrations.actorId, agentProfiles.actorId),
+          eq(runtimeRegistrations.projectId, project.id),
+          eq(runtimeRegistrations.enabled, true)
+        ))
+        .innerJoin(actors, eq(actors.id, agentProfiles.actorId))
+        .innerJoin(projectMemberships, and(
+          eq(projectMemberships.projectId, project.id),
+          eq(projectMemberships.actorId, agentProfiles.actorId),
+          eq(projectMemberships.role, 'agent'),
+          eq(projectMemberships.active, true)
+        ))
+        .where(and(eq(agentProfiles.id, profileId), eq(agentProfiles.workspaceId, project.workspaceId),
+          eq(agentProfiles.runtimeId, 'hermes'), eq(agentProfiles.enabled, true), eq(actors.type, 'agent'), isNull(actors.disabledAt))).limit(1);
+      return profile === undefined
+        ? {eligible: false, remediation: 'Hermes planning недоступен: включите configured Hermes profile и runtime registration проекта.'}
+        : {eligible: true, remediation: 'Hermes profile и runtime registration проекта включены.'};
+    })(configuredPlannerProfileId);
   const externalUrlByItem = new Map(bindings.map((binding) => [binding.entityId, safeExternalUrl(binding.metadata)]));
   const repository = repositoryScopes.length === 1 ? repositoryScopes[0]! : null;
   const workItemByRunId = new Map(runFacts.map((run) => [run.id, run.workItemId]));
@@ -1212,7 +1237,8 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       approvedSourceManifest: approvedRow?.sourceManifest ?? [],
       approvedSourceManifestHash: approvedRow === undefined ? null : hashProjectPlanSourceManifest(approvedRow.sourceManifest),
       approvedSimulation: approvedRow?.simulation ?? null,
-      materialization
+      materialization,
+      plannerEligibility
     },
     workItems: items.flatMap((item) => {
       if (!workItemStatuses.includes(item.status)) return [];

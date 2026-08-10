@@ -1,7 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {
   deterministicProjectPlanUuid,
-  generateProjectPlanDraft,
   hashProjectPlanSourceManifest,
   hashProjectPlanDefinition,
   projectSetupBindingModes,
@@ -22,14 +21,15 @@ import {
   type ProjectPlanSimulation,
   type SourceArtifact
 } from '@fai-control-plane/domain';
-import type {ProjectPlanMutationCommand, ProjectPlanWorkspace} from '@fai-control-plane/application';
+import type {GenerateProjectPlanDraftCommand, ProjectPlanMutationCommand, ProjectPlanSemanticPreparationResult, ProjectPlanWorkspace} from '@fai-control-plane/application';
 import {and, count, desc, eq, inArray, isNull, max} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {reconcileRiskSignal} from './risk-signal';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
-type StoreInput = Readonly<{command: ProjectPlanMutationCommand; requestHash: string; authorized: boolean; policyError?: CommandError}>;
+type StoreInput = Readonly<{command: ProjectPlanMutationCommand; requestHash: string; authorized: boolean; policyError?: CommandError; semanticGeneration?: import('@fai-control-plane/domain').CommandResult<ProjectPlanDefinition>}>;
 const fail = (code: CommandError['code'], message: string) => ({ok: false as const, error: {code, message}});
 
 const authority = async (tx: Transaction, workspaceId: string, projectId: string, actorId: string) => {
@@ -113,6 +113,94 @@ const citationsValid = async (tx: Transaction, workspaceId: string, projectId: s
   });
 };
 
+const hermesPlannerEligible = async (tx: Transaction, workspaceId: string, projectId: string): Promise<ReturnType<typeof fail> | {ok: true; value: true}> => {
+  const [setup] = await tx.select({configuration: schema.projectSetups.configuration}).from(schema.projectSetups)
+    .where(eq(schema.projectSetups.projectId, projectId)).limit(1);
+  if (setup === undefined || setup.configuration.executionMode !== 'managed_agent' || setup.configuration.agentProfileId === null) {
+    return fail('INVALID_TRANSITION', 'Hermes planning is unavailable: configure this project with an enabled managed Hermes profile.');
+  }
+  const [profile] = await tx.select({id: schema.agentProfiles.id}).from(schema.agentProfiles)
+    .innerJoin(schema.runtimeRegistrations, and(
+      eq(schema.runtimeRegistrations.agentProfileId, schema.agentProfiles.id),
+      eq(schema.runtimeRegistrations.actorId, schema.agentProfiles.actorId),
+      eq(schema.runtimeRegistrations.projectId, projectId),
+      eq(schema.runtimeRegistrations.enabled, true)
+    ))
+    .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
+    .innerJoin(schema.projectMemberships, and(
+      eq(schema.projectMemberships.projectId, projectId),
+      eq(schema.projectMemberships.actorId, schema.agentProfiles.actorId),
+      eq(schema.projectMemberships.role, 'agent'),
+      eq(schema.projectMemberships.active, true)
+    ))
+    .where(and(
+      eq(schema.agentProfiles.id, setup.configuration.agentProfileId),
+      eq(schema.agentProfiles.workspaceId, workspaceId),
+      eq(schema.agentProfiles.runtimeId, 'hermes'),
+      eq(schema.agentProfiles.enabled, true),
+      eq(schema.actors.type, 'agent'),
+      isNull(schema.actors.disabledAt)
+    )).limit(1);
+  return profile === undefined
+    ? fail('INVALID_TRANSITION', 'Hermes planning is unavailable: enable the configured Hermes agent profile and this project runtime registration.')
+    : {ok: true, value: true};
+};
+
+const prepareSemanticGeneration = async (tx: Transaction, input: Readonly<{command: GenerateProjectPlanDraftCommand; requestHash: string}>): Promise<ProjectPlanSemanticPreparationResult> => {
+  const {command} = input;
+  if (!validSourceManifest(command.payload.sourceManifest) || command.payload.sourceManifest.length < 1 ||
+    command.payload.sourceManifest.length > projectPlanGenerationLimits.artifactCount ||
+    new Set(command.payload.sourceManifest.map(({artifactId}) => artifactId)).size !== command.payload.sourceManifest.length) return fail('INVALID_COMMAND', 'Draft generation source manifest is invalid.');
+  const [project] = await tx.select({id: schema.projects.id}).from(schema.projects).where(and(
+    eq(schema.projects.id, command.payload.projectId), eq(schema.projects.workspaceId, command.workspaceId)
+  )).limit(1);
+  if (project === undefined) return fail('NOT_FOUND', 'Project was not found.');
+  const rights = await authority(tx, command.workspaceId, command.payload.projectId, command.actor.actorId);
+  if (rights === null || !rights.canApprove) return fail(rights === null ? 'NOT_FOUND' : 'CAPABILITY_DENIED', 'Only the active project Product Owner can generate a plan draft.');
+  const [receipt] = await tx.select({requestHash: schema.commandReceipts.requestHash, state: schema.commandReceipts.state, commandId: schema.commandReceipts.commandId, commandType: schema.commandReceipts.commandType, result: schema.commandReceipts.result})
+    .from(schema.commandReceipts).where(and(eq(schema.commandReceipts.workspaceId, command.workspaceId), eq(schema.commandReceipts.idempotencyKey, command.idempotencyKey))).limit(1);
+  if (receipt !== undefined) {
+    if (receipt.requestHash !== input.requestHash) return fail('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was already used for another request.');
+    if (receipt.state === 'completed' && receipt.result !== null) return {ok: true, value: {kind: 'replay', receipt: {commandId: receipt.commandId, commandType: receipt.commandType as ProjectPlanMutationCommand['type'], result: receipt.result as never}}};
+    return fail('INVALID_TRANSITION', 'Draft generation receipt is incomplete. Retry after the current command completes.');
+  }
+  const plannerEligibility = await hermesPlannerEligible(tx, command.workspaceId, command.payload.projectId);
+  if (!plannerEligibility.ok) return plannerEligibility;
+  const [currentRow] = await tx.select().from(schema.projectPlanDrafts).where(and(
+    eq(schema.projectPlanDrafts.id, command.payload.planId), eq(schema.projectPlanDrafts.workspaceId, command.workspaceId)
+  )).limit(1);
+  const current = currentRow === undefined ? null : draftFrom(currentRow);
+  if ((command.payload.expectedRevision === null) !== (current === null) || current !== null &&
+    (current.revision !== command.payload.expectedRevision || current.state !== 'draft' || current.projectId !== command.payload.projectId)) return fail('VERSION_CONFLICT', 'Project plan draft revision conflicts.');
+  if (current === null) {
+    const [existingDraft] = await tx.select({id: schema.projectPlanDrafts.id}).from(schema.projectPlanDrafts).where(and(
+      eq(schema.projectPlanDrafts.workspaceId, command.workspaceId), eq(schema.projectPlanDrafts.projectId, command.payload.projectId),
+      eq(schema.projectPlanDrafts.state, 'draft')
+    )).limit(1);
+    if (existingDraft !== undefined) return fail('VERSION_CONFLICT', 'Another draft already exists for this project.');
+    const [approved] = await tx.select({id: schema.projectPlanVersions.id}).from(schema.projectPlanVersions).where(and(
+      eq(schema.projectPlanVersions.workspaceId, command.workspaceId), eq(schema.projectPlanVersions.projectId, command.payload.projectId)
+    )).limit(1);
+    if (approved !== undefined) return fail('INVALID_TRANSITION', 'An approved plan requires an explicit scope-delta re-plan.');
+  }
+  const requestedArtifactIds = command.payload.sourceManifest.map(({artifactId}) => artifactId);
+  const artifactRows = await tx.select().from(schema.projectSourceArtifacts).where(and(
+    eq(schema.projectSourceArtifacts.workspaceId, command.workspaceId), eq(schema.projectSourceArtifacts.projectId, command.payload.projectId), inArray(schema.projectSourceArtifacts.id, requestedArtifactIds)
+  )).orderBy(schema.projectSourceArtifacts.id);
+  const actualManifest = artifactRows.map(({id: artifactId, version, sha256}) => ({artifactId, version, sha256}));
+  const requestedManifest = [...command.payload.sourceManifest].sort((left, right) => left.artifactId.localeCompare(right.artifactId));
+  if (hashProjectPlanSourceManifest(actualManifest) !== hashProjectPlanSourceManifest(requestedManifest)) return fail('VERSION_CONFLICT', 'Selected sources changed or are unavailable.');
+  const artifacts = artifactRows.flatMap((row) => {
+    const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, sourceKind: row.sourceKind, mediaType: row.mediaType,
+      content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, sourceFile: row.sourceFile, provenance: row.provenance, version: row.version});
+    return artifact.ok ? [artifact.value] : [];
+  });
+  if (artifacts.length !== artifactRows.length || artifacts.reduce((total, artifact) => total + artifact.sizeBytes, 0) > projectPlanGenerationLimits.totalBytes) return fail('INVALID_COMMAND', 'Selected sources are invalid or exceed the planning limit.');
+  const dossier = projectDossierReadiness(artifacts);
+  if (!dossier.ready) return fail('INVALID_TRANSITION', `Draft generation requires: ${dossier.required.flatMap(({remediation}) => remediation === null ? [] : [remediation]).join(' ')}`);
+  return {ok: true, value: {kind: 'ready', request: {idempotencyKey: command.idempotencyKey, sourceManifest: requestedManifest, artifacts}}};
+};
+
 const simulateIn = async (tx: Transaction, input: {workspaceId: string; projectId: string; actorId: string; definition: ProjectPlanDefinition}) => {
   const rights = await authority(tx, input.workspaceId, input.projectId, input.actorId);
   if (rights === null || !rights.canRead) return null;
@@ -180,6 +268,10 @@ const validSetupConfiguration = (value: unknown): value is schema.ProjectSetupCo
 };
 
 export const createPostgresProjectPlanStore = (db: Database) => ({
+  async prepareSemanticGeneration(input: Readonly<{command: GenerateProjectPlanDraftCommand; requestHash: string; authorized: boolean}>) {
+    if (!input.authorized) return fail('POLICY_DENIED', 'Policy denied.');
+    return db.transaction((tx) => prepareSemanticGeneration(tx, input));
+  },
   async execute(input: StoreInput) {
     return db.transaction(async (tx) => {
       const command = input.command;
@@ -201,6 +293,15 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
       let result: {ok: true; value: {artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation; materialization?: ProjectPlanMaterialization}} | ReturnType<typeof fail>;
       const complete = async () => {
         const now = new Date();
+        if (command.type === 'project_plan.draft.generate' && projectId !== null && input.semanticGeneration !== undefined && (result.ok || !input.semanticGeneration.ok)) {
+          await reconcileRiskSignal(tx, {projectId, deduplicationKey: `hermes_semantic_planning:v1:${command.payload.planId}`, observedAt: now,
+            condition: result.ok ? null : {
+              code: 'hermes_semantic_planning_unavailable', ruleId: 'hermes_semantic_planning_unavailable', ruleVersion: 'v1', signalClass: 'fact', severity: 'yellow',
+              summary: 'Hermes semantic planning did not return a valid draft; no project draft was created.', details: {remediation: 'Verify the private Hermes configuration and response contract, then retry draft generation.'},
+              evidenceReferences: [{type: 'project_plan_command', id: command.commandId}], impact: 'Project planning draft cannot be assembled.', ownerActorId: command.actor.actorId,
+              nextAction: 'Product Owner: verify/enable the private Hermes planner and response contract, then retry the same selected corpus.'
+            }});
+        }
         await tx.insert(schema.auditEvents).values({id: randomUUID(), workspaceId: command.workspaceId, projectId, actorId: command.actor.actorId,
           commandId: command.commandId, actionCategory: 'write', action: command.type, targetType: command.type === 'project_plan.source.record' ? 'project_source_artifact' : 'project_plan',
           targetId: command.type === 'project_plan.source.record' ? command.payload.artifactId : command.payload.planId,
@@ -511,6 +612,13 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           result = fail('INVALID_COMMAND', 'Project plan does not belong to the requested project.'); return complete();
         }
         if (current === null) {
+          const [existingDraft] = await tx.select({id: schema.projectPlanDrafts.id}).from(schema.projectPlanDrafts).where(and(
+            eq(schema.projectPlanDrafts.workspaceId, command.workspaceId), eq(schema.projectPlanDrafts.projectId, command.payload.projectId),
+            eq(schema.projectPlanDrafts.state, 'draft')
+          )).limit(1);
+          if (existingDraft !== undefined) {
+            result = fail('VERSION_CONFLICT', 'Another draft already exists for this project.'); return complete();
+          }
           const [approved] = await tx.select({id: schema.projectPlanVersions.id}).from(schema.projectPlanVersions).where(and(
             eq(schema.projectPlanVersions.workspaceId, command.workspaceId), eq(schema.projectPlanVersions.projectId, command.payload.projectId)
           )).limit(1);
@@ -519,13 +627,18 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           }
         }
         let generatedDefinition: ProjectPlanDefinition | null = null;
+        let generationArtifactIds: readonly string[] | null = null;
         if (command.type === 'project_plan.draft.generate') {
+          if (!rights.canApprove) {
+            result = fail('CAPABILITY_DENIED', 'Only the active project Product Owner can generate a plan draft.'); return complete();
+          }
           if (!validSourceManifest(command.payload.sourceManifest) || command.payload.sourceManifest.length < 1 ||
             command.payload.sourceManifest.length > projectPlanGenerationLimits.artifactCount ||
             new Set(command.payload.sourceManifest.map(({artifactId}) => artifactId)).size !== command.payload.sourceManifest.length) {
             result = fail('INVALID_COMMAND', 'Корпус источников некорректен или превышает допустимый размер.'); return complete();
           }
           const requestedArtifactIds = command.payload.sourceManifest.map(({artifactId}) => artifactId);
+          generationArtifactIds = requestedArtifactIds;
           const artifactRows = await tx.select().from(schema.projectSourceArtifacts).where(and(
             eq(schema.projectSourceArtifacts.workspaceId, command.workspaceId), eq(schema.projectSourceArtifacts.projectId, command.payload.projectId),
             inArray(schema.projectSourceArtifacts.id, requestedArtifactIds)
@@ -549,11 +662,20 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
               .flatMap(({remediation}) => remediation === null ? [] : [remediation]).join(' ')}`);
             return complete();
           }
-          const generated = generateProjectPlanDraft(artifacts); if (!generated.ok) { result = generated; return complete(); }
-          generatedDefinition = generated.value;
+          const plannerEligibility = await hermesPlannerEligible(tx, command.workspaceId, command.payload.projectId);
+          if (!plannerEligibility.ok) { result = plannerEligibility; return complete(); }
+          if (input.semanticGeneration === undefined) {
+            result = fail('INVALID_TRANSITION', 'Hermes semantic planning is unavailable. No deterministic draft is created.'); return complete();
+          }
+          if (!input.semanticGeneration.ok) { result = input.semanticGeneration; return complete(); }
+          generatedDefinition = input.semanticGeneration.value;
         }
         const definition = validateProjectPlanDefinition(command.type === 'project_plan.draft.save' ? command.payload.definition : generatedDefinition);
         if (!definition.ok) { result = definition; return complete(); }
+        if (command.type === 'project_plan.draft.generate' && !evidenceIn(definition.value).every((evidence) =>
+          evidence.kind === 'assumption' || generationArtifactIds?.includes(evidence.artifactId) === true)) {
+          result = fail('INVALID_COMMAND', 'Semantic plan citations must resolve inside the exact selected source corpus.'); return complete();
+        }
         if (!await citationsValid(tx, command.workspaceId, command.payload.projectId, definition.value)) {
           result = fail('INVALID_COMMAND', 'Plan citations must resolve inside this project and bounded source content.'); return complete();
         }
