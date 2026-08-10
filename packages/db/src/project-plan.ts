@@ -173,6 +173,11 @@ const prepareSemanticGeneration = async (tx: Transaction, input: Readonly<{comma
   if ((command.payload.expectedRevision === null) !== (current === null) || current !== null &&
     (current.revision !== command.payload.expectedRevision || current.state !== 'draft' || current.projectId !== command.payload.projectId)) return fail('VERSION_CONFLICT', 'Project plan draft revision conflicts.');
   if (current === null) {
+    const [existingDraft] = await tx.select({id: schema.projectPlanDrafts.id}).from(schema.projectPlanDrafts).where(and(
+      eq(schema.projectPlanDrafts.workspaceId, command.workspaceId), eq(schema.projectPlanDrafts.projectId, command.payload.projectId),
+      eq(schema.projectPlanDrafts.state, 'draft')
+    )).limit(1);
+    if (existingDraft !== undefined) return fail('VERSION_CONFLICT', 'Another draft already exists for this project.');
     const [approved] = await tx.select({id: schema.projectPlanVersions.id}).from(schema.projectPlanVersions).where(and(
       eq(schema.projectPlanVersions.workspaceId, command.workspaceId), eq(schema.projectPlanVersions.projectId, command.payload.projectId)
     )).limit(1);
@@ -607,6 +612,13 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           result = fail('INVALID_COMMAND', 'Project plan does not belong to the requested project.'); return complete();
         }
         if (current === null) {
+          const [existingDraft] = await tx.select({id: schema.projectPlanDrafts.id}).from(schema.projectPlanDrafts).where(and(
+            eq(schema.projectPlanDrafts.workspaceId, command.workspaceId), eq(schema.projectPlanDrafts.projectId, command.payload.projectId),
+            eq(schema.projectPlanDrafts.state, 'draft')
+          )).limit(1);
+          if (existingDraft !== undefined) {
+            result = fail('VERSION_CONFLICT', 'Another draft already exists for this project.'); return complete();
+          }
           const [approved] = await tx.select({id: schema.projectPlanVersions.id}).from(schema.projectPlanVersions).where(and(
             eq(schema.projectPlanVersions.workspaceId, command.workspaceId), eq(schema.projectPlanVersions.projectId, command.payload.projectId)
           )).limit(1);

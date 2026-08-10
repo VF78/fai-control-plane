@@ -76,8 +76,9 @@ describePostgres('project plan persistence', () => {
     const fullManifest = [...requiredManifest, {artifactId: secondArtifactId, version: 1, sha256: sourceArtifactDigest(secondContent)}];
     await expect(store.execute({command: envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: fullManifest}, 'generate-2') as never,
       requestHash: 'c'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 2}}}}});
-    await expect(store.execute({command: envelope('project_plan.draft.generate', {planId: competingPlanId, projectId, expectedRevision: null, sourceManifest: fullManifest}, 'generate-competing') as never,
-      requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+    const competing = envelope('project_plan.draft.generate', {planId: competingPlanId, projectId, expectedRevision: null, sourceManifest: fullManifest}, 'generate-competing');
+    await expect(store.prepareSemanticGeneration({command: competing as never, requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({ok: false, error: {code: 'VERSION_CONFLICT'}});
+    await expect(store.execute({command: competing as never, requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
     expect(await db.select().from(projectPlanDrafts)).toHaveLength(1);
     expect(await db.select().from(auditEvents)).toHaveLength(9);
     expect(await db.select().from(commandReceipts)).toHaveLength(9);
