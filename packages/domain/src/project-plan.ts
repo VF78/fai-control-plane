@@ -8,10 +8,36 @@ export const sourceArtifactMediaTypes = [
 ] as const;
 export type SourceArtifactMediaType = (typeof sourceArtifactMediaTypes)[number];
 
+export const projectSourceArtifactKinds = [
+  'project_passport',
+  'client_requirements',
+  'contract_scope',
+  'acceptance_method',
+  'architecture_constraints',
+  'other'
+] as const;
+export type ProjectSourceArtifactKind = (typeof projectSourceArtifactKinds)[number];
+
+export const requiredProjectDossierKinds = [
+  'project_passport',
+  'client_requirements',
+  'acceptance_method'
+] as const satisfies readonly ProjectSourceArtifactKind[];
+
+export type ProjectDossierReadiness = Readonly<{
+  ready: boolean;
+  required: readonly Readonly<{
+    kind: (typeof requiredProjectDossierKinds)[number];
+    present: boolean;
+    remediation: string | null;
+  }>[];
+}>;
+
 export type SourceArtifact = Readonly<{
   id: string;
   projectId: string;
   name: string;
+  sourceKind: ProjectSourceArtifactKind;
   mediaType: SourceArtifactMediaType;
   content: string;
   sizeBytes: number;
@@ -163,12 +189,29 @@ const containsStructuredSecret = (value: unknown): boolean => {
 export const sourceArtifactDigest = (content: string) =>
   createHash('sha256').update(content, 'utf8').digest('hex');
 
+export const projectDossierReadiness = (
+  artifacts: readonly Pick<SourceArtifact, 'sourceKind'>[]
+): ProjectDossierReadiness => {
+  const presentKinds = new Set(artifacts.map(({sourceKind}) => sourceKind));
+  const label: Record<(typeof requiredProjectDossierKinds)[number], string> = {
+    project_passport: 'паспорт проекта',
+    client_requirements: 'требования клиента',
+    acceptance_method: 'метод приёмки'
+  };
+  const required = requiredProjectDossierKinds.map((kind) => {
+    const present = presentKinds.has(kind);
+    return {kind, present, remediation: present ? null : `Добавьте источник: ${label[kind]}.`};
+  });
+  return Object.freeze({ready: required.every(({present}) => present), required: Object.freeze(required)});
+};
+
 export const validateSourceArtifact = (value: unknown): CommandResult<SourceArtifact> => {
   if (!isObject(value) || !exact(value, [
-    'id', 'projectId', 'name', 'mediaType', 'content', 'sizeBytes', 'sha256', 'provenance', 'version'
+    'id', 'projectId', 'name', 'sourceKind', 'mediaType', 'content', 'sizeBytes', 'sha256', 'provenance', 'version'
   ])) return invalid('Source artifact shape is invalid.');
   if (!uuid.test(value.id as string) || !uuid.test(value.projectId as string) ||
-    !text(value.name, 160) || !sourceArtifactMediaTypes.includes(value.mediaType as SourceArtifactMediaType) ||
+    !text(value.name, 160) || !projectSourceArtifactKinds.includes(value.sourceKind as ProjectSourceArtifactKind) ||
+    !sourceArtifactMediaTypes.includes(value.mediaType as SourceArtifactMediaType) ||
     typeof value.content !== 'string' || value.content.includes('\u0000') || Buffer.byteLength(value.content, 'utf8') < 1 ||
     Buffer.byteLength(value.content, 'utf8') > 256 * 1024 || value.sizeBytes !== Buffer.byteLength(value.content, 'utf8') ||
     value.sha256 !== sourceArtifactDigest(value.content) || containsHighConfidenceSecretContent(value.content) ||

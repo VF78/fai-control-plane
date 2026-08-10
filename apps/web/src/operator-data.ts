@@ -85,10 +85,12 @@ import {
   validateDeliveryProtocolDefinition,
   validateProjectPlanDefinition,
   hashProjectPlanSourceManifest,
+  projectSourceArtifactKinds,
   type DeliveryProtocol,
   type ProjectPlan,
   type ProjectPlanSimulation,
   type ProjectPlanMaterialization,
+  type ProjectSourceArtifactKind,
   type ProjectExecutionProjection,
   type CanonicalJson,
   type PolicyDecision,
@@ -813,7 +815,7 @@ export type ProjectData = Readonly<{
   protocol?: DeliveryProtocol | null;
   protocolRevision?: DeliveryProtocol | null;
   plan?: Readonly<{
-    artifacts: readonly Readonly<{id: string; name: string; mediaType: string; content: string; sizeBytes: number; sha256: string; version: number; provenance: Readonly<{kind: string; label: string; capturedAt: string}>}>[];
+    artifacts: readonly Readonly<{id: string; name: string; sourceKind: import('@fai-control-plane/domain').ProjectSourceArtifactKind; mediaType: string; content: string; sizeBytes: number; sha256: string; version: number; provenance: Readonly<{kind: string; label: string; capturedAt: string}>}>[];
     draft: ProjectPlan | null;
     approved: ProjectPlan | null;
     approvedSourceManifest: readonly Readonly<{artifactId: string; version: number; sha256: string}>[];
@@ -1042,7 +1044,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     scopeOutcomes.map(({id}) => id)
   ));
   const [planArtifactRows, planDraftRows, planVersionRows] = await Promise.all([
-    db.select({id: projectSourceArtifacts.id, name: projectSourceArtifacts.name, mediaType: projectSourceArtifacts.mediaType,
+    db.select({id: projectSourceArtifacts.id, name: projectSourceArtifacts.name, sourceKind: projectSourceArtifacts.sourceKind, mediaType: projectSourceArtifacts.mediaType,
       content: projectSourceArtifacts.content, sizeBytes: projectSourceArtifacts.sizeBytes, sha256: projectSourceArtifacts.sha256, version: projectSourceArtifacts.version,
       provenance: projectSourceArtifacts.provenance})
       .from(projectSourceArtifacts).where(and(eq(projectSourceArtifacts.workspaceId, project.workspaceId), eq(projectSourceArtifacts.projectId, project.id)))
@@ -1199,7 +1201,12 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     protocol,
     protocolRevision,
     plan: {
-      artifacts: planArtifactRows,
+      artifacts: planArtifactRows.map((artifact) => ({
+        ...artifact,
+        sourceKind: projectSourceArtifactKinds.includes(artifact.sourceKind as ProjectSourceArtifactKind)
+          ? artifact.sourceKind as ProjectSourceArtifactKind
+          : 'other' as const
+      })),
       draft: planDraft,
       approved: approvedPlan,
       approvedSourceManifest: approvedRow?.sourceManifest ?? [],

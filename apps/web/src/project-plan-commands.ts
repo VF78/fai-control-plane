@@ -1,5 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {hashProjectPlanSourceManifest, validateProjectPlanDefinition, type ProjectPlanDefinition, type ProjectPlanSourceManifest, type SourceArtifactMediaType} from '@fai-control-plane/domain';
+import {hashProjectPlanSourceManifest, projectSourceArtifactKinds, validateProjectPlanDefinition, type ProjectPlanDefinition, type ProjectPlanSourceManifest, type ProjectSourceArtifactKind, type SourceArtifactMediaType} from '@fai-control-plane/domain';
 import {requireOperatorSession} from './operator-auth-runtime';
 import {getDeliveryRuntime} from './delivery-runtime';
 
@@ -57,14 +57,15 @@ export async function projectPlanCommand(request: Request, overrides: ProjectPla
   const runtime = await overrides.getRuntime(); const actor = await runtime.actor(auth.runtime.config.workspaceId, auth.session.actorId); if (!actor.ok) return invalid('forbidden', 403);
   const base = {commandId: overrides.nextId(), workspaceId: auth.runtime.config.workspaceId, correlationId: overrides.nextId(), issuedAt: overrides.now().toISOString(), actor: actor.value};
   try {
-    if (value.action === 'record_source' && exact(value, ['_csrf', 'action', 'projectId', 'artifactId', 'name', 'mediaType', 'content', 'provenanceLabel']) &&
+    if (value.action === 'record_source' && exact(value, ['_csrf', 'action', 'projectId', 'artifactId', 'name', 'sourceKind', 'mediaType', 'content', 'provenanceLabel']) &&
       typeof value.artifactId === 'string' && UUID.test(value.artifactId) &&
       typeof value.name === 'string' && value.name.trim() === value.name && value.name.length > 0 && value.name.length <= 160 &&
+      projectSourceArtifactKinds.includes(value.sourceKind as ProjectSourceArtifactKind) &&
       ['text/plain', 'text/markdown', 'application/json'].includes(value.mediaType as string) && typeof value.content === 'string' &&
       typeof value.provenanceLabel === 'string' && value.provenanceLabel.trim() === value.provenanceLabel && value.provenanceLabel.length > 0 && value.provenanceLabel.length <= 160) {
       const sizeBytes = Buffer.byteLength(value.content); if (sizeBytes < 1 || sizeBytes > 256 * 1024) return invalid('artifact_too_large', 413);
       const result = await runtime.plan.execute({...base, idempotencyKey: `project_plan.source.record.v1:${value.artifactId}`, type: 'project_plan.source.record', payload: {
-        artifactId: value.artifactId, projectId: value.projectId, name: value.name, mediaType: value.mediaType as SourceArtifactMediaType, content: value.content,
+        artifactId: value.artifactId, projectId: value.projectId, name: value.name, sourceKind: value.sourceKind as ProjectSourceArtifactKind, mediaType: value.mediaType as SourceArtifactMediaType, content: value.content,
         sizeBytes, sha256: createHash('sha256').update(value.content, 'utf8').digest('hex'), provenance: {kind: 'manager_note', label: value.provenanceLabel, capturedAt: base.issuedAt}
       }});
       return mutationResponse(result);

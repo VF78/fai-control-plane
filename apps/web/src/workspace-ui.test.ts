@@ -56,6 +56,10 @@ it('renders the Russian source-draft-approval lifecycle under project setup', ()
   } as unknown as WorkspaceData}));
   expect(markup).toContain('План проекта');
   expect(markup).toContain('Исходные материалы');
+  expect(markup).toContain('Готовность досье');
+  expect(markup).toContain('Добавьте источник: паспорт проекта.');
+  expect(markup).toContain('Категория');
+  expect(markup).toContain('text/plain, text/markdown и application/json');
   expect(markup).toContain('Черновик плана');
   expect(markup).toContain('Утверждение Product Owner');
   expect(markup).not.toContain('Сгенерировать');
@@ -70,6 +74,33 @@ it('distinguishes edit-only delivery authority from Product Owner approval', () 
   expect(markup).toContain('Редактирование доступно');
   expect(markup).toContain('активный Product Owner');
   expect(markup).not.toContain('Утвердить версию');
+});
+
+it('allows draft generation only from a selected complete dossier', () => {
+  const artifact = (id: string, sourceKind: 'project_passport' | 'client_requirements' | 'acceptance_method') => ({
+    id, name: sourceKind, sourceKind, mediaType: 'text/plain', content: 'Подтверждённый текст', sizeBytes: 22,
+    sha256: 'a'.repeat(64), version: 1,
+    provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}
+  });
+  const base = {draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null,
+    approvedSimulation: null, materialization: null};
+  const incomplete = renderToStaticMarkup(createElement(ProjectPlanControls, {
+    projectId: '22222222-2222-4222-8222-222222222222', csrfToken: 'csrf', canEdit: true, canApprove: true,
+    plan: {...base, artifacts: [artifact('11111111-1111-4111-8111-111111111111', 'project_passport')]}
+  }));
+  const buttonFor = (markup: string) => {
+    const labelAt = markup.indexOf('Собрать черновик из источников');
+    return markup.slice(markup.lastIndexOf('<button', labelAt), markup.indexOf('</button>', labelAt) + '</button>'.length);
+  };
+  const incompleteButton = buttonFor(incomplete);
+  expect(incomplete).toContain('Добавьте источник: требования клиента.');
+  expect(incompleteButton).toContain('disabled');
+  const complete = renderToStaticMarkup(createElement(ProjectPlanControls, {
+    projectId: '22222222-2222-4222-8222-222222222222', csrfToken: 'csrf', canEdit: true, canApprove: true,
+    plan: {...base, artifacts: [artifact('11111111-1111-4111-8111-111111111111', 'project_passport'), artifact('22222222-2222-4222-8222-222222222222', 'client_requirements'), artifact('33333333-3333-4333-8333-333333333333', 'acceptance_method')]}
+  }));
+  const completeButton = buttonFor(complete);
+  expect(completeButton).not.toContain('disabled');
 });
 
 it('renders a truthful materialization summary without an execution start action', () => {

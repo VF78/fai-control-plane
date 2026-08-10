@@ -18,7 +18,7 @@ const dependencies = (execute: ReturnType<typeof vi.fn>): ProjectPlanCommandDepe
 it('computes source bytes and digest on the server before the canonical command', async () => {
   const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: id, commandType: 'project_plan.source.record', result: {ok: true, value: {}}}});
   const content = 'Факт\nвторая строка';
-  const response = await projectPlanCommand(request({_csrf: 'csrf', action: 'record_source', projectId, artifactId: id, name: 'Интервью', mediaType: 'text/plain', content, provenanceLabel: 'Product Owner'}), dependencies(execute));
+  const response = await projectPlanCommand(request({_csrf: 'csrf', action: 'record_source', projectId, artifactId: id, name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content, provenanceLabel: 'Product Owner'}), dependencies(execute));
   expect(response.status).toBe(200);
   expect(execute).toHaveBeenCalledWith(expect.objectContaining({payload: expect.objectContaining({
     sizeBytes: Buffer.byteLength(content), sha256: createHash('sha256').update(content).digest('hex')
@@ -27,7 +27,7 @@ it('computes source bytes and digest on the server before the canonical command'
 
 it('rejects oversized source input before a runtime write', async () => {
   const execute = vi.fn(); const deps = dependencies(execute);
-  const response = await projectPlanCommand(request({_csrf: 'csrf', action: 'record_source', projectId, artifactId: id, name: 'X', mediaType: 'text/plain', content: 'x', provenanceLabel: 'Y'}, {'content-length': String(301 * 1024)}), deps);
+  const response = await projectPlanCommand(request({_csrf: 'csrf', action: 'record_source', projectId, artifactId: id, name: 'X', sourceKind: 'other', mediaType: 'text/plain', content: 'x', provenanceLabel: 'Y'}, {'content-length': String(301 * 1024)}), deps);
   expect(response.status).toBe(400); expect(execute).not.toHaveBeenCalled();
 });
 
@@ -48,7 +48,7 @@ it('rejects chunked oversized and invalid UTF-8 bodies before authentication', a
 
 it('maps a persisted failed receipt to 4xx and the client rejects it', async () => {
   const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: id, commandType: 'project_plan.source.record', result: {ok: false, error: {code: 'CAPABILITY_DENIED', message: 'Only Product Owner'}}}});
-  const payload = {_csrf: 'csrf', action: 'record_source', projectId, artifactId: id, name: 'Интервью', mediaType: 'text/plain', content: 'Факт', provenanceLabel: 'PO'};
+  const payload = {_csrf: 'csrf', action: 'record_source', projectId, artifactId: id, name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content: 'Факт', provenanceLabel: 'PO'};
   const response = await projectPlanCommand(request(payload), dependencies(execute));
   expect(response.status).toBe(403);
   await expect(response.json()).resolves.toMatchObject({status: 'capability_denied', message: 'Only Product Owner'});
@@ -90,9 +90,16 @@ it('rejects an empty or oversized generation corpus before execution', async () 
   expect(execute).not.toHaveBeenCalled();
 });
 
+it('rejects an unknown dossier category before execution', async () => {
+  const execute = vi.fn();
+  const response = await projectPlanCommand(request({_csrf: 'csrf', action: 'record_source', projectId, artifactId: id,
+    name: 'Интервью', sourceKind: 'passport', mediaType: 'text/plain', content: 'Факт', provenanceLabel: 'PO'}), dependencies(execute));
+  expect(response.status).toBe(400); expect(execute).not.toHaveBeenCalled();
+});
+
 it('defaults source selection to all bounded artifacts or a usable bounded subset', () => {
   const artifact = (index: number, sizeBytes: number) => ({id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, name: `Source ${index}`,
-    mediaType: 'text/plain', content: 'x', sizeBytes, sha256: 'a'.repeat(64), version: 1, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}});
+    sourceKind: 'other' as const, mediaType: 'text/plain', content: 'x', sizeBytes, sha256: 'a'.repeat(64), version: 1, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}});
   expect(defaultGenerationArtifactIds([artifact(1, 10), artifact(2, 10)])).toHaveLength(2);
   expect(defaultGenerationArtifactIds([artifact(1, 200 * 1024), artifact(2, 200 * 1024), artifact(3, 200 * 1024)])).toHaveLength(2);
   expect(defaultGenerationArtifactIds(Array.from({length: 33}, (_, index) => artifact(index + 1, 1)))).toHaveLength(32);

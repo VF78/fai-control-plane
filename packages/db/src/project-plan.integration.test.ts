@@ -9,7 +9,7 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {actors, agentRuns, auditEvents, commandReceipts, createDatabase, createPostgresProjectPlanStore,
   deliveryJourneys, outboxEvents, projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPublicationIntents,
-  projectPlanVersions, projectScopeBaselineVersions, projectScopeOutcomes, projectSetups, projects,
+  projectPlanVersions, projectScopeBaselineVersions, projectScopeOutcomes, projectSetups, projectSourceArtifacts, projects,
   runbooks, workItemDependencies, workItems, workItemScopeOutcomes, workspaces} from './index';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -35,14 +35,21 @@ describePostgres('project plan persistence', () => {
     await db.insert(projectMemberships).values({id: randomUUID(), projectId, actorId: ownerId, role: 'project_owner'});
     const store = createPostgresProjectPlanStore(db);
     const envelope = (type: string, payload: unknown, key: string) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId: ownerId}, type, payload});
-    const record = async (artifactId: string, content: string, key: string) => store.execute({command: envelope('project_plan.source.record', {
-      artifactId, projectId, name: key, mediaType: 'text/markdown', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content),
+    const record = async (artifactId: string, content: string, key: string, sourceKind: string) => store.execute({command: envelope('project_plan.source.record', {
+      artifactId, projectId, name: key, sourceKind, mediaType: 'text/markdown', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content),
       provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}
     }, key) as never, requestHash: key.padEnd(64, '0').slice(0, 64), authorized: true});
     const firstArtifactId = randomUUID(); const firstContent = '# Результат\nСогласовать границы\nПодтвердить критерии';
-    await expect(record(firstArtifactId, firstContent, 'gen-source-1')).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    await expect(record(firstArtifactId, firstContent, 'gen-source-1', 'project_passport')).resolves.toMatchObject({receipt: {result: {ok: true}}});
     const firstManifest = [{artifactId: firstArtifactId, version: 1, sha256: sourceArtifactDigest(firstContent)}];
-    const generate = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: firstManifest}, 'generate-1');
+    const incomplete = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: firstManifest}, 'generate-incomplete');
+    await expect(store.execute({command: incomplete as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('требования клиента')}}}});
+    const requirementsArtifactId = randomUUID(); const requirementsContent = 'Требования клиента подтверждены';
+    const acceptanceArtifactId = randomUUID(); const acceptanceContent = 'Метод приёмки подтверждён';
+    await expect(record(requirementsArtifactId, requirementsContent, 'gen-source-requirements', 'client_requirements')).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    await expect(record(acceptanceArtifactId, acceptanceContent, 'gen-source-acceptance', 'acceptance_method')).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const requiredManifest = [...firstManifest, {artifactId: requirementsArtifactId, version: 1, sha256: sourceArtifactDigest(requirementsContent)}, {artifactId: acceptanceArtifactId, version: 1, sha256: sourceArtifactDigest(acceptanceContent)}];
+    const generate = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: requiredManifest}, 'generate-1');
     await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 1}}}}});
     await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({status: 'replayed'});
     expect(await db.select().from(projectPlanVersions)).toHaveLength(0);
@@ -51,18 +58,18 @@ describePostgres('project plan persistence', () => {
     expect(await db.select().from(agentRuns)).toHaveLength(0);
 
     const secondArtifactId = randomUUID(); const secondContent = 'Проверить итог с Product Owner';
-    await expect(record(secondArtifactId, secondContent, 'gen-source-2')).resolves.toMatchObject({receipt: {result: {ok: true}}});
-    const staleManifest = [...firstManifest, {artifactId: secondArtifactId, version: 1, sha256: '0'.repeat(64)}];
+    await expect(record(secondArtifactId, secondContent, 'gen-source-2', 'other')).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const staleManifest = [...requiredManifest, {artifactId: secondArtifactId, version: 1, sha256: '0'.repeat(64)}];
     await expect(store.execute({command: envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: staleManifest}, 'generate-stale') as never,
       requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
-    const fullManifest = [...firstManifest, {artifactId: secondArtifactId, version: 1, sha256: sourceArtifactDigest(secondContent)}];
+    const fullManifest = [...requiredManifest, {artifactId: secondArtifactId, version: 1, sha256: sourceArtifactDigest(secondContent)}];
     await expect(store.execute({command: envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: fullManifest}, 'generate-2') as never,
       requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 2}}}}});
     await expect(store.execute({command: envelope('project_plan.draft.generate', {planId: competingPlanId, projectId, expectedRevision: null, sourceManifest: fullManifest}, 'generate-competing') as never,
       requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
     expect(await db.select().from(projectPlanDrafts)).toHaveLength(1);
-    expect(await db.select().from(auditEvents)).toHaveLength(6);
-    expect(await db.select().from(commandReceipts)).toHaveLength(6);
+    expect(await db.select().from(auditEvents)).toHaveLength(9);
+    expect(await db.select().from(commandReceipts)).toHaveLength(9);
   });
 
   it('isolates source evidence, saves with CAS, and freezes an approved version and source manifest', async () => {
@@ -82,7 +89,11 @@ describePostgres('project plan persistence', () => {
     ]);
     const store = createPostgresProjectPlanStore(db); const content = 'Подтверждённый результат\nКритерий приёмки';
     const envelope = (type: string, payload: unknown, key: string, actorId = ownerId) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId}, type, payload});
-    await expect(store.execute({command: envelope('project_plan.source.record', {artifactId, projectId, name: 'Интервью', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}}, 'source') as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    await expect(store.execute({command: envelope('project_plan.source.record', {artifactId, projectId, name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}}, 'source') as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const legacyArtifactId = randomUUID(); const legacyContent = 'Ранее записанный источник';
+    await db.insert(projectSourceArtifacts).values({id: legacyArtifactId, workspaceId, projectId, name: 'Старый источник', mediaType: 'text/plain', content: legacyContent,
+      sizeBytes: Buffer.byteLength(legacyContent), sha256: sourceArtifactDigest(legacyContent), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, createdByActorId: ownerId});
+    await expect(store.inspect({workspaceId, projectId, actorId: ownerId})).resolves.toMatchObject({artifacts: expect.arrayContaining([{id: legacyArtifactId, sourceKind: 'other'}])});
     const citation = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 2}};
     const definition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: citation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: citation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: citation}], tasks: [
       {key: 't1', title: 'Подготовить результат', outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: citation}]},

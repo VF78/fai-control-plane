@@ -1,0 +1,2 @@
+ALTER TABLE "project_source_artifacts" ADD COLUMN "source_kind" text DEFAULT 'other' NOT NULL;--> statement-breakpoint
+ALTER TABLE "project_source_artifacts" ADD CONSTRAINT "project_source_artifacts_source_kind" CHECK ("project_source_artifacts"."source_kind" in ('project_passport', 'client_requirements', 'contract_scope', 'acceptance_method', 'architecture_constraints', 'other'));

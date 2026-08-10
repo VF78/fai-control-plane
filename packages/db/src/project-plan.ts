@@ -6,6 +6,7 @@ import {
   hashProjectPlanDefinition,
   projectSetupBindingModes,
   projectPlanGenerationLimits,
+  projectDossierReadiness,
   sourceArtifactDigest,
   simulateDeliveryProtocol,
   simulateProjectPlan,
@@ -220,6 +221,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           id: command.payload.artifactId,
           projectId: command.payload.projectId,
           name: command.payload.name,
+          sourceKind: command.payload.sourceKind,
           mediaType: command.payload.mediaType,
           content: command.payload.content,
           sizeBytes: command.payload.sizeBytes,
@@ -533,12 +535,18 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
             result = fail('VERSION_CONFLICT', 'Выбранные источники изменились или недоступны. Обновите страницу и соберите черновик повторно.'); return complete();
           }
           const artifacts = artifactRows.flatMap((row) => {
-            const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, mediaType: row.mediaType,
+            const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, sourceKind: row.sourceKind, mediaType: row.mediaType,
               content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, provenance: row.provenance, version: row.version});
             return artifact.ok ? [artifact.value] : [];
           });
           if (artifacts.length !== artifactRows.length || artifacts.reduce((total, artifact) => total + artifact.sizeBytes, 0) > projectPlanGenerationLimits.totalBytes) {
             result = fail('INVALID_COMMAND', 'Записанные источники некорректны или превышают лимит 32 материала / 512 КБ.'); return complete();
+          }
+          const dossier = projectDossierReadiness(artifacts);
+          if (!dossier.ready) {
+            result = fail('INVALID_TRANSITION', `Черновик нельзя собрать: ${dossier.required
+              .flatMap(({remediation}) => remediation === null ? [] : [remediation]).join(' ')}`);
+            return complete();
           }
           const generated = generateProjectPlanDraft(artifacts); if (!generated.ok) { result = generated; return complete(); }
           generatedDefinition = generated.value;
@@ -606,7 +614,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         tx.select().from(schema.projectPlanVersions).where(and(eq(schema.projectPlanVersions.workspaceId, input.workspaceId), eq(schema.projectPlanVersions.projectId, input.projectId))).orderBy(desc(schema.projectPlanVersions.version)).limit(1)
       ]);
       const artifacts = artifactRows.flatMap((row) => {
-        const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, mediaType: row.mediaType, content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, provenance: row.provenance, version: row.version});
+        const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, sourceKind: row.sourceKind, mediaType: row.mediaType, content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, provenance: row.provenance, version: row.version});
         return artifact.ok ? [artifact.value] : [];
       });
       const draft = draftRows[0] === undefined ? null : draftFrom(draftRows[0]);
