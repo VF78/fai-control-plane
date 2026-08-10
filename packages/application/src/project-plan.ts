@@ -3,6 +3,7 @@ import {
   authorize,
   canonicalJson,
   isTrustedActorContext,
+  projectSourceArtifactKinds,
   validateProjectPlanDefinition,
   type CanonicalCommandEnvelope,
   type CommandError,
@@ -20,6 +21,7 @@ export type RecordSourceArtifactCommand = CanonicalCommandEnvelope<'project_plan
   artifactId: string;
   projectId: string;
   name: string;
+  sourceKind: import('@fai-control-plane/domain').ProjectSourceArtifactKind;
   mediaType: SourceArtifactMediaType;
   content: string;
   sizeBytes: number;
@@ -110,7 +112,8 @@ export const createProjectPlanService = (store: ProjectPlanStore): ProjectPlanSe
       return rejected('INVALID_ACTOR_CONTEXT', 'Project plan changes require an authenticated human.');
     }
     if (command.type === 'project_plan.source.record') {
-      if (!UUID.test(command.payload.artifactId) || !UUID.test(command.payload.projectId) || !SHA.test(command.payload.sha256)) {
+      if (!UUID.test(command.payload.artifactId) || !UUID.test(command.payload.projectId) || !SHA.test(command.payload.sha256) ||
+        !projectSourceArtifactKinds.includes(command.payload.sourceKind)) {
         return rejected('INVALID_COMMAND', 'Source artifact command is invalid.');
       }
     } else if (!UUID.test(command.payload.planId)) {
