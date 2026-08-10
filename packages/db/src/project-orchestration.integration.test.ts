@@ -73,7 +73,7 @@ describePostgres('governed project orchestration persistence', () => {
       evidence: {kind: 'assumption' as const, statement: 'Approved by the project owner.'}}],
       milestones: [{key: 'milestone_1', title: 'Done', checkpoint: 'Owner review', targetAt: null,
         evidence: {kind: 'assumption' as const, statement: 'Owner checkpoint.'}}], risks: [],
-      tasks: [{key: 'task_1', title: 'Autonomous task', outcomeKeys: ['outcome_1'], milestoneKey: 'milestone_1',
+      tasks: [{key: 'task_1', title: 'Autonomous task', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'milestone_1',
         dependsOn: [], acceptanceEvidence: [{description: 'Focused checks pass',
           evidence: {kind: 'assumption' as const, statement: 'Verification is required.'}}]}]};
     await db.insert(projectPlanDrafts).values({id: ids.plan, workspaceId: ids.workspace, projectId: ids.project,

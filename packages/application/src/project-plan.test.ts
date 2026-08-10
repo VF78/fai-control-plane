@@ -7,7 +7,7 @@ const semanticDefinition = {
   title: 'Hermes plan', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index + 1}`, title: `Outcome ${index + 1}`, weight: 20, evidence: {kind: 'assumption' as const, statement: 'Product Owner confirms this semantic proposal.'}})),
   milestones: [{key: 'm1', title: 'Acceptance', checkpoint: 'Product Owner accepts.', targetAt: null, evidence: {kind: 'assumption' as const, statement: 'Acceptance date is confirmed by Product Owner.'}}],
   risks: [{key: 'r1', statement: 'Interpretation risk', mitigation: 'Review citations.', evidence: {kind: 'assumption' as const, statement: 'Product Owner reviews interpretation.'}}],
-  tasks: [{key: 't1', title: 'Prepare outcome', outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Product Owner verifies.', evidence: {kind: 'assumption' as const, statement: 'Product Owner verifies the result.'}}]}]
+  tasks: [{key: 't1', title: 'Prepare outcome', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Product Owner verifies.', evidence: {kind: 'assumption' as const, statement: 'Product Owner verifies the result.'}}]}]
 };
 
 describe('project plan service', () => {
