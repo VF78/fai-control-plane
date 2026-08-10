@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {defaultDeliveryProtocolDefinition, deterministicProjectPlanUuid, hashDeliveryProtocolDefinition,
-  hashProjectPlanDefinition, hashProjectPlanSourceManifest, sourceArtifactDigest} from '@fai-control-plane/domain';
+  hashProjectPlanDefinition, hashProjectPlanSourceManifest, sourceArtifactDigest, type ProjectPlanDefinition} from '@fai-control-plane/domain';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {and, eq} from 'drizzle-orm';
 import {Pool} from 'pg';
@@ -48,7 +48,7 @@ describePostgres('project plan persistence', () => {
       const evidence = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 1}};
       return {ok: true as const, value: {title: 'Hermes semantic plan', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index + 1}`, title: `Outcome ${index + 1}`, weight: 20, evidence})),
         milestones: [{key: 'm1', title: 'Acceptance', checkpoint: 'Product Owner accepts', targetAt: null, evidence}], risks: [{key: 'r1', statement: 'Interpretation', mitigation: 'Review source', evidence}],
-        tasks: [{key: 't1', title: 'Prepare', outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Review', evidence}]}]}};
+        tasks: [{key: 't1', title: 'Prepare', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Review', evidence}]}]}};
     };
     await expect(record(firstArtifactId, firstContent, 'gen-source-1', 'project_passport')).resolves.toMatchObject({receipt: {result: {ok: true}}});
     const firstManifest = [{artifactId: firstArtifactId, version: 1, sha256: sourceArtifactDigest(firstContent)}];
@@ -124,10 +124,25 @@ describePostgres('project plan persistence', () => {
       artifacts: expect.arrayContaining([expect.objectContaining({id: artifactId, sourceFile}), expect.objectContaining({id: legacyArtifactId, sourceKind: 'other', sourceFile: null})])
     });
     const citation = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 2}};
-    const definition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: citation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: citation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: citation}], tasks: [
-      {key: 't1', title: 'Подготовить результат', outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: citation}]},
-      {key: 't2', title: 'Проверить результат', outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['t1'], acceptanceEvidence: [{description: 'Проверка выполнена', evidence: citation}]}
+    const definition: ProjectPlanDefinition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: citation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: citation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: citation}], tasks: [
+      {key: 't1', title: 'Подготовить результат', responsibility: {kind: 'human' as const, actorId: ownerId}, outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: citation}]},
+      {key: 't2', title: 'Проверить результат', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['t1'], acceptanceEvidence: [{description: 'Проверка выполнена', evidence: citation}]}
     ]};
+    const legacyEvidence = {kind: 'assumption' as const, statement: 'Frozen legacy plan evidence.'};
+    const legacyTask = {...definition.tasks[0]!}; delete legacyTask.responsibility;
+    const legacyDefinition = {...definition,
+      outcomes: definition.outcomes.map((outcome) => ({...outcome, evidence: legacyEvidence})),
+      milestones: definition.milestones.map((milestone) => ({...milestone, evidence: legacyEvidence})),
+      risks: definition.risks.map((risk) => ({...risk, evidence: legacyEvidence})),
+      tasks: [{...legacyTask, acceptanceEvidence: legacyTask.acceptanceEvidence.map((entry) => ({...entry, evidence: legacyEvidence}))}]};
+    const legacyHash = hashProjectPlanDefinition(legacyDefinition);
+    const legacyPlanId = randomUUID(); const legacyVersionId = randomUUID();
+    await db.insert(projectPlanDrafts).values({id: legacyPlanId, workspaceId, projectId: otherProjectId, state: 'approved', definition: legacyDefinition, contentHash: legacyHash, revision: 1, createdByActorId: ownerId, approvedByActorId: ownerId, approvedAt: new Date()});
+    await db.insert(projectPlanVersions).values({id: legacyVersionId, workspaceId, projectId: otherProjectId, planId: legacyPlanId, version: 1, sourceRevision: 1, definition: legacyDefinition, contentHash: legacyHash, sourceManifest: [], simulation: {} as never, approvedByActorId: ownerId, approvedAt: new Date()});
+    await expect(store.inspect({workspaceId, projectId: otherProjectId, actorId: ownerId})).resolves.toMatchObject({
+      approved: {contentHash: legacyHash, definition: {tasks: [expect.not.objectContaining({responsibility: expect.anything()})]}}
+    });
+    await expect(store.execute({command: envelope('project_plan.materialize', {projectId: otherProjectId, planId: legacyPlanId, expectedPlanVersion: 1, expectedPlanHash: legacyHash, expectedSourceManifestHash: hashProjectPlanSourceManifest([])}, 'legacy-materialize') as never, requestHash: 'legacy'.padEnd(64, '0'), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('responsibilities')}}}});
     await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: null, definition}, 'draft') as never, requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {revision: 1}}}}});
     await expect(store.simulate({workspaceId, projectId: otherProjectId, actorId: ownerId, definition})).resolves.toMatchObject({readyForApproval: false, blockers: [expect.stringContaining('цитат')]});
     await expect(store.simulate({workspaceId, projectId, actorId: adminId, definition})).resolves.toMatchObject({capabilities: {canEdit: true, canApprove: false}, readyForApproval: false});
@@ -203,8 +218,8 @@ describePostgres('project plan persistence', () => {
     expect((await db.select().from(projectScopeOutcomes)).map(({weight, state, sourcePlanVersionId}) => ({weight, state, sourcePlanVersionId})))
       .toEqual(Array.from({length: 5}, () => ({weight: 20, state: 'not_started', sourcePlanVersionId: version!.id})));
     expect(await db.select().from(workItems)).toEqual(expect.arrayContaining([
-      expect.objectContaining({id: deterministicProjectPlanUuid(version!.id, 'work_item', 't1'), sourcePlanVersionId: version!.id, sourceTaskKey: 't1', acceptanceEvidence: definition.tasks[0]!.acceptanceEvidence}),
-      expect.objectContaining({id: deterministicProjectPlanUuid(version!.id, 'work_item', 't2'), sourcePlanVersionId: version!.id, sourceTaskKey: 't2', acceptanceEvidence: definition.tasks[1]!.acceptanceEvidence})
+      expect.objectContaining({id: deterministicProjectPlanUuid(version!.id, 'work_item', 't1'), ownerActorId: ownerId, sourcePlanVersionId: version!.id, sourceTaskKey: 't1', responsibility: definition.tasks[0]!.responsibility, acceptanceEvidence: definition.tasks[0]!.acceptanceEvidence}),
+      expect.objectContaining({id: deterministicProjectPlanUuid(version!.id, 'work_item', 't2'), sourcePlanVersionId: version!.id, sourceTaskKey: 't2', responsibility: definition.tasks[1]!.responsibility, acceptanceEvidence: definition.tasks[1]!.acceptanceEvidence})
     ]));
     expect(await db.select().from(workItemDependencies)).toEqual([expect.objectContaining({sourcePlanVersionId: version!.id})]);
     expect(await db.select().from(workItemScopeOutcomes)).toEqual(expect.arrayContaining([
@@ -270,8 +285,8 @@ describePostgres('project plan persistence', () => {
     const definition = {title: 'Исполняемый план', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: assumption})),
       milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: assumption}],
       risks: [{key: 'r1', statement: 'Изменятся требования', mitigation: 'Повторная приёмка', evidence: assumption}], tasks: [
-        {key: 'root', title: 'Корневая задача', outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'PO подтвердил', evidence: assumption}]},
-        {key: 'dependent', title: 'Зависимая задача', outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['root'], acceptanceEvidence: [{description: 'Проверка пройдена', evidence: assumption}]}
+        {key: 'root', title: 'Корневая задача', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'PO подтвердил', evidence: assumption}]},
+        {key: 'dependent', title: 'Зависимая задача', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['root'], acceptanceEvidence: [{description: 'Проверка пройдена', evidence: assumption}]}
       ]};
     const contentHash = hashProjectPlanDefinition(definition);
     const planIds = [randomUUID(), randomUUID()]; const versionIds = [randomUUID(), randomUUID()];

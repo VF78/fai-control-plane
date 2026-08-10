@@ -6,6 +6,7 @@ import {
   projectSourceArtifactKinds,
   sourceArtifactDigest,
   validateSourceArtifact,
+  validateAssignedProjectPlanDefinition,
   validateProjectPlanDefinition,
   type CanonicalCommandEnvelope,
   type CommandError,
@@ -121,7 +122,7 @@ const semanticCitationsMatch = (definition: ProjectPlanDefinition, artifacts: re
   });
 };
 export const validateSemanticProjectPlanDefinition = (definition: unknown, artifacts: readonly SourceArtifact[]): CommandResult<ProjectPlanDefinition> => {
-  const validated = validateProjectPlanDefinition(definition);
+  const validated = validateAssignedProjectPlanDefinition(definition);
   if (!validated.ok) return validated;
   return semanticCitationsMatch(validated.value, artifacts) ? validated : {ok: false, error: {code: 'INVALID_COMMAND', message: 'Semantic plan citations must resolve inside the exact selected corpus.'}};
 };
@@ -183,7 +184,7 @@ export const createProjectPlanService = (store: ProjectPlanStore, semanticPlanne
       if (!UUID.test(command.payload.projectId) || !(command.payload.expectedRevision === null || Number.isSafeInteger(command.payload.expectedRevision) && command.payload.expectedRevision > 0)) {
         return rejected('INVALID_COMMAND', 'Draft revision is invalid.');
       }
-      const definition = validateProjectPlanDefinition(command.payload.definition);
+      const definition = validateAssignedProjectPlanDefinition(command.payload.definition);
       if (!definition.ok) return {status: 'rejected', error: definition.error};
     } else if (command.type === 'project_plan.draft.generate') {
       if (!UUID.test(command.payload.projectId) || !(command.payload.expectedRevision === null || Number.isSafeInteger(command.payload.expectedRevision) && command.payload.expectedRevision > 0) ||

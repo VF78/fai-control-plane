@@ -828,7 +828,7 @@ export type ProjectData = Readonly<{
     blocked: boolean; owner: string | null; updatedAt: Date; externalUrl: string | null;
     version?: number;
     sourcePlanVersionId: string | null; sourcePlanVersion: number | null;
-    sourceTaskKey: string | null; acceptanceEvidence: unknown;
+    sourceTaskKey: string | null; responsibility: import('@fai-control-plane/domain').ProjectPlanTaskResponsibility | null; acceptanceEvidence: unknown;
     journey?: Readonly<{
       protocolId: string; protocolVersion: number; stageKey: string; version: number;
       deadlineAt: Date | null;
@@ -937,7 +937,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       id: workItems.id, title: workItems.title, summary: workItems.summary, status: workItems.status, version: workItems.version,
       blocked: workItems.blocked, owner: actors.displayName, updatedAt: workItems.updatedAt,
       sourcePlanVersionId: workItems.sourcePlanVersionId, sourcePlanVersion: projectPlanVersions.version,
-      sourceTaskKey: workItems.sourceTaskKey, acceptanceEvidence: workItems.acceptanceEvidence
+      sourceTaskKey: workItems.sourceTaskKey, responsibility: workItems.responsibility, acceptanceEvidence: workItems.acceptanceEvidence
     }).from(workItems).leftJoin(actors, eq(workItems.ownerActorId, actors.id))
       .leftJoin(projectPlanVersions, eq(workItems.sourcePlanVersionId, projectPlanVersions.id))
       .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt))).orderBy(desc(workItems.updatedAt), workItems.id),

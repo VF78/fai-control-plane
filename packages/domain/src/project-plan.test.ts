@@ -1,13 +1,13 @@
 import {describe, expect, it} from 'vitest';
-import {deterministicProjectPlanUuid, hashProjectPlanSourceManifest, projectDossierReadiness, simulateProjectPlan, sourceArtifactDigest, validateProjectPlanDefinition, validateSourceArtifact} from './project-plan';
+import {deterministicProjectPlanUuid, hashProjectPlanDefinition, hashProjectPlanSourceManifest, projectDossierReadiness, simulateProjectPlan, sourceArtifactDigest, validateAssignedProjectPlanDefinition, validateProjectPlanDefinition, validateSourceArtifact, type ProjectPlanDefinition} from './project-plan';
 
 const assumption = {kind: 'assumption' as const, statement: 'Требует проверки Product Owner'};
-const definition = {
+const definition: ProjectPlanDefinition = {
   title: 'План запуска',
   outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index + 1}`, title: `Результат ${index + 1}`, weight: 20, evidence: assumption})),
   milestones: [{key: 'm1', title: 'Контрольная точка', checkpoint: 'Product Owner принимает результат', targetAt: null, evidence: assumption}],
   risks: [{key: 'r1', statement: 'Не подтверждены исходные данные', mitigation: 'Запросить подтверждение', evidence: assumption}],
-  tasks: [{key: 't1', title: 'Проверить исходные данные', outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Решение Product Owner', evidence: assumption}]}]
+  tasks: [{key: 't1', title: 'Проверить исходные данные', responsibility: {kind: 'project_role', role: 'project_owner'}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Решение Product Owner', evidence: assumption}]}]
 };
 
 describe('project plan', () => {
@@ -36,6 +36,7 @@ describe('project plan', () => {
     expect(validateProjectPlanDefinition(definition)).toMatchObject({ok: true});
     expect(validateProjectPlanDefinition({...definition, outcomes: definition.outcomes.slice(0, 4)})).toMatchObject({ok: false});
     expect(validateProjectPlanDefinition({...definition, tasks: [{...definition.tasks[0], dependsOn: ['t1']}]})).toMatchObject({ok: false});
+    expect(validateProjectPlanDefinition({...definition, tasks: [{...definition.tasks[0], responsibility: {kind: 'agent_profile', agentProfileId: 'not-a-uuid'}}]})).toMatchObject({ok: false});
     expect(validateProjectPlanDefinition({...definition, milestones: [{...definition.milestones[0], targetAt: '2026-99-99'}]})).toMatchObject({ok: false});
     for (const title of ['{"apiKey":"hidden"}', '{"password":"hidden"}', 'token: hidden-value', '-----BEGIN PRIVATE KEY-----\nabc']) {
       expect(validateProjectPlanDefinition({...definition, title})).toMatchObject({ok: false});
@@ -43,6 +44,17 @@ describe('project plan', () => {
     expect(validateProjectPlanDefinition({...definition, title: 'Обсудить хранение токена без значения'})).toMatchObject({ok: true});
     const badPointer = {kind: 'citation' as const, artifactId: '10000000-0000-4000-8000-000000000001', locator: {kind: 'json_pointer' as const, pointer: '/bad~2token'}};
     expect(validateProjectPlanDefinition({...definition, outcomes: definition.outcomes.map((item, index) => index === 0 ? {...item, evidence: badPointer} : item)})).toMatchObject({ok: false});
+  });
+
+  it('keeps immutable legacy plans valid and hashed as written, while gating new assignment work', () => {
+    const legacyTask = {...definition.tasks[0]!}; delete legacyTask.responsibility;
+    const legacy = {...definition, tasks: [legacyTask]};
+    const frozenHash = hashProjectPlanDefinition(legacy);
+    expect(validateProjectPlanDefinition(legacy)).toMatchObject({ok: true});
+    expect(validateAssignedProjectPlanDefinition(legacy)).toMatchObject({ok: false, error: {code: 'INVALID_COMMAND'}});
+    expect(hashProjectPlanDefinition(legacy)).toBe(frozenHash);
+    expect(simulateProjectPlan({definition: legacy, citationsValid: true, canEdit: true, canApprove: true, protocol: null}))
+      .toMatchObject({readyForApproval: false, blockers: [expect.stringContaining('responsibility')]});
   });
 
   it('reports protocol readiness without treating it as generated plan evidence', () => {

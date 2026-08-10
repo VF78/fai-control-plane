@@ -10,6 +10,7 @@ import {
   simulateDeliveryProtocol,
   simulateProjectPlan,
   validateDeliveryProtocolDefinition,
+  validateAssignedProjectPlanDefinition,
   validateProjectPlanDefinition,
   validateSourceArtifact,
   type CommandError,
@@ -19,6 +20,7 @@ import {
   type ProjectPlanMaterialization,
   type ProjectPlanSourceManifest,
   type ProjectPlanSimulation,
+  type ProjectPlanTaskResponsibility,
   type SourceArtifact
 } from '@fai-control-plane/domain';
 import type {GenerateProjectPlanDraftCommand, ProjectPlanMutationCommand, ProjectPlanSemanticPreparationResult, ProjectPlanWorkspace} from '@fai-control-plane/application';
@@ -50,6 +52,47 @@ const authority = async (tx: Transaction, workspaceId: string, projectId: string
   const productOwner = activeMembership && membership.role === 'project_owner';
   const ownerEditor = productOwner || activeMembership && membership.role === 'workspace_owner';
   return {canRead: administrativeEditor || activeMembership, canEdit: administrativeEditor || ownerEditor, canApprove: productOwner};
+};
+
+const taskResponsibilityResolved = async (
+  tx: Transaction, workspaceId: string, projectId: string, responsibility: ProjectPlanTaskResponsibility
+): Promise<ReturnType<typeof fail> | Readonly<{ok: true; value: true}>> => {
+  if (responsibility.kind === 'human') {
+    const [human] = await tx.select({id: schema.actors.id}).from(schema.actors)
+      .innerJoin(schema.projectMemberships, and(
+        eq(schema.projectMemberships.actorId, schema.actors.id),
+        eq(schema.projectMemberships.projectId, projectId),
+        eq(schema.projectMemberships.active, true)
+      ))
+      .where(and(eq(schema.actors.id, responsibility.actorId), eq(schema.actors.workspaceId, workspaceId),
+        eq(schema.actors.type, 'human'), eq(schema.actors.authMode, 'user'), isNull(schema.actors.disabledAt))).limit(1);
+    return human === undefined
+      ? fail('INVALID_TRANSITION', 'The assigned human is not an active project member.')
+      : {ok: true, value: true};
+  }
+  if (responsibility.kind === 'project_role') {
+    const [member] = await tx.select({id: schema.projectMemberships.id}).from(schema.projectMemberships)
+      .innerJoin(schema.actors, eq(schema.actors.id, schema.projectMemberships.actorId))
+      .where(and(eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.role, responsibility.role),
+        eq(schema.projectMemberships.active, true), eq(schema.actors.workspaceId, workspaceId),
+        eq(schema.actors.type, 'human'), eq(schema.actors.authMode, 'user'), isNull(schema.actors.disabledAt))).limit(1);
+    return member === undefined
+      ? fail('INVALID_TRANSITION', 'The assigned project role has no active human member.')
+      : {ok: true, value: true};
+  }
+  const [profile] = await tx.select({id: schema.agentProfiles.id}).from(schema.agentProfiles)
+    .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
+    .innerJoin(schema.projectMemberships, and(eq(schema.projectMemberships.actorId, schema.actors.id),
+      eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.role, 'agent'),
+      eq(schema.projectMemberships.active, true)))
+    .innerJoin(schema.runtimeRegistrations, and(eq(schema.runtimeRegistrations.agentProfileId, schema.agentProfiles.id),
+      eq(schema.runtimeRegistrations.actorId, schema.actors.id), eq(schema.runtimeRegistrations.projectId, projectId),
+      eq(schema.runtimeRegistrations.enabled, true)))
+    .where(and(eq(schema.agentProfiles.id, responsibility.agentProfileId), eq(schema.agentProfiles.workspaceId, workspaceId),
+      eq(schema.agentProfiles.enabled, true), eq(schema.actors.type, 'agent'), isNull(schema.actors.disabledAt))).limit(1);
+  return profile === undefined
+    ? fail('INVALID_TRANSITION', 'The assigned agent profile is not enabled and registered for this project.')
+    : {ok: true, value: true};
 };
 
 const protocolSimulation = async (tx: Transaction, workspaceId: string, projectId: string) => {
@@ -405,6 +448,11 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           result = {ok: true, value: {materialization: materializationFrom(existingMaterialization, versionRow.planId)}};
           return complete();
         }
+        const assignedDefinition = validateAssignedProjectPlanDefinition(versionRow.definition);
+        if (!assignedDefinition.ok) {
+          result = fail('INVALID_TRANSITION', 'Approved plan lacks explicit task responsibilities. Approve an assigned re-plan before materializing.');
+          return complete();
+        }
         const [existingBaseline] = await tx.select({id: schema.projectScopeBaselineVersions.id}).from(
           schema.projectScopeBaselineVersions
         ).where(eq(schema.projectScopeBaselineVersions.projectId, versionRow.projectId)).limit(1).for('update');
@@ -427,7 +475,8 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         const baselineId = deterministicProjectPlanUuid(versionRow.id, 'baseline');
         const materializationId = deterministicProjectPlanUuid(versionRow.id, 'materialization');
         const now = new Date();
-        const firstMilestone = definition.value.milestones[0]!;
+        const {outcomes, milestones, tasks} = assignedDefinition.value;
+        const firstMilestone = milestones[0]!;
 
         await tx.insert(schema.projectScopeBaselineVersions).values({
           id: baselineId,
@@ -443,11 +492,11 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           checkpointTargetAt: firstMilestone.targetAt === null ? null : new Date(`${firstMilestone.targetAt}T00:00:00.000Z`)
         });
 
-        const outcomeIds = new Map(definition.value.outcomes.map((outcome) => [
+        const outcomeIds = new Map(outcomes.map((outcome) => [
           outcome.key,
           deterministicProjectPlanUuid(versionRow.id, 'outcome', outcome.key)
         ]));
-        await tx.insert(schema.projectScopeOutcomes).values(definition.value.outcomes.map((outcome) => ({
+        await tx.insert(schema.projectScopeOutcomes).values(outcomes.map((outcome) => ({
           id: outcomeIds.get(outcome.key)!,
           baselineId,
           sourcePlanVersionId: versionRow.id,
@@ -467,11 +516,11 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           evidenceReference: `approved-plan:${versionRow.id}:materialized`
         });
 
-        const milestoneIds = new Map(definition.value.milestones.map((milestone) => [
+        const milestoneIds = new Map(milestones.map((milestone) => [
           milestone.key,
           deterministicProjectPlanUuid(versionRow.id, 'milestone', milestone.key)
         ]));
-        await tx.insert(schema.milestones).values(definition.value.milestones.map((milestone) => ({
+        await tx.insert(schema.milestones).values(milestones.map((milestone) => ({
           id: milestoneIds.get(milestone.key)!,
           projectId: versionRow.projectId,
           title: milestone.title,
@@ -498,11 +547,15 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           ? protocolDefinition.value.stages.find((stage) => stage.enabled) ?? null
           : null;
         const journeyReady = firstStage !== null && (firstStage.taskStatus === 'backlog' || firstStage.taskStatus === 'ready');
-        const workItemIds = new Map(definition.value.tasks.map((task) => [
+        const workItemIds = new Map(tasks.map((task) => [
           task.key,
           deterministicProjectPlanUuid(versionRow.id, 'work_item', task.key)
         ]));
-        await tx.insert(schema.workItems).values(definition.value.tasks.map((task) => ({
+        for (const task of tasks) {
+          const resolved = await taskResponsibilityResolved(tx, command.workspaceId, versionRow.projectId, task.responsibility);
+          if (!resolved.ok) { result = resolved; return complete(); }
+        }
+        await tx.insert(schema.workItems).values(tasks.map((task) => ({
           id: workItemIds.get(task.key)!,
           projectId: versionRow.projectId,
           milestoneId: milestoneIds.get(task.milestoneKey)!,
@@ -510,17 +563,19 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           summary: `Approved plan ${versionRow.version} · ${task.key}`,
           status: journeyReady && task.dependsOn.length === 0 ? firstStage.taskStatus : 'backlog',
           blocked: false,
+          ownerActorId: task.responsibility.kind === 'human' ? task.responsibility.actorId : null,
           sourcePlanVersionId: versionRow.id,
           sourceTaskKey: task.key,
+          responsibility: task.responsibility,
           acceptanceEvidence: task.acceptanceEvidence
         })));
-        const dependencyRows = definition.value.tasks.flatMap((task) => task.dependsOn.map((dependencyKey) => ({
+        const dependencyRows = tasks.flatMap((task) => task.dependsOn.map((dependencyKey) => ({
           workItemId: workItemIds.get(task.key)!,
           dependsOnWorkItemId: workItemIds.get(dependencyKey)!,
           sourcePlanVersionId: versionRow.id
         })));
         if (dependencyRows.length > 0) await tx.insert(schema.workItemDependencies).values(dependencyRows);
-        const taskOutcomeRows = definition.value.tasks.flatMap((task) => task.outcomeKeys.map((outcomeKey) => ({
+        const taskOutcomeRows = tasks.flatMap((task) => task.outcomeKeys.map((outcomeKey) => ({
           workItemId: workItemIds.get(task.key)!,
           outcomeId: outcomeIds.get(outcomeKey)!,
           sourcePlanVersionId: versionRow.id
@@ -528,7 +583,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         await tx.insert(schema.workItemScopeOutcomes).values(taskOutcomeRows);
 
         const journeyWorkItems = journeyReady
-          ? definition.value.tasks.filter((task) => task.dependsOn.length === 0)
+          ? tasks.filter((task) => task.dependsOn.length === 0)
           : [];
         if (protocolRow !== undefined && firstStage !== null && journeyWorkItems.length > 0) {
           await tx.insert(schema.deliveryJourneys).values(journeyWorkItems.map((task) => ({
@@ -546,9 +601,9 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         ].filter((binding) => binding.mode !== 'none');
         const publicationResources = [
           {kind: 'baseline', canonicalId: baselineId},
-          ...definition.value.outcomes.map((outcome) => ({kind: 'outcome', canonicalId: outcomeIds.get(outcome.key)!})),
-          ...definition.value.milestones.map((milestone) => ({kind: 'milestone', canonicalId: milestoneIds.get(milestone.key)!})),
-          ...definition.value.tasks.map((task) => ({kind: 'work_item', canonicalId: workItemIds.get(task.key)!}))
+          ...outcomes.map((outcome) => ({kind: 'outcome', canonicalId: outcomeIds.get(outcome.key)!})),
+          ...milestones.map((milestone) => ({kind: 'milestone', canonicalId: milestoneIds.get(milestone.key)!})),
+          ...tasks.map((task) => ({kind: 'work_item', canonicalId: workItemIds.get(task.key)!}))
         ];
         const publicationRows = desiredSurfaces.flatMap((binding) => publicationResources.map((resource) => ({
           id: deterministicProjectPlanUuid(versionRow.id, 'materialization', `${binding.surface}:${resource.kind}:${resource.canonicalId}`),
@@ -574,9 +629,9 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           planVersion: versionRow.version,
           planHash: versionRow.contentHash,
           sourceManifestHash: command.payload.expectedSourceManifestHash,
-          outcomeCount: definition.value.outcomes.length,
-          milestoneCount: definition.value.milestones.length,
-          workItemCount: definition.value.tasks.length,
+          outcomeCount: outcomes.length,
+          milestoneCount: milestones.length,
+          workItemCount: tasks.length,
           dependencyCount: dependencyRows.length,
           journeyCount: journeyWorkItems.length,
           publicationIntentCount: publicationRows.length,
@@ -670,7 +725,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           if (!input.semanticGeneration.ok) { result = input.semanticGeneration; return complete(); }
           generatedDefinition = input.semanticGeneration.value;
         }
-        const definition = validateProjectPlanDefinition(command.type === 'project_plan.draft.save' ? command.payload.definition : generatedDefinition);
+        const definition = validateAssignedProjectPlanDefinition(command.type === 'project_plan.draft.save' ? command.payload.definition : generatedDefinition);
         if (!definition.ok) { result = definition; return complete(); }
         if (command.type === 'project_plan.draft.generate' && !evidenceIn(definition.value).every((evidence) =>
           evidence.kind === 'assumption' || generationArtifactIds?.includes(evidence.artifactId) === true)) {

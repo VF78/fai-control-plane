@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {projectMembershipRoles, type ProjectMembershipRole} from './access.ts';
 import {canonicalJson, containsHighConfidenceSecretContent, type CommandResult} from './index.ts';
 
 export const sourceArtifactMediaTypes = [
@@ -93,6 +94,11 @@ export type PlanEvidence =
     }>
   | Readonly<{kind: 'assumption'; statement: string}>;
 
+export type ProjectPlanTaskResponsibility =
+  | Readonly<{kind: 'human'; actorId: string}>
+  | Readonly<{kind: 'project_role'; role: Exclude<ProjectMembershipRole, 'agent'>}>
+  | Readonly<{kind: 'agent_profile'; agentProfileId: string}>;
+
 export type ProjectPlanDefinition = Readonly<{
   title: string;
   outcomes: readonly Readonly<{
@@ -117,6 +123,8 @@ export type ProjectPlanDefinition = Readonly<{
   tasks: readonly Readonly<{
     key: string;
     title: string;
+    // Omitted only by immutable plans written before assignment support.
+    responsibility?: ProjectPlanTaskResponsibility;
     outcomeKeys: readonly string[];
     milestoneKey: string;
     dependsOn: readonly string[];
@@ -125,6 +133,12 @@ export type ProjectPlanDefinition = Readonly<{
       evidence: PlanEvidence;
     }>[];
   }>[];
+}>;
+
+export type AssignedProjectPlanDefinition = Omit<ProjectPlanDefinition, 'tasks'> & Readonly<{
+  tasks: readonly (Omit<ProjectPlanDefinition['tasks'][number], 'responsibility'> & Readonly<{
+    responsibility: ProjectPlanTaskResponsibility;
+  }>)[];
 }>;
 
 export type ProjectPlan = Readonly<{
@@ -289,6 +303,13 @@ const evidence = (value: unknown): value is PlanEvidence => {
     typeof value.locator.pointer === 'string' && value.locator.pointer.startsWith('/') && value.locator.pointer.length <= 500 &&
     !/~(?![01])/u.test(value.locator.pointer);
 };
+const taskResponsibility = (value: unknown): value is ProjectPlanTaskResponsibility => {
+  if (!isObject(value)) return false;
+  if (exact(value, ['kind', 'actorId'])) return value.kind === 'human' && uuid.test(value.actorId as string);
+  if (exact(value, ['kind', 'role'])) return value.kind === 'project_role' &&
+    projectMembershipRoles.includes(value.role as ProjectMembershipRole) && value.role !== 'agent';
+  return exact(value, ['kind', 'agentProfileId']) && value.kind === 'agent_profile' && uuid.test(value.agentProfileId as string);
+};
 
 export const validateProjectPlanDefinition = (value: unknown): CommandResult<ProjectPlanDefinition> => {
   if (!isObject(value) || !exact(value, ['title', 'outcomes', 'milestones', 'risks', 'tasks']) || !text(value.title, 160) ||
@@ -327,10 +348,12 @@ export const validateProjectPlanDefinition = (value: unknown): CommandResult<Pro
   }
   const riskKeys = value.risks.map((item) => (item as {key: string}).key);
   if (new Set(riskKeys).size !== riskKeys.length) return invalid('Risk keys must be unique.');
-  if (tasks.some((item) => !isObject(item) || !exact(item, ['key', 'title', 'outcomeKeys', 'milestoneKey', 'dependsOn', 'acceptanceEvidence']) ||
+  if (tasks.some((item) => !isObject(item) || !(exact(item, ['key', 'title', 'outcomeKeys', 'milestoneKey', 'dependsOn', 'acceptanceEvidence']) ||
+    exact(item, ['key', 'title', 'responsibility', 'outcomeKeys', 'milestoneKey', 'dependsOn', 'acceptanceEvidence'])) ||
     !validKey(item.key) || !text(item.title, 240) || !Array.isArray(item.outcomeKeys) || item.outcomeKeys.length < 1 ||
     item.outcomeKeys.length > outcomeKeys.length || new Set(item.outcomeKeys).size !== item.outcomeKeys.length ||
     item.outcomeKeys.some((key) => !outcomeKeys.includes(key as string)) || !milestoneKeys.includes(item.milestoneKey as string) ||
+    !(item.responsibility === undefined || taskResponsibility(item.responsibility)) ||
     !Array.isArray(item.dependsOn) || !Array.isArray(item.acceptanceEvidence) || item.acceptanceEvidence.length < 1 ||
     item.acceptanceEvidence.length > 12 || item.acceptanceEvidence.some((entry) => !isObject(entry) ||
       !exact(entry, ['description', 'evidence']) || !text(entry.description, 500) || !evidence(entry.evidence)))) {
@@ -355,6 +378,17 @@ export const validateProjectPlanDefinition = (value: unknown): CommandResult<Pro
   };
   if (taskKeys.some(cyclic)) return invalid('Task dependency graph must be acyclic.');
   return {ok: true, value: value as unknown as ProjectPlanDefinition};
+};
+
+// Frozen pre-assignment plans must retain their original JSON and hash. This
+// stricter gate is for new writes and materialization only; it never defaults.
+export const validateAssignedProjectPlanDefinition = (value: unknown): CommandResult<AssignedProjectPlanDefinition> => {
+  const plan = validateProjectPlanDefinition(value);
+  if (!plan.ok) return plan;
+  if (plan.value.tasks.some((task) => task.responsibility === undefined)) {
+    return invalid('Each task requires an explicit human, project role, or enabled agent profile responsibility.');
+  }
+  return {ok: true, value: plan.value as AssignedProjectPlanDefinition};
 };
 
 export const hashProjectPlanDefinition = (definition: ProjectPlanDefinition) =>
@@ -383,8 +417,10 @@ export const simulateProjectPlan = (input: Readonly<{
   protocol: Readonly<{protocolId: string; simulationHash: string; valid: boolean}> | null;
 }>): ProjectPlanSimulation => {
   const plan = validateProjectPlanDefinition(input.definition);
+  const assignedPlan = validateAssignedProjectPlanDefinition(input.definition);
   const blockers = [
     ...(plan.ok ? [] : [plan.error.message]),
+    ...(plan.ok && !assignedPlan.ok ? [assignedPlan.error.message] : []),
     ...(input.citationsValid ? [] : ['Одна или несколько цитат не подтверждены источниками этого проекта.']),
     ...(input.canApprove ? [] : ['У оператора нет роли Product Owner для утверждения плана.'])
   ];

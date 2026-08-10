@@ -1114,6 +1114,7 @@ export const workItems = pgTable(
     deletedAt: timestamp('deleted_at', {withTimezone: true}),
     sourcePlanVersionId: uuid('source_plan_version_id'),
     sourceTaskKey: text('source_task_key'),
+    responsibility: jsonb('responsibility').$type<import('@fai-control-plane/domain').ProjectPlanTaskResponsibility>(),
     acceptanceEvidence: jsonb('acceptance_evidence').$type<import('@fai-control-plane/domain').ProjectPlanDefinition['tasks'][number]['acceptanceEvidence']>()
   },
   (table) => [
@@ -1122,7 +1123,8 @@ export const workItems = pgTable(
     foreignKey({columns: [table.projectId, table.sourcePlanVersionId], foreignColumns: [projectPlanVersions.projectId, projectPlanVersions.id], name: 'work_items_project_plan_version_fk'}).onDelete('restrict'),
     uniqueIndex('work_items_identity_source_plan_unique').on(table.id, table.sourcePlanVersionId),
     uniqueIndex('work_items_plan_source_key_unique').on(table.sourcePlanVersionId, table.sourceTaskKey),
-    check('work_items_plan_source_complete', sql`(${table.sourcePlanVersionId} is null and ${table.sourceTaskKey} is null and ${table.acceptanceEvidence} is null) or (${table.sourcePlanVersionId} is not null and ${table.sourceTaskKey} is not null and ${table.acceptanceEvidence} is not null)`),
+    check('work_items_plan_source_complete', sql`(${table.sourcePlanVersionId} is null and ${table.sourceTaskKey} is null and ${table.responsibility} is null and ${table.acceptanceEvidence} is null) or (${table.sourcePlanVersionId} is not null and ${table.sourceTaskKey} is not null and ${table.acceptanceEvidence} is not null)`),
+    check('work_items_responsibility_object', sql`${table.responsibility} is null or jsonb_typeof(${table.responsibility}) = 'object'`),
     check('work_items_version_positive', sql`${table.version} > 0`)
   ]
 );
