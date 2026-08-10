@@ -15,6 +15,7 @@ import {
   type ProjectPlanSourceManifest,
   type ProjectPlanSimulation,
   type SourceArtifact,
+  type CommandResult,
   type SourceFileProvenance,
   type SourceArtifactMediaType,
   type TrustedActorContext
@@ -58,6 +59,18 @@ export type MaterializeProjectPlanCommand = CanonicalCommandEnvelope<'project_pl
   expectedSourceManifestHash: string;
 }>>;
 export type ProjectPlanMutationCommand = RecordSourceArtifactCommand | GenerateProjectPlanDraftCommand | SaveProjectPlanDraftCommand | ApproveProjectPlanCommand | MaterializeProjectPlanCommand;
+export type SemanticProjectPlanRequest = Readonly<{
+  idempotencyKey: string;
+  sourceManifest: ProjectPlanSourceManifest;
+  artifacts: readonly SourceArtifact[];
+}>;
+export interface ProjectPlanSemanticPlanner {
+  generate(input: SemanticProjectPlanRequest): Promise<CommandResult<ProjectPlanDefinition>>;
+}
+export type ProjectPlanSemanticPreparation =
+  | Readonly<{kind: 'ready'; request: SemanticProjectPlanRequest}>
+  | Readonly<{kind: 'replay'; receipt: ProjectPlanReceipt}>;
+export type ProjectPlanSemanticPreparationResult = CommandResult<ProjectPlanSemanticPreparation>;
 
 export type ProjectPlanWorkspace = Readonly<{
   artifacts: readonly SourceArtifact[];
@@ -77,13 +90,42 @@ export type ProjectPlanExecution =
   | Readonly<{status: 'key_reused' | 'rejected'; error: CommandError}>;
 
 export interface ProjectPlanStore {
-  execute(input: Readonly<{command: ProjectPlanMutationCommand; requestHash: string; authorized: boolean; policyError?: CommandError}>): Promise<
+  execute(input: Readonly<{command: ProjectPlanMutationCommand; requestHash: string; authorized: boolean; policyError?: CommandError; semanticGeneration?: CommandResult<ProjectPlanDefinition>}>): Promise<
     | Readonly<{status: 'completed' | 'replayed'; receipt: ProjectPlanReceipt}>
     | Readonly<{status: 'key_reused'; existingRequestHash: string}>
   >;
+  prepareSemanticGeneration(input: Readonly<{command: GenerateProjectPlanDraftCommand; requestHash: string; authorized: boolean}>): Promise<ProjectPlanSemanticPreparationResult>;
   inspect(input: Readonly<{workspaceId: string; projectId: string; actorId: string}>): Promise<ProjectPlanWorkspace | null>;
   simulate(input: Readonly<{workspaceId: string; projectId: string; actorId: string; definition: ProjectPlanDefinition}>): Promise<ProjectPlanSimulation | null>;
 }
+
+const pointerExists = (content: string, pointer: string) => {
+  try {
+    let current: unknown = JSON.parse(content);
+    for (const token of pointer.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'))) {
+      if (typeof current !== 'object' || current === null || !Object.hasOwn(current, token)) return false;
+      current = (current as Record<string, unknown>)[token];
+    }
+    return true;
+  } catch { return false; }
+};
+const semanticCitationsMatch = (definition: ProjectPlanDefinition, artifacts: readonly SourceArtifact[]) => {
+  const corpus = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+  const evidence = [...definition.outcomes.map(({evidence}) => evidence), ...definition.milestones.map(({evidence}) => evidence), ...definition.risks.map(({evidence}) => evidence), ...definition.tasks.flatMap(({acceptanceEvidence}) => acceptanceEvidence.map(({evidence}) => evidence))];
+  return evidence.every((item) => {
+    if (item.kind === 'assumption') return true;
+    const artifact = corpus.get(item.artifactId); if (artifact === undefined) return false;
+    if (item.locator.kind === 'whole_artifact') return true;
+    if (item.locator.kind === 'line_range') return item.locator.endLine <= artifact.content.split(/\r?\n/).length;
+    return artifact.mediaType === 'application/json' && pointerExists(artifact.content, item.locator.pointer);
+  });
+};
+export const validateSemanticProjectPlanDefinition = (definition: unknown, artifacts: readonly SourceArtifact[]): CommandResult<ProjectPlanDefinition> => {
+  const validated = validateProjectPlanDefinition(definition);
+  if (!validated.ok) return validated;
+  return semanticCitationsMatch(validated.value, artifacts) ? validated : {ok: false, error: {code: 'INVALID_COMMAND', message: 'Semantic plan citations must resolve inside the exact selected corpus.'}};
+};
+const unavailableSemanticPlanner: ProjectPlanSemanticPlanner = {generate: async () => ({ok: false, error: {code: 'INVALID_TRANSITION', message: 'Hermes semantic planning is unavailable. Configure and explicitly enable its private runtime before generating a draft.'}})};
 
 export interface ProjectPlanService {
   execute(command: ProjectPlanMutationCommand): Promise<ProjectPlanExecution>;
@@ -103,6 +145,12 @@ const requestHash = (command: ProjectPlanMutationCommand) => createHash('sha256'
   payload: command.payload
 } as never)).digest('hex');
 const rejected = (code: CommandError['code'], message: string): ProjectPlanExecution => ({status: 'rejected', error: {code, message}});
+const semanticAttemptCommand = (command: GenerateProjectPlanDraftCommand): GenerateProjectPlanDraftCommand => ({
+  ...command,
+  // A denial or failed remote attempt is auditable, but must never claim the
+  // canonical plan/revision/manifest key that a later valid generation needs.
+  idempotencyKey: `project_plan.semantic_attempt.v1:${createHash('sha256').update(`${command.idempotencyKey}\u0000${command.commandId}`).digest('hex')}`
+});
 
 const validEnvelope = (command: ProjectPlanMutationCommand) => {
   if (!isTrustedActorContext(command.actor) || !UUID.test(command.commandId) || !UUID.test(command.workspaceId) ||
@@ -110,7 +158,7 @@ const validEnvelope = (command: ProjectPlanMutationCommand) => {
   try { return new Date(command.issuedAt).toISOString() === command.issuedAt; } catch { return false; }
 };
 
-export const createProjectPlanService = (store: ProjectPlanStore): ProjectPlanService => ({
+export const createProjectPlanService = (store: ProjectPlanStore, semanticPlanner: ProjectPlanSemanticPlanner = unavailableSemanticPlanner): ProjectPlanService => ({
   async execute(command) {
     if (!validEnvelope(command) || command.actor.kind !== 'trusted_user' || command.actor.actorType !== 'human') {
       return rejected('INVALID_ACTOR_CONTEXT', 'Project plan changes require an authenticated human.');
@@ -153,7 +201,32 @@ export const createProjectPlanService = (store: ProjectPlanStore): ProjectPlanSe
       return rejected('INVALID_COMMAND', 'Plan materialization preconditions are invalid.');
     }
     const authorization = authorize(command.actor, writePolicy);
-    const result = await store.execute({command, requestHash: requestHash(command), authorized: authorization.ok,
+    const requestHashValue = requestHash(command);
+    if (command.type === 'project_plan.draft.generate') {
+      const attemptedCommand = semanticAttemptCommand(command);
+      if (authorization.ok) {
+        const preparation = await store.prepareSemanticGeneration({command, requestHash: requestHashValue, authorized: true});
+        if (!preparation.ok) {
+          if (preparation.error.code === 'IDEMPOTENCY_KEY_REUSED') return rejected('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was already used for another request.');
+          const result = await store.execute({command: attemptedCommand, requestHash: requestHash(attemptedCommand), authorized: true});
+          return result.status === 'key_reused' ? rejected('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was already used for another request.') : result;
+        }
+        if (preparation.value.kind === 'replay') {
+          return {status: 'replayed', receipt: preparation.value.receipt};
+        }
+        let semanticGeneration: CommandResult<ProjectPlanDefinition>;
+        try { semanticGeneration = await semanticPlanner.generate(preparation.value.request); }
+        catch { semanticGeneration = {ok: false, error: {code: 'INVALID_TRANSITION', message: 'Hermes semantic planning is unavailable. No draft was created.'}}; }
+        if (semanticGeneration.ok) semanticGeneration = validateSemanticProjectPlanDefinition(semanticGeneration.value, preparation.value.request.artifacts);
+        const persistedCommand = semanticGeneration.ok ? command : attemptedCommand;
+        const result = await store.execute({command: persistedCommand, requestHash: requestHash(persistedCommand), authorized: true, semanticGeneration});
+        return result.status === 'key_reused' ? rejected('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was already used for another request.') : result;
+      }
+      const result = await store.execute({command: attemptedCommand, requestHash: requestHash(attemptedCommand), authorized: false,
+        ...(authorization.ok ? {} : {policyError: authorization.error})});
+      return result.status === 'key_reused' ? rejected('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was already used for another request.') : result;
+    }
+    const result = await store.execute({command, requestHash: requestHashValue, authorized: authorization.ok,
       ...(!authorization.ok ? {policyError: authorization.error} : {})});
     return result.status === 'key_reused'
       ? rejected('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was already used for another request.')

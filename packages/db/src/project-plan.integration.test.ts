@@ -3,14 +3,14 @@ import {fileURLToPath} from 'node:url';
 import {defaultDeliveryProtocolDefinition, deterministicProjectPlanUuid, hashDeliveryProtocolDefinition,
   hashProjectPlanDefinition, hashProjectPlanSourceManifest, sourceArtifactDigest} from '@fai-control-plane/domain';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
-import {eq} from 'drizzle-orm';
+import {and, eq} from 'drizzle-orm';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {actors, agentRuns, auditEvents, commandReceipts, createDatabase, createPostgresProjectPlanStore,
   deliveryJourneys, outboxEvents, projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPublicationIntents,
   projectPlanVersions, projectScopeBaselineVersions, projectScopeOutcomes, projectSetups, projectSourceArtifacts, projects,
-  runbooks, workItemDependencies, workItems, workItemScopeOutcomes, workspaces} from './index';
+  runbooks, runtimeRegistrations, agentProfiles, workItemDependencies, workItems, workItemScopeOutcomes, workspaces} from './index';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (process.env.CI && databaseUrl === undefined) throw new Error('DATABASE_URL is required for project plan integration tests in CI.');
@@ -28,11 +28,15 @@ describePostgres('project plan persistence', () => {
   afterAll(async () => { await testPool?.end(); if (adminPool !== undefined) { try { await dropDatabaseWhenDisconnected(adminPool, databaseName); } finally { await adminPool.end(); } } }, 30_000);
 
   it('assembles or replaces only a CAS-protected draft from the exact bounded project corpus', async () => {
-    const workspaceId = randomUUID(); const projectId = randomUUID(); const ownerId = randomUUID(); const planId = randomUUID(); const competingPlanId = randomUUID();
+    const workspaceId = randomUUID(); const projectId = randomUUID(); const ownerId = randomUUID(); const hermesActorId = randomUUID(); const hermesProfileId = randomUUID(); const planId = randomUUID(); const competingPlanId = randomUUID();
     await db.insert(workspaces).values({id: workspaceId, name: 'Generation', slug: `generation-${randomUUID()}`});
     await db.insert(projects).values({id: projectId, workspaceId, name: 'Generated', slug: `generated-${randomUUID()}`});
     await db.insert(actors).values({id: ownerId, workspaceId, type: 'human', role: 'developer', displayName: 'PO', authMode: 'user'});
-    await db.insert(projectMemberships).values({id: randomUUID(), projectId, actorId: ownerId, role: 'project_owner'});
+    await db.insert(actors).values({id: hermesActorId, workspaceId, type: 'agent', role: 'agent_operator', displayName: 'Hermes', authMode: 'agent'});
+    await db.insert(projectMemberships).values([{id: randomUUID(), projectId, actorId: ownerId, role: 'project_owner'}, {id: randomUUID(), projectId, actorId: hermesActorId, role: 'agent'}]);
+    await db.insert(agentProfiles).values({id: hermesProfileId, workspaceId, actorId: hermesActorId, runtimeId: 'hermes', runtimeProfile: 'semantic_planning', configHash: 'a'.repeat(64)});
+    await db.insert(projectSetups).values({id: randomUUID(), projectId, state: 'pending', configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none', clientChat: 'none', executionMode: 'managed_agent', agentProfileId: hermesProfileId}});
+    await db.insert(runtimeRegistrations).values({id: randomUUID(), projectId, actorId: hermesActorId, agentProfileId: hermesProfileId, provider: 'provider_neutral', runtimeKey: 'hermes'});
     const store = createPostgresProjectPlanStore(db);
     const envelope = (type: string, payload: unknown, key: string) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId: ownerId}, type, payload});
     const record = async (artifactId: string, content: string, key: string, sourceKind: string) => store.execute({command: envelope('project_plan.source.record', {
@@ -40,6 +44,12 @@ describePostgres('project plan persistence', () => {
       provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}
     }, key) as never, requestHash: key.padEnd(64, '0').slice(0, 64), authorized: true});
     const firstArtifactId = randomUUID(); const firstContent = '# Результат\nСогласовать границы\nПодтвердить критерии';
+    const semanticGeneration = (artifactId: string) => {
+      const evidence = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 1}};
+      return {ok: true as const, value: {title: 'Hermes semantic plan', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index + 1}`, title: `Outcome ${index + 1}`, weight: 20, evidence})),
+        milestones: [{key: 'm1', title: 'Acceptance', checkpoint: 'Product Owner accepts', targetAt: null, evidence}], risks: [{key: 'r1', statement: 'Interpretation', mitigation: 'Review source', evidence}],
+        tasks: [{key: 't1', title: 'Prepare', outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Review', evidence}]}]}};
+    };
     await expect(record(firstArtifactId, firstContent, 'gen-source-1', 'project_passport')).resolves.toMatchObject({receipt: {result: {ok: true}}});
     const firstManifest = [{artifactId: firstArtifactId, version: 1, sha256: sourceArtifactDigest(firstContent)}];
     const incomplete = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: firstManifest}, 'generate-incomplete');
@@ -50,8 +60,9 @@ describePostgres('project plan persistence', () => {
     await expect(record(acceptanceArtifactId, acceptanceContent, 'gen-source-acceptance', 'acceptance_method')).resolves.toMatchObject({receipt: {result: {ok: true}}});
     const requiredManifest = [...firstManifest, {artifactId: requirementsArtifactId, version: 1, sha256: sourceArtifactDigest(requirementsContent)}, {artifactId: acceptanceArtifactId, version: 1, sha256: sourceArtifactDigest(acceptanceContent)}];
     const generate = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: requiredManifest}, 'generate-1');
-    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 1}}}}});
-    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({status: 'replayed'});
+    await expect(store.prepareSemanticGeneration({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({ok: true, value: {kind: 'ready'}});
+    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 1}}}}});
+    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({status: 'replayed'});
     expect(await db.select().from(projectPlanVersions)).toHaveLength(0);
     expect(await db.select().from(projectPlanMaterializations)).toHaveLength(0);
     expect(await db.select().from(workItems)).toHaveLength(0);
@@ -64,12 +75,26 @@ describePostgres('project plan persistence', () => {
       requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
     const fullManifest = [...requiredManifest, {artifactId: secondArtifactId, version: 1, sha256: sourceArtifactDigest(secondContent)}];
     await expect(store.execute({command: envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: fullManifest}, 'generate-2') as never,
-      requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 2}}}}});
+      requestHash: 'c'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 2}}}}});
     await expect(store.execute({command: envelope('project_plan.draft.generate', {planId: competingPlanId, projectId, expectedRevision: null, sourceManifest: fullManifest}, 'generate-competing') as never,
       requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
     expect(await db.select().from(projectPlanDrafts)).toHaveLength(1);
     expect(await db.select().from(auditEvents)).toHaveLength(9);
     expect(await db.select().from(commandReceipts)).toHaveLength(9);
+    const manualProjectId = randomUUID(); const manualPlanId = randomUUID(); const manualArtifacts = [
+      ['project_passport', 'Manual passport'], ['client_requirements', 'Manual requirements'], ['acceptance_method', 'Manual acceptance']
+    ] as const;
+    await db.insert(projects).values({id: manualProjectId, workspaceId, name: 'Manual', slug: `manual-${randomUUID()}`});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: manualProjectId, actorId: ownerId, role: 'project_owner'});
+    await db.insert(projectSetups).values({id: randomUUID(), projectId: manualProjectId, state: 'pending', configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none', clientChat: 'none', executionMode: 'manual', agentProfileId: null}});
+    const manualManifest = manualArtifacts.map(([, content]) => ({artifactId: randomUUID(), version: 1, sha256: sourceArtifactDigest(content)}));
+    await db.insert(projectSourceArtifacts).values(manualArtifacts.map(([sourceKind, content], index) => ({id: manualManifest[index]!.artifactId, workspaceId, projectId: manualProjectId, name: sourceKind, sourceKind, mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, createdByActorId: ownerId})));
+    const manualCommand = envelope('project_plan.draft.generate', {planId: manualPlanId, projectId: manualProjectId, expectedRevision: null, sourceManifest: manualManifest}, 'manual-generate');
+    await expect(store.prepareSemanticGeneration({command: manualCommand as never, requestHash: 'manual'.padEnd(64, '0'), authorized: true})).resolves.toMatchObject({ok: false, error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('Hermes planning')}});
+    await db.update(projectMemberships).set({active: false}).where(and(eq(projectMemberships.projectId, projectId), eq(projectMemberships.actorId, ownerId)));
+    const formerOwnerReplay = await store.prepareSemanticGeneration({command: generate as never, requestHash: 'a'.repeat(64), authorized: true});
+    expect(formerOwnerReplay).toMatchObject({ok: false, error: {code: 'CAPABILITY_DENIED'}});
+    expect(formerOwnerReplay).not.toHaveProperty('value');
   });
 
   it('isolates source evidence, saves with CAS, and freezes an approved version and source manifest', async () => {

@@ -84,13 +84,13 @@ it('allows draft generation only from a selected complete dossier', () => {
     provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}
   });
   const base = {draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null,
-    approvedSimulation: null, materialization: null};
+    approvedSimulation: null, materialization: null, plannerEligibility: {eligible: true, remediation: 'Hermes ready'}};
   const incomplete = renderToStaticMarkup(createElement(ProjectPlanControls, {
     projectId: '22222222-2222-4222-8222-222222222222', csrfToken: 'csrf', canEdit: true, canApprove: true,
     plan: {...base, artifacts: [artifact('11111111-1111-4111-8111-111111111111', 'project_passport')]}
   }));
   const buttonFor = (markup: string) => {
-    const labelAt = markup.indexOf('Собрать черновик из источников');
+    const labelAt = markup.indexOf('Собрать черновик через Hermes');
     return markup.slice(markup.lastIndexOf('<button', labelAt), markup.indexOf('</button>', labelAt) + '</button>'.length);
   };
   const incompleteButton = buttonFor(incomplete);
@@ -102,6 +102,15 @@ it('allows draft generation only from a selected complete dossier', () => {
   }));
   const completeButton = buttonFor(complete);
   expect(completeButton).not.toContain('disabled');
+});
+
+it('does not present Hermes planning as global project capability', () => {
+  const artifact = (id: string, sourceKind: 'project_passport' | 'client_requirements' | 'acceptance_method') => ({id, name: sourceKind, sourceKind, mediaType: 'text/plain', content: 'Подтверждённый текст', sizeBytes: 22, sha256: 'a'.repeat(64), sourceFile: null, version: 1, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}});
+  const markup = renderToStaticMarkup(createElement(ProjectPlanControls, {projectId: '22222222-2222-4222-8222-222222222222', csrfToken: 'csrf', canEdit: true, canApprove: true,
+    plan: {artifacts: [artifact('11111111-1111-4111-8111-111111111111', 'project_passport'), artifact('22222222-2222-4222-8222-222222222222', 'client_requirements'), artifact('33333333-3333-4333-8333-333333333333', 'acceptance_method')], draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null, plannerEligibility: {eligible: false, remediation: 'Hermes profile не назначен этому проекту.'}}}));
+  const labelAt = markup.indexOf('Собрать черновик через Hermes');
+  expect(markup).toContain('Hermes profile не назначен этому проекту.');
+  expect(markup.slice(markup.lastIndexOf('<button', labelAt), markup.indexOf('</button>', labelAt))).toContain('disabled');
 });
 
 it('renders a truthful materialization summary without an execution start action', () => {
