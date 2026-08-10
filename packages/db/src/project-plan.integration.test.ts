@@ -63,7 +63,7 @@ describePostgres('project plan persistence', () => {
     await expect(store.prepareSemanticGeneration({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({ok: true, value: {kind: 'ready'}});
     await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 1}}}}});
     await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({status: 'replayed'});
-    expect(await db.select().from(projectPlanVersions)).toHaveLength(0);
+    expect(await db.select().from(projectPlanVersions).where(eq(projectPlanVersions.projectId, projectId))).toHaveLength(0);
     expect(await db.select().from(projectPlanMaterializations)).toHaveLength(0);
     expect(await db.select().from(workItems)).toHaveLength(0);
     expect(await db.select().from(agentRuns)).toHaveLength(0);
@@ -160,12 +160,12 @@ describePostgres('project plan persistence', () => {
     const simulation = await store.simulate({workspaceId, projectId, actorId: ownerId, definition});
     expect(simulation).toMatchObject({readyForApproval: true, protocol: {state: 'not_configured'}});
     await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 2, expectedPlanHash: simulation!.planHash, expectedSimulationHash: '0'.repeat(64)}, 'approve-stale') as never, requestHash: 'g'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_COMMAND'}}}});
-    expect(await db.select().from(projectPlanVersions)).toHaveLength(0);
+    expect(await db.select().from(projectPlanVersions).where(eq(projectPlanVersions.projectId, projectId))).toHaveLength(0);
     await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 2, expectedPlanHash: simulation!.planHash, expectedSimulationHash: simulation!.simulationHash}, 'approve') as never, requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'approved', approvedVersion: 1}}}}});
-    const [version] = await db.select().from(projectPlanVersions);
+    const [version] = await db.select().from(projectPlanVersions).where(eq(projectPlanVersions.projectId, projectId));
     expect(version?.sourceManifest).toEqual([{artifactId, version: 1, sha256: sourceArtifactDigest(content)}]);
-    expect(await db.select().from(commandReceipts).where(eq(commandReceipts.workspaceId, workspaceId))).toHaveLength(9);
-    expect(await db.select().from(auditEvents).where(eq(auditEvents.workspaceId, workspaceId))).toHaveLength(9);
+    expect(await db.select().from(commandReceipts).where(eq(commandReceipts.workspaceId, workspaceId))).toHaveLength(10);
+    expect(await db.select().from(auditEvents).where(eq(auditEvents.workspaceId, workspaceId))).toHaveLength(10);
     await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 3, definition}, 'immutable') as never, requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
     const replanSaveId = randomUUID(); const replanGenerateId = randomUUID();
     await expect(store.execute({command: envelope('project_plan.draft.save', {planId: replanSaveId, projectId, expectedRevision: null, definition}, 'replan-save-blocked') as never,
