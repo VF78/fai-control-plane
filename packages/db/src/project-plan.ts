@@ -226,6 +226,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           content: command.payload.content,
           sizeBytes: command.payload.sizeBytes,
           sha256: command.payload.sha256,
+          sourceFile: command.payload.sourceFile,
           provenance: command.payload.provenance,
           version: 1
         });
@@ -536,7 +537,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           }
           const artifacts = artifactRows.flatMap((row) => {
             const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, sourceKind: row.sourceKind, mediaType: row.mediaType,
-              content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, provenance: row.provenance, version: row.version});
+              content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, sourceFile: row.sourceFile, provenance: row.provenance, version: row.version});
             return artifact.ok ? [artifact.value] : [];
           });
           if (artifacts.length !== artifactRows.length || artifacts.reduce((total, artifact) => total + artifact.sizeBytes, 0) > projectPlanGenerationLimits.totalBytes) {
@@ -614,7 +615,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         tx.select().from(schema.projectPlanVersions).where(and(eq(schema.projectPlanVersions.workspaceId, input.workspaceId), eq(schema.projectPlanVersions.projectId, input.projectId))).orderBy(desc(schema.projectPlanVersions.version)).limit(1)
       ]);
       const artifacts = artifactRows.flatMap((row) => {
-        const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, sourceKind: row.sourceKind, mediaType: row.mediaType, content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, provenance: row.provenance, version: row.version});
+        const artifact = validateSourceArtifact({id: row.id, projectId: row.projectId, name: row.name, sourceKind: row.sourceKind, mediaType: row.mediaType, content: row.content, sizeBytes: row.sizeBytes, sha256: row.sha256, sourceFile: row.sourceFile, provenance: row.provenance, version: row.version});
         return artifact.ok ? [artifact.value] : [];
       });
       const draft = draftRows[0] === undefined ? null : draftFrom(draftRows[0]);

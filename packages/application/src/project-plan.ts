@@ -4,6 +4,8 @@ import {
   canonicalJson,
   isTrustedActorContext,
   projectSourceArtifactKinds,
+  sourceArtifactDigest,
+  validateSourceArtifact,
   validateProjectPlanDefinition,
   type CanonicalCommandEnvelope,
   type CommandError,
@@ -13,6 +15,7 @@ import {
   type ProjectPlanSourceManifest,
   type ProjectPlanSimulation,
   type SourceArtifact,
+  type SourceFileProvenance,
   type SourceArtifactMediaType,
   type TrustedActorContext
 } from '@fai-control-plane/domain';
@@ -26,6 +29,7 @@ export type RecordSourceArtifactCommand = CanonicalCommandEnvelope<'project_plan
   content: string;
   sizeBytes: number;
   sha256: string;
+  sourceFile: SourceFileProvenance | null;
   provenance: Readonly<{kind: 'manager_note' | 'manager_upload'; label: string; capturedAt: string}>;
 }>>;
 export type SaveProjectPlanDraftCommand = CanonicalCommandEnvelope<'project_plan.draft.save', Readonly<{
@@ -114,6 +118,15 @@ export const createProjectPlanService = (store: ProjectPlanStore): ProjectPlanSe
     if (command.type === 'project_plan.source.record') {
       if (!UUID.test(command.payload.artifactId) || !UUID.test(command.payload.projectId) || !SHA.test(command.payload.sha256) ||
         !projectSourceArtifactKinds.includes(command.payload.sourceKind)) {
+        return rejected('INVALID_COMMAND', 'Source artifact command is invalid.');
+      }
+      const artifact = validateSourceArtifact({
+        id: command.payload.artifactId, projectId: command.payload.projectId, name: command.payload.name,
+        sourceKind: command.payload.sourceKind, mediaType: command.payload.mediaType, content: command.payload.content,
+        sizeBytes: command.payload.sizeBytes, sha256: command.payload.sha256, sourceFile: command.payload.sourceFile,
+        provenance: command.payload.provenance, version: 1
+      });
+      if (!artifact.ok || command.payload.sha256 !== sourceArtifactDigest(command.payload.content)) {
         return rejected('INVALID_COMMAND', 'Source artifact command is invalid.');
       }
     } else if (!UUID.test(command.payload.planId)) {

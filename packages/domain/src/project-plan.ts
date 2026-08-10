@@ -8,6 +8,37 @@ export const sourceArtifactMediaTypes = [
 ] as const;
 export type SourceArtifactMediaType = (typeof sourceArtifactMediaTypes)[number];
 
+export const sourceFileMediaTypes = [
+  'text/plain',
+  'text/markdown',
+  'application/json',
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+] as const;
+export type SourceFileMediaType = (typeof sourceFileMediaTypes)[number];
+export const sourceFileUploadLimits = Object.freeze({rawBytes: 2 * 1024 * 1024, extractedTextBytes: 256 * 1024});
+
+export type SourceFileProvenance = Readonly<{
+  filename: string;
+  mediaType: SourceFileMediaType;
+  rawSizeBytes: number;
+  rawSha256: string;
+  extractionMethod: 'utf8_text_v1' | 'json_utf8_v1' | 'pdfjs_text_v1' | 'mammoth_text_v1';
+  extractionVersion: 1;
+}>;
+
+export const sourceFileMediaTypeForFilename = (filename: string): SourceFileMediaType | null => {
+  const extension = filename.toLowerCase().slice(filename.lastIndexOf('.'));
+  if (extension === '.txt') return 'text/plain';
+  if (extension === '.md') return 'text/markdown';
+  if (extension === '.json') return 'application/json';
+  if (extension === '.pdf') return 'application/pdf';
+  if (extension === '.docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  return null;
+};
+const sourceFileExtractionMethodForMediaType = (mediaType: SourceFileMediaType): SourceFileProvenance['extractionMethod'] =>
+  mediaType === 'application/pdf' ? 'pdfjs_text_v1' : mediaType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ? 'mammoth_text_v1' : mediaType === 'application/json' ? 'json_utf8_v1' : 'utf8_text_v1';
+
 export const projectSourceArtifactKinds = [
   'project_passport',
   'client_requirements',
@@ -42,6 +73,7 @@ export type SourceArtifact = Readonly<{
   content: string;
   sizeBytes: number;
   sha256: string;
+  sourceFile: SourceFileProvenance | null;
   provenance: Readonly<{
     kind: 'manager_note' | 'manager_upload';
     label: string;
@@ -186,6 +218,19 @@ const containsStructuredSecret = (value: unknown): boolean => {
   return Object.entries(value).some(([key, nested]) => secretKey(key) || containsStructuredSecret(nested));
 };
 
+const sourceFilename = (value: unknown): value is string => typeof value === 'string' &&
+  value.trim() === value && value.length > 0 && value.length <= 160 && !/[\\/\u0000-\u001f]/u.test(value);
+const sourceFile = (value: unknown): value is SourceFileProvenance => isObject(value) && exact(value, [
+  'filename', 'mediaType', 'rawSizeBytes', 'rawSha256', 'extractionMethod', 'extractionVersion'
+]) && sourceFilename(value.filename) && sourceFileMediaTypes.includes(value.mediaType as SourceFileMediaType) &&
+  sourceFileMediaTypeForFilename(value.filename) === value.mediaType &&
+  Number.isSafeInteger(value.rawSizeBytes) && (value.rawSizeBytes as number) > 0 &&
+  (value.rawSizeBytes as number) <= sourceFileUploadLimits.rawBytes &&
+  typeof value.rawSha256 === 'string' && /^[0-9a-f]{64}$/.test(value.rawSha256) &&
+  ['utf8_text_v1', 'json_utf8_v1', 'pdfjs_text_v1', 'mammoth_text_v1'].includes(value.extractionMethod as string) &&
+  value.extractionMethod === sourceFileExtractionMethodForMediaType(value.mediaType as SourceFileMediaType) &&
+  value.extractionVersion === 1;
+
 export const sourceArtifactDigest = (content: string) =>
   createHash('sha256').update(content, 'utf8').digest('hex');
 
@@ -207,17 +252,18 @@ export const projectDossierReadiness = (
 
 export const validateSourceArtifact = (value: unknown): CommandResult<SourceArtifact> => {
   if (!isObject(value) || !exact(value, [
-    'id', 'projectId', 'name', 'sourceKind', 'mediaType', 'content', 'sizeBytes', 'sha256', 'provenance', 'version'
+    'id', 'projectId', 'name', 'sourceKind', 'mediaType', 'content', 'sizeBytes', 'sha256', 'sourceFile', 'provenance', 'version'
   ])) return invalid('Source artifact shape is invalid.');
   if (!uuid.test(value.id as string) || !uuid.test(value.projectId as string) ||
     !text(value.name, 160) || !projectSourceArtifactKinds.includes(value.sourceKind as ProjectSourceArtifactKind) ||
     !sourceArtifactMediaTypes.includes(value.mediaType as SourceArtifactMediaType) ||
     typeof value.content !== 'string' || value.content.includes('\u0000') || Buffer.byteLength(value.content, 'utf8') < 1 ||
-    Buffer.byteLength(value.content, 'utf8') > 256 * 1024 || value.sizeBytes !== Buffer.byteLength(value.content, 'utf8') ||
-    value.sha256 !== sourceArtifactDigest(value.content) || containsHighConfidenceSecretContent(value.content) ||
+    Buffer.byteLength(value.content, 'utf8') > sourceFileUploadLimits.extractedTextBytes || value.sizeBytes !== Buffer.byteLength(value.content, 'utf8') ||
+    value.sha256 !== sourceArtifactDigest(value.content) || !(value.sourceFile === null || sourceFile(value.sourceFile)) || containsHighConfidenceSecretContent(value.content) ||
     containsHighConfidenceSecretContent(`${value.name}\n${isObject(value.provenance) ? String(value.provenance.label ?? '') : ''}`) || value.version !== 1 || !isObject(value.provenance) ||
     !exact(value.provenance, ['kind', 'label', 'capturedAt']) ||
-    !['manager_note', 'manager_upload'].includes(value.provenance.kind as string) || !text(value.provenance.label, 160)) {
+    !['manager_note', 'manager_upload'].includes(value.provenance.kind as string) ||
+    (value.sourceFile === null ? value.provenance.kind !== 'manager_note' : value.provenance.kind !== 'manager_upload') || !text(value.provenance.label, 160)) {
     return invalid('Source artifact metadata does not match its bounded content.');
   }
   try {

@@ -815,7 +815,7 @@ export type ProjectData = Readonly<{
   protocol?: DeliveryProtocol | null;
   protocolRevision?: DeliveryProtocol | null;
   plan?: Readonly<{
-    artifacts: readonly Readonly<{id: string; name: string; sourceKind: import('@fai-control-plane/domain').ProjectSourceArtifactKind; mediaType: string; content: string; sizeBytes: number; sha256: string; version: number; provenance: Readonly<{kind: string; label: string; capturedAt: string}>}>[];
+    artifacts: readonly Readonly<{id: string; name: string; sourceKind: import('@fai-control-plane/domain').ProjectSourceArtifactKind; mediaType: string; content: string; sizeBytes: number; sha256: string; sourceFile: import('@fai-control-plane/domain').SourceFileProvenance | null; version: number; provenance: Readonly<{kind: string; label: string; capturedAt: string}>}>[];
     draft: ProjectPlan | null;
     approved: ProjectPlan | null;
     approvedSourceManifest: readonly Readonly<{artifactId: string; version: number; sha256: string}>[];
@@ -1045,7 +1045,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   ));
   const [planArtifactRows, planDraftRows, planVersionRows] = await Promise.all([
     db.select({id: projectSourceArtifacts.id, name: projectSourceArtifacts.name, sourceKind: projectSourceArtifacts.sourceKind, mediaType: projectSourceArtifacts.mediaType,
-      content: projectSourceArtifacts.content, sizeBytes: projectSourceArtifacts.sizeBytes, sha256: projectSourceArtifacts.sha256, version: projectSourceArtifacts.version,
+      content: projectSourceArtifacts.content, sizeBytes: projectSourceArtifacts.sizeBytes, sha256: projectSourceArtifacts.sha256, sourceFile: projectSourceArtifacts.sourceFile, version: projectSourceArtifacts.version,
       provenance: projectSourceArtifacts.provenance})
       .from(projectSourceArtifacts).where(and(eq(projectSourceArtifacts.workspaceId, project.workspaceId), eq(projectSourceArtifacts.projectId, project.id)))
       .orderBy(desc(projectSourceArtifacts.createdAt)).limit(100),
