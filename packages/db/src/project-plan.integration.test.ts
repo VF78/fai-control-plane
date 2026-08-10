@@ -93,7 +93,9 @@ describePostgres('project plan persistence', () => {
     const legacyArtifactId = randomUUID(); const legacyContent = 'Ранее записанный источник';
     await db.insert(projectSourceArtifacts).values({id: legacyArtifactId, workspaceId, projectId, name: 'Старый источник', mediaType: 'text/plain', content: legacyContent,
       sizeBytes: Buffer.byteLength(legacyContent), sha256: sourceArtifactDigest(legacyContent), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, createdByActorId: ownerId});
-    await expect(store.inspect({workspaceId, projectId, actorId: ownerId})).resolves.toMatchObject({artifacts: expect.arrayContaining([{id: legacyArtifactId, sourceKind: 'other'}])});
+    await expect(store.inspect({workspaceId, projectId, actorId: ownerId})).resolves.toMatchObject({
+      artifacts: expect.arrayContaining([expect.objectContaining({id: legacyArtifactId, sourceKind: 'other'})])
+    });
     const citation = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 2}};
     const definition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: citation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: citation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: citation}], tasks: [
       {key: 't1', title: 'Подготовить результат', outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: citation}]},
