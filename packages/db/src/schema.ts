@@ -354,6 +354,7 @@ export const projectSourceArtifacts = pgTable(
     content: text('content').notNull(),
     sizeBytes: integer('size_bytes').notNull(),
     sha256: text('sha256').notNull(),
+    sourceFile: jsonb('source_file').$type<import('@fai-control-plane/domain').SourceFileProvenance>(),
     provenance: jsonb('provenance').$type<Readonly<{
       kind: 'manager_note' | 'manager_upload';
       label: string;
@@ -375,6 +376,7 @@ export const projectSourceArtifacts = pgTable(
     check('project_source_artifacts_media_type', sql`${table.mediaType} in ('text/plain', 'text/markdown', 'application/json')`),
     check('project_source_artifacts_content_bounded', sql`octet_length(${table.content}) between 1 and 262144 and ${table.sizeBytes} = octet_length(${table.content})`),
     check('project_source_artifacts_sha256', sql`${table.sha256} ~ '^[0-9a-f]{64}$'`),
+    check('project_source_artifacts_source_file_object', sql`${table.sourceFile} is null or jsonb_typeof(${table.sourceFile}) = 'object'`),
     check('project_source_artifacts_provenance_object', sql`jsonb_typeof(${table.provenance}) = 'object'`),
     check('project_source_artifacts_version_one', sql`${table.version} = 1`)
   ]

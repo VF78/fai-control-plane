@@ -36,7 +36,7 @@ describePostgres('project plan persistence', () => {
     const store = createPostgresProjectPlanStore(db);
     const envelope = (type: string, payload: unknown, key: string) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId: ownerId}, type, payload});
     const record = async (artifactId: string, content: string, key: string, sourceKind: string) => store.execute({command: envelope('project_plan.source.record', {
-      artifactId, projectId, name: key, sourceKind, mediaType: 'text/markdown', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content),
+      artifactId, projectId, name: key, sourceKind, mediaType: 'text/markdown', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null,
       provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}
     }, key) as never, requestHash: key.padEnd(64, '0').slice(0, 64), authorized: true});
     const firstArtifactId = randomUUID(); const firstContent = '# Результат\nСогласовать границы\nПодтвердить критерии';
@@ -89,12 +89,13 @@ describePostgres('project plan persistence', () => {
     ]);
     const store = createPostgresProjectPlanStore(db); const content = 'Подтверждённый результат\nКритерий приёмки';
     const envelope = (type: string, payload: unknown, key: string, actorId = ownerId) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId}, type, payload});
-    await expect(store.execute({command: envelope('project_plan.source.record', {artifactId, projectId, name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}}, 'source') as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const sourceFile = {filename: 'requirements.txt', mediaType: 'text/plain' as const, rawSizeBytes: 24, rawSha256: 'a'.repeat(64), extractionMethod: 'utf8_text_v1' as const, extractionVersion: 1 as const};
+    await expect(store.execute({command: envelope('project_plan.source.record', {artifactId, projectId, name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile, provenance: {kind: 'manager_upload', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}}, 'source') as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true}}});
     const legacyArtifactId = randomUUID(); const legacyContent = 'Ранее записанный источник';
     await db.insert(projectSourceArtifacts).values({id: legacyArtifactId, workspaceId, projectId, name: 'Старый источник', mediaType: 'text/plain', content: legacyContent,
       sizeBytes: Buffer.byteLength(legacyContent), sha256: sourceArtifactDigest(legacyContent), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, createdByActorId: ownerId});
     await expect(store.inspect({workspaceId, projectId, actorId: ownerId})).resolves.toMatchObject({
-      artifacts: expect.arrayContaining([expect.objectContaining({id: legacyArtifactId, sourceKind: 'other'})])
+      artifacts: expect.arrayContaining([expect.objectContaining({id: artifactId, sourceFile}), expect.objectContaining({id: legacyArtifactId, sourceKind: 'other', sourceFile: null})])
     });
     const citation = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 2}};
     const definition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: citation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: citation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: citation}], tasks: [

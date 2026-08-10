@@ -59,7 +59,8 @@ it('renders the Russian source-draft-approval lifecycle under project setup', ()
   expect(markup).toContain('Готовность досье');
   expect(markup).toContain('Добавьте источник: паспорт проекта.');
   expect(markup).toContain('Категория');
-  expect(markup).toContain('text/plain, text/markdown и application/json');
+  expect(markup).toContain('.txt, .md, .json, .pdf, .docx');
+  expect(markup).toContain('accept=".txt,.md,.json,.pdf,.docx"');
   expect(markup).toContain('Черновик плана');
   expect(markup).toContain('Утверждение Product Owner');
   expect(markup).not.toContain('Сгенерировать');
@@ -79,7 +80,7 @@ it('distinguishes edit-only delivery authority from Product Owner approval', () 
 it('allows draft generation only from a selected complete dossier', () => {
   const artifact = (id: string, sourceKind: 'project_passport' | 'client_requirements' | 'acceptance_method') => ({
     id, name: sourceKind, sourceKind, mediaType: 'text/plain', content: 'Подтверждённый текст', sizeBytes: 22,
-    sha256: 'a'.repeat(64), version: 1,
+    sha256: 'a'.repeat(64), sourceFile: null, version: 1,
     provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}
   });
   const base = {draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null,

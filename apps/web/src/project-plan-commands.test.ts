@@ -99,7 +99,7 @@ it('rejects an unknown dossier category before execution', async () => {
 
 it('defaults source selection to all bounded artifacts or a usable bounded subset', () => {
   const artifact = (index: number, sizeBytes: number) => ({id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, name: `Source ${index}`,
-    sourceKind: 'other' as const, mediaType: 'text/plain', content: 'x', sizeBytes, sha256: 'a'.repeat(64), version: 1, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}});
+    sourceKind: 'other' as const, mediaType: 'text/plain', content: 'x', sizeBytes, sha256: 'a'.repeat(64), sourceFile: null, version: 1, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}});
   expect(defaultGenerationArtifactIds([artifact(1, 10), artifact(2, 10)])).toHaveLength(2);
   expect(defaultGenerationArtifactIds([artifact(1, 200 * 1024), artifact(2, 200 * 1024), artifact(3, 200 * 1024)])).toHaveLength(2);
   expect(defaultGenerationArtifactIds(Array.from({length: 33}, (_, index) => artifact(index + 1, 1)))).toHaveLength(32);

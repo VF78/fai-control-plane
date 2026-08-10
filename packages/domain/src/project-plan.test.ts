@@ -13,10 +13,12 @@ const definition = {
 describe('project plan', () => {
   it('validates bounded artifacts and rejects mismatched hashes', () => {
     const content = 'Строка 1\nСтрока 2';
-    const artifact = {id: '10000000-0000-4000-8000-000000000001', projectId: '10000000-0000-4000-8000-000000000002', name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), provenance: {kind: 'manager_note', label: 'Встреча', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1};
+    const artifact = {id: '10000000-0000-4000-8000-000000000001', projectId: '10000000-0000-4000-8000-000000000002', name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note', label: 'Встреча', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1};
     expect(validateSourceArtifact(artifact)).toMatchObject({ok: true});
     expect(validateSourceArtifact({...artifact, sha256: '0'.repeat(64)})).toMatchObject({ok: false});
     expect(validateSourceArtifact({...artifact, sourceKind: 'passport'})).toMatchObject({ok: false});
+    expect(validateSourceArtifact({...artifact, sourceFile: {filename: 'brief.pdf', mediaType: 'application/pdf', rawSizeBytes: 4, rawSha256: 'a'.repeat(64), extractionMethod: 'pdfjs_text_v1', extractionVersion: 1}, provenance: {...artifact.provenance, kind: 'manager_upload'}})).toMatchObject({ok: true});
+    expect(validateSourceArtifact({...artifact, sourceFile: {filename: '../brief.pdf', mediaType: 'application/pdf', rawSizeBytes: 4, rawSha256: 'a'.repeat(64), extractionMethod: 'pdfjs_text_v1', extractionVersion: 1}})).toMatchObject({ok: false});
     const invalidJson = '{';
     expect(validateSourceArtifact({...artifact, mediaType: 'application/json', content: invalidJson, sizeBytes: Buffer.byteLength(invalidJson), sha256: sourceArtifactDigest(invalidJson)})).toMatchObject({ok: false});
     for (const payload of [
@@ -50,7 +52,7 @@ describe('project plan', () => {
   it('assembles a deterministic editable scaffold from exact bounded evidence and explicit assumptions', () => {
     const content = '# Цель\nСократить время проверки\nПодтвердить критерии\nЗафиксировать границы';
     const artifact = validateSourceArtifact({id: '10000000-0000-4000-8000-000000000001', projectId: '10000000-0000-4000-8000-000000000002', name: 'Brief', sourceKind: 'project_passport', mediaType: 'text/markdown', content,
-      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1});
+      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1});
     if (!artifact.ok) throw new Error('fixture');
     const generated = generateProjectPlanDraft([artifact.value]);
     expect(generated).toMatchObject({ok: true, value: {outcomes: {length: 5}, milestones: {length: 2}, risks: {length: 2}, tasks: {length: 5}}});
@@ -78,7 +80,7 @@ describe('project plan', () => {
   it('round-robins candidates across sources with a generic stable title', () => {
     const projectId = '10000000-0000-4000-8000-000000000003';
     const makeArtifact = (id: string, name: string, content: string) => validateSourceArtifact({id, projectId, name, sourceKind: 'other', mediaType: 'text/plain', content,
-      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1});
+      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1});
     const long = makeArtifact('10000000-0000-4000-8000-000000000004', 'Альфа', Array.from({length: 20}, (_, index) => `Факт Альфа ${index + 1}`).join('\n'));
     const short = makeArtifact('10000000-0000-4000-8000-000000000005', 'Бета', 'Факт Бета');
     if (!long.ok || !short.ok) throw new Error('fixtures');
@@ -103,7 +105,7 @@ describe('project plan', () => {
   it('depends only on manifest-bound artifact id and content', () => {
     const content = JSON.stringify({result: 'Подтверждённый результат', acceptance: 'Проверка Product Owner'});
     const base = {id: '10000000-0000-4000-8000-000000000006', projectId: '10000000-0000-4000-8000-000000000007', name: 'Исходное имя', sourceKind: 'other', mediaType: 'application/json', content,
-      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1};
+      sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1};
     const original = validateSourceArtifact(base); const metadataChanged = validateSourceArtifact({...base, name: 'Другое имя', mediaType: 'text/plain'});
     if (!original.ok || !metadataChanged.ok) throw new Error('fixtures');
     expect(generateProjectPlanDraft([metadataChanged.value])).toEqual(generateProjectPlanDraft([original.value]));

@@ -66,7 +66,7 @@ export async function projectPlanCommand(request: Request, overrides: ProjectPla
       const sizeBytes = Buffer.byteLength(value.content); if (sizeBytes < 1 || sizeBytes > 256 * 1024) return invalid('artifact_too_large', 413);
       const result = await runtime.plan.execute({...base, idempotencyKey: `project_plan.source.record.v1:${value.artifactId}`, type: 'project_plan.source.record', payload: {
         artifactId: value.artifactId, projectId: value.projectId, name: value.name, sourceKind: value.sourceKind as ProjectSourceArtifactKind, mediaType: value.mediaType as SourceArtifactMediaType, content: value.content,
-        sizeBytes, sha256: createHash('sha256').update(value.content, 'utf8').digest('hex'), provenance: {kind: 'manager_note', label: value.provenanceLabel, capturedAt: base.issuedAt}
+        sizeBytes, sha256: createHash('sha256').update(value.content, 'utf8').digest('hex'), sourceFile: null, provenance: {kind: 'manager_note', label: value.provenanceLabel, capturedAt: base.issuedAt}
       }});
       return mutationResponse(result);
     }
