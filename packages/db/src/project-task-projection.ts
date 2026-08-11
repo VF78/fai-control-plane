@@ -4,6 +4,7 @@ import type {
   ProjectTaskProjectionReader,
   ProjectionAvailability
 } from '@fai-control-plane/domain';
+import {validateDeploymentObservation} from '@fai-control-plane/domain';
 import {and, eq, inArray, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {providerEvidenceFromPersistedFact} from './tracker-evidence-projection';
@@ -52,20 +53,55 @@ const actorProjection = (actor: Actor | undefined) => actor === undefined
 const deploymentProjection = (
   deployment: Deployment,
   actors: ReadonlyMap<string, Actor>
-): CanonicalDeploymentProjection => ({
-  id: deployment.id,
-  workItemId: deployment.workItemId,
-  environment: deployment.environment,
-  revision: deployment.revision,
-  status: deployment.status,
-  externalRef: deployment.externalRef,
-  approvedBy: deployment.approvedByActorId === null
-    ? unknown()
-    : actorProjection(actors.get(deployment.approvedByActorId)),
-  startedAt: deployment.startedAt?.toISOString() ?? null,
-  completedAt: deployment.completedAt?.toISOString() ?? null,
-  externalEvidence: notConfigured()
-});
+): CanonicalDeploymentProjection => {
+  const canonical = deployment.lifecycleVersion === 1 && deployment.referenceKind !== null &&
+    deployment.planVersionId !== null && deployment.materializationId !== null &&
+    deployment.requestedByActorId !== null && deployment.requestedAt !== null &&
+    ['development', 'staging', 'production'].includes(deployment.environment);
+  const observation = deployment.observedResult === null || deployment.smokeChecks === null ||
+    deployment.rollbackEvidence === null || deployment.startedAt === null || deployment.completedAt === null
+    ? null : validateDeploymentObservation({
+        ...deployment.observedResult,
+        startedAt: deployment.startedAt.toISOString(),
+        completedAt: deployment.completedAt.toISOString(),
+        smokeChecks: deployment.smokeChecks,
+        rollback: deployment.rollbackEvidence
+      });
+  return {
+    id: deployment.id,
+    workItemId: deployment.workItemId,
+    environment: deployment.environment,
+    revision: deployment.revision,
+    status: deployment.status,
+    version: deployment.version,
+    externalRef: deployment.externalRef,
+    approvedBy: deployment.approvedByActorId === null
+      ? unknown()
+      : actorProjection(actors.get(deployment.approvedByActorId)),
+    startedAt: deployment.startedAt?.toISOString() ?? null,
+    completedAt: deployment.completedAt?.toISOString() ?? null,
+    desired: !canonical ? unknown() : known({
+      environment: deployment.environment as 'development' | 'staging' | 'production',
+      reference: {kind: deployment.referenceKind!, reference: deployment.revision},
+      planVersionId: deployment.planVersionId!,
+      materializationId: deployment.materializationId!,
+      workItemId: deployment.workItemId
+    }),
+    requested: !canonical ? unknown() : known({
+      by: actorProjection(actors.get(deployment.requestedByActorId!)),
+      at: deployment.requestedAt!.toISOString()
+    }),
+    approval: !canonical ? unknown() : known({
+      state: deployment.status === 'requested' ? 'pending' : 'approved',
+      by: deployment.approvedByActorId === null ? unknown() : actorProjection(actors.get(deployment.approvedByActorId)),
+      at: deployment.approvedAt?.toISOString() ?? null
+    }),
+    externalEvidence: observation?.ok === true ? known(observation.value) : unknown(),
+    nextAction: !canonical ? 'migrate_legacy_record'
+      : deployment.status === 'requested' ? 'approve_production'
+        : deployment.status === 'approved' ? 'record_observation' : 'review_observation'
+  };
+};
 
 /**
  * Reads only canonical PostgreSQL facts and persisted provider evidence.

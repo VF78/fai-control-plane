@@ -1,6 +1,21 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export * from './access-observation.ts';
 export {
+  DEPLOYMENT_OBSERVE_RESULT_COMMAND,
+  DEPLOYMENT_PRODUCTION_APPROVE_COMMAND,
+  DEPLOYMENT_REQUEST_COMMAND,
+  createDeploymentEvidenceService,
+  type ApproveProductionDeploymentCommand,
+  type DeploymentEvidenceCommand,
+  type DeploymentEvidenceExecution,
+  type DeploymentEvidenceReceipt,
+  type DeploymentEvidenceResult,
+  type DeploymentEvidenceStore,
+  type DeploymentEvidenceValue,
+  type ObserveDeploymentResultCommand,
+  type RequestDeploymentCommand
+} from './release-evidence.ts';
+export {
   QA_REVIEW_RECORD_COMMAND,
   QA_TASK_PACKET_PREPARE_COMMAND,
   createGovernedQaService,

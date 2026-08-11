@@ -51,6 +51,7 @@ export {
 } from './delivery-protocol';
 export {createPostgresDeliveryJourneyStore} from './delivery-journey';
 export {createPostgresGovernedQaStore} from './governed-qa';
+export {createPostgresDeploymentEvidenceStore} from './release-evidence';
 export {createPostgresProjectOutcomeAcceptanceStore} from './project-outcome-acceptance';
 export {
   createPostgresAgentRunAcceptanceStore,
