@@ -94,3 +94,27 @@ it('requires session, CSRF-shaped body, and canonical QA evidence before dispatc
   const prepared = await governedQaCommand(request({_csrf: 'csrf', action: 'prepare', expectedWorkItemVersion: 1, expectedJourneyVersion: 1}), commandId, deps);
   expect(prepared.status).toBe(200); expect(execute).toHaveBeenCalledWith(expect.objectContaining({type: 'qa_task_packet.prepare.v1'}));
 });
+
+it.each([
+  ['CAPABILITY_DENIED', 403], ['POLICY_DENIED', 403], ['NOT_FOUND', 404],
+  ['VERSION_CONFLICT', 409], ['INVALID_TRANSITION', 409], ['IDEMPOTENCY_KEY_REUSED', 409],
+  ['INVALID_COMMAND', 422],
+  ['unexpected_store_failure', 503]
+])('maps governed QA %s to HTTP %i', async (code, status) => {
+  const execute = vi.fn().mockResolvedValue({status: 'rejected', error: {code, message: code}});
+  const deps: DeliveryCommandDependencies = {requireSession: authorized(), nextId: () => commandId,
+    getRuntime: async () => ({actor: async () => ({ok: true, value: {} as never}), governedQa: {execute}} as never)};
+  const response = await governedQaCommand(request({_csrf: 'csrf', action: 'prepare',
+    expectedWorkItemVersion: 1, expectedJourneyVersion: 1}), commandId, deps);
+  expect(response.status).toBe(status);
+});
+
+it('maps a retained governed QA command rejection instead of returning a false receipt', async () => {
+  const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId,
+    result: {ok: false, error: {code: 'NOT_FOUND', message: 'QA packet not found'}}}});
+  const deps: DeliveryCommandDependencies = {requireSession: authorized(), nextId: () => commandId,
+    getRuntime: async () => ({actor: async () => ({ok: true, value: {} as never}), governedQa: {execute}} as never)};
+  const response = await governedQaCommand(request({_csrf: 'csrf', action: 'prepare',
+    expectedWorkItemVersion: 1, expectedJourneyVersion: 1}), commandId, deps);
+  expect(response.status).toBe(404);
+});

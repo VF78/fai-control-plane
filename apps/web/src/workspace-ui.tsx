@@ -22,7 +22,6 @@ import {ProjectShareControls} from './project-share-controls';
 import {RuntimeRegistrationControls} from './runtime-registration-controls';
 import {AgentRetirementControls} from './agent-retirement-controls';
 import {ProjectPlanControls} from './project-plan-controls';
-import {runnerActivationEnabled} from './runner-activation-policy';
 import {RiskDispositionControls} from './risk-disposition-controls';
 
 export type WorkspaceRoute = Readonly<{
@@ -356,6 +355,51 @@ function ScopeBaseline({project, csrfToken, canApproveOutcome}: {
   const executionCanAccept = project.execution.status === 'paused' || project.execution.status === 'blocked';
   return <section className="fcp-scope-baseline" id="scope"><header><div><span>Принятый скоп · версия {baseline.version}</span><strong>{totalWeight === 0 ? 'Не настроено' : `${acceptedWeight} / ${totalWeight}`}</strong><small>вес результатов, а не количество задач · обновлено {ruDate(baseline.updatedAt)}</small></div><Link href="#scope-checkpoint">Контрольная точка <ChevronRight aria-hidden="true" size={16}/></Link></header><div className="fcp-scope-outcomes"><ul aria-label="Состав принятого скопа">{outcomes.map((outcome) => <li key={outcome.key} className={`fcp-scope-${outcome.key}`}><span aria-hidden="true"/><b>{outcome.label} {outcome.value}</b></li>)}</ul>{totalWeight === 0 ? <p className="fcp-empty-line">Не настроено: результатам не назначено подтверждённое состояние.</p> : <div className="fcp-scope-bar" aria-label={outcomes.map((outcome) => `${outcome.label}: ${outcome.value}`).join(', ')}>{outcomes.map((outcome) => <span className={`fcp-scope-${outcome.key}`} key={outcome.key} style={{width: `${outcome.value / totalWeight * 100}%`}}/>)}</div>}<ScopeBurnUp baseline={baseline}/></div><div className="fcp-scope-records">{baseline.outcomes.map((outcome) => <article key={outcome.key}><strong>{outcome.title}</strong><span>{outcome.weight} · {outcome.state === 'not_configured' ? 'Не настроено' : statusLabel(outcome.state)}</span><small>{outcome.evidenceReference === null ? outcome.acceptanceBlockReason ?? 'Подтверждение не зафиксировано' : `${outcome.evidenceReference}${outcome.acceptedBy === null ? '' : ` · ${outcome.acceptedBy}`}`}</small><ProjectOutcomeAcceptanceControls projectId={project.project.id} baselineId={baseline.id} outcomeId={outcome.id} expectedExecutionVersion={project.execution.version} weight={outcome.weight} csrfToken={csrfToken} enabled={canApproveOutcome && executionCanAccept && outcome.state !== 'accepted' && outcome.acceptanceReady}/></article>)}</div><section className="fcp-checkpoint" id="scope-checkpoint"><header><h2>Ближайшая контрольная точка</h2><span>{baseline.checkpoint?.targetAt === null || baseline.checkpoint === null ? 'Срок не задан' : ruDate(baseline.checkpoint.targetAt)}</span></header>{baseline.checkpoint === null ? <p>Контрольная точка ещё не зафиксирована.</p> : <><strong>{baseline.checkpoint.title}</strong><div><Status value={baseline.checkpoint.status}/><span>{baseline.checkpoint.owner === null ? 'Ответственный не назначен' : `Ответственный: ${baseline.checkpoint.owner}`}</span></div></>}</section></section>;
 }
+type ManagementRouteState = 'done' | 'active' | 'blocked' | 'pending';
+type ManagementRouteStep = Readonly<{key: string; label: string; state: ManagementRouteState; detail: string; href: string}>;
+
+function ManagementRoute({project, runs, route}: {project: ProjectData; runs: RunsData | null; route: WorkspaceUiRoute}) {
+  const setupHref = `/projects/${project.project.slug}/setup${scopeQuery(route.scope)}#plan`;
+  const tasksHref = projectUrl(project.project.slug, 'tasks', route.scope);
+  const runsHref = projectUrl(project.project.slug, 'runs', route.scope);
+  const protocolHref = projectUrl(project.project.slug, 'protocol', route.scope);
+  const overviewHref = projectUrl(project.project.slug, 'overview', route.scope);
+  const dossierReady = project.plan !== undefined && project.plan.artifacts.some(({sourceKind}) => sourceKind === 'project_passport') &&
+    project.plan.artifacts.some(({sourceKind}) => sourceKind === 'client_requirements') &&
+    project.plan.artifacts.some(({sourceKind}) => sourceKind === 'acceptance_method');
+  const plan = project.plan;
+  const allAssigned = project.workItems.length > 0 && project.workItems.every((item) => item.responsibility !== null);
+  const projectRuns = runs?.runs.filter((run) => run.projectSlug === project.project.slug) ?? [];
+  const failedRun = projectRuns.some((run) => run.status === 'failed');
+  const activeRun = projectRuns.some((run) => ['queued', 'running', 'waiting_approval'].includes(run.status));
+  const qaItems = project.workItems.filter((item) => item.journey?.stageKey === 'qa' || item.status === 'qa');
+  const blockedQa = qaItems.some((item) => item.blocked);
+  const deployments = project.deployments ?? [];
+  const observedDeployment = deployments.some((deployment) =>
+    deployment.externalEvidence.availability === 'known' &&
+    deployment.externalEvidence.value.outcome === 'succeeded');
+  const acceptance = project.execution.acceptance ?? null;
+  const steps: readonly ManagementRouteStep[] = [
+    {key: 'dossier', label: 'Досье', state: dossierReady ? 'done' : 'blocked', href: setupHref,
+      detail: dossierReady ? 'Обязательные источники зафиксированы.' : 'Добавьте паспорт, требования и метод приёмки.'},
+    {key: 'plan', label: 'План', state: plan?.materialization !== null && plan?.materialization !== undefined ? 'done' : plan?.approved !== null && plan?.approved !== undefined ? 'active' : 'blocked', href: setupHref,
+      detail: plan?.materialization !== null && plan?.materialization !== undefined ? `Материализован · v${plan.materialization.planVersion}.` : plan?.approved !== null && plan?.approved !== undefined ? 'Утверждён; нужна материализация.' : 'Нет материализованного утверждённого плана.'},
+    {key: 'assignments', label: 'Назначения', state: allAssigned ? 'done' : project.workItems.length === 0 ? 'blocked' : 'active', href: tasksHref,
+      detail: allAssigned ? `Назначения зафиксированы · ${project.workItems.length}.` : project.workItems.length === 0 ? 'Задачи не зафиксированы.' : 'Не у всех задач зафиксирована ответственность.'},
+    {key: 'execution', label: 'Исполнение / запуски', state: project.execution.status === 'blocked' || failedRun ? 'blocked' : project.execution.status === 'completed' ? 'done' : activeRun || project.execution.status === 'running' ? 'active' : 'pending', href: runsHref,
+      detail: project.execution.status === 'blocked' ? project.execution.blockReason ?? 'Исполнение остановлено до устранения причины.' : failedRun ? 'Есть неуспешный запуск; проверьте причину и устранение.' : activeRun ? 'Запуск или подтверждение в работе.' : project.execution.status === 'running' ? 'Оркестратор включён; запуск ещё может не быть зафиксирован.' : 'Исполнение не запущено.'},
+    {key: 'qa', label: 'QA', state: blockedQa ? 'blocked' : qaItems.length > 0 ? 'active' : project.workItems.length > 0 && project.workItems.every((item) => item.status === 'done') ? 'done' : 'pending', href: protocolHref,
+      detail: blockedQa ? 'QA-задача заблокирована: устраните замечания.' : qaItems.length > 0 ? `На QA · ${qaItems.length}.` : project.workItems.length > 0 && project.workItems.every((item) => item.status === 'done') ? 'Все зафиксированные задачи завершены.' : 'QA-задача не зафиксирована.'},
+    {key: 'deployment', label: 'Развёртывание', state: observedDeployment ? 'done' : deployments.length > 0 ? 'active' : 'pending', href: `${overviewHref}#releases`,
+      detail: observedDeployment ? 'Наблюдаемый факт развёртывания зафиксирован.' : deployments.length > 0 ? 'Есть запрос; нужен наблюдаемый факт.' : 'Запрос на развёртывание не зафиксирован.'},
+    {key: 'uat', label: 'UAT', state: acceptance?.latestResult?.outcome === 'failed' ? 'blocked' : acceptance?.latestResult?.outcome === 'passed' ? 'done' : acceptance === null ? 'pending' : 'active', href: `${overviewHref}#uat`,
+      detail: acceptance?.latestResult?.outcome === 'failed' ? 'UAT не пройден: устраните замечания.' : acceptance?.latestResult?.outcome === 'passed' ? 'Результат UAT зафиксирован.' : acceptance === null ? 'Протокол UAT не подготовлен.' : 'Ожидается результат и подтверждения.'},
+    {key: 'completion', label: 'Завершение', state: project.execution.status === 'completed' ? 'done' : acceptance?.completionReady === true ? 'active' : 'pending', href: `${overviewHref}#uat`,
+      detail: project.execution.status === 'completed' ? 'Проект завершён канонической командой.' : acceptance?.completionReady === true ? 'Готово к отдельной команде завершения.' : 'Completion gate ещё не выполнен.'}
+  ];
+  return <section className="fcp-management-route" aria-labelledby="management-route-title"><div className="fcp-section-head"><div><h2 id="management-route-title">Управленческий маршрут</h2><span>Только зафиксированные факты и ближайшее ограничение</span></div></div><ol>{steps.map((step) => <li className={`fcp-management-route-step ${step.state}`} key={step.key}><span aria-hidden="true"/><div><strong>{step.label}</strong><small>{step.detail}</small></div><Link href={step.href}>Открыть</Link></li>)}</ol></section>;
+}
+
 function Overview({route, project, runs, portfolio, csrfToken, canManage, hasWriteCapability, canApproveOutcome,
   canClientSignoff}: {route: WorkspaceUiRoute; project: ProjectData; runs: RunsData | null; portfolio: PortfolioData | null;
     csrfToken: string | null; canManage: boolean; hasWriteCapability: boolean; canApproveOutcome: boolean;
@@ -367,7 +411,8 @@ function Overview({route, project, runs, portfolio, csrfToken, canManage, hasWri
   return <>
     <ProjectHeader route={route} project={project}/>
     <ContextTabs label="Разделы обзора" items={[{label: 'Сводка', href: projectUrl(project.project.slug, 'overview', route.scope), active: true}, {label: 'Скоп', href: '#scope', active: false}, {label: 'Риски', href: '#risks', active: false}]}/>
-    <ProjectExecutionControls projectId={project.project.id} execution={execution} csrfToken={csrfToken} canManage={canManage} hasWriteCapability={hasWriteCapability} runnerQueueAvailable={runnerActivationEnabled()}/>
+    <ManagementRoute project={project} runs={runs} route={route}/>
+    <ProjectExecutionControls projectId={project.project.id} execution={execution} csrfToken={csrfToken} canManage={canManage} hasWriteCapability={hasWriteCapability} runnerQueueAvailable={project.runnerQueueEnabled}/>
     <ScopeBaseline project={project} csrfToken={csrfToken} canApproveOutcome={canApproveOutcome}/>
     <ProjectAcceptanceControls projectId={project.project.id} execution={execution} csrfToken={csrfToken}
       canProductOwner={canApproveOutcome} canClientRepresentative={canClientSignoff}/>

@@ -142,7 +142,7 @@ export async function governedQaCommand(request: Request, workItemId: string, ov
       const result = await runtime.governedQa.execute({...base,
         idempotencyKey: `governed_qa.prepare.v1:${workItemId}:${expectedWorkItemVersion}:${expectedJourneyVersion}`,
         type: 'qa_task_packet.prepare.v1', payload: {workItemId, expectedWorkItemVersion, expectedJourneyVersion}});
-      return 'receipt' in result ? Response.json({receipt: result.receipt}, {headers: noStore}) : invalid(result.error.message, 409);
+      return governedQaResponse(result);
     }
     if (body.action === 'record' && exact(body, ['_csrf', 'action', 'expectedWorkItemVersion', 'expectedJourneyVersion', 'taskPacketId', 'evidence']) &&
       typeof body.taskPacketId === 'string' && UUID.test(body.taskPacketId) && validateQaReviewEvidence(body.evidence).ok) {
@@ -150,8 +150,23 @@ export async function governedQaCommand(request: Request, workItemId: string, ov
         idempotencyKey: `governed_qa.record.v1:${body.taskPacketId}:${expectedWorkItemVersion}:${expectedJourneyVersion}`,
         type: 'qa_review.record.v1', payload: {workItemId, expectedWorkItemVersion, expectedJourneyVersion,
           taskPacketId: body.taskPacketId, evidence: body.evidence as never}});
-      return 'receipt' in result ? Response.json({receipt: result.receipt}, {headers: noStore}) : invalid(result.error.message, 409);
+      return governedQaResponse(result);
     }
     return invalid('invalid_request');
   } catch { return invalid('unavailable', 503); }
 }
+
+const governedQaStatus = (code: string): number => {
+  if (code === 'CAPABILITY_DENIED' || code === 'POLICY_DENIED' || code === 'APPROVAL_REQUIRED' || code === 'INVALID_ACTOR_CONTEXT') return 403;
+  if (code === 'NOT_FOUND') return 404;
+  if (code === 'VERSION_CONFLICT' || code === 'INVALID_TRANSITION' || code === 'IDEMPOTENCY_KEY_REUSED' || code === 'WORK_ITEM_BLOCKED') return 409;
+  if (code === 'INVALID_COMMAND') return 422;
+  return 503;
+};
+
+const governedQaResponse = (result: Awaited<ReturnType<Awaited<ReturnType<DeliveryCommandDependencies['getRuntime']>>['governedQa']['execute']>>): Response => {
+  if (!('receipt' in result)) return invalid(result.error.message, governedQaStatus(result.error.code));
+  return result.receipt.result.ok
+    ? Response.json({receipt: result.receipt}, {headers: noStore})
+    : invalid(result.receipt.result.error.message, governedQaStatus(result.receipt.result.error.code));
+};

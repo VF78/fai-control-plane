@@ -113,6 +113,23 @@ it('does not present Hermes planning as global project capability', () => {
   expect(markup.slice(markup.lastIndexOf('<button', labelAt), markup.indexOf('</button>', labelAt))).toContain('disabled');
 });
 
+it('keeps ASCON/manual-Codex drafting, simulation, and saving available when Hermes is ineligible', () => {
+  const draft = {id: '11111111-1111-4111-8111-111111111111', projectId: '22222222-2222-4222-8222-222222222222', revision: 1,
+    state: 'draft' as const, definition: {title: 'Ручной план', outcomes: [], milestones: [], risks: [], tasks: []},
+    contentHash: 'a'.repeat(64), approvedVersion: null, approvedByActorId: null, approvedAt: null};
+  const markup = renderToStaticMarkup(createElement(ProjectPlanControls, {projectId: draft.projectId, csrfToken: 'csrf', canEdit: true, canApprove: true,
+    plan: {artifacts: [], draft, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null,
+      materialization: null, plannerEligibility: {eligible: false, remediation: 'Hermes не назначен ASCON.'}}}));
+  const button = (label: string) => {
+    const index = markup.indexOf(label);
+    return markup.slice(markup.lastIndexOf('<button', index), markup.indexOf('</button>', index));
+  };
+  expect(markup).toContain('Для ручного планирования (например ASCON/manual-Codex) Hermes не нужен');
+  expect(button('Собрать черновик через Hermes')).toContain('disabled');
+  expect(button('Проверить последствия')).not.toContain('disabled');
+  expect(button('Сохранить черновик')).not.toContain('disabled');
+});
+
 it('renders a truthful materialization summary without an execution start action', () => {
   const approved = {id: '22222222-2222-4222-8222-222222222222', projectId: '33333333-3333-4333-8333-333333333333', revision: 2, state: 'approved' as const,
     definition: {title: 'План', outcomes: [], milestones: [], risks: [], tasks: []}, contentHash: 'a'.repeat(64), approvedVersion: 1,
@@ -331,11 +348,6 @@ it('renders the persisted weighted scope baseline without deriving progress from
 });
 
 it('does not offer agent activation to a project owner without the exact write capability', () => {
-  const previousRunner = process.env.RUNNER_ENABLED;
-  const previousTransport = process.env.LOCAL_RUNNER_TRANSPORT_ENABLED;
-  process.env.RUNNER_ENABLED = 'true';
-  process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = 'true';
-  try {
     const actorId = '00000000-0000-4000-8000-000000000090';
     const selection = {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Автономная работа', workItemVersion: 1,
       protocolId: 'protocol-1', protocolVersion: 1, journeyVersion: 1, stageKey: 'execute', stageName: 'Исполнение',
@@ -351,7 +363,7 @@ it('does not offer agent activation to a project owner without the exact write c
       access: {state: 'ready', data: accessData},
       project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1',
         name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()},
-      agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: [],
+      runnerQueueEnabled: true, deployments: [], agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: [],
       execution: {projectId: 'project-1', status: 'running', version: 1, selection, dispatch: null,
         blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}}}
     } as unknown as WorkspaceData;
@@ -365,16 +377,38 @@ it('does not offer agent activation to a project owner without the exact write c
         capabilities: {'write:control_plane:development': true}}]}}
     } as unknown as WorkspaceData}));
     expect(permitted).toContain('Подготовить запуск агента');
-  } finally {
-    if (previousRunner === undefined) delete process.env.RUNNER_ENABLED;
-    else process.env.RUNNER_ENABLED = previousRunner;
-    if (previousTransport === undefined) delete process.env.LOCAL_RUNNER_TRANSPORT_ENABLED;
-    else process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = previousTransport;
-  }
+    if (data.project?.state !== 'ready' || data.project.data === null) throw new Error('Expected ready project data.');
+    const disabled = renderToStaticMarkup(createElement(WorkspaceShell, {route, data: {
+      ...data, access: {state: 'ready', data: {...accessData, actors: [{...accessData.actors[0]!,
+        capabilities: {'write:control_plane:development': true}}]}}, project: {state: 'ready', data: {
+        ...data.project.data, runnerQueueEnabled: false}}
+    } as unknown as WorkspaceData}));
+    expect(disabled).not.toContain('Подготовить запуск агента');
+    expect(disabled).toContain('очередь runner или локальный transport не включены');
+});
+
+it('renders a compact eight-step management route at the 390px breakpoint structure', () => {
+  const data = {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
+    project: {state: 'ready', data: {project: {id: 'ascon-id', workspaceId: 'workspace-1', name: 'ASCON', slug: 'ascon', description: null, defaultBranch: 'main', updatedAt: new Date()},
+      runnerQueueEnabled: false, deployments: [{id: 'deployment-failed', version: 1, revision: 'commit:failed',
+        desired: {availability: 'unknown'}, requested: {availability: 'unknown'}, approval: {availability: 'unknown'},
+        externalEvidence: {availability: 'known', value: {outcome: 'failed', completedAt: new Date().toISOString(),
+          smokeChecks: [], rollback: {outcome: 'failed', reference: 'rollback:failed'}}}, nextAction: 'review_observation'}],
+      agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null, plannerEligibility: {eligible: false, remediation: 'Hermes не назначен.'}}, workItems: [],
+      execution: {projectId: 'ascon-id', status: 'stopped', version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null, acceptance: null}}}
+  } as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'overview', project: 'ascon', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
+  expect(markup).toContain('Управленческий маршрут');
+  expect((markup.match(/fcp-management-route-step/g) ?? []).length).toBe(8);
+  expect(markup).toContain('Исполнение / запуски');
+  expect(markup).toContain('Завершение');
+  expect(markup).toContain('href="/projects/ascon/setup#plan"');
+  expect(markup).toContain('Есть запрос; нужен наблюдаемый факт.');
+  expect(markup).not.toContain('Наблюдаемый факт развёртывания зафиксирован.');
 });
 
 it('keeps the selected workspace area when changing between authorized projects', () => {
-  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', version: 1, updatedAt: new Date()}, deployments: [], agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, execution: {projectId: slug, status: 'stopped' as const, version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}, workItems: []});
+  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', version: 1, updatedAt: new Date()}, runnerQueueEnabled: false, deployments: [], agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, execution: {projectId: slug, status: 'stopped' as const, version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}, workItems: []});
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'global_tasks', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
     data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [project('MSA', 'msa'), project('ASCON', 'ascon')]}

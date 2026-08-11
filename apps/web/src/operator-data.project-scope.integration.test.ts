@@ -75,4 +75,26 @@ describePostgres('operator project scope', () => {
       else process.env.DATABASE_URL = previous;
     }
   });
+
+  it('serializes the enabled runner admission fact without exposing its configuration', async () => {
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousRunner = process.env.RUNNER_ENABLED;
+    const previousTransport = process.env.LOCAL_RUNNER_TRANSPORT_ENABLED;
+    process.env.DATABASE_URL = testDatabaseUrl;
+    try {
+      process.env.RUNNER_ENABLED = 'false'; process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = 'true';
+      const disabled = await loadProjectData({projectId: ids.project, slug: 'same-slug'});
+      expect(disabled).toMatchObject({state: 'ready', data: {runnerQueueEnabled: false}});
+      process.env.RUNNER_ENABLED = 'true'; process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = 'true';
+      const enabled = await loadProjectData({projectId: ids.project, slug: 'same-slug'});
+      expect(enabled).toMatchObject({state: 'ready', data: {runnerQueueEnabled: true}});
+    } finally {
+      if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousDatabaseUrl;
+      if (previousRunner === undefined) delete process.env.RUNNER_ENABLED;
+      else process.env.RUNNER_ENABLED = previousRunner;
+      if (previousTransport === undefined) delete process.env.LOCAL_RUNNER_TRANSPORT_ENABLED;
+      else process.env.LOCAL_RUNNER_TRANSPORT_ENABLED = previousTransport;
+    }
+  });
 });
