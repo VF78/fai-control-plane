@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {deterministicProjectPlanUuid, hashProjectPlanDefinition, hashProjectPlanSourceManifest, projectDossierReadiness, simulateProjectPlan, sourceArtifactDigest, validateAssignedProjectPlanDefinition, validateProjectPlanDefinition, validateSourceArtifact, type ProjectPlanDefinition} from './project-plan';
+import {deterministicProjectPlanUuid, hashProjectPlanDefinition, hashProjectPlanSourceManifest, projectDossierReadiness, projectPlanScheduleReadiness, simulateProjectPlan, sourceArtifactDigest, validateAssignedProjectPlanDefinition, validateProjectPlanDefinition, validateSourceArtifact, type ProjectPlanDefinition} from './project-plan';
 
 const assumption = {kind: 'assumption' as const, statement: 'Требует проверки Product Owner'};
 const definition: ProjectPlanDefinition = {
@@ -54,11 +54,25 @@ describe('project plan', () => {
     expect(validateAssignedProjectPlanDefinition(legacy)).toMatchObject({ok: false, error: {code: 'INVALID_COMMAND'}});
     expect(hashProjectPlanDefinition(legacy)).toBe(frozenHash);
     expect(simulateProjectPlan({definition: legacy, citationsValid: true, canEdit: true, canApprove: true, protocol: null}))
-      .toMatchObject({readyForApproval: false, blockers: [expect.stringContaining('responsibility')]});
+      .toMatchObject({readyForApproval: false, blockers: expect.arrayContaining([expect.stringContaining('responsibility')])});
   });
 
   it('reports protocol readiness without treating it as generated plan evidence', () => {
-    expect(simulateProjectPlan({definition, citationsValid: true, canEdit: true, canApprove: true, protocol: null})).toMatchObject({readyForApproval: true, protocol: {state: 'not_configured'}, warnings: [expect.any(String)]});
+    const dated = {...definition, milestones: [{...definition.milestones[0]!, targetAt: '2026-08-21'}]};
+    expect(simulateProjectPlan({definition: dated, citationsValid: true, canEdit: true, canApprove: true, protocol: null})).toMatchObject({readyForApproval: true, protocol: {state: 'not_configured'}, warnings: [expect.any(String)]});
+  });
+
+  it('keeps drafts structurally valid while requiring a complete schedule for approval', () => {
+    expect(projectPlanScheduleReadiness(definition)).toMatchObject({ready: false, earliestMilestone: null, finalTargetAt: null,
+      missingMilestones: [{key: 'm1', title: 'Контрольная точка'}], remediation: expect.stringContaining('Контрольная точка')});
+    const dated = {...definition, milestones: [
+      {...definition.milestones[0]!, targetAt: '2026-09-12'},
+      {...definition.milestones[0]!, key: 'm2', title: 'Финальная приёмка', targetAt: '2026-09-20'}
+    ]};
+    expect(projectPlanScheduleReadiness(dated)).toMatchObject({ready: true,
+      earliestMilestone: {key: 'm1', title: 'Контрольная точка', targetAt: '2026-09-12'}, finalTargetAt: '2026-09-20'});
+    expect(simulateProjectPlan({definition, citationsValid: true, canEdit: true, canApprove: true, protocol: null}))
+      .toMatchObject({readyForApproval: false, blockers: [expect.stringContaining('Контрольная точка')]});
   });
 
   it('reports exactly the missing required dossier categories', () => {

@@ -5,6 +5,7 @@ import {
   hashProjectPlanDefinition,
   projectSetupBindingModes,
   projectPlanGenerationLimits,
+  projectPlanScheduleReadiness,
   projectDossierReadiness,
   projectSourceArtifactKinds,
   sourceArtifactDigest,
@@ -761,6 +762,11 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
       if (current === null) { result = fail('NOT_FOUND', 'Project plan draft was not found.'); return complete(); }
       if (current.state !== 'draft') { result = fail('INVALID_TRANSITION', 'Only a draft plan can be approved.'); return complete(); }
       if (current.revision !== command.payload.expectedRevision) { resultVersion = current.revision; result = fail('VERSION_CONFLICT', 'Project plan draft revision conflicts.'); return complete(); }
+      const schedule = projectPlanScheduleReadiness(current.definition);
+      if (!schedule.ready) {
+        result = fail('INVALID_TRANSITION', schedule.remediation!);
+        return complete();
+      }
       const simulation = await simulateIn(tx, {workspaceId: command.workspaceId, projectId: current.projectId, actorId: command.actor.actorId, definition: current.definition});
       if (simulation === null || !simulation.readyForApproval || simulation.planHash !== command.payload.expectedPlanHash || simulation.simulationHash !== command.payload.expectedSimulationHash) {
         result = fail('INVALID_COMMAND', simulation === null || !simulation.readyForApproval ? 'Project plan is not ready for approval.' : 'Project plan simulation is stale.'); return complete();

@@ -5,6 +5,7 @@ import {
   mapRunnerCompletionToDeliveryEvidence,
   parseRunnerCompletionPayload
 } from '@fai-control-plane/application';
+import {projectPlanScheduleReadiness, type ProjectPlanScheduleReadiness} from '@fai-control-plane/domain';
 import {
   accessRequests,
   actorExternalIdentities,
@@ -828,6 +829,7 @@ export type ProjectData = Readonly<{
     approvedSourceManifest: readonly Readonly<{artifactId: string; version: number; sha256: string}>[];
     approvedSourceManifestHash: string | null;
     approvedSimulation: ProjectPlanSimulation | null;
+    schedule?: ProjectPlanScheduleReadiness | null;
     materialization: ProjectPlanMaterialization | null;
   }>;
   workItems: readonly Readonly<{
@@ -1247,6 +1249,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       approvedSourceManifest: approvedRow?.sourceManifest ?? [],
       approvedSourceManifestHash: approvedRow === undefined ? null : hashProjectPlanSourceManifest(approvedRow.sourceManifest),
       approvedSimulation: approvedRow?.simulation ?? null,
+      schedule: approvedPlan === null ? null : projectPlanScheduleReadiness(approvedPlan.definition),
       materialization,
       plannerEligibility
     },
