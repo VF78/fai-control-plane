@@ -1,6 +1,18 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export * from './access-observation.ts';
 export {
+  QA_REVIEW_RECORD_COMMAND,
+  QA_TASK_PACKET_PREPARE_COMMAND,
+  createGovernedQaService,
+  type GovernedQaCommand,
+  type GovernedQaExecution,
+  type GovernedQaReceipt,
+  type GovernedQaStore,
+  type GovernedQaValue,
+  type PrepareQaTaskPacketCommand,
+  type RecordQaReviewCommand
+} from './governed-qa.ts';
+export {
   CONVERSATION_CHANNEL_SET_COMMAND,
   conversationChannelStates,
   createConversationChannelService,

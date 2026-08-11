@@ -18,8 +18,11 @@ import {
   createDatabase,
   createPostgresConversationStore,
   createPostgresDeliveryJourneyStore,
+  createPostgresGovernedQaStore,
   deliveryJourneys,
   projectMemberships,
+  projectPlanDrafts,
+  projectPlanVersions,
   projects,
   projectTrackerRepositoryScopes,
   runbooks,
@@ -271,10 +274,44 @@ describePostgres('test-operational launch contour', () => {
         eq(runbooks.active, true)
       ));
       if (protocol === undefined) throw new Error('protocol missing');
+      const planId = randomUUID();
+      const planVersionId = randomUUID();
+      const planDefinition = {title: `Synthetic ${project.slug} plan`, outcomes: [], milestones: [], risks: [], tasks: []};
+      const approvedAt = new Date();
+      await db.insert(projectPlanDrafts).values({
+        id: planId,
+        workspaceId: workspace.id,
+        projectId: project.id,
+        state: 'approved',
+        definition: planDefinition as never,
+        contentHash: requestHash(`plan-${project.slug}`),
+        revision: 1,
+        createdByActorId: owner.id,
+        approvedByActorId: owner.id,
+        approvedAt
+      });
+      await db.insert(projectPlanVersions).values({
+        id: planVersionId,
+        workspaceId: workspace.id,
+        projectId: project.id,
+        planId,
+        version: 1,
+        sourceRevision: 1,
+        definition: planDefinition as never,
+        contentHash: requestHash(`plan-${project.slug}`),
+        sourceManifest: [],
+        simulation: {} as never,
+        approvedByActorId: owner.id,
+        approvedAt
+      });
       const [task] = await db.insert(workItems).values({
         projectId: project.id,
         title: `Synthetic ${project.slug} journey`,
-        ownerActorId: owner.id
+        ownerActorId: owner.id,
+        sourcePlanVersionId: planVersionId,
+        sourceTaskKey: `synthetic-${project.slug}`,
+        responsibility: {kind: 'human', actorId: owner.id},
+        acceptanceEvidence: []
       }).returning();
       if (task === undefined) throw new Error('task missing');
       const store = createPostgresDeliveryJourneyStore(db);
@@ -304,8 +341,14 @@ describePostgres('test-operational launch contour', () => {
       })).resolves.toMatchObject({receipt: {result: {ok: true}}});
 
       const definition = protocol.definition as {
-        stages: Array<{key: string; requiredEvidence: string[]}>
+        stages: Array<{
+          key: string;
+          taskStatus: string;
+          executionMode: string;
+          requiredEvidence: string[];
+        }>
       };
+      let stoppedAtAutonomousQa = false;
       for (let index = 0; index < definition.stages.length - 1; index += 1) {
         const [currentTask] = await db.select().from(workItems)
           .where(eq(workItems.id, task.id));
@@ -316,6 +359,72 @@ describePostgres('test-operational launch contour', () => {
           throw new Error('journey state missing');
         }
         const advanceKey = `advance-${project.slug}-${stage.key}`;
+        if (stage.taskStatus === 'qa') {
+          if (stage.executionMode === 'autonomous') {
+            await expect(store.execute({
+              command: command('delivery_journey.advance', {
+                workItemId: task.id,
+                expectedWorkItemVersion: currentTask.version,
+                expectedJourneyVersion: journey.version,
+                evidenceReferences: stage.requiredEvidence.map((requirement) => ({
+                  requirement,
+                  reference: `test://${project.slug}/${stage.key}/${requestHash(requirement)}`
+                }))
+              }, advanceKey) as never,
+              requestHash: requestHash(advanceKey),
+              authorized: true
+            })).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+            stoppedAtAutonomousQa = true;
+            break;
+          }
+          const qaStore = createPostgresGovernedQaStore(db);
+          const prepareKey = `qa-prepare-${project.slug}-${stage.key}`;
+          const prepared = await qaStore.execute({
+            command: {
+              ...command('delivery_journey.advance', {}, prepareKey),
+              type: 'qa_task_packet.prepare.v1',
+              payload: {
+                workItemId: task.id,
+                expectedWorkItemVersion: currentTask.version,
+                expectedJourneyVersion: journey.version
+              }
+            } as never,
+            requestHash: requestHash(prepareKey),
+            authorized: true
+          });
+          if (!('receipt' in prepared) || !prepared.receipt.result.ok) {
+            throw new Error(`governed QA packet preparation failed: ${JSON.stringify(
+              'receipt' in prepared ? prepared.receipt.result : prepared
+            )}`);
+          }
+          const reviewKey = `qa-review-${project.slug}-${stage.key}`;
+          await expect(qaStore.execute({
+            command: {
+              ...command('delivery_journey.advance', {}, reviewKey),
+              type: 'qa_review.record.v1',
+              payload: {
+                workItemId: task.id,
+                expectedWorkItemVersion: currentTask.version,
+                expectedJourneyVersion: journey.version,
+                taskPacketId: prepared.receipt.result.value.taskPacketId,
+                evidence: {
+                  outcome: 'passed',
+                  checks: [{name: 'launch contour QA', status: 'passed', reference: `test://${project.slug}/qa/check`}],
+                  artifacts: [{kind: 'report', reference: `test://${project.slug}/qa/report`}],
+                  failures: [],
+                  risks: [],
+                  evidenceReferences: stage.requiredEvidence.map((requirement) => ({
+                    requirement,
+                    reference: `test://${project.slug}/${stage.key}/${requestHash(requirement)}`
+                  }))
+                }
+              }
+            } as never,
+            requestHash: requestHash(reviewKey),
+            authorized: true
+          })).resolves.toMatchObject({receipt: {result: {ok: true}}});
+          continue;
+        }
         await expect(store.execute({
           command: command('delivery_journey.advance', {
             workItemId: task.id,
@@ -331,10 +440,13 @@ describePostgres('test-operational launch contour', () => {
         })).resolves.toMatchObject({receipt: {result: {ok: true}}});
       }
       expect((await db.select().from(workItems)
-        .where(eq(workItems.id, task.id)))[0]).toMatchObject({status: 'done'});
+        .where(eq(workItems.id, task.id)))[0]).toMatchObject({
+        status: stoppedAtAutonomousQa ? 'qa' : 'done'
+      });
       expect((await db.select().from(deliveryJourneys)
-        .where(eq(deliveryJourneys.workItemId, task.id)))[0])
-        .toMatchObject({stageKey: 'acceptance'});
+        .where(eq(deliveryJourneys.workItemId, task.id)))[0]).toMatchObject({
+        stageKey: stoppedAtAutonomousQa ? 'qa' : 'acceptance'
+      });
     }
 
     const [registration] = await db.select().from(runtimeRegistrations);

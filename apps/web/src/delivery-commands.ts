@@ -1,5 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {defaultDeliveryProtocolDefinition, validateDeliveryProtocolDefinition, type DeliveryEvidenceReference, type DeliveryProtocolDefinition} from '@fai-control-plane/domain';
+import {defaultDeliveryProtocolDefinition, validateDeliveryProtocolDefinition, validateQaReviewEvidence, type DeliveryEvidenceReference, type DeliveryProtocolDefinition} from '@fai-control-plane/domain';
 import {requireOperatorSession} from './operator-auth-runtime';
 import {getDeliveryRuntime} from './delivery-runtime';
 
@@ -10,9 +10,24 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const exact = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const boundedJson = async (request: Request): Promise<unknown> => {
   if (request.headers.get('content-type')?.toLowerCase() !== 'application/json' || request.body === null) return null;
-  const length = request.headers.get('content-length'); if (length !== null && (!/^\d+$/.test(length) || Number(length) > 32 * 1024)) return null;
-  const text = await request.text(); if (Buffer.byteLength(text) > 32 * 1024) return null;
-  try { return JSON.parse(text) as unknown; } catch { return null; }
+  const maximum = 32 * 1024;
+  const length = request.headers.get('content-length');
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maximum)) {
+    await request.body.cancel().catch(() => undefined); return null;
+  }
+  const reader = request.body.getReader(); const decoder = new TextDecoder('utf-8', {fatal: true});
+  let size = 0; let text = '';
+  try {
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maximum) { await reader.cancel(); return null; }
+      text += decoder.decode(value, {stream: true});
+    }
+    text += decoder.decode();
+    return JSON.parse(text) as unknown;
+  } catch { await reader.cancel().catch(() => undefined); return null; }
 };
 const csrf = (value: unknown) => isRecord(value) && typeof value._csrf === 'string' && value._csrf.length > 0 && value._csrf.length <= 128 ? value._csrf : null;
 const protocolDefinition = (value: unknown): DeliveryProtocolDefinition | null => {
@@ -105,6 +120,37 @@ export async function deliveryJourneyCommand(request: Request, workItemId: strin
       const expectedJourneyVersion = body.expectedJourneyVersion as number;
       const result = await runtime.journey.execute({...base, idempotencyKey: `delivery_journey.advance.v1:${workItemId}:${expectedJourneyVersion}`, type: 'delivery_journey.advance', payload: {workItemId, expectedWorkItemVersion, expectedJourneyVersion, evidenceReferences: evidence}});
       return 'receipt' in result ? Response.json(receipt(result), {headers: noStore}) : invalid(result.error.message, 409);
+    }
+    return invalid('invalid_request');
+  } catch { return invalid('unavailable', 503); }
+}
+
+export async function governedQaCommand(request: Request, workItemId: string, overrides: DeliveryCommandDependencies = dependencies): Promise<Response> {
+  const body = await boundedJson(request); const authorization = await overrides.requireSession(request, {csrfToken: csrf(body)});
+  if (!authorization.ok) return authorization.response;
+  if (!UUID.test(workItemId) || !isRecord(body) || typeof body.action !== 'string') return invalid('invalid_request');
+  const runtime = await overrides.getRuntime(); const actor = await runtime.actor(authorization.runtime.config.workspaceId, authorization.session.actorId);
+  if (!actor.ok) return invalid('forbidden', 403);
+  const base = {commandId: overrides.nextId(), workspaceId: authorization.runtime.config.workspaceId, correlationId: overrides.nextId(), idempotencyKey: '', issuedAt: new Date().toISOString(), actor: actor.value};
+  const validTarget = Number.isInteger(body.expectedWorkItemVersion) && (body.expectedWorkItemVersion as number) > 0 &&
+    Number.isInteger(body.expectedJourneyVersion) && (body.expectedJourneyVersion as number) > 0;
+  if (!validTarget) return invalid('invalid_request');
+  const expectedWorkItemVersion = body.expectedWorkItemVersion as number;
+  const expectedJourneyVersion = body.expectedJourneyVersion as number;
+  try {
+    if (body.action === 'prepare' && exact(body, ['_csrf', 'action', 'expectedWorkItemVersion', 'expectedJourneyVersion'])) {
+      const result = await runtime.governedQa.execute({...base,
+        idempotencyKey: `governed_qa.prepare.v1:${workItemId}:${expectedWorkItemVersion}:${expectedJourneyVersion}`,
+        type: 'qa_task_packet.prepare.v1', payload: {workItemId, expectedWorkItemVersion, expectedJourneyVersion}});
+      return 'receipt' in result ? Response.json({receipt: result.receipt}, {headers: noStore}) : invalid(result.error.message, 409);
+    }
+    if (body.action === 'record' && exact(body, ['_csrf', 'action', 'expectedWorkItemVersion', 'expectedJourneyVersion', 'taskPacketId', 'evidence']) &&
+      typeof body.taskPacketId === 'string' && UUID.test(body.taskPacketId) && validateQaReviewEvidence(body.evidence).ok) {
+      const result = await runtime.governedQa.execute({...base,
+        idempotencyKey: `governed_qa.record.v1:${body.taskPacketId}:${expectedWorkItemVersion}:${expectedJourneyVersion}`,
+        type: 'qa_review.record.v1', payload: {workItemId, expectedWorkItemVersion, expectedJourneyVersion,
+          taskPacketId: body.taskPacketId, evidence: body.evidence as never}});
+      return 'receipt' in result ? Response.json({receipt: result.receipt}, {headers: noStore}) : invalid(result.error.message, 409);
     }
     return invalid('invalid_request');
   } catch { return invalid('unavailable', 503); }

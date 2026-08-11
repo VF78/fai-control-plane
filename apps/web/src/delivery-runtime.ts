@@ -1,5 +1,5 @@
-import {createAgentRunRetryContinuationService, createDeliveryJourneyService, createDeliveryProtocolService, createProjectExecutionService, createProjectOutcomeAcceptanceService, createProjectPlanService} from '@fai-control-plane/application';
-import {actors, createDatabase, createPostgresAgentRunRetryContinuationStore, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore, createPostgresProjectOutcomeAcceptanceStore, createPostgresProjectPlanStore, loadProjectExecutionProjection} from '@fai-control-plane/db';
+import {createAgentRunRetryContinuationService, createDeliveryJourneyService, createDeliveryProtocolService, createGovernedQaService, createProjectExecutionService, createProjectOutcomeAcceptanceService, createProjectPlanService} from '@fai-control-plane/application';
+import {actors, createDatabase, createPostgresAgentRunRetryContinuationStore, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresGovernedQaStore, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore, createPostgresProjectOutcomeAcceptanceStore, createPostgresProjectPlanStore, loadProjectExecutionProjection} from '@fai-control-plane/db';
 import {createActorContextIssuer, type Capability, type CommandResult, type TrustedUserActorContext} from '@fai-control-plane/domain';
 import {and, eq, isNull} from 'drizzle-orm';
 import {runnerActivationEnabled} from './runner-activation-policy';
@@ -12,6 +12,7 @@ const capabilities = (value: Record<string, boolean>): Capability[] => Object.en
 export type DeliveryRuntime = Readonly<{
   protocol: ReturnType<typeof createDeliveryProtocolService>;
   journey: ReturnType<typeof createDeliveryJourneyService>;
+  governedQa: ReturnType<typeof createGovernedQaService>;
   plan: ReturnType<typeof createProjectPlanService>;
   projectExecution: ReturnType<typeof createProjectExecutionService>;
   agentRunRetryContinuation: ReturnType<typeof createAgentRunRetryContinuationService>;
@@ -24,6 +25,7 @@ export type DeliveryRuntime = Readonly<{
 const createRuntime = (db: Database): DeliveryRuntime => ({
   protocol: createDeliveryProtocolService(createPostgresDeliveryProtocolStore(db)),
   journey: createDeliveryJourneyService(createPostgresDeliveryJourneyStore(db)),
+  governedQa: createGovernedQaService(createPostgresGovernedQaStore(db)),
   plan: createProjectPlanService(createPostgresProjectPlanStore(db), createHermesSemanticPlanner()),
   projectExecution: createProjectExecutionService(createPostgresProjectExecutionStore(db)),
   agentRunRetryContinuation: createAgentRunRetryContinuationService(

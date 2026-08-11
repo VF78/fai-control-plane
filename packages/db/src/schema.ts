@@ -2124,6 +2124,81 @@ export const taskPackets = pgTable(
   ]
 );
 
+/** Immutable binding facts for a human-governed QA packet. No AgentRun is implied. */
+export const qaTaskPackets = pgTable(
+  'qa_task_packets',
+  {
+    taskPacketId: uuid('task_packet_id').primaryKey()
+      .references(() => taskPackets.id, {onDelete: 'restrict'}),
+    projectId: uuid('project_id').notNull()
+      .references(() => projects.id, {onDelete: 'restrict'}),
+    planVersionId: uuid('plan_version_id').notNull(),
+    workItemId: uuid('work_item_id').notNull()
+      .references(() => workItems.id, {onDelete: 'restrict'}),
+    workItemVersion: integer('work_item_version').notNull(),
+    protocolId: uuid('protocol_id').notNull(),
+    protocolVersion: integer('protocol_version').notNull(),
+    journeyVersion: integer('journey_version').notNull(),
+    stageKey: text('stage_key').notNull(),
+    responsibility: jsonb('responsibility').$type<Record<string, unknown>>().notNull(),
+    requiredEvidence: text('required_evidence').array().notNull(),
+    preparedByActorId: uuid('prepared_by_actor_id').notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    createdAt: createdAt()
+  },
+  (table) => [
+    foreignKey({
+      name: 'qa_task_packets_project_plan_version_fk',
+      columns: [table.projectId, table.planVersionId],
+      foreignColumns: [projectPlanVersions.projectId, projectPlanVersions.id]
+    }).onDelete('restrict'),
+    foreignKey({
+      name: 'qa_task_packets_protocol_version_fk',
+      columns: [table.protocolId, table.protocolVersion],
+      foreignColumns: [runbooks.id, runbooks.version]
+    }).onDelete('restrict'),
+    uniqueIndex('qa_task_packets_work_item_journey_stage_unique').on(
+      table.workItemId, table.workItemVersion, table.journeyVersion, table.stageKey
+    ),
+    check('qa_task_packets_work_item_version_positive', sql`${table.workItemVersion} > 0`),
+    check('qa_task_packets_protocol_version_positive', sql`${table.protocolVersion} > 0`),
+    check('qa_task_packets_journey_version_positive', sql`${table.journeyVersion} > 0`),
+    check('qa_task_packets_stage_key_valid', sql`${table.stageKey} ~ '^[a-z][a-z0-9_]{0,63}$'`),
+    check('qa_task_packets_responsibility_object', sql`jsonb_typeof(${table.responsibility}) = 'object'`)
+  ]
+);
+
+/** Structured, retained manager QA evidence for one immutable QA packet. */
+export const qaReviewReceipts = pgTable(
+  'qa_review_receipts',
+  {
+    id: id(),
+    taskPacketId: uuid('task_packet_id').notNull()
+      .references(() => qaTaskPackets.taskPacketId, {onDelete: 'restrict'}),
+    outcome: text('outcome').$type<'passed' | 'failed'>().notNull(),
+    checks: jsonb('checks').$type<readonly Record<string, unknown>[]>().notNull(),
+    artifacts: jsonb('artifacts').$type<readonly Record<string, unknown>[]>().notNull(),
+    failures: jsonb('failures').$type<readonly Record<string, unknown>[]>().notNull(),
+    risks: jsonb('risks').$type<readonly Record<string, unknown>[]>().notNull(),
+    evidenceReferences: jsonb('evidence_references')
+      .$type<readonly Readonly<{requirement: string; reference: string}>[]>().notNull(),
+    recordedByActorId: uuid('recorded_by_actor_id').notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    commandId: text('command_id').notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex('qa_review_receipts_packet_unique').on(table.taskPacketId),
+    uniqueIndex('qa_review_receipts_command_unique').on(table.commandId),
+    check('qa_review_receipts_outcome_valid', sql`${table.outcome} in ('passed', 'failed')`),
+    check('qa_review_receipts_checks_array', sql`jsonb_typeof(${table.checks}) = 'array'`),
+    check('qa_review_receipts_artifacts_array', sql`jsonb_typeof(${table.artifacts}) = 'array'`),
+    check('qa_review_receipts_failures_array', sql`jsonb_typeof(${table.failures}) = 'array'`),
+    check('qa_review_receipts_risks_array', sql`jsonb_typeof(${table.risks}) = 'array'`),
+    check('qa_review_receipts_evidence_array', sql`jsonb_typeof(${table.evidenceReferences}) = 'array'`)
+  ]
+);
+
 export const agentRuns = pgTable(
   'agent_runs',
   {

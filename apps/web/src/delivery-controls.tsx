@@ -118,6 +118,7 @@ export function DeliveryJourneyAction({workItemId, taskVersion, journey, activeP
   journey: {version: number; deadlineAt: Date | null; protocolId: string; protocolVersion: number;
     stageKey: string; requiredEvidence?: readonly string[]; canRecordTerminalEvidence?: boolean;
     stage?: Readonly<{
+      taskStatus?: string;
       terminal?: boolean; terminalEvidenceComplete?: boolean;
     }> | null;} | null;
   terminal?: boolean; terminalEvidenceComplete?: boolean; requiredEvidence?: readonly string[];}) {
@@ -126,6 +127,55 @@ export function DeliveryJourneyAction({workItemId, taskVersion, journey, activeP
   const hasTerminalEvidence = terminalEvidenceComplete ?? journey?.stage?.terminalEvidenceComplete ?? false;
   const evidenceRequirements = requiredEvidence ?? journey?.requiredEvidence ?? [];
   const submit = async () => { if (csrfToken === null) return; setBusy(true); try { const action = journey === null ? 'start' : 'advance'; const result = await mutate(`/api/delivery-journeys/${workItemId}`, journey === null ? {_csrf: csrfToken, action, protocolId: activeProtocolId, expectedWorkItemVersion: taskVersion, deadlineAt: null} : {_csrf: csrfToken, action, expectedWorkItemVersion: taskVersion, expectedJourneyVersion: journey.version, evidenceReferences: evidence === '' ? [] : evidence.split('\n').filter(Boolean).map((reference) => ({requirement: reference.split(':')[0]?.trim() ?? '', reference: reference.slice(reference.indexOf(':') + 1).trim()}))}); if (result.receipt === undefined) throw new Error('Сохранённая квитанция команды не получена.'); setNotice({tone: 'success', text: `Команда ${result.receipt.commandType} сохранена. Обновляем факты…`}); window.setTimeout(() => window.location.reload(), 450); } catch (error) { setNotice({tone: 'error', text: error instanceof Error ? error.message : 'Команда недоступна.'}); } finally {setBusy(false);} };
-  if (csrfToken === null || taskVersion < 1 || (journey === null && activeProtocolId === null)) return null;
+  if (csrfToken === null || taskVersion < 1 || journey?.stage?.taskStatus === 'qa' ||
+    (journey === null && activeProtocolId === null)) return null;
   return <div className="fcp-journey-action">{journey === null ? <button className="fcp-primary-button" disabled={busy} onClick={() => void submit()}><Play aria-hidden="true" size={16}/>Начать цикл исполнения</button> : hasTerminalEvidence ? <p className="fcp-command-notice success">Финальные подтверждения зафиксированы. Результат можно принять в скопе проекта.</p> : isTerminal && journey.canRecordTerminalEvidence !== true ? <p className="fcp-command-notice neutral">Финальную приёмку фиксирует только выбранный владелец продукта с правом записи.</p> : <><label>{isTerminal ? 'Финальные подтверждения владельца продукта' : 'Подтверждения этапа'}<textarea aria-label="Подтверждения этапа" value={evidence} onChange={(event) => setEvidence(event.target.value)} placeholder={evidenceRequirements.length === 0 ? 'Требование: ссылка на сохранённое подтверждение' : evidenceRequirements.map((item) => `${evidenceLabels[item] ?? item}: ссылка на сохранённое подтверждение`).join('\n')} /></label><button className="fcp-primary-button" disabled={busy} onClick={() => void submit()}><Send aria-hidden="true" size={16}/>{isTerminal ? 'Зафиксировать финальную приёмку' : 'Перейти к следующему этапу'}</button></>}{notice === null ? null : <p className={`fcp-command-notice ${notice.tone}`}>{notice.text}</p>}</div>;
+}
+
+type QaCommandResponse = Readonly<{receipt?: Readonly<{result?: Readonly<{ok: boolean; value?: Readonly<{taskPacketId: string; remediation: string | null}>; error?: Readonly<{message: string}>}>}>}>;
+const qaLines = (value: string, minimum: number, map: (parts: string[]) => Record<string, string> | null) => {
+  const result = value.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => map(line.split('|').map((part) => part.trim())));
+  return result.length >= minimum && result.every((item) => item !== null) ? result : null;
+};
+
+/** A manager-only evidence handoff. It never queues an AgentRun. */
+export function GovernedQaControls({workItemId, taskVersion, journey, csrfToken}: {
+  workItemId: string; taskVersion: number; csrfToken: string | null;
+  journey: {version: number; stageKey: string; requiredEvidence?: readonly string[]; stage?: {taskStatus: string; executionMode: string} | null} | null;
+}) {
+  const [packetId, setPacketId] = useState<string | null>(null); const [outcome, setOutcome] = useState<'passed' | 'failed'>('passed');
+  const [checks, setChecks] = useState('QA checks | passed | qa-report:pending');
+  const [artifacts, setArtifacts] = useState('report | qa-report:pending');
+  const [issues, setIssues] = useState(''); const [evidence, setEvidence] = useState('');
+  const [notice, setNotice] = useState<Notice | null>(null); const [busy, setBusy] = useState(false);
+  const eligible = csrfToken !== null && journey?.stage?.taskStatus === 'qa' &&
+    (journey.stage.executionMode === 'manual' || journey.stage.executionMode === 'human_approval') && taskVersion > 0;
+  const post = async (body: Record<string, unknown>) => {
+    const response = await fetch(`/api/governed-qa/${workItemId}`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)});
+    const parsed = await response.json().catch(() => ({})) as QaCommandResponse & {status?: string};
+    if (!response.ok || parsed.receipt?.result?.ok !== true) throw new Error(parsed.receipt?.result?.error?.message ?? parsed.status ?? 'QA command was not accepted.');
+    return parsed.receipt.result.value!;
+  };
+  const prepare = async () => { if (!eligible || csrfToken === null || journey === null) return; setBusy(true); setNotice(null); try {
+    const value = await post({_csrf: csrfToken, action: 'prepare', expectedWorkItemVersion: taskVersion, expectedJourneyVersion: journey.version});
+    setPacketId(value.taskPacketId); setNotice({tone: 'success', text: 'Immutable QA-пакет подготовлен. Запуск агента не создавался.'});
+  } catch (error) { setNotice({tone: 'error', text: error instanceof Error ? error.message : 'QA preparation unavailable.'}); } finally {setBusy(false);} };
+  const record = async () => { if (!eligible || csrfToken === null || journey === null || packetId === null) return;
+    const parsedChecks = qaLines(checks, 1, ([name, status, reference]) => name && reference && status !== undefined && ['passed', 'failed', 'not_run'].includes(status) ? {name, status, reference} : null);
+    const parsedArtifacts = qaLines(artifacts, outcome === 'passed' ? 1 : 0, ([kind, reference]) => kind && reference && ['report', 'log', 'screenshot', 'other'].includes(kind) ? {kind, reference} : null);
+    const parsedIssues = qaLines(issues, 0, ([summary, reference]) => summary && reference ? {summary, reference} : null);
+    const parsedEvidence = qaLines(evidence, outcome === 'passed' ? (journey.requiredEvidence?.length ?? 0) : 0, ([requirement, reference]) => requirement && reference ? {requirement, reference} : null);
+    if (parsedChecks === null || parsedArtifacts === null || parsedIssues === null || parsedEvidence === null) {
+      setNotice({tone: 'error', text: 'Заполните строки строго через «|»; для pass нужны artifact и все обязательные evidence.'}); return;
+    }
+    setBusy(true); setNotice(null); try {
+      const value = await post({_csrf: csrfToken, action: 'record', expectedWorkItemVersion: taskVersion, expectedJourneyVersion: journey.version, taskPacketId: packetId,
+        evidence: {outcome, checks: parsedChecks, artifacts: parsedArtifacts, failures: outcome === 'failed' ? parsedIssues : [], risks: [], evidenceReferences: parsedEvidence}});
+      setNotice({tone: 'success', text: value.remediation ?? 'QA evidence сохранён. Обновляем факты…'}); window.setTimeout(() => window.location.reload(), 500);
+    } catch (error) { setNotice({tone: 'error', text: error instanceof Error ? error.message : 'QA evidence unavailable.'}); } finally {setBusy(false);} };
+  if (!eligible) return <p className="fcp-empty-line">Governed QA доступен только на включённой ручной QA-стадии, с авторизованной сессией руководителя.</p>;
+  return <section className="fcp-journey-action" aria-label="Управляемая QA проверка"><p className="fcp-muted">QA-пакет и evidence сохраняются в PostgreSQL. AgentRun, merge, release и deploy не создаются.</p>
+    {packetId === null ? <button className="fcp-primary-button" disabled={busy} onClick={() => void prepare()}><FileCheck2 aria-hidden="true" size={16}/>Подготовить QA-пакет</button> : <><label>Итог QA<select aria-label="Итог QA" value={outcome} onChange={(event) => setOutcome(event.target.value as 'passed' | 'failed')}><option value="passed">Пройдено</option><option value="failed">Не пройдено</option></select></label><label>Проверки: название | passed/failed/not_run | reference<textarea aria-label="Проверки QA" value={checks} onChange={(event) => setChecks(event.target.value)}/></label><label>Артефакты: report/log/screenshot/other | reference<textarea aria-label="Артефакты QA" value={artifacts} onChange={(event) => setArtifacts(event.target.value)}/></label><label>Найденные проблемы (для failed): summary | reference<textarea aria-label="Проблемы QA" value={issues} onChange={(event) => setIssues(event.target.value)}/></label><label>Обязательные evidence: требование | reference<textarea aria-label="Evidence QA" placeholder={(journey.requiredEvidence ?? []).map((item) => `${item} | ссылка`).join('\n')} value={evidence} onChange={(event) => setEvidence(event.target.value)}/></label><button className="fcp-primary-button" disabled={busy} onClick={() => void record()}><Send aria-hidden="true" size={16}/>Зафиксировать QA evidence</button></>}
+    {notice === null ? null : <p className={`fcp-command-notice ${notice.tone}`}>{notice.text}</p>}
+  </section>;
 }
