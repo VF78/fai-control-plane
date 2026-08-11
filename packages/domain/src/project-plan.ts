@@ -154,6 +154,14 @@ export type ProjectPlan = Readonly<{
   approvedAt: string | null;
 }>;
 
+export type ProjectPlanScheduleReadiness = Readonly<{
+  ready: boolean;
+  earliestMilestone: Readonly<{key: string; title: string; targetAt: string}> | null;
+  finalTargetAt: string | null;
+  missingMilestones: readonly Readonly<{key: string; title: string}>[];
+  remediation: string | null;
+}>;
+
 export type ProjectPlanSimulation = Readonly<{
   simulationHash: string;
   planHash: string;
@@ -208,6 +216,10 @@ const exact = (value: Record<string, unknown>, keys: readonly string[]) =>
   Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const text = (value: unknown, max: number) =>
   typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= max;
+const isoDate = (candidate: unknown) => {
+  if (typeof candidate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(candidate)) return false;
+  try { return new Date(`${candidate}T00:00:00.000Z`).toISOString().slice(0, 10) === candidate; } catch { return false; }
+};
 const invalid = <T>(message: string): CommandResult<T> => ({
   ok: false,
   error: {code: 'INVALID_COMMAND', message}
@@ -333,10 +345,6 @@ export const validateProjectPlanDefinition = (value: unknown): CommandResult<Pro
   }
   const outcomeKeys = outcomes.map((item) => (item as {key: string}).key);
   if (new Set(outcomeKeys).size !== outcomeKeys.length) return invalid('Outcome keys must be unique.');
-  const isoDate = (candidate: unknown) => {
-    if (typeof candidate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(candidate)) return false;
-    try { return new Date(`${candidate}T00:00:00.000Z`).toISOString().slice(0, 10) === candidate; } catch { return false; }
-  };
   if (milestones.some((item) => !isObject(item) || !exact(item, ['key', 'title', 'checkpoint', 'targetAt', 'evidence']) ||
     !validKey(item.key) || !text(item.title, 240) || !text(item.checkpoint, 500) ||
     !(item.targetAt === null || isoDate(item.targetAt)) ||
@@ -398,6 +406,26 @@ export const hashProjectPlanDefinition = (definition: ProjectPlanDefinition) =>
 export const hashProjectPlanSourceManifest = (manifest: ProjectPlanSourceManifest) =>
   createHash('sha256').update(canonicalJson(manifest as never)).digest('hex');
 
+// Dates remain optional in an editable draft, but a new approval means that
+// Product Owner has approved both the plan and its schedule.
+export const projectPlanScheduleReadiness = (definition: ProjectPlanDefinition): ProjectPlanScheduleReadiness => {
+  const missingMilestones = definition.milestones.flatMap(({key, title, targetAt}) => targetAt === null || !isoDate(targetAt) ? [{key, title}] : []);
+  const scheduled = definition.milestones.flatMap(({key, title, targetAt}) => targetAt === null || !isoDate(targetAt) ? [] : [{key, title, targetAt}])
+    .sort((left, right) => left.targetAt.localeCompare(right.targetAt) || left.key.localeCompare(right.key));
+  const earliestMilestone = scheduled[0] ?? null;
+  const finalTargetAt = scheduled.at(-1)?.targetAt ?? null;
+  const ready = definition.milestones.length > 0 && missingMilestones.length === 0;
+  return {
+    ready,
+    earliestMilestone,
+    finalTargetAt,
+    missingMilestones,
+    remediation: ready ? null : missingMilestones.length === 0
+      ? 'В утверждённой версии нет контрольных точек со сроками. Создайте scope-delta re-plan.'
+      : `Укажите плановую дату для контрольных точек: ${missingMilestones.map(({title}) => `«${title}»`).join(', ')}.`
+  };
+};
+
 export const deterministicProjectPlanUuid = (
   planVersionId: string,
   resource: 'materialization' | 'baseline' | 'outcome' | 'milestone' | 'work_item',
@@ -419,9 +447,11 @@ export const simulateProjectPlan = (input: Readonly<{
 }>): ProjectPlanSimulation => {
   const plan = validateProjectPlanDefinition(input.definition);
   const assignedPlan = validateAssignedProjectPlanDefinition(input.definition);
+  const schedule = plan.ok ? projectPlanScheduleReadiness(plan.value) : null;
   const blockers = [
     ...(plan.ok ? [] : [plan.error.message]),
     ...(plan.ok && !assignedPlan.ok ? [assignedPlan.error.message] : []),
+    ...(schedule === null || schedule.ready ? [] : [schedule.remediation!]),
     ...(input.citationsValid ? [] : ['Одна или несколько цитат не подтверждены источниками этого проекта.']),
     ...(input.canApprove ? [] : ['У оператора нет роли Product Owner для утверждения плана.'])
   ];

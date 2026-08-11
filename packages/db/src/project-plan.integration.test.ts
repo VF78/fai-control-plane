@@ -47,7 +47,7 @@ describePostgres('project plan persistence', () => {
     const semanticGeneration = (artifactId: string) => {
       const evidence = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 1}};
       return {ok: true as const, value: {title: 'Hermes semantic plan', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index + 1}`, title: `Outcome ${index + 1}`, weight: 20, evidence})),
-        milestones: [{key: 'm1', title: 'Acceptance', checkpoint: 'Product Owner accepts', targetAt: null, evidence}], risks: [{key: 'r1', statement: 'Interpretation', mitigation: 'Review source', evidence}],
+        milestones: [{key: 'm1', title: 'Acceptance', checkpoint: 'Product Owner accepts', targetAt: '2026-09-01', evidence}], risks: [{key: 'r1', statement: 'Interpretation', mitigation: 'Review source', evidence}],
         tasks: [{key: 't1', title: 'Prepare', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Review', evidence}]}]}};
     };
     await expect(record(firstArtifactId, firstContent, 'gen-source-1', 'project_passport')).resolves.toMatchObject({receipt: {result: {ok: true}}});
@@ -143,7 +143,7 @@ describePostgres('project plan persistence', () => {
       {key: 't1', title: 'Подготовить результат', responsibility: {kind: 'human' as const, actorId: ownerId}, outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: requirementsCitation}]},
       {key: 't2', title: 'Проверить результат', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['t1'], acceptanceEvidence: [{description: 'Проверка выполнена', evidence: requirementsCitation}]}
     ]};
-    const definition: ProjectPlanDefinition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: index === 0 ? passportCitation : index === 1 ? architectureCitation : requirementsCitation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: architectureCitation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: passportCitation}], tasks: [
+    const definition: ProjectPlanDefinition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: index === 0 ? passportCitation : index === 1 ? architectureCitation : requirementsCitation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: '2026-09-01', evidence: architectureCitation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: passportCitation}], tasks: [
       {key: 't1', title: 'Подготовить результат', responsibility: {kind: 'human' as const, actorId: ownerId}, outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: requirementsCitation}]},
       {key: 't2', title: 'Проверить результат', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['t1'], acceptanceEvidence: [{description: 'Проверка выполнена', evidence: architectureCitation}]}
     ]};
@@ -151,7 +151,7 @@ describePostgres('project plan persistence', () => {
     const legacyTask = {...definition.tasks[0]!}; delete legacyTask.responsibility;
     const legacyDefinition = {...definition,
       outcomes: definition.outcomes.map((outcome) => ({...outcome, evidence: legacyEvidence})),
-      milestones: definition.milestones.map((milestone) => ({...milestone, evidence: legacyEvidence})),
+      milestones: definition.milestones.map((milestone) => ({...milestone, targetAt: null, evidence: legacyEvidence})),
       risks: definition.risks.map((risk) => ({...risk, evidence: legacyEvidence})),
       tasks: [{...legacyTask, acceptanceEvidence: legacyTask.acceptanceEvidence.map((entry) => ({...entry, evidence: legacyEvidence}))}]};
     const legacyHash = hashProjectPlanDefinition(legacyDefinition);
@@ -164,9 +164,10 @@ describePostgres('project plan persistence', () => {
     await expect(store.execute({command: envelope('project_plan.materialize', {projectId: otherProjectId, planId: legacyPlanId, expectedPlanVersion: 1, expectedPlanHash: legacyHash, expectedSourceManifestHash: hashProjectPlanSourceManifest([])}, 'legacy-materialize') as never, requestHash: 'legacy'.padEnd(64, '0'), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('responsibilities')}}}});
     await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: null, definition: incompleteDefinition}, 'draft-incomplete') as never, requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {revision: 1}}}}});
     const incompleteSimulation = await store.simulate({workspaceId, projectId, actorId: ownerId, definition: incompleteDefinition});
+    expect(incompleteSimulation).toMatchObject({readyForApproval: false, blockers: [expect.stringContaining('Приёмка')]});
     await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 1, expectedPlanHash: incompleteSimulation!.planHash,
       expectedSimulationHash: incompleteSimulation!.simulationHash}, 'approve-incomplete-manual') as never, requestHash: 'manual-incomplete'.padEnd(64, '0'), authorized: true}))
-      .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('архитектура решения')}}}});
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('Приёмка')}}}});
     await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 1, definition}, 'draft') as never, requestHash: 'manual-complete'.padEnd(64, '0'), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {revision: 2}}}}});
     await expect(store.simulate({workspaceId, projectId: otherProjectId, actorId: ownerId, definition})).resolves.toMatchObject({readyForApproval: false, blockers: [expect.stringContaining('цитат')]});
     await expect(store.simulate({workspaceId, projectId, actorId: adminId, definition})).resolves.toMatchObject({capabilities: {canEdit: true, canApprove: false}, readyForApproval: false});

@@ -1,6 +1,7 @@
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {expect, it, vi} from 'vitest';
+import type {ProjectPlanDefinition} from '@fai-control-plane/domain';
 import {
   deriveFleetHealth,
   derivePortfolioProjectMetrics,
@@ -148,6 +149,23 @@ it('renders a truthful materialization summary without an execution start action
   expect(markup).toContain('Новый черновик заблокирован');
   expect(markup).toContain('scope-delta re-plan');
   expect(markup).not.toContain('Start execution');
+});
+
+it('shows schedule facts for approved plans and keeps legacy approved plans readable', () => {
+  const base = {id: '22222222-2222-4222-8222-222222222222', projectId: '33333333-3333-4333-8333-333333333333', revision: 2, state: 'approved' as const,
+    outcomes: [], risks: [], tasks: [], contentHash: 'a'.repeat(64), approvedVersion: 1,
+    approvedByActorId: '44444444-4444-4444-8444-444444444444', approvedAt: '2026-08-09T10:00:00.000Z'};
+  const plan = (milestones: ProjectPlanDefinition['milestones']) => ({...base, definition: {title: 'План', outcomes: base.outcomes, milestones, risks: base.risks, tasks: base.tasks}});
+  const dated = renderToStaticMarkup(createElement(ProjectPlanControls, {projectId: base.projectId, csrfToken: 'csrf', canEdit: true, canApprove: true,
+    plan: {artifacts: [], draft: null, approved: plan([{key: 'm2', title: 'Финал', checkpoint: 'PO принимает', targetAt: '2026-09-20', evidence: {kind: 'assumption', statement: 'Подтвердить'}}, {key: 'm1', title: 'Стартовая приёмка', checkpoint: 'PO принимает', targetAt: '2026-09-12', evidence: {kind: 'assumption', statement: 'Подтвердить'}}]), approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null}}));
+  expect(dated).toContain('Утверждённый план и сроки');
+  expect(dated).toContain('Ближайшая контрольная точка: Стартовая приёмка · 2026-09-12');
+  expect(dated).toContain('Финальная дата плана: 2026-09-20');
+  const legacy = renderToStaticMarkup(createElement(ProjectPlanControls, {projectId: base.projectId, csrfToken: 'csrf', canEdit: true, canApprove: true,
+    plan: {artifacts: [], draft: null, approved: plan([{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает', targetAt: null, evidence: {kind: 'assumption', statement: 'Подтвердить'}}]), approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null}}));
+  expect(legacy).toContain('Утверждённый legacy-план · сроки не заполнены');
+  expect(legacy).toContain('Укажите плановую дату для контрольных точек: «Приёмка».');
+  expect(legacy).toContain('scope-delta re-plan');
 });
 
 it('renders a dynamic authorized project card, manager intake, and resumable setup detail', () => {
