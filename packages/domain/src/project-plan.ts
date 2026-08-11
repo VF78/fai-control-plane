@@ -45,6 +45,7 @@ export const projectSourceArtifactKinds = [
   'client_requirements',
   'contract_scope',
   'acceptance_method',
+  'solution_architecture',
   'architecture_constraints',
   'other'
 ] as const;
@@ -52,8 +53,8 @@ export type ProjectSourceArtifactKind = (typeof projectSourceArtifactKinds)[numb
 
 export const requiredProjectDossierKinds = [
   'project_passport',
+  'solution_architecture',
   'client_requirements',
-  'acceptance_method'
 ] as const satisfies readonly ProjectSourceArtifactKind[];
 
 export type ProjectDossierReadiness = Readonly<{
@@ -250,8 +251,8 @@ export const projectDossierReadiness = (
   const presentKinds = new Set(artifacts.map(({sourceKind}) => sourceKind));
   const label: Record<(typeof requiredProjectDossierKinds)[number], string> = {
     project_passport: 'паспорт проекта',
-    client_requirements: 'требования клиента',
-    acceptance_method: 'метод приёмки'
+    solution_architecture: 'архитектура решения',
+    client_requirements: 'требования клиента'
   };
   const required = requiredProjectDossierKinds.map((kind) => {
     const present = presentKinds.has(kind);

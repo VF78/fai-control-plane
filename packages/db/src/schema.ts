@@ -372,7 +372,7 @@ export const projectSourceArtifacts = pgTable(
     }).onDelete('restrict'),
     foreignKey({columns: [table.workspaceId, table.createdByActorId], foreignColumns: [actors.workspaceId, actors.id], name: 'project_source_artifacts_workspace_actor_fk'}).onDelete('restrict'),
     index('project_source_artifacts_project_created_idx').on(table.projectId, table.createdAt),
-    check('project_source_artifacts_source_kind', sql`${table.sourceKind} in ('project_passport', 'client_requirements', 'contract_scope', 'acceptance_method', 'architecture_constraints', 'other')`),
+    check('project_source_artifacts_source_kind', sql`${table.sourceKind} in ('project_passport', 'client_requirements', 'contract_scope', 'acceptance_method', 'solution_architecture', 'architecture_constraints', 'other')`),
     check('project_source_artifacts_media_type', sql`${table.mediaType} in ('text/plain', 'text/markdown', 'application/json')`),
     check('project_source_artifacts_content_bounded', sql`octet_length(${table.content}) between 1 and 262144 and ${table.sizeBytes} = octet_length(${table.content})`),
     check('project_source_artifacts_sha256', sql`${table.sha256} ~ '^[0-9a-f]{64}$'`),

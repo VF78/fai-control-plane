@@ -6,6 +6,7 @@ import {
   projectSetupBindingModes,
   projectPlanGenerationLimits,
   projectDossierReadiness,
+  projectSourceArtifactKinds,
   sourceArtifactDigest,
   simulateDeliveryProtocol,
   simulateProjectPlan,
@@ -764,12 +765,22 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
       if (simulation === null || !simulation.readyForApproval || simulation.planHash !== command.payload.expectedPlanHash || simulation.simulationHash !== command.payload.expectedSimulationHash) {
         result = fail('INVALID_COMMAND', simulation === null || !simulation.readyForApproval ? 'Project plan is not ready for approval.' : 'Project plan simulation is stale.'); return complete();
       }
-      const [latest] = await tx.select({version: max(schema.projectPlanVersions.version)}).from(schema.projectPlanVersions).where(eq(schema.projectPlanVersions.projectId, current.projectId));
-      const approvedVersion = (latest?.version ?? 0) + 1; const now = new Date();
       const citedArtifactIds = [...new Set(evidenceIn(current.definition).flatMap((item) => item.kind === 'citation' ? [item.artifactId] : []))];
-      const sourceManifest = citedArtifactIds.length === 0 ? [] : await tx.select({artifactId: schema.projectSourceArtifacts.id, version: schema.projectSourceArtifacts.version, sha256: schema.projectSourceArtifacts.sha256})
+      const citedSources = citedArtifactIds.length === 0 ? [] : await tx.select({artifactId: schema.projectSourceArtifacts.id, version: schema.projectSourceArtifacts.version, sha256: schema.projectSourceArtifacts.sha256, sourceKind: schema.projectSourceArtifacts.sourceKind})
         .from(schema.projectSourceArtifacts).where(and(eq(schema.projectSourceArtifacts.workspaceId, command.workspaceId), eq(schema.projectSourceArtifacts.projectId, current.projectId), inArray(schema.projectSourceArtifacts.id, citedArtifactIds)))
         .orderBy(schema.projectSourceArtifacts.id);
+      const citedDossierArtifacts = citedSources.flatMap(({sourceKind}) => projectSourceArtifactKinds.includes(sourceKind as SourceArtifact['sourceKind'])
+        ? [{sourceKind: sourceKind as SourceArtifact['sourceKind']}]
+        : []);
+      const dossier = projectDossierReadiness(citedDossierArtifacts);
+      if (citedSources.length !== citedArtifactIds.length || citedDossierArtifacts.length !== citedSources.length || !dossier.ready) {
+        result = fail('INVALID_TRANSITION', `План нельзя утвердить: frozen manifest должен содержать citations на ${dossier.required
+          .flatMap(({remediation}) => remediation === null ? [] : [remediation]).join(' ')}`);
+        return complete();
+      }
+      const [latest] = await tx.select({version: max(schema.projectPlanVersions.version)}).from(schema.projectPlanVersions).where(eq(schema.projectPlanVersions.projectId, current.projectId));
+      const approvedVersion = (latest?.version ?? 0) + 1; const now = new Date();
+      const sourceManifest = citedSources.map(({artifactId, version, sha256}) => ({artifactId, version, sha256}));
       await tx.insert(schema.projectPlanVersions).values({workspaceId: command.workspaceId, projectId: current.projectId, planId: current.id, version: approvedVersion,
         sourceRevision: current.revision, definition: current.definition, contentHash: current.contentHash, sourceManifest, simulation, approvedByActorId: command.actor.actorId, approvedAt: now});
       resultVersion = current.revision + 1;

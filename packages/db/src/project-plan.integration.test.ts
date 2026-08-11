@@ -55,10 +55,10 @@ describePostgres('project plan persistence', () => {
     const incomplete = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: firstManifest}, 'generate-incomplete');
     await expect(store.execute({command: incomplete as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('требования клиента')}}}});
     const requirementsArtifactId = randomUUID(); const requirementsContent = 'Требования клиента подтверждены';
-    const acceptanceArtifactId = randomUUID(); const acceptanceContent = 'Метод приёмки подтверждён';
+    const architectureArtifactId = randomUUID(); const architectureContent = 'Архитектура решения подтверждена';
     await expect(record(requirementsArtifactId, requirementsContent, 'gen-source-requirements', 'client_requirements')).resolves.toMatchObject({receipt: {result: {ok: true}}});
-    await expect(record(acceptanceArtifactId, acceptanceContent, 'gen-source-acceptance', 'acceptance_method')).resolves.toMatchObject({receipt: {result: {ok: true}}});
-    const requiredManifest = [...firstManifest, {artifactId: requirementsArtifactId, version: 1, sha256: sourceArtifactDigest(requirementsContent)}, {artifactId: acceptanceArtifactId, version: 1, sha256: sourceArtifactDigest(acceptanceContent)}];
+    await expect(record(architectureArtifactId, architectureContent, 'gen-source-architecture', 'solution_architecture')).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const requiredManifest = [...firstManifest, {artifactId: requirementsArtifactId, version: 1, sha256: sourceArtifactDigest(requirementsContent)}, {artifactId: architectureArtifactId, version: 1, sha256: sourceArtifactDigest(architectureContent)}];
     const generate = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: requiredManifest}, 'generate-1');
     await expect(store.prepareSemanticGeneration({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({ok: true, value: {kind: 'ready'}});
     await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 1}}}}});
@@ -82,8 +82,13 @@ describePostgres('project plan persistence', () => {
     expect(await db.select().from(projectPlanDrafts)).toHaveLength(1);
     expect(await db.select().from(auditEvents)).toHaveLength(9);
     expect(await db.select().from(commandReceipts)).toHaveLength(9);
+    const approvalSimulation = await store.simulate({workspaceId, projectId, actorId: ownerId, definition: semanticGeneration(firstArtifactId).value});
+    await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 2, expectedPlanHash: approvalSimulation!.planHash,
+      expectedSimulationHash: approvalSimulation!.simulationHash}, 'approve-missing-cited-dossier') as never, requestHash: 'e'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('архитектура решения')}}}});
+    expect(await db.select().from(projectPlanVersions).where(eq(projectPlanVersions.projectId, projectId))).toHaveLength(0);
     const manualProjectId = randomUUID(); const manualPlanId = randomUUID(); const manualArtifacts = [
-      ['project_passport', 'Manual passport'], ['client_requirements', 'Manual requirements'], ['acceptance_method', 'Manual acceptance']
+      ['project_passport', 'Manual passport'], ['solution_architecture', 'Manual architecture'], ['client_requirements', 'Manual requirements']
     ] as const;
     await db.insert(projects).values({id: manualProjectId, workspaceId, name: 'Manual', slug: `manual-${randomUUID()}`});
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: manualProjectId, actorId: ownerId, role: 'project_owner'});
@@ -117,16 +122,30 @@ describePostgres('project plan persistence', () => {
     const envelope = (type: string, payload: unknown, key: string, actorId = ownerId) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId}, type, payload});
     const sourceFile = {filename: 'requirements.txt', mediaType: 'text/plain' as const, rawSizeBytes: 24, rawSha256: 'a'.repeat(64), extractionMethod: 'utf8_text_v1' as const, extractionVersion: 1 as const};
     await expect(store.execute({command: envelope('project_plan.source.record', {artifactId, projectId, name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile, provenance: {kind: 'manager_upload', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}}, 'source') as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const passportArtifactId = randomUUID(); const passportContent = 'Паспорт проекта подтверждён';
+    const architectureArtifactId = randomUUID(); const architectureContent = 'Архитектура решения подтверждена';
+    await db.insert(projectSourceArtifacts).values([
+      {id: passportArtifactId, workspaceId, projectId, name: 'Паспорт', sourceKind: 'project_passport', mediaType: 'text/plain', content: passportContent,
+        sizeBytes: Buffer.byteLength(passportContent), sha256: sourceArtifactDigest(passportContent), sourceFile: null, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, createdByActorId: ownerId},
+      {id: architectureArtifactId, workspaceId, projectId, name: 'Архитектура', sourceKind: 'solution_architecture', mediaType: 'text/plain', content: architectureContent,
+        sizeBytes: Buffer.byteLength(architectureContent), sha256: sourceArtifactDigest(architectureContent), sourceFile: null, provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, createdByActorId: ownerId}
+    ]);
     const legacyArtifactId = randomUUID(); const legacyContent = 'Ранее записанный источник';
     await db.insert(projectSourceArtifacts).values({id: legacyArtifactId, workspaceId, projectId, name: 'Старый источник', mediaType: 'text/plain', content: legacyContent,
       sizeBytes: Buffer.byteLength(legacyContent), sha256: sourceArtifactDigest(legacyContent), provenance: {kind: 'manager_note', label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, createdByActorId: ownerId});
     await expect(store.inspect({workspaceId, projectId, actorId: ownerId})).resolves.toMatchObject({
       artifacts: expect.arrayContaining([expect.objectContaining({id: artifactId, sourceFile}), expect.objectContaining({id: legacyArtifactId, sourceKind: 'other', sourceFile: null})])
     });
-    const citation = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 2}};
-    const definition: ProjectPlanDefinition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: citation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: citation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: citation}], tasks: [
-      {key: 't1', title: 'Подготовить результат', responsibility: {kind: 'human' as const, actorId: ownerId}, outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: citation}]},
-      {key: 't2', title: 'Проверить результат', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['t1'], acceptanceEvidence: [{description: 'Проверка выполнена', evidence: citation}]}
+    const requirementsCitation = {kind: 'citation' as const, artifactId, locator: {kind: 'line_range' as const, startLine: 1, endLine: 2}};
+    const passportCitation = {kind: 'citation' as const, artifactId: passportArtifactId, locator: {kind: 'whole_artifact' as const}};
+    const architectureCitation = {kind: 'citation' as const, artifactId: architectureArtifactId, locator: {kind: 'whole_artifact' as const}};
+    const incompleteDefinition: ProjectPlanDefinition = {title: 'Неполный ручной план', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: requirementsCitation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: requirementsCitation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: requirementsCitation}], tasks: [
+      {key: 't1', title: 'Подготовить результат', responsibility: {kind: 'human' as const, actorId: ownerId}, outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: requirementsCitation}]},
+      {key: 't2', title: 'Проверить результат', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['t1'], acceptanceEvidence: [{description: 'Проверка выполнена', evidence: requirementsCitation}]}
+    ]};
+    const definition: ProjectPlanDefinition = {title: 'План', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: index === 0 ? passportCitation : index === 1 ? architectureCitation : requirementsCitation})), milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: architectureCitation}], risks: [{key: 'r1', statement: 'Исходные данные изменятся', mitigation: 'Повторная проверка PO', evidence: passportCitation}], tasks: [
+      {key: 't1', title: 'Подготовить результат', responsibility: {kind: 'human' as const, actorId: ownerId}, outcomeKeys: ['outcome_0'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Критерий выполнен', evidence: requirementsCitation}]},
+      {key: 't2', title: 'Проверить результат', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: ['t1'], acceptanceEvidence: [{description: 'Проверка выполнена', evidence: architectureCitation}]}
     ]};
     const legacyEvidence = {kind: 'assumption' as const, statement: 'Frozen legacy plan evidence.'};
     const legacyTask = {...definition.tasks[0]!}; delete legacyTask.responsibility;
@@ -143,15 +162,20 @@ describePostgres('project plan persistence', () => {
       approved: {contentHash: legacyHash, definition: {tasks: [expect.not.objectContaining({responsibility: expect.anything()})]}}
     });
     await expect(store.execute({command: envelope('project_plan.materialize', {projectId: otherProjectId, planId: legacyPlanId, expectedPlanVersion: 1, expectedPlanHash: legacyHash, expectedSourceManifestHash: hashProjectPlanSourceManifest([])}, 'legacy-materialize') as never, requestHash: 'legacy'.padEnd(64, '0'), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('responsibilities')}}}});
-    await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: null, definition}, 'draft') as never, requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {revision: 1}}}}});
+    await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: null, definition: incompleteDefinition}, 'draft-incomplete') as never, requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {revision: 1}}}}});
+    const incompleteSimulation = await store.simulate({workspaceId, projectId, actorId: ownerId, definition: incompleteDefinition});
+    await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 1, expectedPlanHash: incompleteSimulation!.planHash,
+      expectedSimulationHash: incompleteSimulation!.simulationHash}, 'approve-incomplete-manual') as never, requestHash: 'manual-incomplete'.padEnd(64, '0'), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('архитектура решения')}}}});
+    await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 1, definition}, 'draft') as never, requestHash: 'manual-complete'.padEnd(64, '0'), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {revision: 2}}}}});
     await expect(store.simulate({workspaceId, projectId: otherProjectId, actorId: ownerId, definition})).resolves.toMatchObject({readyForApproval: false, blockers: [expect.stringContaining('цитат')]});
     await expect(store.simulate({workspaceId, projectId, actorId: adminId, definition})).resolves.toMatchObject({capabilities: {canEdit: true, canApprove: false}, readyForApproval: false});
     for (const [actorId, key] of [[adminId, 'admin-denied'], [leadId, 'lead-denied'], [inactiveOwnerId, 'inactive-po-denied']] as const) {
       await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 1, expectedPlanHash: '0'.repeat(64), expectedSimulationHash: '0'.repeat(64)}, key, actorId) as never, requestHash: key.padEnd(64, '0').slice(0, 64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}});
     }
     const concurrent = [
-      {command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 1, definition}, 'draft-cas-a'), requestHash: 'e'.repeat(64)},
-      {command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 1, definition}, 'draft-cas-b'), requestHash: 'f'.repeat(64)}
+      {command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 2, definition}, 'draft-cas-a'), requestHash: 'e'.repeat(64)},
+      {command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 2, definition}, 'draft-cas-b'), requestHash: 'f'.repeat(64)}
     ];
     const casResults = await Promise.all(concurrent.map((entry) => store.execute({...entry, command: entry.command as never, authorized: true})));
     expect(casResults.filter((result) => 'receipt' in result && result.receipt.result.ok)).toHaveLength(1);
@@ -159,14 +183,19 @@ describePostgres('project plan persistence', () => {
     await expect(store.execute({command: concurrent[0]!.command as never, requestHash: concurrent[0]!.requestHash, authorized: true})).resolves.toMatchObject({status: 'replayed'});
     const simulation = await store.simulate({workspaceId, projectId, actorId: ownerId, definition});
     expect(simulation).toMatchObject({readyForApproval: true, protocol: {state: 'not_configured'}});
-    await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 2, expectedPlanHash: simulation!.planHash, expectedSimulationHash: '0'.repeat(64)}, 'approve-stale') as never, requestHash: 'g'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_COMMAND'}}}});
+    await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 3, expectedPlanHash: simulation!.planHash, expectedSimulationHash: '0'.repeat(64)}, 'approve-stale') as never, requestHash: 'g'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_COMMAND'}}}});
     expect(await db.select().from(projectPlanVersions).where(eq(projectPlanVersions.projectId, projectId))).toHaveLength(0);
-    await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 2, expectedPlanHash: simulation!.planHash, expectedSimulationHash: simulation!.simulationHash}, 'approve') as never, requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'approved', approvedVersion: 1}}}}});
+    await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 3, expectedPlanHash: simulation!.planHash, expectedSimulationHash: simulation!.simulationHash}, 'approve') as never, requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'approved', approvedVersion: 1}}}}});
     const [version] = await db.select().from(projectPlanVersions).where(eq(projectPlanVersions.projectId, projectId));
-    expect(version?.sourceManifest).toEqual([{artifactId, version: 1, sha256: sourceArtifactDigest(content)}]);
-    expect(await db.select().from(commandReceipts).where(eq(commandReceipts.workspaceId, workspaceId))).toHaveLength(10);
-    expect(await db.select().from(auditEvents).where(eq(auditEvents.workspaceId, workspaceId))).toHaveLength(10);
-    await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 3, definition}, 'immutable') as never, requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+    expect(version?.sourceManifest).toEqual(expect.arrayContaining([
+      {artifactId, version: 1, sha256: sourceArtifactDigest(content)},
+      {artifactId: passportArtifactId, version: 1, sha256: sourceArtifactDigest(passportContent)},
+      {artifactId: architectureArtifactId, version: 1, sha256: sourceArtifactDigest(architectureContent)}
+    ]));
+    expect(version?.sourceManifest).toHaveLength(3);
+    expect(await db.select().from(commandReceipts).where(eq(commandReceipts.workspaceId, workspaceId))).toHaveLength(12);
+    expect(await db.select().from(auditEvents).where(eq(auditEvents.workspaceId, workspaceId))).toHaveLength(12);
+    await expect(store.execute({command: envelope('project_plan.draft.save', {planId, projectId, expectedRevision: 4, definition}, 'immutable') as never, requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
     const replanSaveId = randomUUID(); const replanGenerateId = randomUUID();
     await expect(store.execute({command: envelope('project_plan.draft.save', {planId: replanSaveId, projectId, expectedRevision: null, definition}, 'replan-save-blocked') as never,
       requestHash: 'n'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('scope-delta re-plan')}}}});
