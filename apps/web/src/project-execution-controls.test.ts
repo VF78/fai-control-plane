@@ -2,6 +2,7 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {expect, it} from 'vitest';
 import {ProjectExecutionControls} from './project-execution-controls';
+import {RunActionControls} from './delivery-workspace-controls';
 
 const base = {projectId: 'project-1', version: 2, startedAt: '2026-08-09T10:00:00.000Z',
   pausedAt: null, completedAt: null, updatedAt: '2026-08-09T10:00:00.000Z'} as const;
@@ -126,4 +127,40 @@ it('offers one bounded retry only for the current failed autonomous dispatch', (
   expect(markup).toContain('пороги допуска, а не бюджет следующего запуска');
   expect(markup).toContain('timebox остаётся в Task Packet');
   expect(markup).toContain('production или release запрещён');
+});
+
+it('hides autonomous QA retry when exact Hermes transport is unavailable at the 390px structure', () => {
+  const markup = renderToStaticMarkup(createElement(ProjectExecutionControls, {
+    projectId: 'project-1', csrfToken: 'csrf', canManage: true, hasWriteCapability: true,
+    runnerQueueAvailable: true, autonomousQaStage: true, autonomousQaTransportAvailable: false,
+    execution: {...base, status: 'running', blockReason: null, decisions: [],
+      selection: {planVersionId: 'plan-1', workItemId: 'work-1', title: 'QA retry', workItemVersion: 1,
+        protocolId: 'protocol-1', protocolVersion: 1, journeyVersion: 1, stageKey: 'qa',
+        stageName: 'QA', executionMode: 'autonomous', responsibilityHash: 'a'.repeat(64),
+        responsibleActor: {id: 'agent-1', displayName: 'Hermes', type: 'agent', agentProfileId: 'profile-1'},
+        boundary: 'autonomous_ready'}, dispatch: {selectionHash: 'a'.repeat(64), taskPacketId: 'packet-1',
+        taskPacketHash: 'b'.repeat(64), agentRunId: 'run-1', agentRunStatus: 'failed', attempt: 1,
+        failureCode: 'transport_failed', queuedAt: base.startedAt, claimedAt: base.startedAt,
+        completedAt: base.startedAt, nextAction: 'Inspect receipt.'}}
+  }));
+  expect(markup).not.toContain('Повторить в пределах политики');
+  expect(markup).toContain('Новый AgentRun и dispatch не создаются');
+});
+
+it('renders no generic CSRF acceptance action for a governed QA run at the 390px structure', () => {
+  const markup = renderToStaticMarkup(createElement(RunActionControls, {csrfToken: 'csrf',
+    operatorActorId: 'owner-1', run: {id: 'run-qa', project: 'Project', projectSlug: 'project',
+      workItemId: 'work-1', workItem: 'QA', agent: 'Hermes', status: 'done', runtimeProfile: 'read_safe',
+      attempt: 1, packetGoal: 'QA', timeboxMinutes: 30, startedAt: null, completedAt: new Date(),
+      heartbeatAt: null, failureCode: null, version: 2, workItemVersion: 1, workItemStatus: 'qa',
+      canAcceptReceipt: false, approverActorId: 'owner-1', acceptanceTargetStage: 'Acceptance',
+      acceptanceTargetStatus: 'acceptance', receipt: {terminal: 'done', completedAt: new Date(),
+        runtimeId: 'hermes', runtimeProfile: 'read_safe', durationMs: 1,
+        receiptSha256: 'a'.repeat(64), cost: null, usage: null},
+      ledger: {records: [], latestCost: {state: 'unknown', reason: 'none'},
+        latestValueEvidence: null, roi: {state: 'unknown', reason: 'none'}}, artifacts: []} as never
+  }));
+  expect(markup).not.toContain('/accept-receipt');
+  expect(markup).not.toContain('Принять evidence');
+  expect(markup).not.toContain('name="_csrf"');
 });

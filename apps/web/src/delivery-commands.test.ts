@@ -95,6 +95,25 @@ it('requires session, CSRF-shaped body, and canonical QA evidence before dispatc
   expect(prepared.status).toBe(200); expect(execute).toHaveBeenCalledWith(expect.objectContaining({type: 'qa_task_packet.prepare.v1'}));
 });
 
+it('accepts a machine QA receipt through the existing session and CSRF manager command without client evidence', async () => {
+  const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {
+    result: {ok: true, value: {taskPacketId: commandId, remediation: null}}
+  }});
+  const deps: DeliveryCommandDependencies = {requireSession: authorized(), nextId: () => commandId,
+    getRuntime: async () => ({actor: async () => ({ok: true, value: {} as never}),
+      governedQa: {execute}} as never)};
+  const response = await governedQaCommand(request({_csrf: 'csrf', action: 'accept_machine',
+    expectedWorkItemVersion: 2, expectedJourneyVersion: 3, taskPacketId: commandId}), projectId, deps);
+  expect(response.status).toBe(200);
+  expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+    type: 'qa_review.record.v1',
+    idempotencyKey: `governed_qa.accept_machine.v1:${commandId}:2:3`,
+    payload: {workItemId: projectId, expectedWorkItemVersion: 2,
+      expectedJourneyVersion: 3, taskPacketId: commandId}
+  }));
+  expect(execute.mock.calls[0]?.[0].payload).not.toHaveProperty('evidence');
+});
+
 it.each([
   ['CAPABILITY_DENIED', 403], ['POLICY_DENIED', 403], ['NOT_FOUND', 404],
   ['VERSION_CONFLICT', 409], ['INVALID_TRANSITION', 409], ['IDEMPOTENCY_KEY_REUSED', 409],

@@ -58,6 +58,17 @@ export type ProjectExecutionProjection = Readonly<{
     claimedAt: string | null;
     completedAt: string | null;
     nextAction: string;
+    qa?: Readonly<{
+      receiptId: string;
+      outcome: 'passed' | 'failed';
+      checks: readonly Readonly<{name: string; status: string; reference: string}>[];
+      artifacts: readonly Readonly<{kind: string; reference: string}>[];
+      failures: readonly Readonly<{summary: string; reference: string}>[];
+      risks: readonly Readonly<{summary: string; reference: string}>[];
+      recordedAt: string;
+      approvalId: string | null;
+      approvalStatus: 'pending' | 'approved' | 'rejected' | 'expired' | null;
+    }> | null;
   }> | null;
   blockReason: string | null;
   decisions: readonly ProjectDecisionQueueItem[];

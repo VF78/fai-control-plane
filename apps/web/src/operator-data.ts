@@ -41,6 +41,7 @@ import {
   projectPlanDrafts,
   projectPlanMaterializations,
   projectPlanVersions,
+  qaTaskPackets,
   projectExecutionDispatches,
   projectExecutions,
   projectEnvironments,
@@ -106,6 +107,7 @@ import {
   type AttentionQueueItem
 } from './attention-queue';
 import {runnerActivationEnabled} from './runner-activation-policy';
+import {autonomousQaTransportAvailable} from './autonomous-qa-transport';
 
 export type OperatorProjectSlug = string;
 export const isOperatorProjectSlug = (value: string): value is OperatorProjectSlug =>
@@ -785,6 +787,7 @@ export type ProjectData = Readonly<{
   project: Project;
   /** Server-projected admission fact only; configuration values are never serialized. */
   runnerQueueEnabled: boolean;
+  autonomousQaTransportAvailable?: boolean;
   deployments: readonly import('@fai-control-plane/domain').CanonicalDeploymentProjection[];
   setup?: Readonly<{
     id: string;
@@ -1210,6 +1213,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   return {
     project,
     runnerQueueEnabled: runnerActivationEnabled(),
+    autonomousQaTransportAvailable,
     deployments: deploymentProjection?.project.deployments ?? [],
     setup: setups[0] === undefined ? null : {
       ...setups[0], state: setups[0].state as 'pending' | 'in_progress' | 'blocked'
@@ -1366,6 +1370,7 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
       runAgentProfileId: agentRuns.agentProfileId, runProfileActorId: agentProfiles.actorId,
       confirmedPacketHash: agentRuns.confirmedPacketHash, packetContentHash: taskPackets.contentHash,
       packetId: taskPackets.id, packetAgentProfileId: taskPackets.agentProfileSnapshotId,
+      qaTaskPacketId: qaTaskPackets.taskPacketId,
       packetWorkItemVersion: taskPackets.workItemVersion,
       approverActorId: taskPackets.approverActorId,
       executionStatus: projectExecutions.status,
@@ -1395,6 +1400,7 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
       timeboxMinutes: taskPackets.timeboxMinutes, startedAt: agentRuns.startedAt, completedAt: agentRuns.completedAt,
       heartbeatAt: agentRuns.heartbeatAt, failureCode: agentRuns.failureCode, version: agentRuns.version
     }).from(agentRuns).innerJoin(taskPackets, eq(agentRuns.taskPacketId, taskPackets.id))
+      .leftJoin(qaTaskPackets, eq(qaTaskPackets.taskPacketId, taskPackets.id))
       .leftJoin(workItems, eq(taskPackets.workItemId, workItems.id))
       .leftJoin(projectExecutionDispatches, eq(projectExecutionDispatches.agentRunId, agentRuns.id))
       .leftJoin(projectExecutions, eq(projectExecutions.projectId, taskPackets.projectId))
@@ -1605,7 +1611,7 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
         attempt: run.runAttempt,
         project: project.name,
         projectSlug: project.slug,
-        canAcceptReceipt: receiptIsValid,
+        canAcceptReceipt: receiptIsValid && run.qaTaskPacketId === null,
         acceptanceTargetStage: nextStage?.name ?? null,
         acceptanceTargetStatus: nextStage?.taskStatus ?? null,
         receipt: persistedReceipt === undefined ? null : {

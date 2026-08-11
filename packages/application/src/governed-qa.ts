@@ -21,7 +21,7 @@ export type PrepareQaTaskPacketCommand = CanonicalCommandEnvelope<
   typeof QA_TASK_PACKET_PREPARE_COMMAND, QaTarget
 >;
 export type RecordQaReviewCommand = CanonicalCommandEnvelope<typeof QA_REVIEW_RECORD_COMMAND,
-  QaTarget & Readonly<{taskPacketId: string; evidence: QaReviewEvidence}>>;
+  QaTarget & Readonly<{taskPacketId: string; evidence?: QaReviewEvidence}>>;
 export type GovernedQaCommand = PrepareQaTaskPacketCommand | RecordQaReviewCommand;
 export type GovernedQaValue = Readonly<{
   projectId: string;
@@ -60,7 +60,6 @@ const timestamp = (value: unknown): value is string => {
   try { return new Date(value).toISOString() === value; } catch { return false; }
 };
 const target = (value: unknown): value is QaTarget => typeof value === 'object' && value !== null &&
-  exact(value, ['workItemId', 'expectedWorkItemVersion', 'expectedJourneyVersion']) &&
   typeof (value as QaTarget).workItemId === 'string' && uuid.test((value as QaTarget).workItemId) &&
   Number.isSafeInteger((value as QaTarget).expectedWorkItemVersion) &&
   (value as QaTarget).expectedWorkItemVersion > 0 &&
@@ -73,11 +72,16 @@ const valid = (command: GovernedQaCommand): boolean => {
     !uuid.test(command.workspaceId) || !uuid.test(command.correlationId) ||
     typeof command.idempotencyKey !== 'string' || command.idempotencyKey.length === 0 ||
     command.idempotencyKey.length > 256 || !timestamp(command.issuedAt) || !target(command.payload)) return false;
-  if (command.type === QA_TASK_PACKET_PREPARE_COMMAND) return true;
-  return command.type === QA_REVIEW_RECORD_COMMAND && exact(command.payload, [
-    'workItemId', 'expectedWorkItemVersion', 'expectedJourneyVersion', 'taskPacketId', 'evidence'
-  ]) && typeof command.payload.taskPacketId === 'string' && uuid.test(command.payload.taskPacketId) &&
-    validateQaReviewEvidence(command.payload.evidence).ok;
+  if (command.type === QA_TASK_PACKET_PREPARE_COMMAND) return exact(command.payload, [
+    'workItemId', 'expectedWorkItemVersion', 'expectedJourneyVersion'
+  ]);
+  if (command.type !== QA_REVIEW_RECORD_COMMAND || typeof command.payload.taskPacketId !== 'string' ||
+    !uuid.test(command.payload.taskPacketId)) return false;
+  const keys = Object.hasOwn(command.payload, 'evidence')
+    ? ['workItemId', 'expectedWorkItemVersion', 'expectedJourneyVersion', 'taskPacketId', 'evidence']
+    : ['workItemId', 'expectedWorkItemVersion', 'expectedJourneyVersion', 'taskPacketId'];
+  return exact(command.payload, keys) && (!Object.hasOwn(command.payload, 'evidence') ||
+    validateQaReviewEvidence(command.payload.evidence).ok);
 };
 const hash = (command: GovernedQaCommand) => createHash('sha256').update(canonicalJson({
   workspaceId: command.workspaceId, idempotencyKey: command.idempotencyKey,

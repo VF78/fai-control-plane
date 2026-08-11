@@ -2413,21 +2413,33 @@ export const qaReviewReceipts = pgTable(
     failures: jsonb('failures').$type<readonly Record<string, unknown>[]>().notNull(),
     risks: jsonb('risks').$type<readonly Record<string, unknown>[]>().notNull(),
     evidenceReferences: jsonb('evidence_references')
-      .$type<readonly Readonly<{requirement: string; reference: string}>[]>().notNull(),
+      .$type<readonly Readonly<{requirement: string; reference: unknown}>[]>().notNull(),
     recordedByActorId: uuid('recorded_by_actor_id').notNull()
       .references(() => actors.id, {onDelete: 'restrict'}),
+    agentRunId: uuid('agent_run_id'),
+    agentRunAttempt: integer('agent_run_attempt'),
+    agentRunReceiptSha256: text('agent_run_receipt_sha256'),
     commandId: text('command_id').notNull(),
     createdAt: createdAt()
   },
   (table) => [
     uniqueIndex('qa_review_receipts_packet_unique').on(table.taskPacketId),
     uniqueIndex('qa_review_receipts_command_unique').on(table.commandId),
+    uniqueIndex('qa_review_receipts_agent_run_unique').on(table.agentRunId),
+    foreignKey({name: 'qa_review_receipts_run_packet_fk',
+      columns: [table.agentRunId, table.taskPacketId],
+      foreignColumns: [agentRuns.id, agentRuns.taskPacketId]}).onDelete('restrict'),
     check('qa_review_receipts_outcome_valid', sql`${table.outcome} in ('passed', 'failed')`),
     check('qa_review_receipts_checks_array', sql`jsonb_typeof(${table.checks}) = 'array'`),
     check('qa_review_receipts_artifacts_array', sql`jsonb_typeof(${table.artifacts}) = 'array'`),
     check('qa_review_receipts_failures_array', sql`jsonb_typeof(${table.failures}) = 'array'`),
     check('qa_review_receipts_risks_array', sql`jsonb_typeof(${table.risks}) = 'array'`),
-    check('qa_review_receipts_evidence_array', sql`jsonb_typeof(${table.evidenceReferences}) = 'array'`)
+    check('qa_review_receipts_evidence_array', sql`jsonb_typeof(${table.evidenceReferences}) = 'array'`),
+    check('qa_review_receipts_machine_binding_complete', sql`
+      num_nonnulls(${table.agentRunId}, ${table.agentRunAttempt}, ${table.agentRunReceiptSha256}) = 0
+      or (num_nonnulls(${table.agentRunId}, ${table.agentRunAttempt}, ${table.agentRunReceiptSha256}) = 3
+        and ${table.agentRunAttempt} > 0 and ${table.agentRunReceiptSha256} ~ '^[0-9a-f]{64}$')
+    `)
   ]
 );
 
