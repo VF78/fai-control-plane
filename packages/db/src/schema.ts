@@ -1302,6 +1302,9 @@ export const projectPlanMaterializations = pgTable('project_plan_materialization
   createdByActorId: uuid('created_by_actor_id').notNull(),
   createdAt: createdAt()
 }, (table) => [
+  uniqueIndex('project_plan_materializations_identity_scope_unique').on(
+    table.id, table.workspaceId, table.projectId, table.planVersionId
+  ),
   uniqueIndex('project_plan_materializations_plan_version_unique').on(table.planVersionId),
   uniqueIndex('project_plan_materializations_baseline_unique').on(table.baselineId),
   uniqueIndex('project_plan_materializations_command_unique').on(table.commandId),
@@ -1691,6 +1694,7 @@ export const deployments = pgTable(
   'deployments',
   {
     id: id(),
+    workspaceId: uuid('workspace_id').notNull(),
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, {onDelete: 'restrict'}),
@@ -1699,22 +1703,93 @@ export const deployments = pgTable(
     }),
     environment: text('environment').notNull(),
     revision: text('revision').notNull(),
+    referenceKind: text('reference_kind').$type<import('@fai-control-plane/domain').DeploymentReferenceKind>(),
     status: text('status').notNull(),
     externalRef: text('external_ref'),
+    planVersionId: uuid('plan_version_id'),
+    materializationId: uuid('materialization_id'),
+    requestedByActorId: uuid('requested_by_actor_id').references(
+      () => actors.id, {onDelete: 'restrict'}
+    ),
+    requestedAt: timestamp('requested_at', {withTimezone: true}),
     approvedByActorId: uuid('approved_by_actor_id').references(
       () => actors.id,
-      {onDelete: 'set null'}
+      {onDelete: 'restrict'}
     ),
+    approvedAt: timestamp('approved_at', {withTimezone: true}),
+    observedByActorId: uuid('observed_by_actor_id').references(
+      () => actors.id, {onDelete: 'restrict'}
+    ),
+    observedAt: timestamp('observed_at', {withTimezone: true}),
+    observedResult: jsonb('observed_result').$type<Readonly<{
+      outcome: import('@fai-control-plane/domain').DeploymentObservationOutcome;
+      reference: string;
+    }>>(),
+    smokeChecks: jsonb('smoke_checks').$type<readonly import('@fai-control-plane/domain').DeploymentSmokeCheck[]>(),
+    rollbackEvidence: jsonb('rollback_evidence').$type<import('@fai-control-plane/domain').DeploymentRollbackEvidence>(),
     startedAt: timestamp('started_at', {withTimezone: true}),
     completedAt: timestamp('completed_at', {withTimezone: true}),
+    lifecycleVersion: integer('lifecycle_version'),
+    version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
   (table) => [
+    foreignKey({
+      columns: [table.workspaceId, table.projectId],
+      foreignColumns: [projects.workspaceId, projects.id],
+      name: 'deployments_workspace_project_fk'
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.projectId, table.workItemId],
+      foreignColumns: [workItems.projectId, workItems.id],
+      name: 'deployments_project_work_item_fk'
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.workspaceId, table.projectId, table.planVersionId],
+      foreignColumns: [projectPlanVersions.workspaceId, projectPlanVersions.projectId, projectPlanVersions.id],
+      name: 'deployments_plan_scope_fk'
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.materializationId, table.workspaceId, table.projectId, table.planVersionId],
+      foreignColumns: [projectPlanMaterializations.id, projectPlanMaterializations.workspaceId,
+        projectPlanMaterializations.projectId, projectPlanMaterializations.planVersionId],
+      name: 'deployments_materialization_scope_fk'
+    }).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.requestedByActorId],
+      foreignColumns: [actors.workspaceId, actors.id], name: 'deployments_workspace_requested_actor_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.approvedByActorId],
+      foreignColumns: [actors.workspaceId, actors.id], name: 'deployments_workspace_approved_actor_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.observedByActorId],
+      foreignColumns: [actors.workspaceId, actors.id], name: 'deployments_workspace_observed_actor_fk'}).onDelete('restrict'),
     index('deployments_project_environment_idx').on(
       table.projectId,
       table.environment
-    )
+    ),
+    check('deployments_version_positive', sql`${table.version} > 0`),
+    check('deployments_canonical_lifecycle_shape', sql`${table.lifecycleVersion} is null or (
+      ${table.lifecycleVersion} = 1 and ${table.environment} in ('development', 'staging', 'production') and
+      ${table.referenceKind} in ('artifact', 'commit', 'reference') and
+      length(${table.revision}) between 1 and 512 and ${table.planVersionId} is not null and
+      ${table.materializationId} is not null and ${table.requestedByActorId} is not null and
+      ${table.requestedAt} is not null and ${table.externalRef} is null and
+      ${table.status} in ('requested', 'approved', 'observed')
+    )`),
+    check('deployments_canonical_approval_shape', sql`${table.lifecycleVersion} is null or (
+      (${table.status} = 'requested' and ${table.environment} = 'production' and
+        ${table.approvedByActorId} is null and ${table.approvedAt} is null) or
+      (${table.status} in ('approved', 'observed') and ${table.approvedByActorId} is not null and
+        ${table.approvedAt} is not null)
+    )`),
+    check('deployments_canonical_observation_shape', sql`${table.lifecycleVersion} is null or (
+      (${table.status} <> 'observed' and ${table.observedByActorId} is null and ${table.observedAt} is null and
+        ${table.observedResult} is null and ${table.smokeChecks} is null and ${table.rollbackEvidence} is null and
+        ${table.startedAt} is null and ${table.completedAt} is null) or
+      (${table.status} = 'observed' and ${table.observedByActorId} is not null and ${table.observedAt} is not null and
+        jsonb_typeof(${table.observedResult}) = 'object' and jsonb_typeof(${table.smokeChecks}) = 'array' and
+        jsonb_array_length(${table.smokeChecks}) > 0 and jsonb_typeof(${table.rollbackEvidence}) = 'object' and
+        ${table.startedAt} is not null and ${table.completedAt} >= ${table.startedAt})
+    )`)
   ]
 );
 

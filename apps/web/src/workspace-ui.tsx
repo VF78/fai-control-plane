@@ -9,6 +9,7 @@ import {DeliveryJourneyAction, DeliveryProtocolEditor, GovernedQaControls} from 
 import {RunActionControls, TaskPacketBuildControls, TaskPacketPreview} from './delivery-workspace-controls';
 import {ProjectExecutionControls} from './project-execution-controls';
 import {ProjectOutcomeAcceptanceControls} from './project-outcome-acceptance-controls';
+import {ReleaseEvidenceControls} from './release-evidence-controls';
 import {type OperatorScreenRef, type OperatorScopeRef} from '@fai/operator-contracts';
 import {operatorTokens} from '@fai/operator-tokens';
 import {workItemStatuses} from './operator-data';
@@ -364,6 +365,9 @@ function Overview({route, project, runs, portfolio, csrfToken, canManage, hasWri
     <ContextTabs label="Разделы обзора" items={[{label: 'Сводка', href: projectUrl(project.project.slug, 'overview', route.scope), active: true}, {label: 'Скоп', href: '#scope', active: false}, {label: 'Риски', href: '#risks', active: false}]}/>
     <ProjectExecutionControls projectId={project.project.id} execution={execution} csrfToken={csrfToken} canManage={canManage} hasWriteCapability={hasWriteCapability} runnerQueueAvailable={runnerActivationEnabled()}/>
     <ScopeBaseline project={project} csrfToken={csrfToken} canApproveOutcome={canApproveOutcome}/>
+    <ReleaseEvidenceControls projectId={project.project.id} projectVersion={project.project.version}
+      materialization={project.plan?.materialization ?? null} workItems={project.workItems}
+      deployments={project.deployments ?? []} csrfToken={csrfToken} canManage={canManage && hasWriteCapability}/>
     <section className="fcp-section" id="risks"><div className="fcp-section-head"><div><h2>Риски проекта</h2><span>Только открытые системные риски</span></div></div>
       {risks.length === 0 ? <p className="fcp-empty-line">Открытых рисков нет.</p> : <div className="fcp-list">{risks.map((risk) => <article className="fcp-risk-row" key={risk.id}><Status value={risk.severity}/><div><strong>{riskReasonLabel(risk.reason)}</strong><small>{risk.owner ?? 'Ответственный не назначен'} · {date(risk.freshness)}</small><span>{riskActionLabel(risk.nextAction)}</span>{risk.riskSignalId === null ? null : <RiskDispositionControls csrfToken={csrfToken} disposition={risk.disposition} expectedVersion={risk.dispositionVersion} projectId={risk.projectId} riskSignalId={risk.riskSignalId}/>}</div></article>)}</div>}
     </section>

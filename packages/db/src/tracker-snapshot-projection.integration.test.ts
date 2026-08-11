@@ -530,6 +530,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       .where(eq(buildChecks.provider, 'custom-provider'));
     await db.insert(deployments).values({
       id: randomUUID(),
+      workspaceId: ids.workspace,
       projectId,
       workItemId: task!.id,
       environment: 'staging',
@@ -581,7 +582,7 @@ describePostgres('PostgreSQL tracker repository snapshot projection', () => {
       }],
       deployments: [{
         environment: 'staging',
-        externalEvidence: {availability: 'not_configured'},
+        externalEvidence: {availability: 'unknown'},
         approvedBy: {availability: 'known', value: {id: ids.owner, displayName: 'Owner'}}
       }]
     });

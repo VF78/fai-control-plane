@@ -21,6 +21,7 @@ import {
   deliveryJourneyEvidence,
   COST_LEDGER_COMMAND,
   createDatabase,
+  createPostgresProjectTaskProjectionReader,
   isRuntimeAvailable,
   isTaskPacketProfileEligible,
   dashboardSnapshots,
@@ -118,6 +119,7 @@ type Project = Readonly<{
   slug: string;
   description: string | null;
   defaultBranch: string;
+  version: number;
   updatedAt: Date;
 }>;
 
@@ -256,6 +258,7 @@ const scopedProjects = async (
     slug: projects.slug,
     description: projects.description,
     defaultBranch: projects.defaultBranch,
+    version: projects.version,
     updatedAt: projects.updatedAt
   }).from(projects).where(workspaceId !== undefined
     ? eq(projects.workspaceId, workspaceId)
@@ -776,6 +779,7 @@ export const loadPortfolioData = (scopes?: readonly AuthorizedProjectScope[]): P
 
 export type ProjectData = Readonly<{
   project: Project;
+  deployments: readonly import('@fai-control-plane/domain').CanonicalDeploymentProjection[];
   setup?: Readonly<{
     id: string;
     state: 'pending' | 'in_progress' | 'blocked';
@@ -925,7 +929,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   const [project] = await scopedProjects(db, [scope]);
   if (project === undefined) return null;
   const slug = project.slug;
-  const [setups, snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations, execution] = await Promise.all([
+  const [setups, snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations, execution, deploymentProjection] = await Promise.all([
     db.select({id: projectSetups.id, state: projectSetups.state, version: projectSetups.version,
       lastErrorCode: projectSetups.lastErrorCode, configuration: projectSetups.configuration})
       .from(projectSetups).where(eq(projectSetups.projectId, project.id)).limit(1),
@@ -1034,7 +1038,8 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     }).from(projectScopeOutcomeObservations)
       .where(eq(projectScopeOutcomeObservations.projectId, project.id))
       .orderBy(projectScopeOutcomeObservations.observedAt, projectScopeOutcomeObservations.id),
-    loadProjectExecutionProjection(db, project.workspaceId, project.id)
+    loadProjectExecutionProjection(db, project.workspaceId, project.id),
+    createPostgresProjectTaskProjectionReader(db).read({workspaceId: project.workspaceId, projectId: project.id})
   ]);
   const scopeLinks = scopeOutcomes.length === 0 ? [] : await db.select({
     outcomeId: workItemScopeOutcomes.outcomeId,
@@ -1186,6 +1191,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   }));
   return {
     project,
+    deployments: deploymentProjection?.project.deployments ?? [],
     setup: setups[0] === undefined ? null : {
       ...setups[0], state: setups[0].state as 'pending' | 'in_progress' | 'blocked'
     },

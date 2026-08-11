@@ -374,7 +374,7 @@ it('does not offer agent activation to a project owner without the exact write c
 });
 
 it('keeps the selected workspace area when changing between authorized projects', () => {
-  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, execution: {projectId: slug, status: 'stopped' as const, version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}, workItems: []});
+  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', version: 1, updatedAt: new Date()}, deployments: [], agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, execution: {projectId: slug, status: 'stopped' as const, version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}, workItems: []});
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'global_tasks', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
     data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [project('MSA', 'msa'), project('ASCON', 'ascon')]}

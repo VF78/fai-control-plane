@@ -3,6 +3,7 @@ export * from './instruction-versioning.ts';
 export * from './delivery-protocol.ts';
 export * from './delivery-journey.ts';
 export * from './qa-review.ts';
+export * from './release-evidence.ts';
 export * from './project-plan.ts';
 export * from './project-orchestration.ts';
 export * from './agent-run-retry-policy.ts';
@@ -16,6 +17,7 @@ import type {
   AccessResourceType
 } from './access.ts';
 import type {RuntimeRegistration} from './runtime-registration.ts';
+import type {DeploymentEnvironment, DeploymentObservation, DeploymentReference} from './release-evidence.ts';
 
 export * from './access.ts';
 export * from './runtime-registration.ts';
@@ -1727,6 +1729,7 @@ export type CanonicalDeploymentProjection = Readonly<{
   environment: string;
   revision: string;
   status: string;
+  version: number;
   externalRef: string | null;
   approvedBy: ProjectionAvailability<Readonly<{
     id: string;
@@ -1736,8 +1739,24 @@ export type CanonicalDeploymentProjection = Readonly<{
   }>>;
   startedAt: string | null;
   completedAt: string | null;
-  /** No deployment provider observation is persisted until a later bounded integration adds one. */
-  externalEvidence: ProjectionAvailability<never>;
+  desired: ProjectionAvailability<Readonly<{
+    environment: DeploymentEnvironment;
+    reference: DeploymentReference;
+    planVersionId: string;
+    materializationId: string;
+    workItemId: string | null;
+  }>>;
+  requested: ProjectionAvailability<Readonly<{
+    by: ProjectionAvailability<Readonly<{id: string; displayName: string; type: ActorType; role: string}>>;
+    at: string;
+  }>>;
+  approval: ProjectionAvailability<Readonly<{
+    state: 'pending' | 'approved';
+    by: ProjectionAvailability<Readonly<{id: string; displayName: string; type: ActorType; role: string}>>;
+    at: string | null;
+  }>>;
+  externalEvidence: ProjectionAvailability<DeploymentObservation>;
+  nextAction: 'approve_production' | 'record_observation' | 'review_observation' | 'migrate_legacy_record';
 }>;
 
 export type ProjectTaskProjectionTask = Readonly<{
