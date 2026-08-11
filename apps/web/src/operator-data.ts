@@ -102,6 +102,7 @@ import {
   rankAttentionQueue,
   type AttentionQueueItem
 } from './attention-queue';
+import {runnerActivationEnabled} from './runner-activation-policy';
 
 export type OperatorProjectSlug = string;
 export const isOperatorProjectSlug = (value: string): value is OperatorProjectSlug =>
@@ -779,6 +780,8 @@ export const loadPortfolioData = (scopes?: readonly AuthorizedProjectScope[]): P
 
 export type ProjectData = Readonly<{
   project: Project;
+  /** Server-projected admission fact only; configuration values are never serialized. */
+  runnerQueueEnabled: boolean;
   deployments: readonly import('@fai-control-plane/domain').CanonicalDeploymentProjection[];
   setup?: Readonly<{
     id: string;
@@ -1191,6 +1194,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   }));
   return {
     project,
+    runnerQueueEnabled: runnerActivationEnabled(),
     deployments: deploymentProjection?.project.deployments ?? [],
     setup: setups[0] === undefined ? null : {
       ...setups[0], state: setups[0].state as 'pending' | 'in_progress' | 'blocked'
@@ -1509,8 +1513,7 @@ export const loadRunsData = (scopes?: readonly AuthorizedProjectScope[]): Promis
     return typeof binding.metadata.headSha === 'string' &&
       /^[0-9a-f]{40}$/.test(binding.metadata.headSha) ? binding.metadata.headSha : null;
   };
-  const runnerQueueEnabled = process.env.RUNNER_ENABLED === 'true' &&
-    process.env.LOCAL_RUNNER_TRANSPORT_ENABLED === 'true';
+  const runnerQueueEnabled = runnerActivationEnabled();
   return {
     runs: runs.flatMap((run) => {
       const project = projectById.get(run.projectId);
