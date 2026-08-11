@@ -7,6 +7,7 @@ import {
   evaluateAgentRunRetryAdmission,
   validateDeliveryProtocolDefinition,
   type CommandError,
+  type HermesCodexWorkOrder,
   type ProjectDecisionQueueItem,
   type ProjectExecutionProjection,
   type ProjectExecutionSelection
@@ -30,6 +31,8 @@ type ExecutionRow = typeof schema.projectExecutions.$inferSelect;
 type StoreResult = Readonly<{ok: true; value: ProjectExecutionProjection}> |
   Readonly<{ok: false; error: CommandError}>;
 const failure = (code: CommandError['code'], message: string): StoreResult => ({ok: false, error: {code, message}});
+const recordValue = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const authority = async (tx: Queryable, workspaceId: string, projectId: string, actorId: string) => {
   const [actor] = await tx.select({role: schema.actors.role}).from(schema.actors).where(and(
@@ -617,6 +620,30 @@ export const createPostgresAgentRunRetryContinuationStore = (
         return complete({ok: false, error: {code: 'POLICY_DENIED',
           message: 'The exact enabled profile, runtime registration, or Task Packet snapshot is unavailable.'}});
       }
+      if (profileBinding.profileRuntimeId === 'hermes') {
+        const frozen = dispatch.workOrder;
+        const canonicalHash = recordValue(frozen)
+          ? createHash('sha256').update(canonicalJson(frozen as never)).digest('hex') : null;
+        const runtime = recordValue(frozen) && recordValue(frozen.runtime) ? frozen.runtime : null;
+        if (canonicalHash === null || canonicalHash !== dispatch.workOrderHash ||
+          dispatch.orchestratorRuntimeId !== 'hermes' || dispatch.executorRuntimeId !== 'codex-cli' ||
+          runtime?.hermesVersion !== options.runtimeEnvironment?.HERMES_ORCHESTRATOR_VERSION ||
+          runtime?.hermesConfigSha256 !== options.runtimeEnvironment?.HERMES_ORCHESTRATOR_CONFIG_SHA256) {
+          return complete({ok: false, error: {code: 'POLICY_DENIED',
+            message: 'The immutable Hermes work order or runtime binding drifted before retry.'}});
+        }
+        const admission = await autonomousQaAdmission(tx, {at: now,
+          transport: options.autonomousQaClaimTransport, workspaceId: command.workspaceId,
+          projectId: project.id, repository: {owner: profileBinding.repositoryOwner,
+            name: profileBinding.repositoryName}, runtimeId: 'hermes',
+          registration: {id: profileBinding.registrationId, version: profileBinding.registrationVersion,
+            runtimeKey: profileBinding.registrationRuntimeKey,
+            serviceMaxAgeSeconds: profileBinding.serviceMaxAgeSeconds,
+            schedulerMaxAgeSeconds: profileBinding.schedulerMaxAgeSeconds,
+            deliveryMaxAgeSeconds: profileBinding.deliveryMaxAgeSeconds}});
+        if (admission !== 'available') return complete({ok: false, error: {code: 'POLICY_DENIED',
+          message: 'Hermes retry requires the exact authenticated transport and fresh observations.'}});
+      }
       if (profileBinding.qaTaskPacketId !== null) {
         const policy = typeof profileBinding.packetDataPolicy === 'object' &&
           profileBinding.packetDataPolicy !== null && !Array.isArray(profileBinding.packetDataPolicy) &&
@@ -756,6 +783,9 @@ export const createPostgresAgentRunRetryContinuationStore = (
         selectionHash: dispatch.selectionHash, taskPacketId: dispatch.taskPacketId,
         agentRunId: newRun.id, runtimeRegistrationId: dispatch.runtimeRegistrationId,
         runtimeRegistrationVersion: dispatch.runtimeRegistrationVersion,
+        workOrder: dispatch.workOrder, workOrderHash: dispatch.workOrderHash,
+        orchestratorRuntimeId: dispatch.orchestratorRuntimeId,
+        executorRuntimeId: dispatch.executorRuntimeId,
         requestedByActorId: command.actor.actorId, createdAt: now
       });
       return complete({ok: true, value: {disposition: 'queued', projectId: project.id,
@@ -1196,13 +1226,16 @@ export const createPostgresProjectExecutionDispatcher = (
           return block('runner_queue_unavailable', 'POLICY_DENIED',
             'The isolated runner queue is not enabled.');
         }
-        const [work, plan, protocol, profileRows, registrations, repositoryScopes] = await Promise.all([
+        const [work, plan, protocol, profileRows, registrations, repositoryScopes,
+          materializations, memberships, dossierArtifacts] = await Promise.all([
           tx.select({title: schema.workItems.title, summary: schema.workItems.summary,
             version: schema.workItems.version, sourceTaskKey: schema.workItems.sourceTaskKey,
             acceptanceEvidence: schema.workItems.acceptanceEvidence})
             .from(schema.workItems).where(and(eq(schema.workItems.id, selection.workItemId),
               eq(schema.workItems.projectId, execution.projectId), isNull(schema.workItems.deletedAt))).limit(1),
           tx.select({contentHash: schema.projectPlanVersions.contentHash,
+            version: schema.projectPlanVersions.version,
+            sourceManifest: schema.projectPlanVersions.sourceManifest,
             definition: schema.projectPlanVersions.definition,
             approvedByActorId: schema.projectPlanVersions.approvedByActorId})
             .from(schema.projectPlanVersions).where(and(
@@ -1238,7 +1271,27 @@ export const createPostgresProjectExecutionDispatcher = (
             repositoryName: schema.projectTrackerRepositoryScopes.repositoryName,
             repositoryExternalId: schema.projectTrackerRepositoryScopes.repositoryExternalId})
             .from(schema.projectTrackerRepositoryScopes)
-            .where(eq(schema.projectTrackerRepositoryScopes.projectId, execution.projectId)).limit(2)
+            .where(eq(schema.projectTrackerRepositoryScopes.projectId, execution.projectId)).limit(2),
+          tx.select({id: schema.projectPlanMaterializations.id,
+            planHash: schema.projectPlanMaterializations.planHash,
+            sourceManifestHash: schema.projectPlanMaterializations.sourceManifestHash,
+            planVersion: schema.projectPlanMaterializations.planVersion})
+            .from(schema.projectPlanMaterializations).where(and(
+              eq(schema.projectPlanMaterializations.projectId, execution.projectId),
+              eq(schema.projectPlanMaterializations.planVersionId, selection.planVersionId))).limit(2),
+          tx.select({id: schema.projectMemberships.id, version: schema.projectMemberships.version,
+            roles: schema.projectMemberships.roles})
+            .from(schema.projectMemberships).where(and(
+              eq(schema.projectMemberships.projectId, execution.projectId),
+              eq(schema.projectMemberships.actorId, selection.responsibleActor.id),
+              eq(schema.projectMemberships.active, true))).limit(2),
+          tx.select({id: schema.projectSourceArtifacts.id, version: schema.projectSourceArtifacts.version,
+            sha256: schema.projectSourceArtifacts.sha256,
+            sourceKind: schema.projectSourceArtifacts.sourceKind,
+            mediaType: schema.projectSourceArtifacts.mediaType})
+            .from(schema.projectSourceArtifacts).where(and(
+              eq(schema.projectSourceArtifacts.workspaceId, project.workspaceId),
+              eq(schema.projectSourceArtifacts.projectId, execution.projectId))).limit(100)
         ]);
         const profile = profileRows[0];
         if (profile === undefined || !profile.enabled || profile.actorId !== selection.responsibleActor.id ||
@@ -1248,9 +1301,11 @@ export const createPostgresProjectExecutionDispatcher = (
             'The selected active agent profile and runtime registration are not available.');
         }
         if (work[0] === undefined || work[0].version !== selection.workItemVersion || plan[0] === undefined ||
-          protocol[0] === undefined || repositoryScopes.length !== 1) {
+          protocol[0] === undefined || protocol[0].contentHash === null ||
+          repositoryScopes.length !== 1 || materializations.length !== 1 ||
+          memberships.length !== 1) {
           return block('selection_preconditions_stale', 'VERSION_CONFLICT',
-            'The exact plan, work item, protocol, or repository scope changed.');
+            'The exact plan, materialization, work item, responsibility, protocol, or repository scope changed.');
         }
         const protocolDefinition = validateDeliveryProtocolDefinition(protocol[0].definition);
         const stage = protocolDefinition.ok
@@ -1263,10 +1318,26 @@ export const createPostgresProjectExecutionDispatcher = (
           return block('selection_preconditions_stale', 'VERSION_CONFLICT',
             'The selected plan task or autonomous protocol stage is no longer exact.');
         }
+        const dossierById = new Map(dossierArtifacts.map((artifact) => [artifact.id, artifact]));
+        const sourceManifest = plan[0].sourceManifest;
+        const frozenDossier = sourceManifest.map((entry) => dossierById.get(entry.artifactId));
+        const sourceManifestHash = createHash('sha256')
+          .update(canonicalJson(sourceManifest as never)).digest('hex');
+        if (profile.runtimeId === 'hermes' && (
+          new Set(sourceManifest.map(({artifactId}) => artifactId)).size !== sourceManifest.length ||
+          frozenDossier.some((artifact, index) => artifact === undefined ||
+            artifact.version !== sourceManifest[index]!.version ||
+            artifact.sha256 !== sourceManifest[index]!.sha256) ||
+          materializations[0]!.planVersion !== plan[0].version ||
+          materializations[0]!.planHash !== plan[0].contentHash ||
+          materializations[0]!.sourceManifestHash !== sourceManifestHash)) {
+          return block('selection_preconditions_stale', 'VERSION_CONFLICT',
+            'The exact dossier manifest or approved plan materialization changed.');
+        }
         const autonomousQa = stage.taskStatus === 'qa';
         const autonomousQaTransportIdentity = options.autonomousQaClaimTransport?.status === 'available'
           ? options.autonomousQaClaimTransport.identity : null;
-        if (autonomousQa) {
+        if (autonomousQa || profile.runtimeId === 'hermes') {
           const registration = registrations[0]!;
           const repository = repositoryScopes[0]!;
           const admission = await autonomousQaAdmission(tx, {at: now,
@@ -1276,11 +1347,11 @@ export const createPostgresProjectExecutionDispatcher = (
             runtimeId: profile.runtimeId, registration});
           if (admission === 'transport_unavailable') {
             return block('autonomous_qa_transport_unavailable', 'POLICY_DENIED',
-              'Autonomous QA requires an exact Hermes profile and authenticated Hermes claim transport identity.');
+              'Hermes execution requires an exact authenticated claim transport identity and allowlists.');
           }
           if (admission === 'availability_unavailable') {
             return block('runtime_availability_unavailable', 'POLICY_DENIED',
-              'Autonomous QA requires fresh available service, scheduler, and delivery observations.');
+              'Hermes execution requires fresh available service, scheduler, and delivery observations.');
           }
         }
         const [binding] = await tx.select({metadata: schema.trackerBindings.metadata})
@@ -1367,6 +1438,67 @@ export const createPostgresProjectExecutionDispatcher = (
         if (!packetResult.ok) {
           return block('dispatch_packet_invalid', packetResult.error.code, packetResult.error.message);
         }
+        const allowedActions = profile.runtimeProfile === 'read_safe'
+          ? ['read_repository', 'run_scoped_checks', 'produce_structured_receipt']
+          : ['read_repository', 'write_isolated_worktree', 'run_scoped_checks', 'produce_structured_receipt'];
+        const forbiddenActions = ['external_provider_write', 'merge', 'release', 'deploy', 'production_access'];
+        const registration = registrations[0]!;
+        const membership = memberships[0]!;
+        const repository = repositoryScopes[0]!;
+        const materialization = materializations[0]!;
+        const workOrder: HermesCodexWorkOrder = {
+          schemaVersion: 1,
+          runtime: {hermesVersion: '0.18.2', hermesConfigSha256:
+            options.runtimeEnvironment?.HERMES_ORCHESTRATOR_CONFIG_SHA256 ?? ''},
+          project: {id: execution.projectId},
+          dossierManifest: sourceManifest.map((entry, index) => ({
+            artifactId: entry.artifactId,
+            version: entry.version,
+            sha256: entry.sha256,
+            sourceKind: frozenDossier[index]!.sourceKind,
+            mediaType: frozenDossier[index]!.mediaType
+          })),
+          plan: {versionId: selection.planVersionId, version: plan[0].version,
+            sha256: plan[0].contentHash, sourceManifestSha256: sourceManifestHash,
+            materializationId: materialization.id},
+          protocol: {id: selection.protocolId, version: selection.protocolVersion,
+            sha256: protocol[0].contentHash, stageKey: selection.stageKey,
+            requiredEvidence: [...stage.requiredEvidence]},
+          execution: {version: execution.version, selectionSha256: selectionHash,
+            journeyVersion: selection.journeyVersion, workItemId: selection.workItemId,
+            workItemVersion: selection.workItemVersion,
+            responsibility: stage.responsibility as never,
+            responsibilitySha256: selection.responsibilityHash},
+          actor: {id: selection.responsibleActor.id, membershipId: membership.id,
+            membershipVersion: membership.version, membershipRoles: [...membership.roles],
+            profileId: profile.profileId, profileVersion: profile.version,
+            profileConfigSha256: profile.configHash, registrationId: registration.id,
+            registrationVersion: registration.version},
+          repository: {owner: repository.repositoryOwner, name: repository.repositoryName,
+            baseCommit},
+          orchestration: {
+            strategyOptions: ['evidence_first', 'risk_first', 'minimal_change'],
+            stepIds: profile.runtimeProfile === 'read_safe'
+              ? ['step.inspect_scope', 'step.verify_evidence', 'step.report']
+              : ['step.inspect_scope', 'step.implement_scoped_change', 'step.verify_evidence', 'step.report'],
+            checkCandidates: acceptanceCriteria.map((_, index) => ({
+              id: `check.acceptance.${String(index + 1).padStart(3, '0')}`,
+              requirementIndex: index
+            })),
+            riskControlIds: ['risk.no_external_provider_write', 'risk.no_merge',
+              'risk.no_release', 'risk.no_deploy', 'risk.no_production_access']
+          },
+          taskPacket: {id: packetId, sha256: packetResult.value.contentHash,
+            goal: packetResult.value.content.goal,
+            acceptanceCriteria: [...packetResult.value.content.acceptanceCriteria],
+            timeboxMinutes: packetResult.value.content.timeboxMinutes,
+            allowedActions, forbiddenActions,
+            dataPolicySha256: createHash('sha256')
+              .update(canonicalJson(packetResult.value.content.dataPolicy)).digest('hex'),
+            expectedOutput: packetResult.value.content.expectedOutputSchema}
+        };
+        const workOrderHash = createHash('sha256')
+          .update(canonicalJson(workOrder as never)).digest('hex');
         const policy = simulateAgentRunQueuePolicy({taskPacketId: packetId, profileId: profile.profileId,
           context: {operatorActorId: approver.id,
             operatorCapabilities: Object.entries(approver.capabilities).flatMap(([capability, enabled]) => enabled ? [capability] : []),
@@ -1436,6 +1568,8 @@ export const createPostgresProjectExecutionDispatcher = (
           taskPacketId: packet.packetId, agentRunId: runId,
           runtimeRegistrationId: registrations[0]!.id,
           runtimeRegistrationVersion: registrations[0]!.version,
+          ...(profile.runtimeId === 'hermes' ? {workOrder: workOrder as never, workOrderHash,
+            orchestratorRuntimeId: 'hermes', executorRuntimeId: 'codex-cli'} : {}),
           requestedByActorId: input.requestedByActorId, createdAt: now});
         const commandId = stableUuid(`${identity}:command`);
         const requestHash = createHash('sha256').update(canonicalJson({

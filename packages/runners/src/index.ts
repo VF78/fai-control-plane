@@ -1,3 +1,5 @@
+import type {HermesCodexWorkOrder} from '@fai-control-plane/domain';
+
 export type RuntimeProfile = 'read_safe' | 'write_scoped';
 
 export type AgentRuntimeInput = Readonly<{
@@ -9,6 +11,8 @@ export type AgentRuntimeInput = Readonly<{
   artifactPath: string;
   profile: RuntimeProfile;
   timeboxMinutes: number;
+  workOrder?: HermesCodexWorkOrder;
+  workOrderHash?: string;
   signal?: AbortSignal;
 }>;
 
@@ -128,6 +132,19 @@ export {
 } from './hermes-runtime-adapter';
 
 export {
+  createHermesDirectivePlanner,
+  codexPrompt,
+  validateHermesDirective,
+  type HermesDirectivePlanner,
+  type HermesDirectivePlannerOptions,
+  type HermesProcessExecutor,
+  type HermesProcessRequest,
+  type HermesProcessResult
+} from './hermes-codex-runtime';
+
+export {createHermesExecutorTransport, type HermesExecutorTransport} from './hermes-executor-transport';
+
+export {
   createWorktreeManager,
   WorktreeManagerError,
   type AgentRunWorktree,
@@ -179,3 +196,9 @@ export {
   type WorkstationRunnerFromEnvironmentResult,
   type WorkstationRunnerOnceResult
 } from './workstation-runner';
+
+export {
+  runHermesRunnerLoop,
+  runHermesRunnerOnceFromEnvironment,
+  type HermesRunnerEnvironment
+} from './hermes-runner';

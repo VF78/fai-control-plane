@@ -42,6 +42,7 @@ describe('workstation runner', () => {
         startedAt: '2026-07-26T08:00:00.000Z',
         finishedAt: '2026-07-26T08:01:00.000Z',
         durationMs: 60_000,
+        executionMetadata: {sandbox: 'workspace-write'},
         output: {
           stdout: {observedBytes: 0, boundedBytes: 0, truncated: false, sha256: 'c'.repeat(64), contentRetained: false},
           stderr: {observedBytes: 0, boundedBytes: 0, truncated: false, sha256: 'c'.repeat(64), contentRetained: false}

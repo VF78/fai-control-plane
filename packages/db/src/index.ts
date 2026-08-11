@@ -42,6 +42,7 @@ export {
 export {createPostgresConversationChannelStore} from './conversation-management';
 export {createPostgresUnitOfWork} from './persistence';
 export {
+  isHermesTransportConfigured,
   isRuntimeAvailable,
   isTaskPacketProfileEligible,
   matchesTaskPacketProfileSnapshot

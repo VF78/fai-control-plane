@@ -1,6 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {defaultDeliveryProtocolDefinition, MVP_AGENT_RUN_RETRY_POLICY} from '@fai-control-plane/domain';
+import {canonicalJson, defaultDeliveryProtocolDefinition, MVP_AGENT_RUN_RETRY_POLICY,
+  type HermesCodexWorkOrder} from '@fai-control-plane/domain';
 import {
   hashAgentProfileConfiguration,
   hashDeliveryProtocolDefinition,
@@ -36,6 +37,34 @@ const databaseUrl = process.env.DATABASE_URL;
 if (process.env.CI && databaseUrl === undefined) throw new Error('DATABASE_URL is required for project orchestration integration tests in CI.');
 const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 const databaseName = `fai_project_execution_${randomUUID().replaceAll('-', '')}`;
+const emptySourceManifestHash = createHash('sha256').update('[]').digest('hex');
+const hermesRuntimeEnvironment = {
+  HERMES_ORCHESTRATOR_VERSION: '0.18.2', HERMES_ORCHESTRATOR_CONFIG_SHA256: 'a'.repeat(64),
+  RUNNER_ENABLED: 'true', LOCAL_RUNNER_TRANSPORT_ENABLED: 'true',
+  LOCAL_RUNNER_WORKSPACE_ID: '00000000-0000-4000-8000-000000000001',
+  LOCAL_RUNNER_ID: 'runner-hermes',
+  LOCAL_RUNNER_ALLOWED_PROJECT_IDS: '00000000-0000-4000-8000-000000000002',
+  LOCAL_RUNNER_ALLOWED_REPOSITORIES: 'VF78/fai-control-plane',
+  LOCAL_RUNNER_ALLOWED_RUNTIME_IDS: 'hermes',
+  LOCAL_RUNNER_ALLOWED_RUNTIME_REGISTRATION_KEYS: 'hermes-codex-v1',
+  LOCAL_RUNNER_TOKEN_FILE: '/run/secrets/local-runner-token',
+  RUNTIME_OBSERVATION_TRANSPORT_ENABLED: 'true',
+  RUNTIME_OBSERVATION_ALLOWED_REGISTRATION_IDS: '00000000-0000-4000-8000-000000000003',
+  RUNTIME_OBSERVATION_TOKEN_FILE: '/run/secrets/runtime-observation-token'
+} as const;
+const hermesCompletionProvenance = (workOrderHash: string, raw: unknown) => {
+  const workOrder = raw as HermesCodexWorkOrder;
+  const directive = {schemaVersion: 1 as const, orchestrator: 'hermes' as const,
+    executor: 'codex-cli' as const, taskPacketId: workOrder.taskPacket.id,
+    taskPacketHash: workOrder.taskPacket.sha256, workOrderHash, strategy: 'risk_first' as const,
+    orderedStepIds: [...workOrder.orchestration.stepIds],
+    selectedCheckIds: workOrder.orchestration.checkCandidates.map((item) => item.id),
+    selectedRiskControlIds: [...workOrder.orchestration.riskControlIds]};
+  return {orchestrator: 'hermes' as const, executor: 'codex-cli' as const, workOrderHash,
+    directiveHash: createHash('sha256').update(canonicalJson(directive)).digest('hex'),
+    strategy: 'risk_first' as const, hermesVersion: '0.18.2' as const,
+    hermesConfigHash: workOrder.runtime.hermesConfigSha256, directive};
+};
 const expectImmutableRejection = async (operation: Promise<unknown>, tableName: string) => {
   try { await operation; throw new Error('Expected immutable write to fail.'); }
   catch (error) {
@@ -103,7 +132,7 @@ describePostgres('governed project orchestration persistence', () => {
       version: 1, active: true, sourcePlanVersionId: ids.planVersion, sourcePlanHash: 'a'.repeat(64)});
     await db.insert(projectPlanMaterializations).values({workspaceId: ids.workspace, projectId: ids.project,
       planVersionId: ids.planVersion, baselineId: ids.baseline, commandId: randomUUID(), planVersion: 1,
-      planHash: 'a'.repeat(64), sourceManifestHash: 'b'.repeat(64), outcomeCount: 1, milestoneCount: 1,
+      planHash: 'a'.repeat(64), sourceManifestHash: emptySourceManifestHash, outcomeCount: 1, milestoneCount: 1,
       workItemCount: 1, dependencyCount: 0, journeyCount: 1, publicationIntentCount: 0, createdByActorId: ids.owner});
     const responsibility = {kind: 'actor' as const, actorId: ids.agent,
       actorType: 'agent' as const, agentProfileId: ids.profile};
@@ -1043,7 +1072,7 @@ describePostgres('governed project orchestration persistence', () => {
     const now = new Date('2026-08-09T10:00:00.000Z');
     await observeHermes(fixture.registration.id, now);
     await expect(createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
-      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => now,
+      runtimeEnvironment: hermesRuntimeEnvironment, now: () => now,
       autonomousQaClaimTransport: {status: 'unavailable', reason: 'No Hermes claim adapter is configured.'}
     }).run({workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
       expectedVersion: 1, requestedByActorId: fixture.ids.owner}))
@@ -1072,7 +1101,7 @@ describePostgres('governed project orchestration persistence', () => {
       runtimeRegistrationKeys: [fixture.registration.runtimeKey]
     }};
     await expect(createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
-      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => observedAt,
+      runtimeEnvironment: hermesRuntimeEnvironment, now: () => observedAt,
       autonomousQaClaimTransport: transport
     }).run({workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
       expectedVersion: 1, requestedByActorId: fixture.ids.owner}))
@@ -1119,7 +1148,9 @@ describePostgres('governed project orchestration persistence', () => {
 
     const receiptSha256 = 'a'.repeat(64);
     const reference = `runs/${packet!.run.id}`;
-    const metadata = {runtimeId: 'hermes', artifactStore: {provider: 'fixture', reference,
+    const metadata = {runtimeId: 'hermes',
+      runtimeProvenance: hermesCompletionProvenance(packet!.dispatch.workOrderHash!, packet!.dispatch.workOrder),
+      artifactStore: {provider: 'fixture', reference,
       correlationId: `artifact-run-${packet!.run.id}`}, receiptArtifact: {
       name: 'agent-run-receipt.json', reference: `${reference}/agent-run-receipt.json`,
       sha256: receiptSha256, sizeBytes: 512}, pathManifest: {
@@ -1136,6 +1167,15 @@ describePostgres('governed project orchestration persistence', () => {
       completionReplayHash: 'c'.repeat(64), terminal: 'done' as const, receiptSha256,
       receiptSizeBytes: 512, metadata, at: new Date(claimedAt.getTime() + 1_000)};
     const representativeSecret = ['github', 'pat', 'A'.repeat(24)].join('_');
+    await expect(runnerStore.complete({...completionInput,
+      metadata: {...metadata, runtimeProvenance: {...metadata.runtimeProvenance,
+        workOrderHash: '0'.repeat(64)}}})).resolves.toEqual({status: 'denied'});
+    const driftedDirective = {...metadata.runtimeProvenance.directive,
+      selectedRiskControlIds: ['risk.no_deploy']};
+    await expect(runnerStore.complete({...completionInput, metadata: {...metadata,
+      runtimeProvenance: {...metadata.runtimeProvenance, directive: driftedDirective,
+        directiveHash: createHash('sha256').update(canonicalJson(driftedDirective)).digest('hex')}}}))
+      .resolves.toEqual({status: 'denied'});
     await expect(runnerStore.complete({...completionInput,
       metadata: {...metadata, qaResult: {...metadata.qaResult,
         checks: [{name: 'hostile', status: 'passed', reference: 'https://provider.test/secret'}]}} as never}))
@@ -1219,7 +1259,7 @@ describePostgres('governed project orchestration persistence', () => {
       projectIds: [fixture.ids.project], repositories: [{owner: 'owner', name: 'repository'}],
       runtimeIds: ['hermes']};
     await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
-      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => at,
+      runtimeEnvironment: hermesRuntimeEnvironment, now: () => at,
       autonomousQaClaimTransport: {status: 'available', identity: {
         kind: 'hermes_authenticated_claim_v1', runnerId, workspaceId: fixture.ids.workspace,
         projectIds: [fixture.ids.project], repositories: authorization.repositories,
@@ -1228,6 +1268,11 @@ describePostgres('governed project orchestration persistence', () => {
       expectedVersion: 1, requestedByActorId: fixture.ids.owner});
     const [run] = await db.select().from(agentRuns).where(eq(agentRuns.workItemId, fixture.ids.task));
     if (run === undefined) throw new Error('failed QA run fixture missing');
+    const [dispatch] = await db.select().from(projectExecutionDispatches)
+      .where(eq(projectExecutionDispatches.agentRunId, run.id));
+    if (dispatch?.workOrderHash === null || dispatch?.workOrderHash === undefined) {
+      throw new Error('failed QA work order fixture missing');
+    }
     const runnerStore = createPostgresRunnerClaimStore(db, {activationEnvironment: {
       RUNNER_ENABLED: 'true', LOCAL_RUNNER_TRANSPORT_ENABLED: 'true'
     }});
@@ -1238,7 +1283,8 @@ describePostgres('governed project orchestration persistence', () => {
     const completion = {...authorization, runId: run.id, attempt: 1, leaseTokenHash,
       completionReplayHash: 'f'.repeat(64), terminal: 'done' as const, receiptSha256,
       receiptSizeBytes: 512, at: new Date(at.getTime() + 1_000), metadata: {
-        runtimeId: 'hermes', artifactStore: {provider: 'fixture', reference,
+        runtimeId: 'hermes', runtimeProvenance: hermesCompletionProvenance(dispatch.workOrderHash, dispatch.workOrder),
+        artifactStore: {provider: 'fixture', reference,
           correlationId: `artifact-run-${run.id}`}, receiptArtifact: {
           name: 'agent-run-receipt.json', reference: `${reference}/agent-run-receipt.json`,
           sha256: receiptSha256, sizeBytes: 512}, pathManifest: {
@@ -1428,7 +1474,7 @@ describePostgres('governed project orchestration persistence', () => {
           version: 2, active: true, sourcePlanVersionId: newPlanVersion, sourcePlanHash: 'c'.repeat(64)});
         await db.insert(projectPlanMaterializations).values({workspaceId: ids.workspace, projectId: ids.project,
           planVersionId: newPlanVersion, baselineId: newBaseline, commandId: randomUUID(), planVersion: 2,
-          planHash: 'c'.repeat(64), sourceManifestHash: 'd'.repeat(64), outcomeCount: 1, milestoneCount: 1,
+          planHash: 'c'.repeat(64), sourceManifestHash: emptySourceManifestHash, outcomeCount: 1, milestoneCount: 1,
           workItemCount: 1, dependencyCount: 0, journeyCount: 0, publicationIntentCount: 0,
           createdByActorId: ids.owner, createdAt: new Date(Date.now() + 1_000)});
       }
@@ -1479,7 +1525,7 @@ describePostgres('governed project orchestration persistence', () => {
       version: 1, active: true, sourcePlanVersionId: ids.planVersion, sourcePlanHash: 'a'.repeat(64)});
     await db.insert(projectPlanMaterializations).values({id: ids.materialization, workspaceId: ids.workspace,
       projectId: ids.project, planVersionId: ids.planVersion, baselineId: ids.baseline,
-      commandId: randomUUID(), planVersion: 1, planHash: 'a'.repeat(64), sourceManifestHash: 'b'.repeat(64),
+      commandId: randomUUID(), planVersion: 1, planHash: 'a'.repeat(64), sourceManifestHash: emptySourceManifestHash,
       outcomeCount: 1, milestoneCount: 1, workItemCount: 1, dependencyCount: 0, journeyCount: 1,
       publicationIntentCount: 1, createdByActorId: ids.owner});
     const definition = {schemaVersion: 1 as const, stages: [{key: 'intake', name: 'Intake', enabled: true,
@@ -1589,7 +1635,7 @@ describePostgres('governed project orchestration persistence', () => {
       active: true, sourcePlanVersionId: ids.planVersion, sourcePlanHash: 'a'.repeat(64)});
     await db.insert(projectPlanMaterializations).values({workspaceId: ids.workspace, projectId: ids.project,
       planVersionId: ids.planVersion, baselineId: ids.baseline, commandId: randomUUID(), planVersion: 1,
-      planHash: 'a'.repeat(64), sourceManifestHash: 'b'.repeat(64), outcomeCount: 1, milestoneCount: 1,
+      planHash: 'a'.repeat(64), sourceManifestHash: emptySourceManifestHash, outcomeCount: 1, milestoneCount: 1,
       workItemCount: 2, dependencyCount: 1, journeyCount: 0, publicationIntentCount: 0, createdByActorId: ids.owner});
     await db.insert(workItems).values([
       {id: ids.first, projectId: ids.project, title: 'Dependency', status: 'backlog', sourcePlanVersionId: ids.planVersion, sourceTaskKey: 'a', acceptanceEvidence: []},
@@ -1816,7 +1862,7 @@ describePostgres('governed project orchestration persistence', () => {
       repositories: [{owner: 'owner', name: 'repository'}], runtimeIds: ['hermes'],
       runtimeRegistrationKeys: [fixture.registration.runtimeKey]};
     await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
-      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => observedAt,
+      runtimeEnvironment: hermesRuntimeEnvironment, now: () => observedAt,
       autonomousQaClaimTransport: {status: 'available', identity}}).run({
       workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
       expectedVersion: 1, requestedByActorId: fixture.ids.owner});
@@ -1832,14 +1878,14 @@ describePostgres('governed project orchestration persistence', () => {
         expectedExecutionVersion: 1}});
     const unavailableRunId = randomUUID();
     await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true,
-      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => observedAt,
+      runtimeEnvironment: hermesRuntimeEnvironment, now: () => observedAt,
       autonomousQaClaimTransport: {status: 'unavailable', reason: 'not configured'}}).execute({
       command: commandFor(unavailableRunId) as never, requestHash: 'i'.repeat(64),
       policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true
     })).resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'POLICY_DENIED'}}}});
     const staleRunId = randomUUID();
     await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true,
-      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'},
+      runtimeEnvironment: hermesRuntimeEnvironment,
       now: () => new Date(observedAt.getTime() + 301_000),
       autonomousQaClaimTransport: {status: 'available', identity}}).execute({
       command: commandFor(staleRunId) as never, requestHash: 'j'.repeat(64),
@@ -1863,7 +1909,7 @@ describePostgres('governed project orchestration persistence', () => {
     await observeHermes(fixture.registration.id, freshAt);
     const exactRetryRunId = randomUUID();
     await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true,
-      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => freshAt,
+      runtimeEnvironment: hermesRuntimeEnvironment, now: () => freshAt,
       autonomousQaClaimTransport: {status: 'available', identity}}).execute({
       command: commandFor(exactRetryRunId) as never, requestHash: 'l'.repeat(64),
       policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true
@@ -1872,9 +1918,14 @@ describePostgres('governed project orchestration persistence', () => {
     }}}});
     expect((await db.select().from(agentRuns).where(eq(agentRuns.id, exactRetryRunId)))[0])
       .toMatchObject({status: 'queued', retryOfAgentRunId: failed.id});
-    expect((await db.select().from(projectExecutionDispatches).where(and(
+    const retryDispatch = (await db.select().from(projectExecutionDispatches).where(and(
       eq(projectExecutionDispatches.projectId, fixture.ids.project),
-      eq(projectExecutionDispatches.executionVersion, 2))))[0])
-      .toMatchObject({agentRunId: exactRetryRunId});
+      eq(projectExecutionDispatches.executionVersion, 2))))[0];
+    const originalDispatch = (await db.select().from(projectExecutionDispatches).where(
+      eq(projectExecutionDispatches.agentRunId, failed.id)))[0];
+    expect(retryDispatch).toMatchObject({agentRunId: exactRetryRunId,
+      workOrderHash: originalDispatch?.workOrderHash, workOrder: originalDispatch?.workOrder,
+      orchestratorRuntimeId: 'hermes', executorRuntimeId: 'codex-cli',
+      runtimeRegistrationVersion: originalDispatch?.runtimeRegistrationVersion});
   });
 });

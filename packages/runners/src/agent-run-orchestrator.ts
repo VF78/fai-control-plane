@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import type {HermesCodexWorkOrder} from '@fai-control-plane/domain';
 import type {
   AgentRuntime,
   AgentRuntimeInput,
@@ -36,6 +37,8 @@ export type LocalAgentRunEnvelope = Readonly<{
   prompt: string;
   profile: RuntimeProfile;
   timeboxMinutes: number;
+  workOrder?: HermesCodexWorkOrder;
+  workOrderHash?: string;
   signal?: AbortSignal;
 }>;
 
@@ -62,6 +65,7 @@ export type LocalAgentRunReceipt = Readonly<{
   startedAt: string;
   finishedAt: string;
   durationMs: number;
+  executionMetadata: AgentRuntimeResult['executionMetadata'];
   output: Readonly<{
     stdout: RedactedProcessOutputMetadata;
     stderr: RedactedProcessOutputMetadata;
@@ -441,6 +445,8 @@ const runtimeInput = (
   artifactPath,
   profile: envelope.profile,
   timeboxMinutes: envelope.timeboxMinutes,
+  ...(envelope.workOrder === undefined ? {} : {workOrder: envelope.workOrder}),
+  ...(envelope.workOrderHash === undefined ? {} : {workOrderHash: envelope.workOrderHash}),
   ...(envelope.signal === undefined ? {} : {signal: envelope.signal})
 });
 
@@ -535,6 +541,7 @@ export const createLocalAgentRunOrchestrator = (
         startedAt: effectiveRuntimeResult.startedAt,
         finishedAt: effectiveRuntimeResult.finishedAt,
         durationMs: effectiveRuntimeResult.durationMs,
+        executionMetadata: effectiveRuntimeResult.executionMetadata,
         output: {
           stdout: effectiveRuntimeResult.stdout,
           stderr: effectiveRuntimeResult.stderr
