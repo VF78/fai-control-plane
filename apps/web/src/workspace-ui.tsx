@@ -23,6 +23,7 @@ import {RuntimeRegistrationControls} from './runtime-registration-controls';
 import {AgentRetirementControls} from './agent-retirement-controls';
 import {ProjectPlanControls} from './project-plan-controls';
 import {RiskDispositionControls} from './risk-disposition-controls';
+import {projectDossierReadiness} from '@fai-control-plane/domain';
 
 export type WorkspaceRoute = Readonly<{
   screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'people' | 'setup' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
@@ -364,9 +365,7 @@ function ManagementRoute({project, runs, route}: {project: ProjectData; runs: Ru
   const runsHref = projectUrl(project.project.slug, 'runs', route.scope);
   const protocolHref = projectUrl(project.project.slug, 'protocol', route.scope);
   const overviewHref = projectUrl(project.project.slug, 'overview', route.scope);
-  const dossierReady = project.plan !== undefined && project.plan.artifacts.some(({sourceKind}) => sourceKind === 'project_passport') &&
-    project.plan.artifacts.some(({sourceKind}) => sourceKind === 'client_requirements') &&
-    project.plan.artifacts.some(({sourceKind}) => sourceKind === 'acceptance_method');
+  const dossierReady = project.plan !== undefined && projectDossierReadiness(project.plan.artifacts).ready;
   const plan = project.plan;
   const allAssigned = project.workItems.length > 0 && project.workItems.every((item) => item.responsibility !== null);
   const projectRuns = runs?.runs.filter((run) => run.projectSlug === project.project.slug) ?? [];
@@ -381,7 +380,7 @@ function ManagementRoute({project, runs, route}: {project: ProjectData; runs: Ru
   const acceptance = project.execution.acceptance ?? null;
   const steps: readonly ManagementRouteStep[] = [
     {key: 'dossier', label: 'Досье', state: dossierReady ? 'done' : 'blocked', href: setupHref,
-      detail: dossierReady ? 'Обязательные источники зафиксированы.' : 'Добавьте паспорт, требования и метод приёмки.'},
+      detail: dossierReady ? 'Обязательные источники зафиксированы.' : 'Добавьте паспорт, архитектуру решения и требования клиента.'},
     {key: 'plan', label: 'План', state: plan?.materialization !== null && plan?.materialization !== undefined ? 'done' : plan?.approved !== null && plan?.approved !== undefined ? 'active' : 'blocked', href: setupHref,
       detail: plan?.materialization !== null && plan?.materialization !== undefined ? `Материализован · v${plan.materialization.planVersion}.` : plan?.approved !== null && plan?.approved !== undefined ? 'Утверждён; нужна материализация.' : 'Нет материализованного утверждённого плана.'},
     {key: 'assignments', label: 'Назначения', state: allAssigned ? 'done' : project.workItems.length === 0 ? 'blocked' : 'active', href: tasksHref,

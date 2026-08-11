@@ -58,6 +58,8 @@ it('renders the Russian source-draft-approval lifecycle under project setup', ()
   expect(markup).toContain('Исходные материалы');
   expect(markup).toContain('Готовность досье');
   expect(markup).toContain('Добавьте источник: паспорт проекта.');
+  expect(markup).toContain('Архитектура решения');
+  expect(markup).toContain('неизменяемом протоколе UAT');
   expect(markup).toContain('Категория');
   expect(markup).toContain('.txt, .md, .json, .pdf, .docx');
   expect(markup).toContain('accept=".txt,.md,.json,.pdf,.docx"');
@@ -78,7 +80,7 @@ it('distinguishes edit-only delivery authority from Product Owner approval', () 
 });
 
 it('allows draft generation only from a selected complete dossier', () => {
-  const artifact = (id: string, sourceKind: 'project_passport' | 'client_requirements' | 'acceptance_method') => ({
+  const artifact = (id: string, sourceKind: 'project_passport' | 'solution_architecture' | 'client_requirements' | 'acceptance_method') => ({
     id, name: sourceKind, sourceKind, mediaType: 'text/plain', content: 'Подтверждённый текст', sizeBytes: 22,
     sha256: 'a'.repeat(64), sourceFile: null, version: 1,
     provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}
@@ -98,7 +100,7 @@ it('allows draft generation only from a selected complete dossier', () => {
   expect(incompleteButton).toContain('disabled');
   const complete = renderToStaticMarkup(createElement(ProjectPlanControls, {
     projectId: '22222222-2222-4222-8222-222222222222', csrfToken: 'csrf', canEdit: true, canApprove: true,
-    plan: {...base, artifacts: [artifact('11111111-1111-4111-8111-111111111111', 'project_passport'), artifact('22222222-2222-4222-8222-222222222222', 'client_requirements'), artifact('33333333-3333-4333-8333-333333333333', 'acceptance_method')]}
+    plan: {...base, artifacts: [artifact('11111111-1111-4111-8111-111111111111', 'project_passport'), artifact('22222222-2222-4222-8222-222222222222', 'solution_architecture'), artifact('33333333-3333-4333-8333-333333333333', 'client_requirements')]}
   }));
   const completeButton = buttonFor(complete);
   expect(completeButton).not.toContain('disabled');

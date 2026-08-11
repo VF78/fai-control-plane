@@ -64,11 +64,11 @@ describe('project plan', () => {
   it('reports exactly the missing required dossier categories', () => {
     expect(projectDossierReadiness([])).toMatchObject({ready: false, required: [
       {kind: 'project_passport', present: false, remediation: 'Добавьте источник: паспорт проекта.'},
-      {kind: 'client_requirements', present: false, remediation: 'Добавьте источник: требования клиента.'},
-      {kind: 'acceptance_method', present: false, remediation: 'Добавьте источник: метод приёмки.'}
+      {kind: 'solution_architecture', present: false, remediation: 'Добавьте источник: архитектура решения.'},
+      {kind: 'client_requirements', present: false, remediation: 'Добавьте источник: требования клиента.'}
     ]});
     expect(projectDossierReadiness([
-      {sourceKind: 'project_passport'}, {sourceKind: 'client_requirements'}, {sourceKind: 'acceptance_method'}, {sourceKind: 'other'}
+      {sourceKind: 'project_passport'}, {sourceKind: 'solution_architecture'}, {sourceKind: 'client_requirements'}, {sourceKind: 'acceptance_method'}, {sourceKind: 'architecture_constraints'}, {sourceKind: 'other'}
     ])).toMatchObject({ready: true});
   });
 
