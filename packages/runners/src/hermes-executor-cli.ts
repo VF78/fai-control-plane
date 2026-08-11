@@ -29,10 +29,10 @@ if (Object.keys(request).length === 3 && request.schemaVersion === 1 && request.
     if (canonical !== directory || !metadata.isDirectory() || metadata.isSymbolicLink()) fail('directory');
   }
   const codex = await run('/usr/bin/codex', ['--version'], {env: {HOME: absolute('FAI_EXECUTOR_CODEX_HOME'),
-    PATH: '/usr/bin:/bin'}, timeout: 10_000});
+    NODE_ENV: 'production', PATH: '/usr/bin:/bin'}, timeout: 10_000});
   if (codex.stdout.trim() !== `codex-cli ${required('FAI_EXECUTOR_CODEX_VERSION')}`) fail('codex_version');
   const remote = await run('/usr/bin/git', ['-C', repositoryRoot, 'config', '--get', 'remote.origin.url'],
-    {env: {HOME: absolute('FAI_EXECUTOR_CODEX_HOME'), PATH: '/usr/bin:/bin'}, timeout: 10_000});
+    {env: {HOME: absolute('FAI_EXECUTOR_CODEX_HOME'), NODE_ENV: 'production', PATH: '/usr/bin:/bin'}, timeout: 10_000});
   const repository = required('FAI_EXECUTOR_REPOSITORY');
   if (![ `https://github.com/${repository}.git`, `git@github.com:${repository}.git`].includes(remote.stdout.trim())) {
     fail('repository_identity');
