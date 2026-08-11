@@ -6027,7 +6027,7 @@
         },
         "project_memberships_roles_canonical": {
           "name": "project_memberships_roles_canonical",
-          "value": "cardinality(\"project_memberships\".\"roles\") between 1 and 5 and (cardinality(\"project_memberships\".\"roles\") < 2 or \"project_memberships\".\"roles\"[1] < \"project_memberships\".\"roles\"[2]) and (cardinality(\"project_memberships\".\"roles\") < 3 or \"project_memberships\".\"roles\"[2] < \"project_memberships\".\"roles\"[3]) and (cardinality(\"project_memberships\".\"roles\") < 4 or \"project_memberships\".\"roles\"[3] < \"project_memberships\".\"roles\"[4]) and (cardinality(\"project_memberships\".\"roles\") < 5 or \"project_memberships\".\"roles\"[4] < \"project_memberships\".\"roles\"[5])"
+          "value": "cardinality(\"project_memberships\".\"roles\") between 1 and 5\n      and (cardinality(\"project_memberships\".\"roles\") < 2 or \"project_memberships\".\"roles\"[1] < \"project_memberships\".\"roles\"[2])\n      and (cardinality(\"project_memberships\".\"roles\") < 3 or \"project_memberships\".\"roles\"[2] < \"project_memberships\".\"roles\"[3])\n      and (cardinality(\"project_memberships\".\"roles\") < 4 or \"project_memberships\".\"roles\"[3] < \"project_memberships\".\"roles\"[4])\n      and (cardinality(\"project_memberships\".\"roles\") < 5 or \"project_memberships\".\"roles\"[4] < \"project_memberships\".\"roles\"[5])"
         },
         "project_memberships_agent_role_is_singleton": {
           "name": "project_memberships_agent_role_is_singleton",
