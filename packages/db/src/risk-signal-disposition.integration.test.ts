@@ -63,10 +63,12 @@ describePostgres('risk signal disposition persistence', () => {
       project: randomUUID(),
       otherProject: randomUUID(),
       operator: randomUUID(),
+      dualRoleOwner: randomUUID(),
       viewer: randomUUID(),
       otherOperator: randomUUID(),
       viewerMembership: randomUUID(),
       signal: randomUUID(),
+      dualRoleSignal: randomUUID(),
       otherSignal: randomUUID(),
       resolvedSignal: randomUUID()
     };
@@ -81,17 +83,19 @@ describePostgres('risk signal disposition persistence', () => {
     await db.insert(actors).values([
       {id: ids.operator, workspaceId: ids.workspace, type: 'human',
         role: 'workspace_admin', displayName: 'Operator', authMode: 'user'},
+      {id: ids.dualRoleOwner, workspaceId: ids.workspace, type: 'human',
+        role: 'developer', displayName: 'Dual role owner', authMode: 'user'},
       {id: ids.viewer, workspaceId: ids.workspace, type: 'human',
         role: 'developer', displayName: 'Viewer', authMode: 'user'},
       {id: ids.otherOperator, workspaceId: ids.otherWorkspace, type: 'human',
         role: 'workspace_admin', displayName: 'Other', authMode: 'user'}
     ]);
-    await db.insert(projectMemberships).values({
-      id: ids.viewerMembership,
-      projectId: ids.project,
-      actorId: ids.viewer,
-      roles: ['client_viewer']
-    });
+    await db.insert(projectMemberships).values([
+      {id: randomUUID(), projectId: ids.project, actorId: ids.dualRoleOwner,
+        roles: ['project_owner', 'contributor']},
+      {id: ids.viewerMembership, projectId: ids.project, actorId: ids.viewer,
+        roles: ['client_viewer']}
+    ]);
     const risk = (
       id: string,
       projectId: string,
@@ -113,6 +117,7 @@ describePostgres('risk signal disposition persistence', () => {
     });
     await db.insert(riskSignals).values([
       risk(ids.signal, ids.project),
+      risk(ids.dualRoleSignal, ids.project),
       risk(ids.otherSignal, ids.otherProject),
       risk(ids.resolvedSignal, ids.project, new Date('2026-07-30T11:00:00.000Z'))
     ]);
@@ -164,6 +169,9 @@ describePostgres('risk signal disposition persistence', () => {
       status: 'applied',
       disposition: {kind: 'snoozed', version: 2}
     });
+    await expect(store.execute({...command, riskSignalId: ids.dualRoleSignal,
+      actorId: ids.dualRoleOwner, commandId: randomUUID(), correlationId: randomUUID()}))
+      .resolves.toMatchObject({status: 'applied', disposition: {version: 1}});
     await expect(store.execute({
       ...command,
       actorId: ids.viewer,
