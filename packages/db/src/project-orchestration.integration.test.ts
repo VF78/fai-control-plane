@@ -11,6 +11,7 @@ import {and, eq, inArray} from 'drizzle-orm';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
+import {resolveWorkItemResponsibility} from './work-item-responsibility';
 import {
   actors, agentProfiles, agentRunReceipts, agentRuns, approvalRequests, artifacts, auditEvents,
   canonicalEvents, commandReceipts,
@@ -69,8 +70,9 @@ describePostgres('governed project orchestration persistence', () => {
       {id: ids.agent, workspaceId: ids.workspace, type: 'agent', role: 'agent_operator', displayName: 'Agent', authMode: 'agent'}
     ]);
     await db.insert(projectMemberships).values([
-      {id: randomUUID(), projectId: ids.project, actorId: ids.owner, role: 'project_owner'},
-      {id: randomUUID(), projectId: ids.project, actorId: ids.agent, role: 'agent'}
+      {id: randomUUID(), projectId: ids.project, actorId: ids.owner,
+        roles: humanOwned ? ['project_owner', 'contributor'] : ['project_owner']},
+      {id: randomUUID(), projectId: ids.project, actorId: ids.agent, roles: ['agent']}
     ]);
     const profile = {runtimeId: 'codex-cli', runtimeProfile: 'read_safe', allowedTools: ['repository_read'],
       forbiddenSurfaces: ['production'], instructions: 'Complete only the immutable task packet.',
@@ -83,7 +85,9 @@ describePostgres('governed project orchestration persistence', () => {
       evidence: {kind: 'assumption' as const, statement: 'Approved by the project owner.'}}],
       milestones: [{key: 'milestone_1', title: 'Done', checkpoint: 'Owner review', targetAt: null,
         evidence: {kind: 'assumption' as const, statement: 'Owner checkpoint.'}}], risks: [],
-      tasks: [{key: 'task_1', title: 'Autonomous task', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'milestone_1',
+      tasks: [{key: 'task_1', title: 'Autonomous task', responsibility: humanOwned
+        ? {kind: 'project_role' as const, role: 'contributor' as const}
+        : {kind: 'agent_profile' as const, agentProfileId: ids.profile}, outcomeKeys: ['outcome_1'], milestoneKey: 'milestone_1',
         dependsOn: [], acceptanceEvidence: [{description: 'Focused checks pass',
           evidence: {kind: 'assumption' as const, statement: 'Verification is required.'}}]}]};
     await db.insert(projectPlanDrafts).values({id: ids.plan, workspaceId: ids.workspace, projectId: ids.project,
@@ -99,9 +103,8 @@ describePostgres('governed project orchestration persistence', () => {
       planVersionId: ids.planVersion, baselineId: ids.baseline, commandId: randomUUID(), planVersion: 1,
       planHash: 'a'.repeat(64), sourceManifestHash: 'b'.repeat(64), outcomeCount: 1, milestoneCount: 1,
       workItemCount: 1, dependencyCount: 0, journeyCount: 1, publicationIntentCount: 0, createdByActorId: ids.owner});
-    const responsibility = humanOwned
-      ? {kind: 'project_role' as const, role: 'project_owner' as const}
-      : {kind: 'actor' as const, actorId: ids.agent, actorType: 'agent' as const, agentProfileId: ids.profile};
+    const responsibility = {kind: 'actor' as const, actorId: ids.agent,
+      actorType: 'agent' as const, agentProfileId: ids.profile};
     const definition = {schemaVersion: 1 as const, stages: [
       {key: 'development', name: 'Development', enabled: true,
         taskStatus: 'in_dev' as const, responsibility, executionMode: 'autonomous' as const,
@@ -117,6 +120,7 @@ describePostgres('governed project orchestration persistence', () => {
       definition, active: true, protocolState: 'published', revision: 1, contentHash: hashDeliveryProtocolDefinition(definition)});
     await db.insert(workItems).values({id: ids.task, projectId: ids.project, title: 'Autonomous task', status: 'in_dev',
       sourcePlanVersionId: ids.planVersion, sourceTaskKey: 'task_1',
+      responsibility: planDefinition.tasks[0]!.responsibility,
       acceptanceEvidence: planDefinition.tasks[0]!.acceptanceEvidence});
     await db.insert(deliveryJourneys).values({workItemId: ids.task, protocolId: ids.protocol,
       protocolVersion: 1, stageKey: 'development'});
@@ -218,6 +222,24 @@ describePostgres('governed project orchestration persistence', () => {
     return {...fixture, run, receiptSha256, store, command, idempotencyKey};
   };
 
+  type ResponsibilityDrift = 'membership' | 'role' | 'profile' | 'registration';
+  const applyResponsibilityDrift = async (
+    ids: Awaited<ReturnType<typeof seedAutonomousProject>>['ids'], drift: ResponsibilityDrift
+  ) => {
+    if (drift === 'membership') {
+      await db.update(projectMemberships).set({version: 2}).where(and(
+        eq(projectMemberships.projectId, ids.project), eq(projectMemberships.actorId, ids.agent)));
+    } else if (drift === 'role') {
+      await db.update(projectMemberships).set({roles: ['contributor'], version: 2}).where(and(
+        eq(projectMemberships.projectId, ids.project), eq(projectMemberships.actorId, ids.agent)));
+    } else if (drift === 'profile') {
+      await db.update(agentProfiles).set({version: 2}).where(eq(agentProfiles.id, ids.profile));
+    } else {
+      await db.update(runtimeRegistrations).set({version: 2}).where(and(
+        eq(runtimeRegistrations.projectId, ids.project), eq(runtimeRegistrations.agentProfileId, ids.profile)));
+    }
+  };
+
   const seedOutcomeAcceptance = async () => {
     const fixture = await seedAutonomousProject(false);
     const finalDefinition = defaultDeliveryProtocolDefinition();
@@ -270,6 +292,60 @@ describePostgres('governed project orchestration persistence', () => {
     }}}});
     expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId, ids.project)))[0])
       .toMatchObject({status: 'blocked', selectedWorkItemId: null, selectedAgentProfileId: null});
+  });
+
+  it('resolves bounded in-dev assignments and fails closed on role, scope, type, and activity drift', async () => {
+    const ids = {workspace: randomUUID(), project: randomUUID(), foreignProject: randomUUID(), po: randomUUID(),
+      dual: randomUUID(), second: randomUUID(), disabled: randomUUID(), agent: randomUUID(), profile: randomUUID()};
+    await db.insert(workspaces).values({id: ids.workspace, name: 'Assignment', slug: `assignment-${randomUUID()}`});
+    await db.insert(projects).values([
+      {id: ids.project, workspaceId: ids.workspace, name: 'Target', slug: `target-${randomUUID()}`},
+      {id: ids.foreignProject, workspaceId: ids.workspace, name: 'Foreign', slug: `foreign-${randomUUID()}`}
+    ]);
+    await db.insert(actors).values([
+      {id: ids.po, workspaceId: ids.workspace, type: 'human', role: 'delivery_lead', displayName: 'PO', authMode: 'user'},
+      {id: ids.dual, workspaceId: ids.workspace, type: 'human', role: 'developer', displayName: 'Dual', authMode: 'user'},
+      {id: ids.second, workspaceId: ids.workspace, type: 'human', role: 'developer', displayName: 'Second', authMode: 'user'},
+      {id: ids.disabled, workspaceId: ids.workspace, type: 'human', role: 'developer', displayName: 'Disabled', authMode: 'user', disabledAt: new Date()},
+      {id: ids.agent, workspaceId: ids.workspace, type: 'agent', role: 'agent_operator', displayName: 'Agent', authMode: 'agent'}
+    ]);
+    await db.insert(projectMemberships).values([
+      {id: randomUUID(), projectId: ids.project, actorId: ids.po, roles: ['project_owner']},
+      {id: randomUUID(), projectId: ids.project, actorId: ids.dual, roles: ['project_owner', 'contributor']},
+      {id: randomUUID(), projectId: ids.foreignProject, actorId: ids.second, roles: ['contributor']},
+      {id: randomUUID(), projectId: ids.project, actorId: ids.disabled, roles: ['contributor']},
+      {id: randomUUID(), projectId: ids.project, actorId: ids.agent, roles: ['agent']}
+    ]);
+    const profile = {runtimeId: 'assignment-agent', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [],
+      instructions: 'Execute only the assigned task.', settings: {resultFormat: 'structured_v1' as const, includeEvidence: true},
+      enabled: true, version: 1};
+    await db.insert(agentProfiles).values({id: ids.profile, workspaceId: ids.workspace, actorId: ids.agent,
+      ...profile, configHash: hashAgentProfileConfiguration(profile)});
+    await db.insert(runtimeRegistrations).values({projectId: ids.project, actorId: ids.agent,
+      agentProfileId: ids.profile, provider: 'fixture', runtimeKey: `assignment-${randomUUID()}`});
+    const resolve = (responsibility: Parameters<typeof resolveWorkItemResponsibility>[1]['responsibility']) =>
+      resolveWorkItemResponsibility(db, {workspaceId: ids.workspace, projectId: ids.project, responsibility,
+        requireContributorForHuman: true, requireUniqueProjectRole: true});
+
+    await expect(resolve({kind: 'human', actorId: ids.po})).resolves.toBeNull();
+    await expect(resolve({kind: 'human', actorId: ids.dual})).resolves.toMatchObject({actor: {id: ids.dual, type: 'human'}});
+    await expect(resolve({kind: 'project_role', role: 'contributor'})).resolves.toMatchObject({actor: {id: ids.dual}});
+    await expect(resolve({kind: 'agent_profile', agentProfileId: ids.profile})).resolves.toMatchObject({actor: {id: ids.agent, type: 'agent'}});
+    await expect(resolve({kind: 'human', actorId: ids.second})).resolves.toBeNull();
+    await expect(resolve({kind: 'human', actorId: ids.agent})).resolves.toBeNull();
+    await expect(resolve({kind: 'human', actorId: ids.disabled})).resolves.toBeNull();
+
+    await db.update(projectMemberships).set({active: false, version: 2})
+      .where(and(eq(projectMemberships.projectId, ids.project), eq(projectMemberships.actorId, ids.dual)));
+    await expect(resolve({kind: 'human', actorId: ids.dual})).resolves.toBeNull();
+    await db.update(projectMemberships).set({active: true, version: 3})
+      .where(and(eq(projectMemberships.projectId, ids.project), eq(projectMemberships.actorId, ids.dual)));
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: ids.project,
+      actorId: ids.second, roles: ['contributor']});
+    await expect(resolve({kind: 'project_role', role: 'contributor'})).resolves.toBeNull();
+    await db.update(runtimeRegistrations).set({enabled: false, version: 2})
+      .where(and(eq(runtimeRegistrations.projectId, ids.project), eq(runtimeRegistrations.agentProfileId, ids.profile)));
+    await expect(resolve({kind: 'agent_profile', agentProfileId: ids.profile})).resolves.toBeNull();
   });
 
   it('atomically freezes one exact autonomous selection and queues one runner-compatible AgentRun', async () => {
@@ -408,7 +484,7 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(actors).values({id: outsider, workspaceId: fixture.ids.workspace, type: 'human',
       role: 'developer', displayName: 'Outsider', authMode: 'user'});
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
-      actorId: outsider, role: 'contributor'});
+      actorId: outsider, roles: ['contributor']});
     await expect(fixture.store.execute({command: fixture.command(fixture.second, 3, outsider) as never,
       requestHash: 'r'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
       error: {code: 'CAPABILITY_DENIED'}}}});
@@ -449,7 +525,7 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(actors).values({id: client, workspaceId: fixture.ids.workspace, type: 'human', role: 'developer',
       displayName: 'Client representative', authMode: 'user', capabilities: {'write:control_plane:development': true}});
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
-      actorId: client, role: 'client_viewer'});
+      actorId: client, roles: ['client_viewer']});
     const acceptance = createPostgresProjectAcceptanceStore(db, {now: () => new Date('2026-08-09T13:00:00.000Z')});
     const protocolId = randomUUID();
     const prepare = {commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
@@ -474,7 +550,7 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(actors).values({id: secondOwner, workspaceId: fixture.ids.workspace, type: 'human', role: 'developer',
       displayName: 'Second Product Owner', authMode: 'user', capabilities: {'write:control_plane:development': true}});
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
-      actorId: secondOwner, role: 'project_owner'});
+      actorId: secondOwner, roles: ['project_owner']});
     const duplicatePrepare = {...prepare, commandId: randomUUID(), actor: {actorId: secondOwner},
       idempotencyKey: `project-uat-prepare:v1:${fixture.ids.project}:4:${secondOwner}`, payload: {...prepare.payload,
         protocolId: randomUUID()}};
@@ -600,7 +676,7 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(actors).values({id: outsider, workspaceId: authority.ids.workspace,
       type: 'human', role: 'developer', displayName: 'Other member', authMode: 'user'});
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: authority.ids.project,
-      actorId: outsider, role: 'project_owner'});
+      actorId: outsider, roles: ['project_owner']});
     const authorityCommand = authority.command(outsider);
     await expect(authority.store.execute({command: authorityCommand,
       requestHash: 'f'.repeat(64), authorized: true}))
@@ -666,7 +742,7 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(actors).values({id: contributor, workspaceId: fixture.ids.workspace,
       type: 'human', role: 'developer', displayName: 'Contributor', authMode: 'user'});
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
-      actorId: contributor, role: 'contributor'});
+      actorId: contributor, roles: ['contributor']});
     const hostile = fixture.command(contributor);
     await expect(fixture.store.execute({command: hostile,
       requestHash: '3'.repeat(64), authorized: true}))
@@ -767,6 +843,22 @@ describePostgres('governed project orchestration persistence', () => {
     });
   });
 
+  it('keeps QA and later stages protocol-owned even when the WorkItem assignment remains an agent profile', async () => {
+    const fixture = await seedCompletedAcceptance(false);
+    await fixture.store.execute({command: fixture.command(), requestHash: 'q'.repeat(64), authorized: true});
+    const executionStore = createPostgresProjectExecutionStore(db);
+    const command = {commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `qa-protocol-${randomUUID()}`, issuedAt: '2026-08-09T11:02:00.000Z',
+      actor: {actorId: fixture.ids.owner}, type: 'project_execution.resume' as const,
+      payload: {projectId: fixture.ids.project, expectedVersion: 2}};
+    await expect(executionStore.execute({command: command as never, requestHash: 'p'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {value: {status: 'blocked', selection: {
+        stageKey: 'qa', boundary: 'human_confirmation_required',
+        responsibleActor: {id: fixture.ids.owner, type: 'human', agentProfileId: null}},
+      decisions: expect.arrayContaining([expect.objectContaining({
+        id: `protocol:${fixture.ids.task}:qa:approval`, source: 'delivery_protocol'})])}}}});
+  });
+
   it('rolls back evidence, task, journey, execution, receipt, and audit on a late write failure', async () => {
     const fixture = await seedCompletedAcceptance();
     await db.insert(statusTransitions).values({workItemId: fixture.ids.task,
@@ -803,7 +895,7 @@ describePostgres('governed project orchestration persistence', () => {
       role: 'developer', displayName: 'Hostile project member', authMode: 'user',
       capabilities: {'write:control_plane:development': true}});
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: ids.project,
-      actorId: hostileActorId, role: 'contributor'});
+      actorId: hostileActorId, roles: ['contributor']});
     await expect(dispatcher.run({workspaceId: ids.workspace, projectId: ids.project,
       expectedVersion: 1, requestedByActorId: hostileActorId}))
       .resolves.toEqual({dispatched: 0, blocked: 0, replayed: 0, denied: 1});
@@ -923,6 +1015,39 @@ describePostgres('governed project orchestration persistence', () => {
       .toMatchObject({status: 'running', runnerId: 'isolated-runner', attempt: 1});
   });
 
+  it.each(['membership', 'role', 'profile', 'registration'] as const)(
+    'refuses runner claim after queued responsibility %s drift', async (drift) => {
+      const fixture = await seedAutonomousProject(false);
+      await fixture.store.execute({command: fixture.command('project_execution.start', 0,
+        `claim-drift-start-${drift}`) as never, requestHash: `claim-${drift}`.padEnd(64, '0'), authorized: true});
+      await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+        workspaceId: fixture.ids.workspace, projectId: fixture.ids.project, expectedVersion: 1,
+        requestedByActorId: fixture.ids.owner});
+      await applyResponsibilityDrift(fixture.ids, drift);
+      const claimedAt = new Date('2026-08-09T10:02:00.000Z');
+      await expect(createPostgresRunnerClaimStore(db, {activationEnvironment: {
+        RUNNER_ENABLED: 'true', LOCAL_RUNNER_TRANSPORT_ENABLED: 'true'
+      }}).claim({workspaceId: fixture.ids.workspace, runnerId: 'isolated-runner',
+        projectIds: [fixture.ids.project], repositories: [{owner: 'owner', name: 'repository'}],
+        runtimeIds: ['codex-cli'], leaseTokenHash: 'f'.repeat(64), claimedAt,
+        leaseExpiresAt: new Date(claimedAt.getTime() + 60_000)}, (record) => record)).resolves.toBeNull();
+      expect((await db.select().from(agentRuns).where(eq(agentRuns.workItemId, fixture.ids.task)))[0])
+        .toMatchObject({status: 'queued', attempt: 0});
+    }
+  );
+
+  it.each(['membership', 'role', 'profile', 'registration'] as const)(
+    'refuses first acceptance after dispatched responsibility %s drift', async (drift) => {
+      const fixture = await seedCompletedAcceptance();
+      await applyResponsibilityDrift(fixture.ids, drift);
+      await expect(fixture.store.execute({command: fixture.command(),
+        requestHash: `accept-${drift}`.padEnd(64, '0'), authorized: true})).resolves.toMatchObject({
+        receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
+      expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+        .toMatchObject({status: 'in_dev', version: 1});
+    }
+  );
+
   it('rolls back a late persistence failure and retries without duplicate packet or run', async () => {
     const {ids, store, command} = await seedAutonomousProject(false);
     await store.execute({command: command('project_execution.start', 0, 'retry-start') as never,
@@ -969,7 +1094,7 @@ describePostgres('governed project orchestration persistence', () => {
       .where(eq(projectExecutionDispatches.projectId, target.ids.project))).toHaveLength(0);
   });
 
-  it.each(['journey_advanced', 'protocol_inactive', 'actor_disabled', 'old_plan'] as const)(
+  it.each(['journey_advanced', 'protocol_inactive', 'actor_disabled', 'role_changed', 'old_plan'] as const)(
     'projects stale autonomous selection as blocked and reconciles it on the next CAS command: %s',
     async (mutation) => {
       const {ids, store, command} = await seedAutonomousProject(false);
@@ -984,6 +1109,9 @@ describePostgres('governed project orchestration persistence', () => {
         await db.update(runbooks).set({active: false}).where(eq(runbooks.id, ids.protocol));
       } else if (mutation === 'actor_disabled') {
         await db.update(actors).set({disabledAt: new Date()}).where(eq(actors.id, ids.agent));
+      } else if (mutation === 'role_changed') {
+        await db.update(projectMemberships).set({roles: ['contributor'], version: 2})
+          .where(and(eq(projectMemberships.projectId, ids.project), eq(projectMemberships.actorId, ids.agent)));
       } else {
         const newPlan = randomUUID(); const newPlanVersion = randomUUID(); const newBaseline = randomUUID();
         await db.update(projectScopeBaselineVersions).set({active: false})
@@ -1034,8 +1162,8 @@ describePostgres('governed project orchestration persistence', () => {
       {id: ids.agent, workspaceId: ids.workspace, type: 'agent', role: 'agent_operator', displayName: 'Agent', authMode: 'agent'}
     ]);
     await db.insert(projectMemberships).values([
-      {id: randomUUID(), projectId: ids.project, actorId: ids.owner, role: 'project_owner'},
-      {id: randomUUID(), projectId: ids.project, actorId: ids.agent, role: 'agent'}
+      {id: randomUUID(), projectId: ids.project, actorId: ids.owner, roles: ['project_owner']},
+      {id: randomUUID(), projectId: ids.project, actorId: ids.agent, roles: ['agent']}
     ]);
     await db.insert(agentProfiles).values({id: ids.profile, workspaceId: ids.workspace, actorId: ids.agent,
       runtimeId: 'fixture', runtimeProfile: 'read_safe'});
@@ -1135,7 +1263,7 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(actors).values({id: ids.secondOwner, workspaceId: ids.workspace, type: 'human',
       role: 'developer', displayName: 'Second owner', authMode: 'user'});
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: ids.project,
-      actorId: ids.secondOwner, role: 'project_owner'});
+      actorId: ids.secondOwner, roles: ['project_owner']});
     await expect(store.execute({command: command('resume-ambiguity', 'project_execution.resume', 4) as never,
       requestHash: 'v'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {value: {
       status: 'blocked', version: 5, blockReason: 'delivery_protocol_not_ready', selection: null
@@ -1149,7 +1277,7 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(workspaces).values({id: ids.workspace, name: 'Dependencies', slug: `dependencies-${randomUUID()}`});
     await db.insert(projects).values({id: ids.project, workspaceId: ids.workspace, name: 'Project', slug: `project-${randomUUID()}`});
     await db.insert(actors).values({id: ids.owner, workspaceId: ids.workspace, type: 'human', role: 'workspace_admin', displayName: 'Owner', authMode: 'user'});
-    await db.insert(projectMemberships).values({id: randomUUID(), projectId: ids.project, actorId: ids.owner, role: 'project_owner'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: ids.project, actorId: ids.owner, roles: ['project_owner']});
     await db.insert(projectPlanDrafts).values({id: ids.plan, workspaceId: ids.workspace, projectId: ids.project,
       state: 'approved', definition: {} as never, contentHash: 'a'.repeat(64), revision: 2, createdByActorId: ids.owner,
       approvedByActorId: ids.owner, approvedAt: new Date()});

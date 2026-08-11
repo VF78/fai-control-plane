@@ -12,6 +12,7 @@ import {
 import {and, eq, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {resolveCurrentExecutionResponsibility, resolveProtocolResponsibility} from './work-item-responsibility';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -75,44 +76,8 @@ const responsibilityResolved = async (
   projectId: string,
   stage: DeliveryProtocolStage
 ): Promise<boolean> => {
-  if (stage.responsibility.kind === 'project_role') {
-    const [owner] = await tx.select({id: schema.actors.id, type: schema.actors.type})
-      .from(schema.projectMemberships)
-      .innerJoin(schema.actors, eq(schema.actors.id, schema.projectMemberships.actorId))
-      .where(and(
-        eq(schema.projectMemberships.projectId, projectId),
-        eq(schema.projectMemberships.role, stage.responsibility.role),
-        eq(schema.projectMemberships.active, true),
-        eq(schema.actors.workspaceId, workspaceId),
-        isNull(schema.actors.disabledAt)
-      )).limit(1);
-    return owner !== undefined && owner.type !== 'system';
-  }
-  const responsibility = stage.responsibility;
-  const [actor] = await tx.select({type: schema.actors.type}).from(schema.actors)
-    .innerJoin(schema.projectMemberships, and(
-      eq(schema.projectMemberships.actorId, schema.actors.id),
-      eq(schema.projectMemberships.projectId, projectId),
-      eq(schema.projectMemberships.active, true)
-    )).where(and(
-      eq(schema.actors.id, responsibility.actorId),
-      eq(schema.actors.workspaceId, workspaceId),
-      eq(schema.actors.type, responsibility.actorType),
-      isNull(schema.actors.disabledAt)
-    )).limit(1);
-  if (actor === undefined || responsibility.actorType === 'human') return actor !== undefined;
-  const [profile] = await tx.select({id: schema.agentProfiles.id}).from(schema.agentProfiles)
-    .innerJoin(schema.runtimeRegistrations, and(
-      eq(schema.runtimeRegistrations.agentProfileId, schema.agentProfiles.id),
-      eq(schema.runtimeRegistrations.actorId, schema.agentProfiles.actorId),
-      eq(schema.runtimeRegistrations.projectId, projectId),
-      eq(schema.runtimeRegistrations.enabled, true)
-    )).where(and(
-      eq(schema.agentProfiles.id, responsibility.agentProfileId),
-      eq(schema.agentProfiles.actorId, responsibility.actorId),
-      eq(schema.agentProfiles.enabled, true)
-    )).limit(1);
-  return profile !== undefined;
+  return await resolveProtocolResponsibility(tx, {workspaceId, projectId,
+    responsibility: stage.responsibility}) !== null;
 };
 
 export type PostgresAgentRunAcceptanceOptions = Readonly<{
@@ -289,7 +254,7 @@ export const createPostgresAgentRunAcceptanceStore = (
           eq(schema.actors.authMode, 'user'),
           isNull(schema.actors.disabledAt)
         )).limit(1);
-      const [membership] = await tx.select({role: schema.projectMemberships.role})
+      const [membership] = await tx.select({roles: schema.projectMemberships.roles})
         .from(schema.projectMemberships).where(and(
           eq(schema.projectMemberships.projectId, binding.projectId),
           eq(schema.projectMemberships.actorId, command.actor.actorId),
@@ -297,7 +262,7 @@ export const createPostgresAgentRunAcceptanceStore = (
         )).limit(1);
       const isOwner = operator !== undefined && (
         ['workspace_admin', 'delivery_lead'].includes(operator.role) ||
-        membership?.role === 'workspace_owner' || membership?.role === 'project_owner'
+        membership?.roles.includes('workspace_owner') === true || membership?.roles.includes('project_owner') === true
       );
       if (!isOwner || command.actor.actorId !== binding.approverActorId) {
         return completeAttempt(errorResult('CAPABILITY_DENIED',
@@ -363,16 +328,22 @@ export const createPostgresAgentRunAcceptanceStore = (
       )).limit(1);
       const [runProfile] = await tx.select({actorId: schema.agentProfiles.actorId})
         .from(schema.agentProfiles).where(eq(schema.agentProfiles.id, run.agentProfileId)).limit(1);
+      const currentResponsibility = await resolveCurrentExecutionResponsibility(tx, {
+        workspaceId: command.workspaceId, projectId: binding.projectId, workItemId: binding.workItemId});
       if (dispatch === undefined || execution.status !== 'running' ||
+        currentResponsibility === null ||
         execution.selectedWorkItemId !== binding.workItemId ||
-        execution.selectedPlanVersionId !== binding.workItemPlanVersionId ||
-        execution.selectedWorkItemVersion !== binding.workItemVersion ||
-        execution.selectedProtocolId !== journey.protocolId ||
-        execution.selectedProtocolVersion !== journey.protocolVersion ||
-        execution.selectedJourneyVersion !== journey.version ||
-        execution.selectedStageKey !== journey.stageKey ||
+        execution.selectedPlanVersionId !== currentResponsibility.planVersionId ||
+        execution.selectedWorkItemVersion !== currentResponsibility.workItemVersion ||
+        execution.selectedProtocolId !== currentResponsibility.protocolId ||
+        execution.selectedProtocolVersion !== currentResponsibility.protocolVersion ||
+        execution.selectedJourneyVersion !== currentResponsibility.journeyVersion ||
+        execution.selectedStageKey !== currentResponsibility.stageKey ||
         runProfile === undefined || execution.selectedResponsibleActorId !== runProfile.actorId ||
+        execution.selectedResponsibleActorId !== currentResponsibility.actor.id ||
         execution.selectedAgentProfileId !== run.agentProfileId ||
+        currentResponsibility.actor.agentProfileId !== run.agentProfileId ||
+        execution.selectedResponsibilityHash !== currentResponsibility.factHash ||
         binding.workItemVersion !== command.payload.expectedWorkItemVersion ||
         binding.packetWorkItemVersion !== binding.workItemVersion ||
         binding.packetAgentProfileId !== run.agentProfileId) {
@@ -548,6 +519,7 @@ export const createPostgresAgentRunAcceptanceStore = (
         selectedStageKey: null,
         selectedResponsibleActorId: null,
         selectedAgentProfileId: null,
+        selectedResponsibilityHash: null,
         blockReason: null,
         pausedAt: now,
         completedAt: null,

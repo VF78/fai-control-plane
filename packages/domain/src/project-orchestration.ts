@@ -31,6 +31,7 @@ export type ProjectExecutionSelection = Readonly<{
   stageKey: string;
   stageName: string;
   executionMode: 'manual' | 'autonomous' | 'human_approval';
+  responsibilityHash: string;
   responsibleActor: Readonly<{
     id: string;
     displayName: string;

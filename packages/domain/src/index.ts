@@ -778,7 +778,7 @@ export type SetProjectMembershipCommand = CanonicalCommandEnvelope<
     membershipId: string;
     projectId: string;
     subjectActorId: string;
-    role: ProjectMembershipRole;
+    roles: readonly ProjectMembershipRole[];
     active: boolean;
     expectedVersion: number | null;
   }>
@@ -795,10 +795,11 @@ export type CreateProjectCommand = CanonicalCommandEnvelope<
     slug: string;
     productOwnerActorId: string;
     productOwnerMembershipId: string;
+    productOwnerRoles: readonly ProjectMembershipRole[];
     members: readonly Readonly<{
       membershipId: string;
       actorId: string;
-      role: ProjectMembershipRole;
+      roles: readonly ProjectMembershipRole[];
     }>[];
     repositoryBinding: ProjectSetupBindingMode;
     trackerBinding: ProjectSetupBindingMode;
@@ -817,7 +818,7 @@ export type OnboardActorCommand = CanonicalCommandEnvelope<
     actorType: 'human' | 'agent';
     displayName: string;
     actorRole: 'delivery_lead' | 'developer' | 'agent_operator';
-    membershipRole: ProjectMembershipRole;
+    membershipRoles: readonly ProjectMembershipRole[];
     agentProfile: null | Readonly<{
       profileId: string;
       registrationId: string;
@@ -2665,7 +2666,7 @@ export interface CanonicalCommandTransaction {
       actorId: string;
       slug: string;
       productOwnerActorId: string;
-      members: readonly Readonly<{actorId: string; role: ProjectMembershipRole}>[];
+      members: readonly Readonly<{actorId: string; roles: readonly ProjectMembershipRole[]}>[];
       agentProfileId: string | null;
     }>
   ): Promise<Readonly<{
@@ -2707,7 +2708,7 @@ export interface CanonicalCommandTransaction {
     projectId?: string
   ): Promise<Readonly<{
     workspaceAdmin: boolean;
-    projectRole: ProjectMembershipRole | null;
+    projectRoles: readonly ProjectMembershipRole[] | null;
   }> | null>;
   /** Atomically compare-and-swaps the aggregate and appends its audit event. */
   persistAuditedMutation(input: Readonly<{

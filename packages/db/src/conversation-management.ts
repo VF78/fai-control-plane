@@ -56,13 +56,13 @@ const canManage = async (
     isNull(schema.actors.disabledAt)
   )).limit(1);
   if (actor?.role === 'workspace_admin') return true;
-  const [membership] = await tx.select({role: schema.projectMemberships.role})
+  const [membership] = await tx.select({roles: schema.projectMemberships.roles})
     .from(schema.projectMemberships).where(and(
       eq(schema.projectMemberships.projectId, projectId),
       eq(schema.projectMemberships.actorId, actorId),
       eq(schema.projectMemberships.active, true)
     )).limit(1);
-  return membership?.role === 'project_owner' || membership?.role === 'workspace_owner';
+  return membership?.roles.includes('project_owner') === true || membership?.roles.includes('workspace_owner') === true;
 };
 
 export const createPostgresConversationChannelStore = (db: Database) => ({

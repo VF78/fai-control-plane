@@ -122,19 +122,19 @@ describePostgres('delivery protocol persistence', () => {
         id: ids.ownerMembership,
         projectId: ids.project,
         actorId: ids.owner,
-        role: 'project_owner'
+        roles: ['project_owner']
       },
       {
         id: ids.contributorMembership,
         projectId: ids.project,
         actorId: ids.contributor,
-        role: 'contributor'
+        roles: ['contributor']
       },
       {
         id: ids.reviewerMembership,
         projectId: ids.project,
         actorId: ids.reviewer,
-        role: 'reviewer'
+        roles: ['reviewer']
       }
     ]);
     const store = createPostgresDeliveryProtocolStore(db);

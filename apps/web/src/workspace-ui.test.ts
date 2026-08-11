@@ -179,7 +179,7 @@ it('renders a dynamic authorized project card, manager intake, and resumable set
   const access = {canRetireAgents: false, instructionBaselines: [], actors: [{id: actorId, displayName: 'Manager',
     type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {'write:control_plane:development': true}}],
     memberships: [{id: 'membership-1', projectId, project: 'Dynamic', projectSlug: 'dynamic-project', actorId,
-      role: 'project_owner', active: true, version: 1, canManage: true}], externalIdentities: [], resourceGrants: [],
+      roles: ['project_owner'], active: true, version: 1, canManage: true}], externalIdentities: [], resourceGrants: [],
     agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}};
   const base = {portfolio: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [project],
     csrfToken: 'csrf', operatorActorId: actorId, access: {state: 'ready', data: access}} as unknown as WorkspaceData;
@@ -375,7 +375,7 @@ it('does not offer agent activation to a project owner without the exact write c
       boundary: 'autonomous_ready' as const};
     const accessData = {actors: [{id: actorId, displayName: 'Owner', type: 'human' as const,
       role: 'developer', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1',
-      project: 'MSA', projectSlug: 'msa', actorId, role: 'project_owner', active: true, version: 1}],
+      project: 'MSA', projectSlug: 'msa', actorId, roles: ['project_owner'], active: true, version: 1}],
     externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [],
     sharing: {enabled: false, projects: [], grants: []}};
     const data = {portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
@@ -462,12 +462,12 @@ it('renders only the fixed MSA and ASCON roster memberships in People & Access',
         {id: 'hermes', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}
       ],
       memberships: [
-        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'vladimir', role: 'project_owner', active: true, version: 1},
-        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', role: 'contributor', active: true, version: 1},
-        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'hermes', role: 'agent', active: true, version: 1},
-        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', role: 'project_owner', active: true, version: 1},
-        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vitaliy', role: 'contributor', active: false, version: 2},
-        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'hermes', role: 'agent', active: false, version: 2}
+        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'vladimir', roles: ['project_owner'], active: true, version: 1},
+        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', roles: ['contributor'], active: true, version: 1},
+        {projectId: 'msa', project: 'MSA', projectSlug: 'msa', actorId: 'hermes', roles: ['agent'], active: true, version: 1},
+        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', roles: ['project_owner'], active: true, version: 1},
+        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vitaliy', roles: ['contributor'], active: false, version: 2},
+        {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'hermes', roles: ['agent'], active: false, version: 2}
       ], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}
     }}
   } as unknown as WorkspaceData;
@@ -490,7 +490,7 @@ it('renders real authenticated onboarding forms only inside People and Agents ma
   const access = {
     canRetireAgents: false,
     actors: [{id: 'owner', displayName: 'Owner', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}],
-    memberships: [{projectId: '11111111-1111-4111-8111-111111111111', project: 'MSA', projectSlug: 'msa', actorId: 'owner', role: 'project_owner', active: true, version: 1, canManage: true}],
+    memberships: [{projectId: '11111111-1111-4111-8111-111111111111', project: 'MSA', projectSlug: 'msa', actorId: 'owner', roles: ['project_owner'], active: true, version: 1, canManage: true}],
     externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [],
     sharing: {enabled: false, projects: [], grants: []}
   };
@@ -592,8 +592,8 @@ it('derives unassigned task responsibility from the active protocol without fabr
     {id: 'vladimir', displayName: 'Vladimir', type: 'human' as const, role: 'workspace_admin', disabledAt: null, capabilities: {}},
     {id: 'vitaliy', displayName: 'Vitaliy', type: 'human' as const, role: 'developer', disabledAt: null, capabilities: {}}
   ], memberships: [
-    {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa' as const, actorId: 'vladimir', role: 'project_owner', active: true, version: 1},
-    {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa' as const, actorId: 'vitaliy', role: 'contributor', active: true, version: 1}
+    {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa' as const, actorId: 'vladimir', roles: ['project_owner' as const], active: true, version: 1},
+    {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa' as const, actorId: 'vitaliy', roles: ['contributor' as const], active: true, version: 1}
   ], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}};
   const data = {portfolio: {state: 'unconfigured'}, access: {state: 'ready', data: access}, project: {state: 'ready', data: project}, runs: null, health: null, projectIndex: [], operatorActorId: 'vladimir'} as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'msa', 'tasks'], {})!, data}));
@@ -610,7 +610,7 @@ it('shows only active project memberships and denies a direct cross-project rout
       {id: 'msa-id', name: 'MSA', slug: 'msa', health: 'green', snapshotAt: null, synchronizedAt: null, unresolvedRiskCount: 0, metrics: {}},
       {id: 'ascon-id', name: 'ASCON', slug: 'ascon', health: 'green', snapshotAt: null, synchronizedAt: null, unresolvedRiskCount: 0, metrics: {}}
     ]}},
-    access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: 'vitaliy', displayName: 'Vitaliy', type: 'human', role: 'developer', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', role: 'contributor', active: true, version: 1}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
+    access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: 'vitaliy', displayName: 'Vitaliy', type: 'human', role: 'developer', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', roles: ['contributor'], active: true, version: 1}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
     project: {state: 'ready', data: {project, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []}}, runs: null, health: null, projectIndex: [], operatorActorId: 'vitaliy'
   } as unknown as WorkspaceData;
   const allowed = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'msa', 'tasks'], {})!, data}));
@@ -631,8 +631,8 @@ it('keeps every global surface within the operator membership and rejects unauth
       {id: 'vitaliy', displayName: 'Vitaliy', type: 'human', role: 'developer', disabledAt: null, capabilities: {}},
       {id: 'ascon-agent', displayName: 'ASCON agent', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}
     ], memberships: [
-      {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', role: 'contributor', active: true, version: 1},
-      {projectId: 'ascon-id', project: 'ASCON', projectSlug: 'ascon', actorId: 'ascon-agent', role: 'agent', active: true, version: 1}
+      {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', roles: ['contributor'], active: true, version: 1},
+      {projectId: 'ascon-id', project: 'ASCON', projectSlug: 'ascon', actorId: 'ascon-agent', roles: ['agent'], active: true, version: 1}
     ], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
     health: {state: 'ready', data: {jobs: [
       {id: 'msa-job', project: 'MSA', projectSlug: 'msa', name: 'MSA health', status: 'healthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null},
@@ -710,10 +710,10 @@ it('renders chat intent, provider observation, read-only messages and manager co
   const data = {
     portfolio: {state: 'unconfigured'}, runs: null, health: null, projectIndex: [], csrfToken: 'csrf', operatorActorId: actorId,
     project: {state: 'ready', data: {project, agentProfiles: [], snapshot: null, synchronizedAt: null, execution: {status: 'stopped', version: 0}, protocol: null, workItems: []}},
-    access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: actorId, displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {'write:control_plane:development': true}}], memberships: [{projectId, project: 'MSA', projectSlug: 'msa', actorId, role: 'project_owner', active: true, version: 1, canManage: true}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
+    access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: actorId, displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {'write:control_plane:development': true}}], memberships: [{projectId, project: 'MSA', projectSlug: 'msa', actorId, roles: ['project_owner'], active: true, version: 1, canManage: true}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
     conversations: {state: 'ready', data: {projects: [{id: projectId, name: 'MSA', slug: 'msa', channels: [{
       conversationClass: 'internal', state: 'ready', configuration: {id: channelId, desiredState: 'active', provider: 'telegram', version: 1}, freshnessAt: new Date('2026-08-09T12:00:00.000Z'), failure: null,
-      access: [{actorId, displayName: 'Vladimir', role: 'project_owner', grantId: null, grantVersion: null, desiredLevel: 'write', observedLevel: 'read', observedAt: new Date('2026-08-09T11:59:00.000Z'), confirmation: 'mismatch'}],
+      access: [{actorId, displayName: 'Vladimir', roles: ['project_owner'], grantId: null, grantVersion: null, desiredLevel: 'write', observedLevel: 'read', observedAt: new Date('2026-08-09T11:59:00.000Z'), confirmation: 'mismatch'}],
       participants: [{id: 'p1', displayName: 'Vladimir', resolution: 'resolved', observedLevel: 'read', observedAt: new Date('2026-08-09T11:59:00.000Z'), lastObservedAt: new Date('2026-08-09T12:00:00.000Z')}],
       messages: [{id: 'm1', participantId: 'p1', author: 'Vladimir', sentAt: new Date('2026-08-09T12:00:00.000Z'), text: 'Готово к проверке', attachmentSummary: null, reply: false, threaded: false}]
     }, {conversationClass: 'client', state: 'not_used', configuration: {id: '55555555-5555-4555-8555-555555555555', desiredState: 'not_used', provider: null, version: 1}, freshnessAt: null, failure: null, access: [], participants: [], messages: []}]}]}}
@@ -741,7 +741,7 @@ it('renders persisted agent registrations and authorized new-claim controls with
   const data = {
     portfolio: {state: 'unconfigured'}, project: null, runs: null, projectIndex: [], csrfToken: 'csrf',
     health: {state: 'ready', data: {jobs: [{id: 'job-1', project: 'MSA', projectSlug: 'msa', name: 'recovery', status: 'unhealthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null}], integrations: [], risks: [], audit: [], costLedger: []}},
-    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'agent-1', role: 'agent', active: true, version: 1}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64), registrations: [{id: 'registration-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true, version: 3, updatedAt: new Date('2026-07-30T11:00:00.000Z'), availability: unavailable, canManage: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null, fleet: {health: 'unknown', freshnessAt: null, currentWork: null, lastReceipt: null}}]}], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}}
+    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'agent-1', roles: ['agent'], active: true, version: 1}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64), registrations: [{id: 'registration-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true, version: 3, updatedAt: new Date('2026-07-30T11:00:00.000Z'), availability: unavailable, canManage: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null, fleet: {health: 'unknown', freshnessAt: null, currentWork: null, lastReceipt: null}}]}], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}}
   } as unknown as WorkspaceData;
   const list = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agents', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
   const detail = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data}));
@@ -788,7 +788,7 @@ it('renders persisted agent registrations and authorized new-claim controls with
       project: 'MSA',
       projectSlug: 'msa',
       actorId: 'agent-2',
-      role: 'agent',
+      roles: ['agent'],
       active: true,
       version: 1,
       canManage: true
@@ -901,9 +901,9 @@ it('shows owned Hermes availability attention and treats ASCON no-bot scope as c
       {id: 'hermes', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}
     ],
     memberships: [
-      {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vladimir', role: 'project_owner', active: true, version: 1},
-      {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'hermes', role: 'agent', active: true, version: 1},
-      {projectId: 'ascon-id', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', role: 'project_owner', active: true, version: 1}
+      {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vladimir', roles: ['project_owner'], active: true, version: 1},
+      {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'hermes', roles: ['agent'], active: true, version: 1},
+      {projectId: 'ascon-id', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', roles: ['project_owner'], active: true, version: 1}
     ],
     externalIdentities: [], resourceGrants: [],
     agentSystems: [{actorId: 'hermes', profiles: [{
@@ -959,12 +959,12 @@ it('renders project membership and provider-confirmed grant facts in the access 
   const data = {
     portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf',
     project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: []}},
-    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{id: 'membership-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', role: 'project_owner', active: true, version: 2, canManage: true}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], resourceGrants: [{id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), observationState: 'confirmed', remediation: null, providerAccessUrl: null, version: 3}], agentSystems: [], requests: [{id: 'request-1', requester: 'Vladimir', targetSurface: 'repository', requestedScope: ['msa'], status: 'pending', expiresAt: null, decidedAt: null}], secretRefs: [], policy: [], sharing: {enabled: true, projects: [{name: 'MSA', slug: 'msa', workItems: []}], grants: []}}}
+    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{id: 'membership-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', roles: ['project_owner', 'contributor'], active: true, version: 2, canManage: true}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], resourceGrants: [{id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), observationState: 'confirmed', remediation: null, providerAccessUrl: null, version: 3}], agentSystems: [], requests: [{id: 'request-1', requester: 'Vladimir', targetSurface: 'repository', requestedScope: ['msa'], status: 'pending', expiresAt: null, decidedAt: null}], secretRefs: [], policy: [], sharing: {enabled: true, projects: [{name: 'MSA', slug: 'msa', workItems: []}], grants: []}}}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'access', project: 'msa', taskId: null, runId: null, agentId: null, accessActorId: 'actor-1', scope: {environment: null, from: null, to: null}}, data}));
 
   expect(markup).toContain('Карта доступов проекта');
-  expect(markup).toContain('Владелец продукта');
+  expect(markup).toContain('Владелец продукта · Разработчик');
   expect(markup).toContain('Требуемый и подтверждённый уровень');
   expect(markup).toContain('github');
   expect(markup).toContain('href="/projects/msa/access/actor-1"');
@@ -973,6 +973,8 @@ it('renders project membership and provider-confirmed grant facts in the access 
   expect(markup).toContain('Запросы доступа');
   expect(markup).toContain('Управляемые заявки рабочей области');
   expect(markup).toContain('action="/api/access/memberships/membership-1"');
+  expect(markup).toMatch(/name="roleContributor" checked=""/);
+  expect(markup).toMatch(/name="roleProjectOwner" checked=""/);
   expect(markup).toContain('action="/api/access/grants/grant-1"');
   expect(markup).toContain('После сохранения Control Plane покажет расхождение');
   expect(markup).not.toContain('Secret refs');
@@ -984,7 +986,7 @@ it('deep-links only a safe provider-confirmed access observation', () => {
     project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: []}},
     access: {state: 'ready', data: {
       actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}],
-      memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', role: 'project_owner', active: true, version: 2}],
+      memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', roles: ['project_owner'], active: true, version: 2}],
       externalIdentities: [],
       resourceGrants: [
         {id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), observationState: 'confirmed', remediation: null, providerAccessUrl: 'https://github.com/VF78/MSA/settings/access', version: 3},
@@ -1080,7 +1082,7 @@ it('keeps the governed task to receipt journey inside project task and run detai
     agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [baseTask]
   };
   const shellData = (workItem: unknown, runs: unknown): WorkspaceData => ({
-    portfolio: {state: 'unconfigured'}, access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: actorId, displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId, role: 'project_owner', active: true, version: 1}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}}, health: null, projectIndex: [],
+    portfolio: {state: 'unconfigured'}, access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: actorId, displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId, roles: ['project_owner'], active: true, version: 1}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}}, health: null, projectIndex: [],
     csrfToken: 'csrf', operatorActorId: actorId,
     project: {state: 'ready', data: {...project, workItems: [workItem]}},
     runs: {state: 'ready', data: runs}

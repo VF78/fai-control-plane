@@ -1,6 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {
   computeApprovalActionHash,
+  canonicalProjectMembershipRoles,
   containsHighConfidenceSecretContent,
   DEFAULT_AGENT_INSTRUCTIONS,
   DEFAULT_AGENT_SETTINGS,
@@ -54,6 +55,7 @@ import {
   isTaskPacketProfileEligible,
   matchesTaskPacketProfileSnapshot
 } from './runtime-availability';
+import {projectMembershipHasRoleSql} from './project-membership-roles';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = NodePgTransaction<
@@ -347,6 +349,8 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.id, 'projectMembership.id');
       uuid(mutation.aggregate.projectId, 'projectMembership.projectId');
       uuid(mutation.aggregate.actorId, 'projectMembership.actorId');
+      invariant(canonicalProjectMembershipRoles(mutation.aggregate.roles) !== null,
+        'Project membership roles must be canonical.');
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
     case 'project_setup':
@@ -373,9 +377,10 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       'Actor onboarding membership must be active and bound to the actor and project.');
       invariant(
         (mutation.aggregate.actorType === 'human' && mutation.aggregate.agentProfile === null &&
-          mutation.aggregate.membership.role !== 'agent') ||
+          !mutation.aggregate.membership.roles.includes('agent')) ||
         (mutation.aggregate.actorType === 'agent' && mutation.aggregate.actorRole === 'agent_operator' &&
-          mutation.aggregate.membership.role === 'agent' && mutation.aggregate.agentProfile !== null),
+          mutation.aggregate.membership.roles.length === 1 &&
+          mutation.aggregate.membership.roles[0] === 'agent' && mutation.aggregate.agentProfile !== null),
         'Actor onboarding role and profile must match actor type.'
       );
       if (mutation.aggregate.agentProfile !== null) {
@@ -1499,6 +1504,21 @@ const accessSubjectIsScoped = async (
   await workspaceHasProject(tx, workspaceId, projectId) &&
   await workspaceHasActor(tx, workspaceId, actorId);
 
+const projectMembershipActorIsCompatible = async (
+  tx: Transaction,
+  workspaceId: string,
+  actorId: string,
+  roles: readonly ProjectMembership['roles'][number][]
+): Promise<boolean> => {
+  const [actor] = await tx.select({type: schema.actors.type})
+    .from(schema.actors)
+    .where(and(eq(schema.actors.id, actorId), eq(schema.actors.workspaceId, workspaceId)));
+  if (actor === undefined) return false;
+  return actor.type === 'agent'
+    ? roles.length === 1 && roles[0] === 'agent'
+    : actor.type === 'human' && !roles.includes('agent');
+};
+
 const persistProjectMembership = async (
   tx: Transaction,
   workspaceId: string,
@@ -1507,13 +1527,15 @@ const persistProjectMembership = async (
   const aggregate = mutation.aggregate;
   if (!await accessSubjectIsScoped(
     tx, workspaceId, aggregate.projectId, aggregate.actorId
+  ) || !await projectMembershipActorIsCompatible(
+    tx, workspaceId, aggregate.actorId, aggregate.roles
   )) return {status: 'not_found'};
   if (mutation.expectedPersistedVersion === null) {
     const [row] = await tx.insert(schema.projectMemberships).values({
       id: aggregate.id,
       projectId: aggregate.projectId,
       actorId: aggregate.actorId,
-      role: aggregate.role,
+      roles: [...aggregate.roles],
       active: aggregate.active,
       version: 1
     }).onConflictDoNothing().returning({version: schema.projectMemberships.version});
@@ -1526,7 +1548,7 @@ const persistProjectMembership = async (
         };
   }
   const [row] = await tx.update(schema.projectMemberships).set({
-    role: aggregate.role,
+    roles: [...aggregate.roles],
     active: aggregate.active,
     version: sql`${schema.projectMemberships.version} + 1`,
     updatedAt: new Date()
@@ -1569,7 +1591,7 @@ const persistActorOnboarding = async (
     id: aggregate.membership.id,
     projectId: aggregate.projectId,
     actorId: aggregate.id,
-    role: aggregate.membership.role,
+    roles: [...aggregate.membership.roles],
     active: true,
     version: 1
   });
@@ -1759,7 +1781,7 @@ const runtimeRegistrationSubjectIsScoped = async (
     .where(and(
       eq(schema.projectMemberships.projectId, registration.projectId),
       eq(schema.projectMemberships.actorId, registration.actorId),
-      eq(schema.projectMemberships.role, 'agent'),
+      projectMembershipHasRoleSql(schema.projectMemberships.roles, 'agent'),
       eq(schema.projectMemberships.active, true)
     ));
   return membership !== undefined;
@@ -2108,17 +2130,18 @@ const persistProjectSetup = async (
   invariant(membershipIds.size === aggregate.memberships.length && actorIds.size === aggregate.memberships.length &&
     aggregate.memberships.every(({id, actorId}) => isUuid(id) && isUuid(actorId)),
   'Project setup membership identities must be unique UUIDs.');
-  const ownerMemberships = aggregate.memberships.filter(({actorId, role}) =>
-    actorId === aggregate.productOwnerActorId && role === 'project_owner');
-  invariant(ownerMemberships.length === 1 && aggregate.memberships.filter(({role}) => role === 'project_owner').length === 1 &&
-    aggregate.memberships.every(({role}) => ['project_owner', 'contributor', 'reviewer', 'client_viewer', 'agent'].includes(role)),
+  const ownerMemberships = aggregate.memberships.filter(({actorId, roles}) =>
+    actorId === aggregate.productOwnerActorId && roles.includes('project_owner'));
+  invariant(ownerMemberships.length === 1 && aggregate.memberships.filter(({roles}) => roles.includes('project_owner')).length === 1 &&
+    aggregate.memberships.every(({roles}) => roles.every((role) =>
+      ['project_owner', 'contributor', 'reviewer', 'client_viewer', 'agent'].includes(role))),
   'Project setup must contain exactly one Product Owner membership and canonical roles.');
   const actorRows = await tx.select({id: schema.actors.id, type: schema.actors.type})
     .from(schema.actors).where(and(eq(schema.actors.workspaceId, workspaceId),
       inArray(schema.actors.id, [...actorIds]), isNull(schema.actors.disabledAt)));
   const actorTypes = new Map(actorRows.map((actor) => [actor.id, actor.type]));
   invariant(actorRows.length === aggregate.memberships.length && aggregate.memberships.every((membership) =>
-    membership.role === 'agent'
+    membership.roles.length === 1 && membership.roles[0] === 'agent'
       ? actorTypes.get(membership.actorId) === 'agent'
       : actorTypes.get(membership.actorId) === 'human'),
   'Project setup actors must be active, workspace-scoped, and role-compatible.');
@@ -2128,8 +2151,8 @@ const persistProjectSetup = async (
       .where(and(eq(schema.agentProfiles.id, configuration.agentProfileId as string),
         eq(schema.agentProfiles.workspaceId, workspaceId), eq(schema.agentProfiles.enabled, true),
         eq(schema.actors.type, 'agent'), isNull(schema.actors.disabledAt)));
-    invariant(profile !== undefined && aggregate.memberships.some(({actorId, role}) =>
-      actorId === profile.actorId && role === 'agent'),
+    invariant(profile !== undefined && aggregate.memberships.some(({actorId, roles}) =>
+      actorId === profile.actorId && roles.length === 1 && roles[0] === 'agent'),
     'Managed execution profile must belong to an active agent member.');
   }
   const [project] = await tx.insert(schema.projects).values({
@@ -2144,7 +2167,7 @@ const persistProjectSetup = async (
     id: membership.id,
     projectId: membership.projectId,
     actorId: membership.actorId,
-    role: membership.role,
+    roles: [...membership.roles],
     active: true,
     version: 1
   })));
@@ -2644,7 +2667,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             id: schema.projectMemberships.id,
             projectId: schema.projectMemberships.projectId,
             actorId: schema.projectMemberships.actorId,
-            role: schema.projectMemberships.role,
+            roles: schema.projectMemberships.roles,
             active: schema.projectMemberships.active,
             version: schema.projectMemberships.version
           }).from(schema.projectMemberships).innerJoin(
@@ -2836,25 +2859,25 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             ));
           if (actor === undefined) return null;
           if (projectId === undefined) {
-            const [ownership] = await tx.select({role: schema.projectMemberships.role})
+            const [ownership] = await tx.select({roles: schema.projectMemberships.roles})
               .from(schema.projectMemberships)
               .innerJoin(schema.projects, eq(schema.projects.id, schema.projectMemberships.projectId))
               .where(and(
                 eq(schema.projects.workspaceId, state.claim.workspaceId),
                 eq(schema.projectMemberships.actorId, actorId),
                 eq(schema.projectMemberships.active, true),
-                eq(schema.projectMemberships.role, 'workspace_owner')
+                projectMembershipHasRoleSql(schema.projectMemberships.roles, 'workspace_owner')
               ))
               .limit(1);
             return {
               workspaceAdmin: actor.role === 'workspace_admin',
-              projectRole: ownership?.role ?? null
+              projectRoles: ownership?.roles ?? null
             };
           }
           if (!await workspaceHasProject(tx, state.claim.workspaceId, projectId)) {
             return null;
           }
-          const [membership] = await tx.select({role: schema.projectMemberships.role})
+          const [membership] = await tx.select({roles: schema.projectMemberships.roles})
             .from(schema.projectMemberships)
             .where(and(
               eq(schema.projectMemberships.projectId, projectId),
@@ -2863,7 +2886,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             ));
           return {
             workspaceAdmin: actor.role === 'workspace_admin',
-            projectRole: membership?.role ?? null
+            projectRoles: membership?.roles ?? null
           };
         },
 
@@ -2892,9 +2915,9 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
           const actorType = new Map(candidates.map((candidate) => [candidate.id, candidate.type]));
           const validProductOwner = actorType.get(input.productOwnerActorId) === 'human';
           const validMembers = candidates.length === ids.length && input.members.every((member) =>
-            member.role === 'agent'
+            member.roles.length === 1 && member.roles[0] === 'agent'
               ? actorType.get(member.actorId) === 'agent'
-              : actorType.get(member.actorId) === 'human');
+              : !member.roles.includes('agent') && actorType.get(member.actorId) === 'human');
           let validAgentProfile = input.agentProfileId === null;
           if (input.agentProfileId !== null) {
             const [profile] = await tx.select({actorId: schema.agentProfiles.actorId})
@@ -2903,7 +2926,7 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
                 eq(schema.agentProfiles.workspaceId, state.claim.workspaceId), eq(schema.agentProfiles.enabled, true),
                 eq(schema.actors.type, 'agent'), isNull(schema.actors.disabledAt)));
             validAgentProfile = profile !== undefined && input.members.some((member) =>
-              member.actorId === profile.actorId && member.role === 'agent');
+              member.actorId === profile.actorId && member.roles.length === 1 && member.roles[0] === 'agent');
           }
           return {
             workspaceAdmin: operator[0].role === 'workspace_admin',

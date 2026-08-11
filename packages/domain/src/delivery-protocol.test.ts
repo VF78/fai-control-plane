@@ -125,7 +125,7 @@ describe('delivery protocol', () => {
     });
     const mismatchedRuntime = simulateDeliveryProtocol(definition, {
       projectExists: true,
-      memberships: [{actorId, role: 'agent', active: true}],
+      memberships: [{actorId, roles: ['agent'], active: true}],
       actors: [{actorId, actorType: 'agent', active: true}],
       agentProfiles: [{profileId, actorId, enabled: true}],
       agentRegistrations: [{profileId: randomUUID(), actorId, enabled: true}]
@@ -139,7 +139,7 @@ describe('delivery protocol', () => {
     });
     const complete = simulateDeliveryProtocol(definition, {
       projectExists: true,
-      memberships: [{actorId, role: 'agent', active: true}],
+      memberships: [{actorId, roles: ['agent'], active: true}],
       actors: [{actorId, actorType: 'agent', active: true}],
       agentProfiles: [{profileId, actorId, enabled: true}],
       agentRegistrations: [{profileId, actorId, enabled: true}]

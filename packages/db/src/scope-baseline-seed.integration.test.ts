@@ -23,10 +23,19 @@ if (process.env.CI && databaseUrl === undefined) {
 }
 const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 const databaseName = `fai_scope_baseline_${randomUUID().replaceAll('-', '')}`;
-const migrationSql = await readFile(
+const historicalMigrationSql = await readFile(
   fileURLToPath(new URL('../drizzle/0036_seed_approved_scope_baselines.sql', import.meta.url)),
   'utf8'
 );
+const legacyOwnerPredicate = `"project_memberships"."role" = 'project_owner'`;
+// 0036 stays immutable and is applied by migrate() in its scalar-role era. This replay adapts only
+// its ownership predicate so the same idempotent seed payload can be exercised on the latest schema.
+const currentRoleSetReplaySql = (() => {
+  const predicateCount = historicalMigrationSql.split(legacyOwnerPredicate).length - 1;
+  if (predicateCount !== 1) throw new Error('Historical 0036 owner predicate changed unexpectedly.');
+  return historicalMigrationSql.replace(legacyOwnerPredicate,
+    `"project_memberships"."roles" @> array['project_owner']::"project_membership_role"[]`);
+})();
 
 describePostgres('approved scope baseline migration', () => {
   let adminPool: Pool;
@@ -64,8 +73,8 @@ describePostgres('approved scope baseline migration', () => {
     msaId = msa.id;
     asconId = ascon.id;
     await db.insert(projectMemberships).values([
-      {projectId: msa.id, actorId: owner.id, role: 'project_owner'},
-      {projectId: ascon.id, actorId: owner.id, role: 'project_owner'}
+      {projectId: msa.id, actorId: owner.id, roles: ['project_owner']},
+      {projectId: ascon.id, actorId: owner.id, roles: ['project_owner']}
     ]);
   }, 30_000);
 
@@ -81,7 +90,7 @@ describePostgres('approved scope baseline migration', () => {
   }, 30_000);
 
   it('creates the canonical 45/100 MSA and 0/100 ASCON baselines once without overwriting them', async () => {
-    await testPool.query(migrationSql);
+    await testPool.query(currentRoleSetReplaySql);
     const baselines = await db.select().from(projectScopeBaselineVersions).orderBy(asc(projectScopeBaselineVersions.projectId));
     const outcomes = await db.select().from(projectScopeOutcomes).orderBy(asc(projectScopeOutcomes.key));
     const observations = await db.select().from(projectScopeOutcomeObservations).orderBy(asc(projectScopeOutcomeObservations.projectId));
@@ -103,7 +112,7 @@ describePostgres('approved scope baseline migration', () => {
       {projectId: asconId, acceptedWeight: 0, totalWeight: 100}
     ]));
 
-    await testPool.query(migrationSql);
+    await testPool.query(currentRoleSetReplaySql);
     expect(await db.select().from(projectScopeBaselineVersions)).toHaveLength(2);
     expect(await db.select().from(projectScopeOutcomes)).toHaveLength(16);
     expect(await db.select().from(projectScopeOutcomeObservations)).toHaveLength(2);

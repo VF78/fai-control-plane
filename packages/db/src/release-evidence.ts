@@ -31,10 +31,10 @@ const humanAuthority = async (tx: Transaction, workspaceId: string, projectId: s
   )).limit(1);
   if (actor === undefined) return false;
   if (actor.role === 'workspace_admin' || actor.role === 'delivery_lead') return true;
-  const [membership] = await tx.select({role: schema.projectMemberships.role}).from(schema.projectMemberships)
+  const [membership] = await tx.select({roles: schema.projectMemberships.roles}).from(schema.projectMemberships)
     .where(and(eq(schema.projectMemberships.projectId, projectId),
       eq(schema.projectMemberships.actorId, actorId), eq(schema.projectMemberships.active, true))).limit(1);
-  return membership?.role === 'workspace_owner' || membership?.role === 'project_owner';
+  return membership?.roles.includes('workspace_owner') === true || membership?.roles.includes('project_owner') === true;
 };
 const systemAuthority = async (tx: Transaction, workspaceId: string, actorId: string) => {
   const [actor] = await tx.select({id: schema.actors.id}).from(schema.actors).where(and(

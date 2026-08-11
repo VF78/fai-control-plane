@@ -115,7 +115,7 @@ describePostgres('launch roster reconciliation', () => {
       .from(actorExternalIdentities)).map(({id}) => id).sort();
 
     const vladimirActorId = firstRoster.members
-      .find(({role}) => role === 'project_owner')?.actorId;
+      .find(({roles}) => roles.includes('project_owner'))?.actorId;
     if (vladimirActorId === undefined) throw new Error('Vladimir actor missing');
     await db.update(actors).set({displayName: 'Stale owner'})
       .where(eq(actors.id, vladimirActorId));
@@ -124,7 +124,7 @@ describePostgres('launch roster reconciliation', () => {
       eq(actorExternalIdentities.provider, 'github')
     ));
     await db.update(projectMemberships).set({
-      role: 'contributor',
+      roles: ['contributor'],
       active: false
     }).where(and(
       eq(projectMemberships.projectId, projectSeeds[0].id),
@@ -185,21 +185,21 @@ describePostgres('launch roster reconciliation', () => {
       project: projects.slug,
       actor: actors.displayName,
       actorType: actors.type,
-      role: projectMemberships.role,
+      roles: projectMemberships.roles,
       active: projectMemberships.active
     }).from(projectMemberships)
       .innerJoin(projects, eq(projects.id, projectMemberships.projectId))
       .innerJoin(actors, eq(actors.id, projectMemberships.actorId))
       .orderBy(asc(projects.slug), asc(actors.displayName));
     expect(memberships.filter(({active}) => active)).toEqual([
-      {project: 'ascon', actor: 'Vladimir', actorType: 'human', role: 'project_owner', active: true},
-      {project: 'msa', actor: 'Hermes', actorType: 'agent', role: 'agent', active: true},
-      {project: 'msa', actor: 'Vitaliy', actorType: 'human', role: 'contributor', active: true},
-      {project: 'msa', actor: 'Vladimir', actorType: 'human', role: 'project_owner', active: true}
+      {project: 'ascon', actor: 'Vladimir', actorType: 'human', roles: ['project_owner'], active: true},
+      {project: 'msa', actor: 'Hermes', actorType: 'agent', roles: ['agent'], active: true},
+      {project: 'msa', actor: 'Vitaliy', actorType: 'human', roles: ['contributor'], active: true},
+      {project: 'msa', actor: 'Vladimir', actorType: 'human', roles: ['project_owner'], active: true}
     ]);
     expect(memberships.filter(({project, active}) => project === 'ascon' && !active)).toEqual([
-      {project: 'ascon', actor: 'Hermes', actorType: 'agent', role: 'agent', active: false},
-      {project: 'ascon', actor: 'Vitaliy', actorType: 'human', role: 'contributor', active: false}
+      {project: 'ascon', actor: 'Hermes', actorType: 'agent', roles: ['agent'], active: false},
+      {project: 'ascon', actor: 'Vitaliy', actorType: 'human', roles: ['contributor'], active: false}
     ]);
     expect(memberships.some(({actor}) => actor === 'Codex CLI')).toBe(false);
     expect(await db.select({id: resourceAccessGrants.id}).from(resourceAccessGrants)).toEqual([]);

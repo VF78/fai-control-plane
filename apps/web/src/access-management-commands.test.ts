@@ -19,7 +19,7 @@ const request = (path: string, values: Record<string, string>) => new Request(`h
 it('submits only a bounded canonical membership intent', async () => {
   const setMembership = vi.fn().mockResolvedValue('updated');
   const response = await setMembershipCommand(request(`/api/access/memberships/${targetId}`, {
-    _csrf: 'csrf', expectedVersion: '2', role: 'contributor', active: 'true'
+    _csrf: 'csrf', expectedVersion: '2', roleContributor: 'true', roleProjectOwner: 'true', active: 'true'
   }), targetId, {
     requireSession: vi.fn().mockResolvedValue(authorization) as never,
     getRuntime: vi.fn().mockResolvedValue({setMembership})
@@ -27,7 +27,7 @@ it('submits only a bounded canonical membership intent', async () => {
   expect(response.status).toBe(303);
   expect(setMembership).toHaveBeenCalledWith({
     workspaceId, operatorActorId: actorId, membershipId: targetId,
-    expectedVersion: 2, role: 'contributor', active: true
+    expectedVersion: 2, roles: ['project_owner', 'contributor'], active: true
   });
 });
 
@@ -49,7 +49,7 @@ it('submits desired access without claiming provider confirmation', async () => 
 it('fails closed for extra fields, stale versions, and missing CSRF', async () => {
   const requireSession = vi.fn().mockResolvedValue(authorization) as never;
   const malformed = await setMembershipCommand(request('/api/access/memberships/x', {
-    _csrf: 'csrf', expectedVersion: '2', role: 'contributor', active: 'true', extra: 'x'
+    _csrf: 'csrf', expectedVersion: '2', roleContributor: 'true', active: 'true', extra: 'x'
   }), targetId, {requireSession, getRuntime: vi.fn()});
   expect(malformed.status).toBe(400);
 
@@ -77,12 +77,12 @@ it('submits bounded human and agent onboarding without provider config or secret
   };
   const human = await onboardActorCommand(request('/api/access/onboarding', {
     _csrf: 'csrf', idempotencyKey: targetId, projectId: targetId, actorType: 'human',
-    displayName: 'Мария', actorRole: 'developer', membershipRole: 'contributor'
+    displayName: 'Мария', actorRole: 'developer', roleContributor: 'true', roleProjectOwner: 'true'
   }), deps);
   expect(human.status).toBe(303);
   expect(onboardActor).toHaveBeenCalledWith(expect.objectContaining({
     workspaceId, operatorActorId: actorId, actorType: 'human', displayName: 'Мария',
-    actorRole: 'developer', membershipRole: 'contributor'
+    actorRole: 'developer', membershipRoles: ['project_owner', 'contributor']
   }));
 
   const agent = await onboardActorCommand(request('/api/access/onboarding', {
@@ -91,7 +91,7 @@ it('submits bounded human and agent onboarding without provider config or secret
   }), deps);
   expect(agent.status).toBe(303);
   expect(onboardActor).toHaveBeenLastCalledWith(expect.objectContaining({
-    actorType: 'agent', actorRole: 'agent_operator', membershipRole: 'agent', runtimeId: 'codex'
+    actorType: 'agent', actorRole: 'agent_operator', membershipRoles: ['agent'], runtimeId: 'codex'
   }));
 
   const secret = await onboardActorCommand(request('/api/access/onboarding', {

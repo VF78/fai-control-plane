@@ -1,6 +1,7 @@
-import {and, desc, eq, inArray, isNull} from 'drizzle-orm';
+import {and, desc, eq, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {projectMembershipHasAnyRoleSql} from './project-membership-roles';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -80,7 +81,7 @@ const canManageProjectRisk = async (
     .limit(1);
   if (actor === undefined) return false;
   if (inArrayRole(actor.role, ['workspace_admin', 'delivery_lead'])) return true;
-  const [membership] = await tx.select({role: schema.projectMemberships.role})
+  const [membership] = await tx.select({roles: schema.projectMemberships.roles})
     .from(schema.projectMemberships)
     .innerJoin(
       schema.projects,
@@ -91,11 +92,9 @@ const canManageProjectRisk = async (
       eq(schema.projectMemberships.actorId, actorId),
       eq(schema.projectMemberships.active, true),
       eq(schema.projects.workspaceId, workspaceId),
-      inArray(schema.projectMemberships.role, [
+      projectMembershipHasAnyRoleSql(schema.projectMemberships.roles, [
         'workspace_owner',
-        'project_owner',
-        'contributor',
-        'reviewer'
+        'project_owner'
       ])
     ))
     .limit(1);

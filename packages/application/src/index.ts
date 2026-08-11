@@ -173,6 +173,7 @@ import {
   CURRENT_POLICY_VERSION,
   authorize,
   canonicalJson,
+  canonicalProjectMembershipRoles,
   containsHighConfidenceSecretContent,
   DEFAULT_AGENT_INSTRUCTIONS,
   DEFAULT_AGENT_SETTINGS,
@@ -1855,18 +1856,25 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         isVersion(payload.expectedVersion);
     case 'project_membership.set':
       return hasExactKeys(payload, [
-        'membershipId', 'projectId', 'subjectActorId', 'role', 'active', 'expectedVersion'
+        'membershipId', 'projectId', 'subjectActorId', 'roles', 'active', 'expectedVersion'
       ]) && isUuid(payload.membershipId) && isUuid(payload.projectId) &&
-        isUuid(payload.subjectActorId) && isOneOf(projectMembershipRoles, payload.role) &&
+        isUuid(payload.subjectActorId) && isDenseArray(payload.roles) &&
+        payload.roles.every((role) => isOneOf(projectMembershipRoles, role)) &&
+        canonicalProjectMembershipRoles(payload.roles as readonly (typeof projectMembershipRoles)[number][]) !== null &&
         typeof payload.active === 'boolean' &&
         (payload.expectedVersion === null || isVersion(payload.expectedVersion));
     case 'project.create': {
       if (!hasExactKeys(payload, [
         'projectId', 'setupId', 'name', 'slug', 'productOwnerActorId',
-        'productOwnerMembershipId', 'members', 'repositoryBinding', 'trackerBinding',
+        'productOwnerMembershipId', 'productOwnerRoles', 'members', 'repositoryBinding', 'trackerBinding',
         'internalChat', 'clientChat', 'executionMode', 'agentProfileId'
       ]) || !isUuid(payload.projectId) || !isUuid(payload.setupId) ||
         !isUuid(payload.productOwnerActorId) || !isUuid(payload.productOwnerMembershipId) ||
+        !isDenseArray(payload.productOwnerRoles) ||
+        !payload.productOwnerRoles.every((role) => isOneOf(projectMembershipRoles, role)) ||
+        canonicalProjectMembershipRoles(payload.productOwnerRoles as readonly (typeof projectMembershipRoles)[number][]) === null ||
+        !payload.productOwnerRoles.includes('project_owner') ||
+        payload.productOwnerRoles.some((role) => role !== 'project_owner' && role !== 'contributor') ||
         typeof payload.name !== 'string' || payload.name.trim() !== payload.name ||
         payload.name.length < 1 || payload.name.length > 120 || /[\u0000-\u001f\u007f]/.test(payload.name) ||
         typeof payload.slug !== 'string' || !/^[a-z][a-z0-9-]{1,47}$/.test(payload.slug) ||
@@ -1880,10 +1888,12 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
       const seen = new Set<string>();
       const membershipIds = new Set<string>([payload.productOwnerMembershipId]);
       return payload.members.every((entry) => {
-        if (!isPlainObject(entry) || !hasExactKeys(entry, ['membershipId', 'actorId', 'role']) ||
+        if (!isPlainObject(entry) || !hasExactKeys(entry, ['membershipId', 'actorId', 'roles']) ||
           !isUuid(entry.membershipId) || !isUuid(entry.actorId) ||
-          !isOneOf(projectMembershipRoles, entry.role) || entry.role === 'workspace_owner' ||
-          entry.role === 'project_owner' || seen.has(entry.actorId) || membershipIds.has(entry.membershipId) ||
+          !isDenseArray(entry.roles) || !entry.roles.every((role) => isOneOf(projectMembershipRoles, role)) ||
+          canonicalProjectMembershipRoles(entry.roles as readonly (typeof projectMembershipRoles)[number][]) === null ||
+          entry.roles.includes('workspace_owner') || entry.roles.includes('project_owner') ||
+          seen.has(entry.actorId) || membershipIds.has(entry.membershipId) ||
           entry.actorId === payload.productOwnerActorId) return false;
         seen.add(entry.actorId);
         membershipIds.add(entry.membershipId);
@@ -1893,27 +1903,30 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
     case 'actor.onboard': {
       if (!hasExactKeys(payload, [
         'actorId', 'membershipId', 'projectId', 'actorType', 'displayName',
-        'actorRole', 'membershipRole', 'agentProfile'
+        'actorRole', 'membershipRoles', 'agentProfile'
       ]) || !isUuid(payload.actorId) || !isUuid(payload.membershipId) ||
         !isUuid(payload.projectId) || !isOneOf(['human', 'agent'] as const, payload.actorType) ||
         typeof payload.displayName !== 'string' || payload.displayName.trim() !== payload.displayName ||
         payload.displayName.length < 1 || payload.displayName.length > 120 ||
         /[\u0000-\u001f\u007f]/.test(payload.displayName) ||
         !isOneOf(['delivery_lead', 'developer', 'agent_operator'] as const, payload.actorRole) ||
-        !isOneOf(projectMembershipRoles, payload.membershipRole)) return false;
+        !isDenseArray(payload.membershipRoles) ||
+        !payload.membershipRoles.every((role) => isOneOf(projectMembershipRoles, role)) ||
+        canonicalProjectMembershipRoles(payload.membershipRoles as readonly (typeof projectMembershipRoles)[number][]) === null) return false;
       if (payload.actorType === 'human') {
         return actorOnboardingRolesAreCompatible({
           actorType: payload.actorType, actorRole: payload.actorRole,
-          membershipRole: payload.membershipRole, hasAgentProfile: false
+          membershipRoles: payload.membershipRoles as readonly (typeof projectMembershipRoles)[number][], hasAgentProfile: false
         }) && payload.agentProfile === null;
       }
-      if (payload.actorRole !== 'agent_operator' || payload.membershipRole !== 'agent' ||
+      if (payload.actorRole !== 'agent_operator' || payload.membershipRoles.length !== 1 ||
+        payload.membershipRoles[0] !== 'agent' ||
         !isPlainObject(payload.agentProfile) || !hasExactKeys(payload.agentProfile, [
           'profileId', 'registrationId', 'runtimeId', 'runtimeProfile', 'runtimeKey', 'configHash'
         ])) return false;
       return actorOnboardingRolesAreCompatible({
         actorType: payload.actorType, actorRole: payload.actorRole,
-        membershipRole: payload.membershipRole, hasAgentProfile: true
+        membershipRoles: payload.membershipRoles as readonly (typeof projectMembershipRoles)[number][], hasAgentProfile: true
       }) && isUuid(payload.agentProfile.profileId) && isUuid(payload.agentProfile.registrationId) &&
         isOnboardingRuntimeIdentifier(payload.agentProfile.runtimeId, 128) &&
         isOnboardingRuntimeIdentifier(payload.agentProfile.runtimeProfile, 128) &&
@@ -2825,8 +2838,8 @@ export const createCanonicalCommandService = (
       projectId
     );
     if (authority === null) return failed('NOT_FOUND', 'Resource was not found.');
-    return authority.workspaceAdmin || authority.projectRole === 'workspace_owner' ||
-      authority.projectRole === 'project_owner'
+    return authority.workspaceAdmin || authority.projectRoles?.includes('workspace_owner') === true ||
+      authority.projectRoles?.includes('project_owner') === true
       ? succeeded(true)
       : failed('CAPABILITY_DENIED', 'Actor is not an access owner for this scope.');
   }
@@ -2867,7 +2880,7 @@ export const createCanonicalCommandService = (
       id: payload.membershipId,
       projectId: payload.projectId,
       actorId: payload.subjectActorId,
-      role: payload.role,
+      roles: payload.roles,
       active: payload.active,
       version: (payload.expectedVersion ?? 0) + 1
     };
@@ -2908,7 +2921,7 @@ export const createCanonicalCommandService = (
     const context = await transaction.loadProjectSetupContext(token, {
       actorId: command.actor.actorId, slug: payload.slug,
       productOwnerActorId: payload.productOwnerActorId,
-      members: payload.members.map(({actorId, role}) => ({actorId, role})),
+      members: payload.members.map(({actorId, roles}) => ({actorId, roles})),
       agentProfileId: payload.agentProfileId
     });
     if (context === null) return completeNoMutation(transaction, token, claim, command, target,
@@ -2923,10 +2936,10 @@ export const createCanonicalCommandService = (
     }
     const memberships = [{
       id: payload.productOwnerMembershipId, projectId: payload.projectId,
-      actorId: payload.productOwnerActorId, role: 'project_owner' as const, active: true, version: 1
+      actorId: payload.productOwnerActorId, roles: payload.productOwnerRoles, active: true, version: 1
     }, ...payload.members.map((member) => ({
       id: member.membershipId, projectId: payload.projectId, actorId: member.actorId,
-      role: member.role, active: true, version: 1
+      roles: member.roles, active: true, version: 1
     }))];
     const aggregate = {
       id: payload.setupId,
@@ -2982,7 +2995,7 @@ export const createCanonicalCommandService = (
       displayName: payload.displayName,
       membership: {
         id: payload.membershipId, projectId: payload.projectId, actorId: payload.actorId,
-        role: payload.membershipRole, active: true, version: 1
+        roles: payload.membershipRoles, active: true, version: 1
       },
       agentProfile: profile === null ? null : {
         id: profile.profileId,

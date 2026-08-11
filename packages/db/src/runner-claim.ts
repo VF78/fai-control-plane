@@ -8,6 +8,7 @@ import {runnerActivationEnabled} from '@fai-control-plane/domain';
 import {and, asc, eq, exists, inArray, isNull, or, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {resolveCurrentExecutionResponsibility} from './work-item-responsibility';
 
 type Database = NodePgDatabase<typeof schema>;
 
@@ -18,6 +19,7 @@ const runtimeIdPattern = /^[A-Za-z0-9._:-]{1,128}$/;
 const artifactReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$/;
 const artifactProviderPattern = /^[a-z][a-z0-9-]{0,63}$/;
 const MAX_LEASE_MS = 2 * 60 * 1_000;
+const MAX_CLAIM_CANDIDATES = 32;
 const MAX_RECEIPT_BYTES = 1_024 * 1_024;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -163,7 +165,7 @@ export const createPostgresRunnerClaimStore = (
         throw new Error('Runner repository authorization is empty.');
       }
 
-      const [candidate] = await tx
+      const candidates = await tx
         .select({
           runId: schema.agentRuns.id,
           packetId: schema.taskPackets.id,
@@ -177,7 +179,21 @@ export const createPostgresRunnerClaimStore = (
           attempt: schema.agentRuns.attempt,
           runtimeProfile: schema.taskPackets.runtimeProfile,
           projectId: schema.taskPackets.projectId,
+          workItemId: schema.agentRuns.workItemId,
           actorId: schema.actors.id,
+          agentProfileId: schema.agentProfiles.id,
+          executionStatus: schema.projectExecutions.status,
+          executionVersion: schema.projectExecutions.version,
+          selectedWorkItemId: schema.projectExecutions.selectedWorkItemId,
+          selectedPlanVersionId: schema.projectExecutions.selectedPlanVersionId,
+          selectedWorkItemVersion: schema.projectExecutions.selectedWorkItemVersion,
+          selectedProtocolId: schema.projectExecutions.selectedProtocolId,
+          selectedProtocolVersion: schema.projectExecutions.selectedProtocolVersion,
+          selectedJourneyVersion: schema.projectExecutions.selectedJourneyVersion,
+          selectedStageKey: schema.projectExecutions.selectedStageKey,
+          selectedResponsibleActorId: schema.projectExecutions.selectedResponsibleActorId,
+          selectedAgentProfileId: schema.projectExecutions.selectedAgentProfileId,
+          selectedResponsibilityHash: schema.projectExecutions.selectedResponsibilityHash,
           version: schema.agentRuns.version,
           timeboxMinutes: schema.taskPackets.timeboxMinutes,
           goal: schema.taskPackets.goal,
@@ -215,6 +231,11 @@ export const createPostgresRunnerClaimStore = (
             schema.agentRuns.repositoryScopeId
           )
         )
+        .innerJoin(schema.projectExecutionDispatches,
+          eq(schema.projectExecutionDispatches.agentRunId, schema.agentRuns.id))
+        .innerJoin(schema.projectExecutions, and(
+          eq(schema.projectExecutions.projectId, schema.taskPackets.projectId),
+          eq(schema.projectExecutions.version, schema.projectExecutionDispatches.executionVersion)))
         .where(
           and(
             eq(schema.agentRuns.status, 'queued'),
@@ -255,9 +276,29 @@ export const createPostgresRunnerClaimStore = (
           )
         )
         .orderBy(asc(schema.agentRuns.createdAt), asc(schema.agentRuns.id))
-        .limit(1)
+        .limit(MAX_CLAIM_CANDIDATES)
         .for('update', {of: schema.agentRuns, skipLocked: true});
 
+      let candidate: (typeof candidates)[number] | undefined;
+      for (const queued of candidates) {
+        const current = await resolveCurrentExecutionResponsibility(tx, {workspaceId: input.workspaceId,
+          projectId: queued.projectId, workItemId: queued.workItemId});
+        if (current !== null && queued.executionStatus === 'running' &&
+          queued.selectedWorkItemId === queued.workItemId &&
+          queued.selectedPlanVersionId === current.planVersionId &&
+          queued.selectedWorkItemVersion === current.workItemVersion &&
+          queued.selectedProtocolId === current.protocolId &&
+          queued.selectedProtocolVersion === current.protocolVersion &&
+          queued.selectedJourneyVersion === current.journeyVersion &&
+          queued.selectedStageKey === current.stageKey &&
+          queued.selectedResponsibleActorId === current.actor.id &&
+          queued.selectedAgentProfileId === queued.agentProfileId &&
+          current.actor.agentProfileId === queued.agentProfileId &&
+          queued.selectedResponsibilityHash === current.factHash) {
+          candidate = queued;
+          break;
+        }
+      }
       if (candidate === undefined) return null;
       const record: RunnerClaimRecord = {
         runId: candidate.runId,

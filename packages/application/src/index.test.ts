@@ -190,7 +190,7 @@ class FakeUnitOfWork implements UnitOfWork {
         this.runtimeRecoveryPolicies.get(value) ?? null,
       loadAccessCommandAuthority: async () => ({
         workspaceAdmin: this.accessAdmin,
-        projectRole: null
+        projectRoles: null
       }),
       loadProjectSetupContext: async () => this.projectSetupContext,
       persistAuditedMutation: async ({outcome}) => {
@@ -265,7 +265,7 @@ const item = (overrides: Partial<WorkItem> = {}): WorkItem => ({id: id(), projec
 describe('project intake canonical command', () => {
   const payload = () => ({
     projectId: id(), setupId: id(), name: 'Новый проект', slug: `project-${id().slice(0, 8)}`,
-    productOwnerActorId: actorId, productOwnerMembershipId: id(), members: [],
+    productOwnerActorId: actorId, productOwnerMembershipId: id(), productOwnerRoles: ['project_owner'] as const, members: [],
     repositoryBinding: 'create_managed' as const, trackerBinding: 'link_existing' as const,
     internalChat: 'create_managed' as const, clientChat: 'none' as const,
     executionMode: 'manual' as const, agentProfileId: null
@@ -305,8 +305,8 @@ describe('project intake canonical command', () => {
     const duplicate = command('project.create', {
       ...base,
       members: [
-        {membershipId: id(), actorId: memberId, role: 'contributor' as const},
-        {membershipId: id(), actorId: memberId, role: 'reviewer' as const}
+        {membershipId: id(), actorId: memberId, roles: ['contributor' as const]},
+        {membershipId: id(), actorId: memberId, roles: ['reviewer' as const]}
       ]
     });
     await expect(serviceFor(new FakeUnitOfWork()).execute(duplicate)).resolves.toMatchObject({
@@ -979,7 +979,7 @@ describe('canonical command service', () => {
       membershipId,
       projectId,
       subjectActorId,
-      role: 'agent',
+      roles: ['agent'],
       active: true,
       expectedVersion: null
     }))).resolves.toMatchObject({
@@ -1025,7 +1025,7 @@ describe('canonical command service', () => {
       membershipId: id(),
       projectId,
       subjectActorId: id(),
-      role: 'contributor',
+      roles: ['contributor'],
       active: true,
       expectedVersion: null
     }))).resolves.toMatchObject({
@@ -1246,7 +1246,7 @@ describe('canonical command service', () => {
     const payload = {
       actorId: id(), membershipId: id(), projectId, actorType: 'agent' as const,
       displayName: 'Codex QA', actorRole: 'agent_operator' as const,
-      membershipRole: 'agent' as const,
+      membershipRoles: ['agent' as const],
       agentProfile: {
         profileId: id(), registrationId: id(), runtimeId: 'codex',
         runtimeProfile: 'read_safe', runtimeKey: 'codex-qa',
@@ -1265,7 +1265,7 @@ describe('canonical command service', () => {
     await expect(service.execute(onboard)).resolves.toMatchObject({status: 'replayed'});
     expect(uow.mutations).toHaveLength(1);
     expect(uow.mutations[0]).toMatchObject({mutation: {aggregate: {
-      actorType: 'agent', membership: {role: 'agent'},
+      actorType: 'agent', membership: {roles: ['agent']},
       agentProfile: {
         configHash: payload.agentProfile.configHash,
         registration: {provider: 'provider_neutral'}
@@ -1299,7 +1299,7 @@ describe('canonical command service', () => {
     const uow = new FakeUnitOfWork();
     await expect(serviceFor(uow).execute(command('actor.onboard', {
       actorId: id(), membershipId: id(), projectId, actorType: 'agent',
-      displayName: 'Bounded agent', actorRole: 'agent_operator', membershipRole: 'agent',
+      displayName: 'Bounded agent', actorRole: 'agent_operator', membershipRoles: ['agent'],
       agentProfile: {profileId: id(), registrationId: id(), ...profile, configHash}
     }))).resolves.toMatchObject({status: 'rejected'});
     expect(uow.executions).toBe(0);
@@ -1310,7 +1310,7 @@ describe('canonical command service', () => {
     const uow = new FakeUnitOfWork();
     await expect(serviceFor(uow).execute(command('actor.onboard', {
       actorId: id(), membershipId: id(), projectId, actorType: 'agent',
-      displayName: 'Unversioned hash', actorRole: 'agent_operator', membershipRole: 'agent',
+      displayName: 'Unversioned hash', actorRole: 'agent_operator', membershipRoles: ['agent'],
       agentProfile: {
         profileId: id(), registrationId: id(), runtimeId: 'codex',
         runtimeProfile: 'read_safe', runtimeKey: 'codex-unversioned',

@@ -109,17 +109,17 @@ describePostgres('test-operational launch contour', () => {
     const memberships = await db.select({
       project: projects.slug,
       actor: actors.displayName,
-      role: projectMemberships.role,
+      roles: projectMemberships.roles,
       active: projectMemberships.active
     }).from(projectMemberships)
       .innerJoin(projects, eq(projects.id, projectMemberships.projectId))
       .innerJoin(actors, eq(actors.id, projectMemberships.actorId))
       .orderBy(asc(projects.slug), asc(actors.displayName));
     expect(memberships.filter(({active}) => active)).toEqual([
-      {project: 'ascon', actor: 'Vladimir', role: 'project_owner', active: true},
-      {project: 'msa', actor: 'Hermes', role: 'agent', active: true},
-      {project: 'msa', actor: 'Vitaliy', role: 'contributor', active: true},
-      {project: 'msa', actor: 'Vladimir', role: 'project_owner', active: true}
+      {project: 'ascon', actor: 'Vladimir', roles: ['project_owner'], active: true},
+      {project: 'msa', actor: 'Hermes', roles: ['agent'], active: true},
+      {project: 'msa', actor: 'Vitaliy', roles: ['contributor'], active: true},
+      {project: 'msa', actor: 'Vladimir', roles: ['project_owner'], active: true}
     ]);
 
     const protocolRows = await db.select({

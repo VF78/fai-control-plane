@@ -10,15 +10,36 @@ export const projectMembershipRoles = [
 ] as const;
 export type ProjectMembershipRole = (typeof projectMembershipRoles)[number];
 
+export const humanProjectMembershipRoles = projectMembershipRoles.filter(
+  (role): role is Exclude<ProjectMembershipRole, 'agent'> => role !== 'agent'
+);
+
+export const canonicalProjectMembershipRoles = (
+  roles: readonly ProjectMembershipRole[]
+): readonly ProjectMembershipRole[] | null => {
+  if (roles.length < 1 || roles.length > humanProjectMembershipRoles.length) return null;
+  const unique = [...new Set(roles)];
+  unique.sort((left, right) => projectMembershipRoles.indexOf(left) - projectMembershipRoles.indexOf(right));
+  return unique.length === roles.length && unique.every((role, index) => role === roles[index])
+    ? unique
+    : null;
+};
+
+export const projectMembershipHasRole = (
+  membership: Readonly<{roles: readonly ProjectMembershipRole[]; active: boolean}> | null | undefined,
+  role: ProjectMembershipRole
+): boolean => membership?.active === true && membership.roles.includes(role);
+
 export const actorOnboardingRolesAreCompatible = (input: Readonly<{
   actorType: 'human' | 'agent';
   actorRole: 'delivery_lead' | 'developer' | 'agent_operator';
-  membershipRole: ProjectMembershipRole;
+  membershipRoles: readonly ProjectMembershipRole[];
   hasAgentProfile: boolean;
-}>): boolean => input.actorType === 'agent'
-  ? input.actorRole === 'agent_operator' && input.membershipRole === 'agent' && input.hasAgentProfile
+}>): boolean => canonicalProjectMembershipRoles(input.membershipRoles) !== null && (input.actorType === 'agent'
+  ? input.actorRole === 'agent_operator' && input.membershipRoles.length === 1 &&
+    input.membershipRoles[0] === 'agent' && input.hasAgentProfile
   : input.actorRole !== 'agent_operator' &&
-    !['agent', 'workspace_owner'].includes(input.membershipRole) && !input.hasAgentProfile;
+    !input.membershipRoles.includes('agent') && !input.hasAgentProfile);
 
 export const accessResourceTypes = [
   'repository',
@@ -37,7 +58,7 @@ export type ProjectMembership = Readonly<{
   id: string;
   projectId: string;
   actorId: string;
-  role: ProjectMembershipRole;
+  roles: readonly ProjectMembershipRole[];
   active: boolean;
   version: number;
 }>;
@@ -117,7 +138,7 @@ export type EffectiveAccessExplanation = Readonly<{
   resourceType: AccessResourceType;
   resourceId: string;
   membership: Readonly<{
-    role: ProjectMembershipRole | null;
+    roles: readonly ProjectMembershipRole[] | null;
     active: boolean;
     baselineLevel: AccessLevel;
   }>;
@@ -149,20 +170,21 @@ const levelRank: Readonly<Record<AccessLevel, number>> = {
 };
 
 const baselineFor = (
-  role: ProjectMembershipRole | null,
+  roles: readonly ProjectMembershipRole[] | null,
   resourceType: AccessResourceType
 ): AccessLevel => {
-  if (role === 'workspace_owner' || role === 'project_owner') return 'admin';
-  if (role === 'contributor') {
+  if (roles === null) return 'none';
+  if (roles.includes('workspace_owner') || roles.includes('project_owner')) return 'admin';
+  if (roles.includes('contributor')) {
     if (['repository', 'tracker', 'internal_chat'].includes(resourceType)) return 'write';
     return resourceType === 'environment' ? 'read' : 'none';
   }
-  if (role === 'reviewer') {
+  if (roles.includes('reviewer')) {
     return ['repository', 'tracker', 'internal_chat', 'control_plane_action'].includes(resourceType)
       ? 'read'
       : 'none';
   }
-  return role === 'client_viewer' && resourceType === 'client_chat' ? 'read' : 'none';
+  return roles.includes('client_viewer') && resourceType === 'client_chat' ? 'read' : 'none';
 };
 
 const higherLevel = (left: AccessLevel, right: AccessLevel): AccessLevel =>
@@ -189,16 +211,16 @@ export const explainEffectiveAccess = (input: Readonly<{
   return input.actorIds
     .flatMap((actorId) => input.resources.map((resource) => {
       const membership = memberships.get(`${resource.projectId}\0${actorId}`);
-      const role = membership?.active === true ? membership.role : null;
-      const baselineLevel = baselineFor(role, resource.resourceType);
+      const roles = membership?.active === true ? membership.roles : null;
+      const baselineLevel = baselineFor(roles, resource.resourceType);
       const grant = grants.get(
         `${resource.projectId}\0${actorId}\0${resource.resourceType}\0${resource.resourceId}`
       );
-      const candidate = role === null
+      const candidate = roles === null
         ? 'none'
         : higherLevel(baselineLevel, grant?.desiredLevel ?? 'none');
       const level = resource.policyDecision === 'allow' ? candidate : 'none';
-      const reasons = role === null
+      const reasons = roles === null
         ? ['membership_missing_or_inactive']
         : resource.policyDecision === 'deny'
           ? ['policy_denied']
@@ -206,7 +228,7 @@ export const explainEffectiveAccess = (input: Readonly<{
             ? ['role_and_grant_do_not_allow']
             : [
                 ...(baselineLevel === level
-                  ? [`role:${role}`]
+                  ? roles.map((role) => `role:${role}`)
                   : []),
                 ...(grant !== undefined && grant.desiredLevel === level
                   ? [`grant:${grant.id}`]
@@ -219,7 +241,7 @@ export const explainEffectiveAccess = (input: Readonly<{
         resourceType: resource.resourceType,
         resourceId: resource.resourceId,
         membership: {
-          role,
+          roles,
           active: membership?.active === true,
           baselineLevel
         },

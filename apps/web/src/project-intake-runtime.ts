@@ -15,7 +15,8 @@ export type ProjectIntakeInput = Readonly<{
   name: string;
   slug: string;
   productOwnerActorId: string;
-  members: readonly Readonly<{actorId: string; role: ProjectMembershipRole}>[];
+  productOwnerRoles: readonly ProjectMembershipRole[];
+  members: readonly Readonly<{actorId: string; roles: readonly ProjectMembershipRole[]}>[];
   repositoryBinding: ProjectSetupBindingMode;
   trackerBinding: ProjectSetupBindingMode;
   internalChat: ProjectSetupBindingMode;
@@ -55,6 +56,7 @@ export const createProjectIntakeRuntime = (db: Database) => ({
       type: 'project.create', payload: {
         projectId: deterministicUuid(aggregateKey, 'project'), setupId: deterministicUuid(aggregateKey, 'setup'), name: input.name, slug: input.slug,
         productOwnerActorId: input.productOwnerActorId, productOwnerMembershipId: deterministicUuid(aggregateKey, 'owner-membership'),
+        productOwnerRoles: input.productOwnerRoles,
         members: input.members.map((member, index) => ({membershipId: deterministicUuid(aggregateKey, `member-${index}`), ...member})),
         repositoryBinding: input.repositoryBinding, trackerBinding: input.trackerBinding,
         internalChat: input.internalChat, clientChat: input.clientChat,
