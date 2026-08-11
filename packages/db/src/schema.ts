@@ -297,7 +297,7 @@ export const projectMemberships = pgTable(
     actorId: uuid('actor_id')
       .notNull()
       .references(() => actors.id, {onDelete: 'restrict'}),
-    role: projectMembershipRoleEnum('role').notNull(),
+    roles: projectMembershipRoleEnum('roles').array().notNull(),
     active: boolean('active').default(true).notNull(),
     version: integer('version').default(1).notNull(),
     createdAt: createdAt(),
@@ -309,7 +309,13 @@ export const projectMemberships = pgTable(
       table.actorId
     ),
     index('project_memberships_actor_idx').on(table.actorId),
-    check('project_memberships_version_positive', sql`${table.version} > 0`)
+    check('project_memberships_version_positive', sql`${table.version} > 0`),
+    check('project_memberships_roles_canonical', sql`cardinality(${table.roles}) between 1 and 5
+      and (cardinality(${table.roles}) < 2 or ${table.roles}[1] < ${table.roles}[2])
+      and (cardinality(${table.roles}) < 3 or ${table.roles}[2] < ${table.roles}[3])
+      and (cardinality(${table.roles}) < 4 or ${table.roles}[3] < ${table.roles}[4])
+      and (cardinality(${table.roles}) < 5 or ${table.roles}[4] < ${table.roles}[5])`),
+    check('project_memberships_agent_role_is_singleton', sql`not (${table.roles} @> array['agent']::project_membership_role[]) or ${table.roles} = array['agent']::project_membership_role[]`)
   ]
 );
 
@@ -1145,6 +1151,7 @@ export const projectExecutions = pgTable(
     selectedStageKey: text('selected_stage_key'),
     selectedResponsibleActorId: uuid('selected_responsible_actor_id'),
     selectedAgentProfileId: uuid('selected_agent_profile_id'),
+    selectedResponsibilityHash: text('selected_responsibility_hash'),
     blockReason: text('block_reason'),
     version: integer('version').default(1).notNull(),
     startedAt: timestamp('started_at', {withTimezone: true}).notNull(),
@@ -1190,12 +1197,13 @@ export const projectExecutions = pgTable(
        ${table.selectedWorkItemVersion} is null and ${table.selectedProtocolId} is null and
        ${table.selectedProtocolVersion} is null and ${table.selectedJourneyVersion} is null and
        ${table.selectedStageKey} is null and ${table.selectedResponsibleActorId} is null and
-       ${table.selectedAgentProfileId} is null)
+       ${table.selectedAgentProfileId} is null and ${table.selectedResponsibilityHash} is null)
       or
       (${table.selectedWorkItemId} is not null and ${table.selectedPlanVersionId} is not null and
        ${table.selectedWorkItemVersion} > 0 and ${table.selectedProtocolId} is not null and
        ${table.selectedProtocolVersion} > 0 and ${table.selectedJourneyVersion} > 0 and
-       ${table.selectedStageKey} ~ '^[a-z][a-z0-9_]{0,63}$' and ${table.selectedResponsibleActorId} is not null)`),
+       ${table.selectedStageKey} ~ '^[a-z][a-z0-9_]{0,63}$' and ${table.selectedResponsibleActorId} is not null and
+       ${table.selectedResponsibilityHash} is not null)`),
     check('project_executions_block_shape',
       sql`(${table.status} = 'blocked' and ${table.blockReason} ~ '^[a-z][a-z0-9_]{0,63}$') or (${table.status} <> 'blocked' and ${table.blockReason} is null)`),
     check('project_executions_pause_shape',

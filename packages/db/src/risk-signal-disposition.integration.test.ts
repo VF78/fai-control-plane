@@ -90,7 +90,7 @@ describePostgres('risk signal disposition persistence', () => {
       id: ids.viewerMembership,
       projectId: ids.project,
       actorId: ids.viewer,
-      role: 'client_viewer'
+      roles: ['client_viewer']
     });
     const risk = (
       id: string,

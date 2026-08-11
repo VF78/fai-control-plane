@@ -288,8 +288,8 @@ describePostgres(
         );
         await testPool.query(
           `INSERT INTO project_memberships (
-             id, project_id, actor_id, role, active
-           ) VALUES ($1, $2, $3, 'agent', true)`,
+             id, project_id, actor_id, roles, active
+           ) VALUES ($1, $2, $3, array['agent']::project_membership_role[], true)`,
           [randomUUID(), entry.projectId, entry.runtimeActorId]
         );
         await testPool.query(
@@ -920,7 +920,7 @@ describePostgres(
           membershipId,
           projectId: fixture.projectId,
           subjectActorId: fixture.actorId,
-          role: 'workspace_owner',
+          roles: ['workspace_owner'],
           active: true,
           expectedVersion: null
         }
@@ -974,7 +974,7 @@ describePostgres(
       });
       expect(await testDb.select().from(projectMemberships)
         .where(eq(projectMemberships.id, membershipId)))
-        .toMatchObject([{role: 'workspace_owner', version: 1}]);
+        .toMatchObject([{roles: ['workspace_owner'], version: 1}]);
       expect(await testDb.select().from(actorExternalIdentities)
         .where(eq(actorExternalIdentities.id, identityId)))
         .toMatchObject([{provider: 'github', externalSubject: 'github:user:123'}]);
@@ -1012,7 +1012,7 @@ describePostgres(
           membershipId: randomUUID(),
           projectId: fixture.otherProjectId,
           subjectActorId: fixture.actorId,
-          role: 'project_owner',
+          roles: ['project_owner'],
           active: true,
           expectedVersion: null
         }
@@ -1140,8 +1140,8 @@ describePostgres(
       );
       await testPool.query(
         `INSERT INTO project_memberships (
-           id, project_id, actor_id, role, active
-         ) VALUES ($1, $2, $3, 'agent', true)`,
+           id, project_id, actor_id, roles, active
+         ) VALUES ($1, $2, $3, array['agent']::project_membership_role[], true)`,
         [randomUUID(), fixture.projectId, targetActorId]
       );
       const sourceRegistrationId = randomUUID();
@@ -1421,7 +1421,7 @@ describePostgres(
         id: randomUUID(),
         projectId: fixture.projectId,
         actorId: agentId,
-        role: 'agent',
+        roles: ['agent'],
         active: true
       });
       await testDb.insert(actorExternalIdentities).values({
@@ -1471,7 +1471,7 @@ describePostgres(
       const onboardPayload = (name: string, overrides: Record<string, unknown> = {}) => ({
         actorId: randomUUID(), membershipId: randomUUID(), projectId: fixture.projectId,
         actorType: 'agent' as const, displayName: name, actorRole: 'agent_operator' as const,
-        membershipRole: 'agent' as const,
+        membershipRoles: ['agent' as const],
         agentProfile: {
           profileId: randomUUID(), registrationId: randomUUID(), runtimeId: 'codex',
           runtimeProfile: 'read_safe', runtimeKey: name.toLowerCase().replaceAll(' ', '-'),
@@ -1489,7 +1489,7 @@ describePostgres(
       await expect(service().execute(command(fixture.workspaceId, primaryActor, 'actor.onboard', {
         actorId: humanActorId, membershipId: humanMembershipId, projectId: fixture.projectId,
         actorType: 'human', displayName: `Human ${randomUUID()}`, actorRole: 'developer',
-        membershipRole: 'contributor', agentProfile: null
+        membershipRoles: ['contributor'], agentProfile: null
       }))).resolves.toMatchObject({status: 'completed', receipt: {result: {ok: true, value: {profileId: null, registrationId: null}}}});
       await expect(testDb.select({id: actors.id, type: actors.type}).from(actors).where(eq(actors.id, humanActorId)))
         .resolves.toEqual([{id: humanActorId, type: 'human'}]);

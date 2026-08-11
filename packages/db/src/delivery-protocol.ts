@@ -117,7 +117,7 @@ const authorityIn = async (
     .limit(1);
   if (actor === undefined) return false;
   if (['workspace_admin', 'delivery_lead'].includes(actor.role)) return true;
-  const [membership] = await tx.select({role: schema.projectMemberships.role})
+  const [membership] = await tx.select({roles: schema.projectMemberships.roles})
     .from(schema.projectMemberships)
     .innerJoin(schema.projects, eq(schema.projects.id, schema.projectMemberships.projectId))
     .where(and(
@@ -129,7 +129,7 @@ const authorityIn = async (
     .limit(1);
   if (membership === undefined) return false;
   return input.write
-    ? ['workspace_owner', 'project_owner'].includes(membership.role)
+    ? membership.roles.some((role) => role === 'workspace_owner' || role === 'project_owner')
     : true;
 };
 
@@ -156,7 +156,7 @@ const contextIn = async (
   }
   const memberships = await tx.select({
     actorId: schema.projectMemberships.actorId,
-    role: schema.projectMemberships.role,
+    roles: schema.projectMemberships.roles,
     active: schema.projectMemberships.active
   }).from(schema.projectMemberships).where(eq(schema.projectMemberships.projectId, projectId));
   const actorIds = [...new Set(memberships.map((membership) => membership.actorId))];

@@ -51,8 +51,8 @@ describePostgres('deployment evidence persistence', () => {
       {id: ids.observer, workspaceId: ids.workspace, type: 'system', role: 'agent_operator', displayName: 'Deployment observer', authMode: 'system'}
     ]);
     await db.insert(projectMemberships).values([
-      {id: randomUUID(), projectId: ids.project, actorId: ids.owner, role: 'project_owner'},
-      {id: randomUUID(), projectId: ids.project, actorId: ids.contributor, role: 'contributor'}
+      {id: randomUUID(), projectId: ids.project, actorId: ids.owner, roles: ['project_owner']},
+      {id: randomUUID(), projectId: ids.project, actorId: ids.contributor, roles: ['contributor']}
     ]);
     const definition = {title: 'Approved', outcomes: [], milestones: [], risks: [], tasks: []};
     await db.insert(projectPlanDrafts).values({id: ids.plan, workspaceId: ids.workspace, projectId: ids.project,
@@ -85,9 +85,9 @@ describePostgres('deployment evidence persistence', () => {
     const restoredAuthority = command('deployment.request.v1', {...requestPayload, deploymentId: ids.restored,
       environment: 'development'}, 'restored-authority', ids.contributor);
     await expect(execute(restoredAuthority)).resolves.toMatchObject({receipt: {result: {error: {code: 'CAPABILITY_DENIED'}}}});
-    await db.update(projectMemberships).set({role: 'project_owner'}).where(eq(projectMemberships.actorId, ids.contributor));
+    await db.update(projectMemberships).set({roles: ['project_owner']}).where(eq(projectMemberships.actorId, ids.contributor));
     await expect(execute(restoredAuthority)).resolves.toMatchObject({receipt: {result: {ok: true, value: {state: 'approved'}}}});
-    await db.update(projectMemberships).set({role: 'contributor'}).where(eq(projectMemberships.actorId, ids.contributor));
+    await db.update(projectMemberships).set({roles: ['contributor']}).where(eq(projectMemberships.actorId, ids.contributor));
 
     await expect(execute(command('deployment.request.v1', requestPayload, 'cross-workspace', ids.owner, ids.otherWorkspace)))
       .resolves.toMatchObject({receipt: {result: {error: {code: 'NOT_FOUND'}}}});

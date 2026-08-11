@@ -136,6 +136,7 @@ export {
 } from './pm-qa-bot';
 export {createPostgresRunnerClaimStore} from './runner-claim';
 export {createPostgresProjectShareStore} from './project-share';
+export {resolveWorkItemResponsibility} from './work-item-responsibility';
 export {createPostgresInstructionVersionStore} from './instruction-versioning';
 export {
   createPostgresPolicySimulationStore,

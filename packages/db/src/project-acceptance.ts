@@ -34,10 +34,10 @@ const roleFor = async (tx: Queryable, workspaceId: string, projectId: string, ac
     eq(schema.actors.id, actorId), eq(schema.actors.workspaceId, workspaceId), eq(schema.actors.type, 'human'),
     eq(schema.actors.authMode, 'user'), isNull(schema.actors.disabledAt))).limit(1);
   if (actor === undefined) return null;
-  const [membership] = await tx.select({role: schema.projectMemberships.role}).from(schema.projectMemberships)
+  const [membership] = await tx.select({roles: schema.projectMemberships.roles}).from(schema.projectMemberships)
     .where(and(eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.actorId, actorId),
       eq(schema.projectMemberships.active, true))).limit(1);
-  return membership?.role ?? null;
+  return membership?.roles ?? null;
 };
 
 type ProtocolRow = typeof schema.projectUatProtocols.$inferSelect;
@@ -241,10 +241,10 @@ export const createPostgresProjectAcceptanceStore = (
         eq(schema.projects.id, command.payload.projectId), eq(schema.projects.workspaceId, command.workspaceId)
       )).limit(1).for('update');
       if (project === undefined) { result = fail('NOT_FOUND', 'Project was not found.'); return complete(); }
-      const role = await roleFor(tx, command.workspaceId, project.id, command.actor.actorId);
+      const roles = await roleFor(tx, command.workspaceId, project.id, command.actor.actorId);
       const requiredRole = command.type === PROJECT_UAT_SIGNOFF_COMMAND &&
         command.payload.kind === 'client_representative' ? 'client_viewer' : 'project_owner';
-      if (role !== requiredRole) { result = fail('CAPABILITY_DENIED', requiredRole === 'client_viewer'
+      if (roles?.includes(requiredRole) !== true) { result = fail('CAPABILITY_DENIED', requiredRole === 'client_viewer'
         ? 'Only an active client representative can record the client signoff.'
         : 'Only the active Product Owner can perform this acceptance action.'); return complete(project.id, 'deny'); }
       const [existing] = await tx.select().from(schema.commandReceipts).where(and(
@@ -380,6 +380,7 @@ export const createPostgresProjectAcceptanceStore = (
             selectedWorkItemId: null, selectedPlanVersionId: null, selectedWorkItemVersion: null,
             selectedProtocolId: null, selectedProtocolVersion: null, selectedJourneyVersion: null,
             selectedStageKey: null, selectedResponsibleActorId: null, selectedAgentProfileId: null,
+            selectedResponsibilityHash: null,
             pausedAt: null, completedAt: now, version: execution.version + 1, updatedAt: now})
             .where(and(eq(schema.projectExecutions.projectId, project.id),
               eq(schema.projectExecutions.version, execution.version), eq(schema.projectExecutions.status, execution.status)))

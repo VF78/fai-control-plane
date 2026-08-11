@@ -4,11 +4,11 @@ import {actorOnboardingRolesAreCompatible, explainEffectiveAccess} from './acces
 
 describe('actor onboarding role compatibility', () => {
   it('requires agent-only role/profile pairing and rejects it for humans', () => {
-    expect(actorOnboardingRolesAreCompatible({actorType: 'agent', actorRole: 'agent_operator', membershipRole: 'agent', hasAgentProfile: true})).toBe(true);
-    expect(actorOnboardingRolesAreCompatible({actorType: 'agent', actorRole: 'developer', membershipRole: 'agent', hasAgentProfile: true})).toBe(false);
-    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'developer', membershipRole: 'agent', hasAgentProfile: false})).toBe(false);
-    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'delivery_lead', membershipRole: 'workspace_owner', hasAgentProfile: false})).toBe(false);
-    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'developer', membershipRole: 'contributor', hasAgentProfile: false})).toBe(true);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'agent', actorRole: 'agent_operator', membershipRoles: ['agent'], hasAgentProfile: true})).toBe(true);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'agent', actorRole: 'developer', membershipRoles: ['agent'], hasAgentProfile: true})).toBe(false);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'developer', membershipRoles: ['agent'], hasAgentProfile: false})).toBe(false);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'delivery_lead', membershipRoles: ['workspace_owner'], hasAgentProfile: false})).toBe(true);
+    expect(actorOnboardingRolesAreCompatible({actorType: 'human', actorRole: 'developer', membershipRoles: ['contributor'], hasAgentProfile: false})).toBe(true);
   });
 });
 
@@ -68,7 +68,7 @@ describe('effective access explanation', () => {
       id: id(),
       projectId,
       actorId,
-      role: 'contributor' as const,
+      roles: ['contributor'] as const,
       active: true,
       version: 1
     };

@@ -14,6 +14,7 @@ import {
 import {and, asc, eq, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {projectMembershipHasRoleSql} from './project-membership-roles';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -73,8 +74,8 @@ const authority = async (tx: Transaction, workspaceId: string, actorId: string,
     eq(schema.projectMemberships.actorId, actorId),
     eq(schema.projectMemberships.active, true)
   )).limit(1);
-  return membership !== undefined && (!write ||
-    ['workspace_owner', 'project_owner'].includes(membership.role));
+  return membership !== undefined && (!write || membership.roles.some((role) =>
+    role === 'workspace_owner' || role === 'project_owner'));
 };
 const responsibilityProjection = async (
   tx: Transaction,
@@ -91,7 +92,7 @@ const responsibilityProjection = async (
       .innerJoin(schema.actors, eq(schema.actors.id, schema.projectMemberships.actorId))
       .where(and(
         eq(schema.projectMemberships.projectId, projectId),
-        eq(schema.projectMemberships.role, configured.role),
+        projectMembershipHasRoleSql(schema.projectMemberships.roles, configured.role),
         eq(schema.projectMemberships.active, true),
         isNull(schema.actors.disabledAt)
       )).orderBy(asc(schema.actors.id));

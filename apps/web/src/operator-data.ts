@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {and, desc, eq, inArray, isNull, max, or} from 'drizzle-orm';
+import {and, desc, eq, inArray, isNull, max, or, sql} from 'drizzle-orm';
 import {
   CANONICAL_COMMAND_POLICY,
   mapRunnerCompletionToDeliveryEvidence,
@@ -51,6 +51,7 @@ import {
   runbooks,
   riskSignalDispositionEvents,
   riskSignals,
+  resolveWorkItemResponsibility,
   scheduledJobs,
   secretRefs,
   taskPackets,
@@ -147,7 +148,7 @@ export type ConversationsData = Readonly<{
       access: readonly Readonly<{
         actorId: string;
         displayName: string;
-        role: string;
+        roles: readonly string[];
         grantId: string | null;
         grantVersion: number | null;
         desiredLevel: 'none' | 'read' | 'write' | 'admin' | null;
@@ -285,7 +286,7 @@ export const loadConversationsData = (
       db.select({
         projectId: projectMemberships.projectId,
         actorId: projectMemberships.actorId,
-        role: projectMemberships.role,
+        roles: projectMemberships.roles,
         active: projectMemberships.active
       }).from(projectMemberships).where(and(
         inArray(projectMemberships.projectId, projectIds),
@@ -374,7 +375,7 @@ export const loadConversationsData = (
             return [{
               actorId: actor.id,
               displayName: actor.displayName,
-              role: membership.role,
+              roles: membership.roles,
               grantId: grant?.id ?? null,
               grantVersion: grant?.version ?? null,
               desiredLevel,
@@ -625,7 +626,7 @@ export const loadPortfolioData = (scopes?: readonly AuthorizedProjectScope[]): P
       .from(projectMemberships).innerJoin(actors, eq(projectMemberships.actorId, actors.id))
       .where(and(
         inArray(projectMemberships.projectId, projectIds),
-        eq(projectMemberships.role, 'project_owner'),
+        sql`${projectMemberships.roles} @> array['project_owner']::project_membership_role[]`,
         eq(projectMemberships.active, true),
         isNull(actors.disabledAt)
       )).orderBy(projectMemberships.projectId, actors.id)
@@ -1003,7 +1004,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       .where(and(eq(workItems.projectId, project.id), isNull(workItems.deletedAt))),
     db.select({
       actorId: actors.id, displayName: actors.displayName, type: actors.type,
-      role: projectMemberships.role
+      roles: projectMemberships.roles
     }).from(projectMemberships).innerJoin(actors, eq(actors.id, projectMemberships.actorId))
       .where(and(eq(projectMemberships.projectId, project.id), eq(projectMemberships.active, true), isNull(actors.disabledAt)))
       .orderBy(actors.id),
@@ -1080,7 +1081,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
         .innerJoin(projectMemberships, and(
           eq(projectMemberships.projectId, project.id),
           eq(projectMemberships.actorId, agentProfiles.actorId),
-          eq(projectMemberships.role, 'agent'),
+          sql`${projectMemberships.roles} @> array['agent']::project_membership_role[]`,
           eq(projectMemberships.active, true)
         ))
         .where(and(eq(agentProfiles.id, profileId), eq(agentProfiles.workspaceId, project.workspaceId),
@@ -1157,8 +1158,10 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     ? [[member.actorId, {id: member.actorId, displayName: member.displayName, type: member.type}] as const] : []));
   const memberByRole = new Map<string, Readonly<{id: string; displayName: string; type: 'human' | 'agent'}>>();
   for (const member of members) {
-    if ((member.type === 'human' || member.type === 'agent') && !memberByRole.has(member.role)) {
-      memberByRole.set(member.role, {id: member.actorId, displayName: member.displayName, type: member.type});
+    if (member.type === 'human' || member.type === 'agent') {
+      for (const role of member.roles) if (!memberByRole.has(role)) {
+        memberByRole.set(role, {id: member.actorId, displayName: member.displayName, type: member.type});
+      }
     }
   }
   const evidenceByJourney = new Map<string, Readonly<{stageKey: string; requirement: string; reference: string}>[]>();
@@ -1169,12 +1172,21 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       reference: evidence.reference
     }]);
   }
-  const journeyByItem = new Map(journeys.map((journey) => {
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const journeyByItem = new Map(await Promise.all(journeys.map(async (journey) => {
     const boundProtocol = protocolByJourney.get(`${journey.protocolId}:${journey.protocolVersion}`) ?? null;
     const stage = boundProtocol?.definition.stages.find((item) => item.key === journey.stageKey) ?? null;
-    const actor = stage === null ? null : stage.responsibility.kind === 'project_role'
-      ? memberByRole.get(stage.responsibility.role) ?? null
-      : memberById.get(stage.responsibility.actorId) ?? null;
+    const itemResponsibility = itemById.get(journey.workItemId)?.responsibility ?? null;
+    const assigned = stage?.taskStatus === 'in_dev' && itemResponsibility !== null
+      ? await resolveWorkItemResponsibility(db, {workspaceId: project.workspaceId, projectId: project.id,
+          responsibility: itemResponsibility, requireContributorForHuman: itemResponsibility.kind === 'human',
+          requireUniqueProjectRole: true})
+      : null;
+    const actor = stage === null ? null : stage.taskStatus === 'in_dev'
+      ? assigned?.actor ?? null
+      : stage.responsibility.kind === 'project_role'
+        ? memberByRole.get(stage.responsibility.role) ?? null
+        : memberById.get(stage.responsibility.actorId) ?? null;
     const nextStage = stage?.allowedNextStageKey === null || stage === null ? null
       : boundProtocol?.definition.stages.find((item) => item.key === stage.allowedNextStageKey)?.name ?? null;
     const currentEvidence = (evidenceByJourney.get(journey.workItemId) ?? [])
@@ -1193,7 +1205,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
       evidence: evidenceByJourney.get(journey.workItemId) ?? [],
       requiredEvidence: stage?.requiredEvidence ?? []
     }] as const;
-  }));
+  })));
   return {
     project,
     runnerQueueEnabled: runnerActivationEnabled(),
@@ -1683,7 +1695,7 @@ export type AccessData = Readonly<{
     previous: Readonly<{id: string; version: number; instructions: string; createdAt: Date; rollbackOfVersionId: string | null}> | null;
   }>[];
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
-  memberships: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; role: string; active: boolean; version: number; canManage: boolean}>[];
+  memberships: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; roles: readonly string[]; active: boolean; version: number; canManage: boolean}>[];
   externalIdentities: readonly Readonly<{actorId: string; provider: string; active: boolean}>[];
   resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; desiredLevel: string; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; observationState: 'confirmed' | 'unobserved' | 'unsupported'; remediation: string | null; providerAccessUrl: string | null; version: number}>[];
   agentSystems: readonly Readonly<{
@@ -1771,7 +1783,7 @@ export const deriveRuntimeAvailabilityAlerts = (
 ): AttentionQueueItem[] => {
   const actorById = new Map(access.actors.map((actor) => [actor.id, actor]));
   const activeAgentMemberships = access.memberships.filter((membership) =>
-    membership.active && membership.role === 'agent');
+    membership.active && membership.roles.length === 1 && membership.roles[0] === 'agent');
   return access.agentSystems.flatMap((system) => {
     const actor = actorById.get(system.actorId);
     if (actor === undefined || actor.type !== 'agent' || actor.disabledAt !== null) return [];
@@ -1787,7 +1799,7 @@ export const deriveRuntimeAvailabilityAlerts = (
       const ownerMembership = access.memberships.find((item) =>
         item.projectId === registration.projectId &&
         item.active &&
-        (item.role === 'project_owner' || item.role === 'workspace_owner'));
+        (item.roles.includes('project_owner') || item.roles.includes('workspace_owner')));
       const owner = ownerMembership === undefined ? null : actorById.get(ownerMembership.actorId)?.displayName ?? null;
       const evidenceReferences = Object.entries(registration.availability.components).flatMap(([component, fact]) =>
         fact.evidenceReference === null ? [] : [{type: `runtime_${component}`, id: fact.evidenceReference}]);
@@ -1982,7 +1994,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       .leftJoin(agentRunReceipts, eq(agentRunReceipts.agentRunId, agentRuns.id))
       .where(and(inArray(agentProfiles.workspaceId, workspaceIds), inArray(taskPackets.projectId, projectIds)))
       .orderBy(desc(agentRuns.updatedAt), agentRuns.id),
-    db.select({id: projectMemberships.id, projectId: projectMemberships.projectId, actorId: projectMemberships.actorId, role: projectMemberships.role, active: projectMemberships.active, version: projectMemberships.version})
+    db.select({id: projectMemberships.id, projectId: projectMemberships.projectId, actorId: projectMemberships.actorId, roles: projectMemberships.roles, active: projectMemberships.active, version: projectMemberships.version})
       .from(projectMemberships).where(inArray(projectMemberships.projectId, projectIds))
       .orderBy(projectMemberships.projectId, projectMemberships.actorId),
     db.select({actorId: actorExternalIdentities.actorId, provider: actorExternalIdentities.provider, active: actorExternalIdentities.active})
@@ -2062,7 +2074,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     memberships.flatMap((membership) =>
       membership.actorId === operatorActorId &&
       membership.active &&
-      (membership.role === 'workspace_owner' || membership.role === 'project_owner')
+      (membership.roles.includes('workspace_owner') || membership.roles.includes('project_owner'))
         ? [membership.projectId]
         : [])
   );
@@ -2071,7 +2083,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       memberships.some((membership) =>
         membership.actorId === operatorActorId &&
         membership.active &&
-        membership.role === 'workspace_owner'));
+        membership.roles.includes('workspace_owner')));
   const profilesByActor = new Map<string, AccessData['agentSystems'][number]['profiles'][number][]>();
   for (const profile of persistedProfiles) {
     const baseline = latestWorkspaceInstruction.get(profile.workspaceId);

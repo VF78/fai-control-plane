@@ -7,7 +7,6 @@ import {
   evaluateAgentRunRetryAdmission,
   validateDeliveryProtocolDefinition,
   type CommandError,
-  type DeliveryProtocolResponsibility,
   type ProjectDecisionQueueItem,
   type ProjectExecutionProjection,
   type ProjectExecutionSelection
@@ -22,6 +21,7 @@ import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 import {isRuntimeAvailable} from './runtime-availability';
 import {loadProjectAcceptanceProjection} from './project-acceptance';
+import {resolveCurrentExecutionResponsibility} from './work-item-responsibility';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -37,53 +37,12 @@ const authority = async (tx: Queryable, workspaceId: string, projectId: string, 
     eq(schema.actors.type, 'human'), eq(schema.actors.authMode, 'user'), isNull(schema.actors.disabledAt)
   )).limit(1);
   if (actor === undefined) return false;
-  const [membership] = await tx.select({role: schema.projectMemberships.role, active: schema.projectMemberships.active})
+  const [membership] = await tx.select({roles: schema.projectMemberships.roles, active: schema.projectMemberships.active})
     .from(schema.projectMemberships).where(and(
       eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.actorId, actorId)
     )).limit(1);
   return actor.role === 'workspace_admin' || actor.role === 'delivery_lead' ||
-    membership?.active === true && (membership.role === 'workspace_owner' || membership.role === 'project_owner');
-};
-
-const responsibleActor = async (
-  tx: Queryable,
-  workspaceId: string,
-  projectId: string,
-  responsibility: DeliveryProtocolResponsibility
-): Promise<ProjectExecutionSelection['responsibleActor'] | null> => {
-  const roleActors = responsibility.kind === 'project_role'
-    ? await tx.select({actorId: schema.projectMemberships.actorId}).from(schema.projectMemberships)
-        .innerJoin(schema.actors, eq(schema.actors.id, schema.projectMemberships.actorId))
-        .where(and(eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.role, responsibility.role),
-          eq(schema.projectMemberships.active, true), eq(schema.actors.workspaceId, workspaceId), eq(schema.actors.type, 'human'),
-          isNull(schema.actors.disabledAt))).orderBy(asc(schema.actors.id)).limit(2)
-    : [];
-  if (responsibility.kind === 'project_role' && roleActors.length !== 1) return null;
-  const actorId = responsibility.kind === 'project_role' ? roleActors[0]!.actorId : responsibility.actorId;
-  if (actorId === undefined) return null;
-  const [binding] = await tx.select({
-    id: schema.actors.id, displayName: schema.actors.displayName, type: schema.actors.type,
-    membershipActive: schema.projectMemberships.active
-  }).from(schema.actors).innerJoin(schema.projectMemberships, and(
-    eq(schema.projectMemberships.actorId, schema.actors.id), eq(schema.projectMemberships.projectId, projectId)
-  )).where(and(eq(schema.actors.id, actorId), eq(schema.actors.workspaceId, workspaceId),
-    eq(schema.projectMemberships.active, true), isNull(schema.actors.disabledAt))).limit(1);
-  if (binding === undefined || (binding.type !== 'human' && binding.type !== 'agent')) return null;
-  if (responsibility.kind === 'actor' && responsibility.actorType !== binding.type) return null;
-  let agentProfileId: string | null = null;
-  if (responsibility.kind === 'actor' && responsibility.actorType === 'agent') {
-    const [profile] = await tx.select({id: schema.agentProfiles.id}).from(schema.agentProfiles)
-      .innerJoin(schema.runtimeRegistrations, and(
-        eq(schema.runtimeRegistrations.agentProfileId, schema.agentProfiles.id),
-        eq(schema.runtimeRegistrations.actorId, schema.agentProfiles.actorId)
-      )).where(and(eq(schema.agentProfiles.id, responsibility.agentProfileId),
-        eq(schema.agentProfiles.actorId, binding.id), eq(schema.agentProfiles.workspaceId, workspaceId),
-        eq(schema.agentProfiles.enabled, true), eq(schema.runtimeRegistrations.projectId, projectId),
-        eq(schema.runtimeRegistrations.enabled, true))).limit(1);
-    if (profile === undefined) return null;
-    agentProfileId = profile.id;
-  }
-  return {id: binding.id, displayName: binding.displayName, type: binding.type, agentProfileId};
+    membership?.active === true && membership.roles.some((role) => role === 'workspace_owner' || role === 'project_owner');
 };
 
 const selectionFor = async (
@@ -92,65 +51,21 @@ const selectionFor = async (
   projectId: string,
   workItemId: string
 ): Promise<ProjectExecutionSelection | null> => {
-  const [record] = await tx.select({
-    workItemId: schema.workItems.id, title: schema.workItems.title,
-    workItemVersion: schema.workItems.version, planVersionId: schema.workItems.sourcePlanVersionId,
-    workItemStatus: schema.workItems.status, workItemBlocked: schema.workItems.blocked,
-    protocolId: schema.deliveryJourneys.protocolId,
-    protocolVersion: schema.deliveryJourneys.protocolVersion, journeyVersion: schema.deliveryJourneys.version,
-    stageKey: schema.deliveryJourneys.stageKey, definition: schema.runbooks.definition,
-    protocolState: schema.runbooks.protocolState, active: schema.runbooks.active
-  }).from(schema.workItems).innerJoin(schema.projects, eq(schema.projects.id, schema.workItems.projectId))
-    .innerJoin(schema.deliveryJourneys, eq(schema.deliveryJourneys.workItemId, schema.workItems.id))
-    .innerJoin(schema.runbooks, and(eq(schema.runbooks.id, schema.deliveryJourneys.protocolId),
-      eq(schema.runbooks.version, schema.deliveryJourneys.protocolVersion)))
-    .where(and(eq(schema.workItems.id, workItemId), eq(schema.workItems.projectId, projectId),
-      eq(schema.projects.workspaceId, workspaceId), isNull(schema.workItems.deletedAt))).limit(1);
-  if (record === undefined || record.planVersionId === null || record.workItemBlocked ||
-    record.protocolState !== 'published' || !record.active) return null;
-  const definition = validateDeliveryProtocolDefinition(record.definition);
-  if (!definition.ok) return null;
-  const stage = definition.value.stages.find(({key, enabled}) => enabled && key === record.stageKey) ?? null;
-  if (stage === null || stage.taskStatus !== record.workItemStatus) return null;
-  const actor = await responsibleActor(tx, workspaceId, projectId, stage.responsibility);
-  if (actor === null) return null;
-  const boundary = stage.executionMode === 'autonomous'
+  const resolved = await resolveCurrentExecutionResponsibility(tx, {workspaceId, projectId, workItemId});
+  if (resolved === null) return null;
+  const actor = resolved.actor;
+  const boundary = resolved.executionMode === 'autonomous'
     ? actor.type === 'agent' && actor.agentProfileId !== null ? 'autonomous_ready' : 'autonomous_agent_required'
-    : stage.executionMode === 'human_approval' ? 'human_confirmation_required'
+    : resolved.executionMode === 'human_approval' ? 'human_confirmation_required'
     : 'provider_handoff_required';
   return {
-    planVersionId: record.planVersionId, workItemId: record.workItemId, title: record.title,
-    workItemVersion: record.workItemVersion,
-    protocolId: record.protocolId, protocolVersion: record.protocolVersion,
-    journeyVersion: record.journeyVersion, stageKey: stage.key, stageName: stage.name,
-    executionMode: stage.executionMode, responsibleActor: actor, boundary
+    planVersionId: resolved.planVersionId, workItemId, title: resolved.title,
+    workItemVersion: resolved.workItemVersion,
+    protocolId: resolved.protocolId, protocolVersion: resolved.protocolVersion,
+    journeyVersion: resolved.journeyVersion, stageKey: resolved.stageKey, stageName: resolved.stageName,
+    executionMode: resolved.executionMode, responsibilityHash: resolved.factHash,
+    responsibleActor: actor, boundary
   };
-};
-
-const hasHumanOwnedAutonomousStage = async (
-  tx: Queryable,
-  workspaceId: string,
-  projectId: string,
-  workItemId: string
-) => {
-  const [record] = await tx.select({definition: schema.runbooks.definition, stageKey: schema.deliveryJourneys.stageKey})
-    .from(schema.workItems).innerJoin(schema.projects, eq(schema.projects.id, schema.workItems.projectId))
-    .innerJoin(schema.deliveryJourneys, eq(schema.deliveryJourneys.workItemId, schema.workItems.id))
-    .innerJoin(schema.runbooks, and(eq(schema.runbooks.id, schema.deliveryJourneys.protocolId),
-      eq(schema.runbooks.version, schema.deliveryJourneys.protocolVersion)))
-    .where(and(eq(schema.workItems.id, workItemId), eq(schema.workItems.projectId, projectId),
-      eq(schema.projects.workspaceId, workspaceId), eq(schema.runbooks.protocolState, 'published'),
-      eq(schema.runbooks.active, true), isNull(schema.workItems.deletedAt))).limit(1);
-  if (record === undefined || typeof record.definition !== 'object' || record.definition === null) return false;
-  const stages = (record.definition as {stages?: unknown}).stages;
-  if (!Array.isArray(stages)) return false;
-  const current = stages.find((stage) => typeof stage === 'object' && stage !== null &&
-    (stage as {enabled?: unknown; key?: unknown}).enabled === true &&
-    (stage as {key?: unknown}).key === record.stageKey) as Record<string, unknown> | undefined;
-  if (current === undefined || current.executionMode !== 'autonomous' ||
-    typeof current.responsibility !== 'object' || current.responsibility === null) return false;
-  const responsibility = current.responsibility as Record<string, unknown>;
-  return responsibility.kind !== 'actor' || responsibility.actorType !== 'agent';
 };
 
 const decisionQueue = async (
@@ -336,13 +251,15 @@ const dispatchProjection = async (
 const selectionSnapshot = (selection: ProjectExecutionSelection | null) => selection === null ? {
   selectedWorkItemId: null, selectedPlanVersionId: null, selectedWorkItemVersion: null,
   selectedProtocolId: null, selectedProtocolVersion: null, selectedJourneyVersion: null,
-  selectedStageKey: null, selectedResponsibleActorId: null, selectedAgentProfileId: null
+  selectedStageKey: null, selectedResponsibleActorId: null, selectedAgentProfileId: null,
+  selectedResponsibilityHash: null
 } : {
   selectedWorkItemId: selection.workItemId, selectedPlanVersionId: selection.planVersionId,
   selectedWorkItemVersion: selection.workItemVersion, selectedProtocolId: selection.protocolId,
   selectedProtocolVersion: selection.protocolVersion, selectedJourneyVersion: selection.journeyVersion,
   selectedStageKey: selection.stageKey, selectedResponsibleActorId: selection.responsibleActor.id,
-  selectedAgentProfileId: selection.responsibleActor.agentProfileId
+  selectedAgentProfileId: selection.responsibleActor.agentProfileId,
+  selectedResponsibilityHash: selection.responsibilityHash
 };
 
 const persistedSelection = async (
@@ -374,7 +291,8 @@ const persistedSelection = async (
     row.selectedJourneyVersion === snapshot.selectedJourneyVersion &&
     row.selectedStageKey === snapshot.selectedStageKey &&
     row.selectedResponsibleActorId === snapshot.selectedResponsibleActorId &&
-    row.selectedAgentProfileId === snapshot.selectedAgentProfileId;
+    row.selectedAgentProfileId === snapshot.selectedAgentProfileId &&
+    row.selectedResponsibilityHash === snapshot.selectedResponsibilityHash;
   return matches ? {selection, stale: false} : {selection: null, stale: true};
 };
 
@@ -799,12 +717,7 @@ const nextState = async (tx: Transaction, workspaceId: string, projectId: string
       .every(({dependsOnWorkItemId}) => statusById.get(dependsOnWorkItemId) === 'done'));
   for (const candidate of candidates) {
     const selection = await selectionFor(tx, workspaceId, projectId, candidate.id);
-    if (selection === null) {
-      if (await hasHumanOwnedAutonomousStage(tx, workspaceId, projectId, candidate.id)) {
-        return {status: 'blocked' as const, selection: null, blockReason: 'autonomous_agent_required'};
-      }
-      continue;
-    }
+    if (selection === null) continue;
     return selection.boundary === 'autonomous_ready'
       ? {status: 'running' as const, selection, blockReason: null}
       : {status: 'blocked' as const,
@@ -1211,7 +1124,7 @@ export const createPostgresProjectExecutionDispatcher = (
           workItemVersion: selection.workItemVersion, protocolId: selection.protocolId,
           protocolVersion: selection.protocolVersion, journeyVersion: selection.journeyVersion,
           stageKey: selection.stageKey, responsibleActorId: selection.responsibleActor.id,
-          agentProfileId: profile.profileId
+          agentProfileId: profile.profileId, responsibilityHash: selection.responsibilityHash
         })).digest('hex');
         const identity = `project-execution-dispatch:v1:${execution.projectId}:${execution.version}:${selectionHash}`;
         const eventId = stableUuid(`${identity}:event`);

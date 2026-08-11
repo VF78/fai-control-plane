@@ -14,7 +14,7 @@ const values = () => {
   };
   for (let index = 0; index < 8; index += 1) {
     result[`memberActorId${index}`] = '';
-    result[`memberRole${index}`] = 'contributor';
+    result[`memberRole${index}`] = '';
   }
   return result;
 };
@@ -24,16 +24,19 @@ const request = (body: Record<string, string>) => new Request('https://app.examp
 });
 
 it('submits an exact provider-neutral project intake and redirects to real setup detail', async () => {
+  const input = values();
+  input.productOwnerContributor = 'true';
   const create = vi.fn().mockResolvedValue({status: 'created', slug: 'new-project'});
   const close = vi.fn().mockResolvedValue(undefined);
-  const response = await createProjectCommand(request(values()), {
+  const response = await createProjectCommand(request(input), {
     requireSession: vi.fn().mockResolvedValue(authorization) as never,
     getRuntime: vi.fn().mockResolvedValue({runtime: {create}, close}) as never
   });
   expect(response.status).toBe(303);
   expect(response.headers.get('location')).toBe('https://app.example/projects/new-project/setup');
   expect(create).toHaveBeenCalledWith(expect.objectContaining({workspaceId, operatorActorId: actorId,
-    slug: 'new-project', repositoryBinding: 'create_managed', agentProfileId: null, members: []}));
+    slug: 'new-project', repositoryBinding: 'create_managed', agentProfileId: null,
+    productOwnerRoles: ['project_owner', 'contributor'], members: []}));
   expect(close).toHaveBeenCalledOnce();
 });
 

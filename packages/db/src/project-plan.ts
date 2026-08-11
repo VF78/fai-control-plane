@@ -30,6 +30,8 @@ import {and, count, desc, eq, inArray, isNull, max} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 import {reconcileRiskSignal} from './risk-signal';
+import {projectMembershipHasRoleSql} from './project-membership-roles';
+import {resolveWorkItemResponsibility} from './work-item-responsibility';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -46,54 +48,23 @@ const authority = async (tx: Transaction, workspaceId: string, projectId: string
     eq(schema.projects.id, projectId), eq(schema.projects.workspaceId, workspaceId)
   )).limit(1);
   if (project === undefined) return null;
-  const [membership] = await tx.select({role: schema.projectMemberships.role, active: schema.projectMemberships.active}).from(schema.projectMemberships).where(and(
+  const [membership] = await tx.select({roles: schema.projectMemberships.roles, active: schema.projectMemberships.active}).from(schema.projectMemberships).where(and(
     eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.actorId, actorId)
   )).limit(1);
   const administrativeEditor = actor.role === 'workspace_admin' || actor.role === 'delivery_lead';
   const activeMembership = membership?.active === true;
-  const productOwner = activeMembership && membership.role === 'project_owner';
-  const ownerEditor = productOwner || activeMembership && membership.role === 'workspace_owner';
+  const productOwner = activeMembership && membership.roles.includes('project_owner');
+  const ownerEditor = productOwner || activeMembership && membership.roles.includes('workspace_owner');
   return {canRead: administrativeEditor || activeMembership, canEdit: administrativeEditor || ownerEditor, canApprove: productOwner};
 };
 
 const taskResponsibilityResolved = async (
   tx: Transaction, workspaceId: string, projectId: string, responsibility: ProjectPlanTaskResponsibility
 ): Promise<ReturnType<typeof fail> | Readonly<{ok: true; value: true}>> => {
-  if (responsibility.kind === 'human') {
-    const [human] = await tx.select({id: schema.actors.id}).from(schema.actors)
-      .innerJoin(schema.projectMemberships, and(
-        eq(schema.projectMemberships.actorId, schema.actors.id),
-        eq(schema.projectMemberships.projectId, projectId),
-        eq(schema.projectMemberships.active, true)
-      ))
-      .where(and(eq(schema.actors.id, responsibility.actorId), eq(schema.actors.workspaceId, workspaceId),
-        eq(schema.actors.type, 'human'), eq(schema.actors.authMode, 'user'), isNull(schema.actors.disabledAt))).limit(1);
-    return human === undefined
-      ? fail('INVALID_TRANSITION', 'The assigned human is not an active project member.')
-      : {ok: true, value: true};
-  }
-  if (responsibility.kind === 'project_role') {
-    const [member] = await tx.select({id: schema.projectMemberships.id}).from(schema.projectMemberships)
-      .innerJoin(schema.actors, eq(schema.actors.id, schema.projectMemberships.actorId))
-      .where(and(eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.role, responsibility.role),
-        eq(schema.projectMemberships.active, true), eq(schema.actors.workspaceId, workspaceId),
-        eq(schema.actors.type, 'human'), eq(schema.actors.authMode, 'user'), isNull(schema.actors.disabledAt))).limit(1);
-    return member === undefined
-      ? fail('INVALID_TRANSITION', 'The assigned project role has no active human member.')
-      : {ok: true, value: true};
-  }
-  const [profile] = await tx.select({id: schema.agentProfiles.id}).from(schema.agentProfiles)
-    .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
-    .innerJoin(schema.projectMemberships, and(eq(schema.projectMemberships.actorId, schema.actors.id),
-      eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.role, 'agent'),
-      eq(schema.projectMemberships.active, true)))
-    .innerJoin(schema.runtimeRegistrations, and(eq(schema.runtimeRegistrations.agentProfileId, schema.agentProfiles.id),
-      eq(schema.runtimeRegistrations.actorId, schema.actors.id), eq(schema.runtimeRegistrations.projectId, projectId),
-      eq(schema.runtimeRegistrations.enabled, true)))
-    .where(and(eq(schema.agentProfiles.id, responsibility.agentProfileId), eq(schema.agentProfiles.workspaceId, workspaceId),
-      eq(schema.agentProfiles.enabled, true), eq(schema.actors.type, 'agent'), isNull(schema.actors.disabledAt))).limit(1);
-  return profile === undefined
-    ? fail('INVALID_TRANSITION', 'The assigned agent profile is not enabled and registered for this project.')
+  const resolved = await resolveWorkItemResponsibility(tx, {workspaceId, projectId, responsibility,
+    requireContributorForHuman: false, requireUniqueProjectRole: false});
+  return resolved === null
+    ? fail('INVALID_TRANSITION', 'The assigned responsibility is not an active compatible project member/profile.')
     : {ok: true, value: true};
 };
 
@@ -104,7 +75,7 @@ const protocolSimulation = async (tx: Transaction, workspaceId: string, projectI
   if (row === undefined) return null;
   const definition = validateDeliveryProtocolDefinition(row.definition);
   if (!definition.ok) return {protocolId: row.id, simulationHash: '', valid: false};
-  const memberships = await tx.select({actorId: schema.projectMemberships.actorId, role: schema.projectMemberships.role, active: schema.projectMemberships.active})
+  const memberships = await tx.select({actorId: schema.projectMemberships.actorId, roles: schema.projectMemberships.roles, active: schema.projectMemberships.active})
     .from(schema.projectMemberships).where(eq(schema.projectMemberships.projectId, projectId));
   const actorIds = [...new Set(memberships.map(({actorId}) => actorId))];
   const actors = actorIds.length === 0 ? [] : await tx.select({actorId: schema.actors.id, actorType: schema.actors.type, disabledAt: schema.actors.disabledAt})
@@ -175,7 +146,7 @@ const hermesPlannerEligible = async (tx: Transaction, workspaceId: string, proje
     .innerJoin(schema.projectMemberships, and(
       eq(schema.projectMemberships.projectId, projectId),
       eq(schema.projectMemberships.actorId, schema.agentProfiles.actorId),
-      eq(schema.projectMemberships.role, 'agent'),
+      projectMembershipHasRoleSql(schema.projectMemberships.roles, 'agent'),
       eq(schema.projectMemberships.active, true)
     ))
     .where(and(

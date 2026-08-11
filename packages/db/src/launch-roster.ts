@@ -1,4 +1,5 @@
 import type {createDatabase} from './index';
+import type {ProjectMembershipRole} from '@fai-control-plane/domain';
 import {
   actorExternalIdentities,
   actors,
@@ -6,11 +7,9 @@ import {
 } from './schema';
 
 type Database = ReturnType<typeof createDatabase>['db'];
-type MembershipRole = typeof projectMemberships.$inferInsert.role;
-
 export type LaunchHumanMember = Readonly<{
   actorId: string;
-  role: Extract<MembershipRole, 'project_owner' | 'contributor'>;
+  roles: readonly Extract<ProjectMembershipRole, 'project_owner' | 'contributor'>[];
 }>;
 
 export type LaunchHumanRoster = Readonly<{
@@ -104,8 +103,8 @@ export const reconcileLaunchHumanRoster = async (
       set: {externalSubject, active: true}
     });
 
-    const role = isProductOwner ? 'project_owner' as const : 'contributor' as const;
-    members.push({actorId: actor.id, role});
+    const roles = isProductOwner ? ['project_owner'] as const : ['contributor'] as const;
+    members.push({actorId: actor.id, roles});
     if (isProductOwner) bootstrapActorId = actor.id;
   }
 
@@ -122,13 +121,13 @@ export const reconcileLaunchProjectMemberships = async (
   humanMembers: readonly LaunchHumanMember[],
   hermesActorId: string
 ): Promise<void> => {
-  const projectOwner = humanMembers.find(({role}) => role === 'project_owner');
+  const projectOwner = humanMembers.find(({roles}) => roles.includes('project_owner'));
   if (projectOwner === undefined) {
     throw new Error('launch project membership seed requires a project owner');
   }
   const fixedMembers = [
     ...humanMembers,
-    {actorId: hermesActorId, role: 'agent' as const}
+    {actorId: hermesActorId, roles: ['agent'] as const}
   ];
   const members = projectSlug === 'msa' ? fixedMembers : [projectOwner];
   const desiredActorIds = new Set(members.map(({actorId}) => actorId));
@@ -137,14 +136,14 @@ export const reconcileLaunchProjectMemberships = async (
     await db.insert(projectMemberships).values({
       projectId,
       actorId: member.actorId,
-      role: member.role,
+      roles: [...member.roles],
       active
     }).onConflictDoUpdate({
       target: [
         projectMemberships.projectId,
         projectMemberships.actorId
       ],
-      set: {role: member.role, active}
+      set: {roles: [...member.roles], active}
     });
   }
 };

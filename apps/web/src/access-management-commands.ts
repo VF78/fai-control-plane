@@ -1,5 +1,6 @@
 import {
   accessLevels,
+  canonicalProjectMembershipRoles,
   containsHighConfidenceSecretContent,
   projectMembershipRoles
 } from '@fai-control-plane/domain';
@@ -61,6 +62,15 @@ const responseFor = (request: Request, status: Awaited<ReturnType<Runtime['setMe
     status === 'forbidden' ? json(status, 403) :
       status === 'not_found' ? json(status, 404) :
       status === 'stale' ? json(status, 409) : json(status, 400);
+const roleFields = [
+  ['roleWorkspaceOwner', 'workspace_owner'], ['roleProjectOwner', 'project_owner'],
+  ['roleContributor', 'contributor'], ['roleReviewer', 'reviewer'],
+  ['roleClientViewer', 'client_viewer'], ['roleAgent', 'agent']
+] as const;
+const rolesFrom = (form: URLSearchParams): readonly (typeof projectMembershipRoles)[number][] | null => {
+  const roles = roleFields.flatMap(([field, role]) => form.get(field) === 'true' ? [role] : []);
+  return canonicalProjectMembershipRoles(roles);
+};
 
 export async function onboardActorCommand(
   request: Request,
@@ -69,9 +79,12 @@ export async function onboardActorCommand(
   const form = await readForm(request);
   const kind = form?.get('actorType');
   const keys = kind === 'human'
-    ? ['_csrf', 'idempotencyKey', 'projectId', 'actorType', 'displayName', 'actorRole', 'membershipRole']
+    ? ['_csrf', 'idempotencyKey', 'projectId', 'actorType', 'displayName', 'actorRole']
     : ['_csrf', 'idempotencyKey', 'projectId', 'actorType', 'displayName', 'runtimeId', 'runtimeProfile', 'runtimeKey'];
-  const values = exact(form, keys);
+  const allowedRoleFields = kind === 'human' ? new Set(roleFields.slice(1, 5).map(([field]) => field)) : new Set<string>();
+  const values = form !== null && [...form.keys()].every((key) => keys.includes(key) || allowedRoleFields.has(key)) &&
+    [...form.keys()].every((key) => form.getAll(key).length === 1) && keys.every((key) => form.has(key))
+    ? Object.fromEntries(keys.map((key) => [key, form.get(key)!])) : null;
   const authorization = await overrides.requireSession(request, {csrfToken: values?._csrf ?? null});
   if (!authorization.ok) return authorization.response;
   const bounded = (value: string | undefined, maximum: number): value is string =>
@@ -80,10 +93,11 @@ export async function onboardActorCommand(
   if (values === null || !uuidPattern.test(values.idempotencyKey ?? '') ||
     !uuidPattern.test(values.projectId ?? '') || !bounded(values.displayName, 120) ||
     (kind !== 'human' && kind !== 'agent')) return json('invalid_request', 400);
-  if (kind === 'human' && (
-    !['delivery_lead', 'developer'].includes(values.actorRole ?? '') ||
-    !['project_owner', 'contributor', 'reviewer', 'client_viewer'].includes(values.membershipRole ?? '')
-  )) return json('invalid_request', 400);
+  const humanRoles = kind === 'human' && form !== null ? rolesFrom(form) : null;
+  if (kind === 'human' && (!['delivery_lead', 'developer'].includes(values.actorRole ?? '') ||
+    humanRoles === null || humanRoles.includes('workspace_owner') || humanRoles.includes('agent'))) {
+    return json('invalid_request', 400);
+  }
   if (kind === 'agent' && (
     !bounded(values.runtimeId, 64) || !bounded(values.runtimeProfile, 64) ||
     !bounded(values.runtimeKey, 256)
@@ -97,7 +111,7 @@ export async function onboardActorCommand(
       actorType: kind,
       displayName: values.displayName,
       actorRole: kind === 'agent' ? 'agent_operator' : values.actorRole as 'delivery_lead' | 'developer',
-      membershipRole: kind === 'agent' ? 'agent' : values.membershipRole as (typeof projectMembershipRoles)[number],
+      membershipRoles: kind === 'agent' ? ['agent'] : humanRoles!,
       ...(kind === 'agent' ? {
         runtimeId: values.runtimeId, runtimeProfile: values.runtimeProfile, runtimeKey: values.runtimeKey
       } : {})
@@ -113,13 +127,19 @@ export async function setMembershipCommand(
   membershipId: string,
   overrides: AccessManagementCommandDependencies = dependencies
 ): Promise<Response> {
-  const values = exact(await readForm(request), ['_csrf', 'expectedVersion', 'role', 'active']);
+  const form = await readForm(request);
+  const fixed = ['_csrf', 'expectedVersion', 'active'];
+  const allowed = new Set([...fixed, ...roleFields.map(([field]) => field)]);
+  const values = form !== null && [...form.keys()].every((key) => allowed.has(key)) &&
+    [...form.keys()].every((key) => form.getAll(key).length === 1) && fixed.every((key) => form.has(key))
+    ? Object.fromEntries(fixed.map((key) => [key, form.get(key)!])) : null;
+  const roles = form === null ? null : rolesFrom(form);
   const authorization = await overrides.requireSession(request, {csrfToken: values?._csrf ?? null});
   if (!authorization.ok) return authorization.response;
   if (
     values === null || !uuidPattern.test(membershipId) ||
     !/^[1-9][0-9]{0,8}$/.test(values.expectedVersion ?? '') ||
-    !projectMembershipRoles.includes(values.role as never) ||
+    roles === null ||
     (values.active !== 'true' && values.active !== 'false')
   ) return json('invalid_request', 400);
   try {
@@ -128,7 +148,7 @@ export async function setMembershipCommand(
       operatorActorId: authorization.session.actorId,
       membershipId,
       expectedVersion: Number(values.expectedVersion),
-      role: values.role as (typeof projectMembershipRoles)[number],
+      roles,
       active: values.active === 'true'
     }));
   } catch {

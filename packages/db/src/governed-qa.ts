@@ -16,6 +16,7 @@ import type {GovernedQaStore, GovernedQaValue} from '@fai-control-plane/applicat
 import {and, asc, eq, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
+import {projectMembershipHasRoleSql} from './project-membership-roles';
 import {reconcileRiskSignal} from './risk-signal';
 
 type Database = NodePgDatabase<typeof schema>;
@@ -41,10 +42,10 @@ const authority = async (tx: Transaction, workspaceId: string, projectId: string
   )).limit(1);
   if (actor === undefined) return false;
   if (actor.role === 'workspace_admin' || actor.role === 'delivery_lead') return true;
-  const [membership] = await tx.select({role: schema.projectMemberships.role}).from(schema.projectMemberships)
+  const [membership] = await tx.select({roles: schema.projectMemberships.roles}).from(schema.projectMemberships)
     .where(and(eq(schema.projectMemberships.projectId, projectId),
       eq(schema.projectMemberships.actorId, actorId), eq(schema.projectMemberships.active, true))).limit(1);
-  return membership?.role === 'workspace_owner' || membership?.role === 'project_owner';
+  return membership?.roles.includes('workspace_owner') === true || membership?.roles.includes('project_owner') === true;
 };
 const responsibleHuman = async (tx: Transaction, workspaceId: string, projectId: string,
   responsibility: DeliveryProtocolResponsibility): Promise<string | null> => {
@@ -60,7 +61,7 @@ const responsibleHuman = async (tx: Transaction, workspaceId: string, projectId:
   const rows = await tx.select({id: schema.actors.id}).from(schema.projectMemberships)
     .innerJoin(schema.actors, eq(schema.actors.id, schema.projectMemberships.actorId))
     .where(and(eq(schema.projectMemberships.projectId, projectId),
-      eq(schema.projectMemberships.role, responsibility.role), eq(schema.projectMemberships.active, true),
+      projectMembershipHasRoleSql(schema.projectMemberships.roles, responsibility.role), eq(schema.projectMemberships.active, true),
       eq(schema.actors.workspaceId, workspaceId), eq(schema.actors.type, 'human'),
       isNull(schema.actors.disabledAt))).orderBy(asc(schema.actors.id)).limit(2);
   return rows.length === 1 ? rows[0]!.id : null;
@@ -84,7 +85,8 @@ const pauseExecution = async (tx: Transaction, projectId: string, now: Date): Pr
     status: target, blockReason: null, selectedWorkItemId: null, selectedPlanVersionId: null,
     selectedWorkItemVersion: null, selectedProtocolId: null, selectedProtocolVersion: null,
     selectedJourneyVersion: null, selectedStageKey: null, selectedResponsibleActorId: null,
-    selectedAgentProfileId: null, pausedAt: now, updatedAt: now, version: execution.version + 1
+    selectedAgentProfileId: null, selectedResponsibilityHash: null,
+    pausedAt: now, updatedAt: now, version: execution.version + 1
   }).where(and(eq(schema.projectExecutions.projectId, projectId), eq(schema.projectExecutions.version, execution.version)))
     .returning({id: schema.projectExecutions.projectId});
   if (updated === undefined) throw new Error('governed_qa_execution_cas');
@@ -100,7 +102,8 @@ const blockExecution = async (tx: Transaction, projectId: string, now: Date): Pr
     blockReason: 'qa_review_failed', selectedWorkItemId: null, selectedPlanVersionId: null,
     selectedWorkItemVersion: null, selectedProtocolId: null, selectedProtocolVersion: null,
     selectedJourneyVersion: null, selectedStageKey: null, selectedResponsibleActorId: null,
-    selectedAgentProfileId: null, pausedAt: null, updatedAt: now, version: execution.version + 1
+    selectedAgentProfileId: null, selectedResponsibilityHash: null,
+    pausedAt: null, updatedAt: now, version: execution.version + 1
   }).where(and(eq(schema.projectExecutions.projectId, projectId), eq(schema.projectExecutions.version, execution.version)))
     .returning({id: schema.projectExecutions.projectId});
   if (updated === undefined) throw new Error('governed_qa_execution_block_cas');

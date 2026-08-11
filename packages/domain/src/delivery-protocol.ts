@@ -66,7 +66,7 @@ export type DeliveryProtocolSimulationContext = Readonly<{
   projectExists: boolean;
   memberships: readonly Readonly<{
     actorId: string;
-    role: ProjectMembershipRole;
+    roles: readonly ProjectMembershipRole[];
     active: boolean;
   }>[];
   actors: readonly Readonly<{
@@ -300,7 +300,7 @@ export const simulateDeliveryProtocol = (
   const canonicalContext = {
     projectExists: context.projectExists,
     memberships: [...context.memberships].sort((a, b) =>
-      a.actorId.localeCompare(b.actorId) || a.role.localeCompare(b.role)
+      a.actorId.localeCompare(b.actorId) || a.roles.join(',').localeCompare(b.roles.join(','))
     ),
     actors: [...context.actors].sort((a, b) => a.actorId.localeCompare(b.actorId)),
     agentProfiles: [...context.agentProfiles].sort((a, b) =>
@@ -338,7 +338,7 @@ export const simulateDeliveryProtocol = (
         if (owner.kind === 'project_role') {
           responsibilityResolved = context.memberships.some((item) =>
             item.active &&
-            item.role === owner.role &&
+            item.roles.includes(owner.role) &&
             context.actors.some((actor) =>
               actor.actorId === item.actorId && actor.active
             )

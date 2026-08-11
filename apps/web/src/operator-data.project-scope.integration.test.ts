@@ -45,8 +45,8 @@ describePostgres('operator project scope', () => {
       {id: ids.otherActor, workspaceId: ids.otherWorkspace, type: 'human', role: 'workspace_admin', displayName: 'Foreign operator', authMode: 'user'}
     ]);
     await created.db.insert(projectMemberships).values([
-      {projectId: ids.project, actorId: ids.actor, role: 'project_owner'},
-      {projectId: ids.otherProject, actorId: ids.otherActor, role: 'project_owner'}
+      {projectId: ids.project, actorId: ids.actor, roles: ['project_owner']},
+      {projectId: ids.otherProject, actorId: ids.otherActor, roles: ['project_owner']}
     ]);
   }, 30_000);
 

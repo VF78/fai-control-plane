@@ -21,8 +21,8 @@ const attemptAuditCommandId = (command: Command, requestHash: string, reason: st
 const isOwner = async (tx: Parameters<Parameters<Database['transaction']>[0]>[0], workspaceId: string, projectId: string, actorId: string) => {
   const [actor] = await tx.select({id: schema.actors.id}).from(schema.actors).where(and(eq(schema.actors.id, actorId), eq(schema.actors.workspaceId, workspaceId), eq(schema.actors.type, 'human'), eq(schema.actors.authMode, 'user'), isNull(schema.actors.disabledAt))).limit(1);
   if (actor === undefined) return false;
-  const [member] = await tx.select({role: schema.projectMemberships.role}).from(schema.projectMemberships).where(and(eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.actorId, actorId), eq(schema.projectMemberships.active, true))).limit(1);
-  return member?.role === 'project_owner';
+  const [member] = await tx.select({roles: schema.projectMemberships.roles}).from(schema.projectMemberships).where(and(eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.actorId, actorId), eq(schema.projectMemberships.active, true))).limit(1);
+  return member?.roles.includes('project_owner') === true;
 };
 
 export const createPostgresProjectOutcomeAcceptanceStore = (db: Database, options: Readonly<{now?: () => Date}> = {}) => ({
@@ -122,7 +122,7 @@ export const createPostgresProjectOutcomeAcceptanceStore = (db: Database, option
         resultVersion = execution.version; result = {ok: true, value: {projectId: project.id, outcomeId: outcome.id, acceptedWeight, totalWeight, executionStatus: execution.status, executionVersion: execution.version}};
         return complete(project.id, 'allow', claimed);
       }
-      const [updated] = await tx.update(schema.projectExecutions).set({status: 'blocked', blockReason: 'uat_required', selectedWorkItemId: null, selectedPlanVersionId: null, selectedWorkItemVersion: null, selectedProtocolId: null, selectedProtocolVersion: null, selectedJourneyVersion: null, selectedStageKey: null, selectedResponsibleActorId: null, selectedAgentProfileId: null, pausedAt: null, completedAt: null, version: execution.version + 1, updatedAt: nowBase}).where(and(eq(schema.projectExecutions.projectId, project.id), eq(schema.projectExecutions.version, execution.version), eq(schema.projectExecutions.status, execution.status))).returning({version: schema.projectExecutions.version});
+      const [updated] = await tx.update(schema.projectExecutions).set({status: 'blocked', blockReason: 'uat_required', selectedWorkItemId: null, selectedPlanVersionId: null, selectedWorkItemVersion: null, selectedProtocolId: null, selectedProtocolVersion: null, selectedJourneyVersion: null, selectedStageKey: null, selectedResponsibleActorId: null, selectedAgentProfileId: null, selectedResponsibilityHash: null, pausedAt: null, completedAt: null, version: execution.version + 1, updatedAt: nowBase}).where(and(eq(schema.projectExecutions.projectId, project.id), eq(schema.projectExecutions.version, execution.version), eq(schema.projectExecutions.status, execution.status))).returning({version: schema.projectExecutions.version});
       if (updated === undefined) throw new Error('project_outcome_acceptance_execution_cas');
       await tx.insert(schema.projectScopeOutcomeObservations).values({id: randomUUID(), projectId: project.id, baselineId: baseline.id, acceptedWeight, totalWeight, observedAt, evidenceReference: `outcome-acceptance:${outcome.id}:${command.commandId}`});
       resultVersion = updated.version; result = {ok: true, value: {projectId: project.id, outcomeId: outcome.id, acceptedWeight, totalWeight, executionStatus: 'blocked', executionVersion: updated.version}};

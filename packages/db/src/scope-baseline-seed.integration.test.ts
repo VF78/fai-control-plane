@@ -64,8 +64,8 @@ describePostgres('approved scope baseline migration', () => {
     msaId = msa.id;
     asconId = ascon.id;
     await db.insert(projectMemberships).values([
-      {projectId: msa.id, actorId: owner.id, role: 'project_owner'},
-      {projectId: ascon.id, actorId: owner.id, role: 'project_owner'}
+      {projectId: msa.id, actorId: owner.id, roles: ['project_owner']},
+      {projectId: ascon.id, actorId: owner.id, roles: ['project_owner']}
     ]);
   }, 30_000);
 

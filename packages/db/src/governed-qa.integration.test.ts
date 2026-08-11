@@ -68,8 +68,8 @@ describePostgres('governed QA persistence', () => {
       {id: ids.contributor, workspaceId: ids.workspace, type: 'human', role: 'developer', displayName: 'Contributor', authMode: 'user'}
     ]);
     await db.insert(projectMemberships).values([
-      {id: randomUUID(), projectId: ids.project, actorId: ids.owner, role: 'project_owner'},
-      {id: randomUUID(), projectId: ids.project, actorId: ids.contributor, role: 'contributor'}
+      {id: randomUUID(), projectId: ids.project, actorId: ids.owner, roles: ['project_owner']},
+      {id: randomUUID(), projectId: ids.project, actorId: ids.contributor, roles: ['contributor']}
     ]);
     const planDefinition = {title: 'Plan', outcomes: [], milestones: [], risks: [], tasks: []};
     const approvedAt = new Date('2026-08-11T00:00:00.000Z');

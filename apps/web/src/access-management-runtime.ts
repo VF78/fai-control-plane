@@ -39,7 +39,7 @@ export type AccessManagementRuntime = Readonly<{
     actorType: 'human' | 'agent';
     displayName: string;
     actorRole: 'delivery_lead' | 'developer' | 'agent_operator';
-    membershipRole: ProjectMembershipRole;
+    membershipRoles: readonly ProjectMembershipRole[];
     runtimeId?: string;
     runtimeProfile?: string;
     runtimeKey?: string;
@@ -49,7 +49,7 @@ export type AccessManagementRuntime = Readonly<{
     operatorActorId: string;
     membershipId: string;
     expectedVersion: number;
-    role: ProjectMembershipRole;
+    roles: readonly ProjectMembershipRole[];
     active: boolean;
   }>): Promise<MutationStatus>;
   setDesiredAccess(input: Readonly<{
@@ -146,7 +146,7 @@ const createRuntime = (db: Database): AccessManagementRuntime => {
       const payload = {
         actorId: id('actor'), membershipId: id('membership'), projectId: input.projectId,
         actorType: input.actorType, displayName: input.displayName,
-        actorRole: input.actorRole, membershipRole: input.membershipRole, agentProfile
+        actorRole: input.actorRole, membershipRoles: input.membershipRoles, agentProfile
       };
       return execute(input.workspaceId, input.operatorActorId, {
         idempotencyKey: `actor.onboard.v1:${input.idempotencyKey}`,
@@ -165,7 +165,7 @@ const createRuntime = (db: Database): AccessManagementRuntime => {
           eq(projects.workspaceId, input.workspaceId)
         )).limit(1);
       if (binding === undefined) return 'not_found';
-      const change = {role: input.role, active: input.active};
+      const change = {roles: input.roles, active: input.active};
       const inputHash = createHash('sha256').update(canonicalJson(change)).digest('hex');
       return execute(input.workspaceId, input.operatorActorId, {
         idempotencyKey: `project_membership.set.v1:${binding.id}:${input.expectedVersion}:${inputHash}`,

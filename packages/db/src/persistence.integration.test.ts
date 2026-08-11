@@ -1591,7 +1591,7 @@ describePostgres(
             project: {id: projectId, workspaceId: fixture.workspaceId, name: 'Forged', slug: `forged-${randomUUID()}`, version: 1},
             productOwnerActorId: fixture.actorId,
             memberships: [{id: randomUUID(), projectId, actorId: fixture.actorId,
-              role: 'project_owner', active: true, version: 1}],
+              roles: ['project_owner'], active: true, version: 1}],
             configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none',
               clientChat: 'none', executionMode: 'manual', agentProfileId: null, providerId: 'github'} as never,
             state: 'pending', lastErrorCode: null, version: 1
@@ -1624,7 +1624,7 @@ describePostgres(
         idempotencyKey: `project-${randomUUID()}`, issuedAt: new Date().toISOString(), actor: actor.value,
         type: 'project.create' as const, payload: {
           projectId: ids.project, setupId: ids.setup, name: 'Atomic project', slug: `atomic-${randomUUID()}`,
-          productOwnerActorId: fixture.actorId, productOwnerMembershipId: ids.membership, members: [],
+          productOwnerActorId: fixture.actorId, productOwnerMembershipId: ids.membership, productOwnerRoles: ['project_owner' as const], members: [],
           repositoryBinding: 'create_managed' as const, trackerBinding: 'link_existing' as const,
           internalChat: 'none' as const, clientChat: 'none' as const,
           executionMode: 'manual' as const, agentProfileId: null
@@ -1649,7 +1649,7 @@ describePostgres(
       const rollbackKey = `rollback-${randomUUID()}`;
       const collidingSetup = {...command, commandId: randomUUID(), correlationId: randomUUID(),
         idempotencyKey: rollbackKey, payload: {...command.payload, projectId: rollbackProjectId,
-          productOwnerMembershipId: randomUUID(), slug: `rollback-${randomUUID()}`}};
+          productOwnerMembershipId: randomUUID(), productOwnerRoles: ['project_owner' as const], slug: `rollback-${randomUUID()}`}};
       await expect(service.execute(collidingSetup)).rejects.toBeDefined();
       expect(await testDb.select().from(projects).where(eq(projects.id, rollbackProjectId))).toHaveLength(0);
       expect(await testDb.select().from(projectMemberships).where(eq(projectMemberships.projectId, rollbackProjectId))).toHaveLength(0);
@@ -1659,7 +1659,7 @@ describePostgres(
       const concurrent = [0, 1].map((index) => ({...command, commandId: randomUUID(),
         correlationId: randomUUID(), idempotencyKey: `concurrent-${index}-${randomUUID()}`,
         payload: {...command.payload, projectId: randomUUID(), setupId: randomUUID(),
-          productOwnerMembershipId: randomUUID(), slug: concurrentSlug}}));
+          productOwnerMembershipId: randomUUID(), productOwnerRoles: ['project_owner' as const], slug: concurrentSlug}}));
       const concurrentResults = await Promise.all(concurrent.map((candidate) => service.execute(candidate)));
       expect(concurrentResults.filter((result) => result.status === 'completed' &&
         result.receipt.result.ok)).toHaveLength(1);
@@ -1672,12 +1672,54 @@ describePostgres(
       const crossWorkspace = {...command, commandId: randomUUID(), workspaceId: fixture.otherWorkspaceId,
         correlationId: randomUUID(), idempotencyKey: crossKey, payload: {...command.payload,
           projectId: crossIds.project, setupId: crossIds.setup,
-          productOwnerMembershipId: crossIds.membership, slug: `cross-${randomUUID()}`}};
+          productOwnerMembershipId: crossIds.membership, productOwnerRoles: ['project_owner' as const], slug: `cross-${randomUUID()}`}};
       await expect(service.execute(crossWorkspace)).rejects.toThrow('Actor does not belong to claim workspace');
       expect(await testDb.select().from(projects).where(eq(projects.id, crossIds.project))).toHaveLength(0);
       expect(await testDb.select().from(projectMemberships).where(eq(projectMemberships.projectId, crossIds.project))).toHaveLength(0);
       expect(await testDb.select().from(projectSetups).where(eq(projectSetups.id, crossIds.setup))).toHaveLength(0);
       expect(await testDb.select().from(commandReceipts).where(eq(commandReceipts.idempotencyKey, crossKey))).toHaveLength(0);
+    });
+
+    it('persists one canonical role set with membership CAS, replay, actor compatibility, and project isolation', async () => {
+      const issuer = createActorContextIssuer({users: [{actorId: fixture.actorId,
+        capabilities: ['write:control_plane:development']}], agents: [], systems: []});
+      if (!issuer.ok) throw new Error('issuer fixture failed');
+      const actor = issuer.value.issueUser(fixture.actorId);
+      if (!actor.ok) throw new Error('actor fixture failed');
+      const service = createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(testDb)});
+      const membershipId = randomUUID();
+      await testDb.insert(projectMemberships).values({id: membershipId, projectId: fixture.projectId,
+        actorId: fixture.actorId, roles: ['project_owner'], version: 1});
+      const command = {
+        commandId: randomUUID(), workspaceId: fixture.workspaceId, correlationId: randomUUID(),
+        idempotencyKey: `membership-role-set-${randomUUID()}`, issuedAt: new Date().toISOString(), actor: actor.value,
+        type: 'project_membership.set' as const, payload: {membershipId, projectId: fixture.projectId,
+          subjectActorId: fixture.actorId, roles: ['project_owner' as const, 'contributor' as const],
+          active: true, expectedVersion: 1}
+      };
+      await expect(service.execute(command)).resolves.toMatchObject({status: 'completed',
+        receipt: {result: {ok: true, value: {id: membershipId, version: 2}}}});
+      await expect(service.execute(command)).resolves.toMatchObject({status: 'replayed'});
+      expect(await testDb.select().from(projectMemberships).where(eq(projectMemberships.id, membershipId)))
+        .toMatchObject([{roles: ['project_owner', 'contributor'], version: 2}]);
+      expect(await testDb.select().from(auditEvents).where(eq(auditEvents.targetId, membershipId))).toHaveLength(1);
+
+      await expect(service.execute({...command, commandId: randomUUID(), correlationId: randomUUID(),
+        idempotencyKey: `membership-stale-${randomUUID()}`})).resolves.toMatchObject({receipt: {result: {
+        error: {code: 'VERSION_CONFLICT'}}}});
+      await expect(service.execute({...command, commandId: randomUUID(), correlationId: randomUUID(),
+        idempotencyKey: `membership-isolation-${randomUUID()}`, payload: {...command.payload,
+          projectId: fixture.otherProjectId}})).resolves.toMatchObject({receipt: {result: {error: {code: 'NOT_FOUND'}}}});
+
+      const agentId = randomUUID();
+      await testPool.query("insert into actors (id, workspace_id, type, role, display_name, auth_mode) values ($1, $2, 'agent', 'agent_operator', 'Role mismatch', 'agent')",
+        [agentId, fixture.workspaceId]);
+      await expect(service.execute({...command, commandId: randomUUID(), correlationId: randomUUID(),
+        idempotencyKey: `membership-type-${randomUUID()}`, payload: {membershipId: randomUUID(),
+          projectId: fixture.projectId, subjectActorId: agentId, roles: ['contributor' as const],
+          active: true, expectedVersion: null}})).resolves.toMatchObject({receipt: {result: {
+        error: {code: 'NOT_FOUND'}}}});
+      expect(await testDb.select().from(projectMemberships).where(eq(projectMemberships.actorId, agentId))).toHaveLength(0);
     });
 
     it('preserves existing rows while upgrading the foundation migrations', async () => {

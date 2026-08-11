@@ -14,7 +14,7 @@ it('renders one real manager command and a truthful mobile-safe decision queue',
       dispatch: null,
       selection: {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Проверить результат', workItemVersion: 1,
         protocolId: 'protocol-1', protocolVersion: 3, journeyVersion: 1,
-        stageKey: 'acceptance', stageName: 'Приёмка', executionMode: 'human_approval',
+        stageKey: 'acceptance', stageName: 'Приёмка', executionMode: 'human_approval', responsibilityHash: 'a'.repeat(64),
         responsibleActor: {id: 'owner-1', displayName: 'Владелец проекта', type: 'human', agentProfileId: null},
         boundary: 'human_confirmation_required'},
       decisions: [{id: 'decision-1', kind: 'approval', source: 'delivery_protocol',
@@ -55,7 +55,7 @@ it('shows the preparation command only for the current running autonomous-ready 
       ...base, status: 'running', blockReason: null, dispatch: null, decisions: [],
       selection: {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Подготовить результат', workItemVersion: 1,
         protocolId: 'protocol-1', protocolVersion: 3, journeyVersion: 1, stageKey: 'execute', stageName: 'Исполнение',
-        executionMode: 'autonomous', responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent', agentProfileId: 'profile-1'},
+        executionMode: 'autonomous', responsibilityHash: 'a'.repeat(64), responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent', agentProfileId: 'profile-1'},
         boundary: 'autonomous_ready'}
     }
   }));
@@ -66,7 +66,7 @@ it('shows the preparation command only for the current running autonomous-ready 
       ...base, status: 'running', blockReason: null, decisions: [],
       selection: {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Подготовить результат', workItemVersion: 1,
         protocolId: 'protocol-1', protocolVersion: 3, journeyVersion: 1, stageKey: 'execute', stageName: 'Исполнение',
-        executionMode: 'autonomous', responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent', agentProfileId: 'profile-1'},
+        executionMode: 'autonomous', responsibilityHash: 'a'.repeat(64), responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent', agentProfileId: 'profile-1'},
         boundary: 'autonomous_ready'},
       dispatch: {selectionHash: 'a'.repeat(64), taskPacketId: 'packet-1', taskPacketHash: 'b'.repeat(64),
         agentRunId: 'run-1', agentRunStatus: 'queued', attempt: 0, failureCode: null,
@@ -88,7 +88,7 @@ it('hides activation and explains missing write capability or runner transport',
     ...base, status: 'running' as const, blockReason: null, dispatch: null, decisions: [],
     selection: {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Подготовить результат', workItemVersion: 1,
       protocolId: 'protocol-1', protocolVersion: 3, journeyVersion: 1, stageKey: 'execute', stageName: 'Исполнение',
-      executionMode: 'autonomous' as const, responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent' as const, agentProfileId: 'profile-1'},
+      executionMode: 'autonomous' as const, responsibilityHash: 'a'.repeat(64), responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent' as const, agentProfileId: 'profile-1'},
       boundary: 'autonomous_ready' as const}
   };
   const noCapability = renderToStaticMarkup(createElement(ProjectExecutionControls, {
@@ -112,7 +112,7 @@ it('offers one bounded retry only for the current failed autonomous dispatch', (
       ...base, status: 'running', blockReason: null, decisions: [],
       selection: {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Исправить результат', workItemVersion: 1,
         protocolId: 'protocol-1', protocolVersion: 3, journeyVersion: 1,
-        stageKey: 'development', stageName: 'Разработка', executionMode: 'autonomous',
+        stageKey: 'development', stageName: 'Разработка', executionMode: 'autonomous', responsibilityHash: 'a'.repeat(64),
         responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent', agentProfileId: 'profile-1'},
         boundary: 'autonomous_ready'},
       dispatch: {selectionHash: 'a'.repeat(64), taskPacketId: 'packet-1', taskPacketHash: 'b'.repeat(64),

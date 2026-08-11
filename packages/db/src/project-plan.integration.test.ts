@@ -33,7 +33,7 @@ describePostgres('project plan persistence', () => {
     await db.insert(projects).values({id: projectId, workspaceId, name: 'Generated', slug: `generated-${randomUUID()}`});
     await db.insert(actors).values({id: ownerId, workspaceId, type: 'human', role: 'developer', displayName: 'PO', authMode: 'user'});
     await db.insert(actors).values({id: hermesActorId, workspaceId, type: 'agent', role: 'agent_operator', displayName: 'Hermes', authMode: 'agent'});
-    await db.insert(projectMemberships).values([{id: randomUUID(), projectId, actorId: ownerId, role: 'project_owner'}, {id: randomUUID(), projectId, actorId: hermesActorId, role: 'agent'}]);
+    await db.insert(projectMemberships).values([{id: randomUUID(), projectId, actorId: ownerId, roles: ['project_owner']}, {id: randomUUID(), projectId, actorId: hermesActorId, roles: ['agent']}]);
     await db.insert(agentProfiles).values({id: hermesProfileId, workspaceId, actorId: hermesActorId, runtimeId: 'hermes', runtimeProfile: 'semantic_planning', configHash: 'a'.repeat(64)});
     await db.insert(projectSetups).values({id: randomUUID(), projectId, state: 'pending', configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none', clientChat: 'none', executionMode: 'managed_agent', agentProfileId: hermesProfileId}});
     await db.insert(runtimeRegistrations).values({id: randomUUID(), projectId, actorId: hermesActorId, agentProfileId: hermesProfileId, provider: 'provider_neutral', runtimeKey: 'hermes'});
@@ -91,7 +91,7 @@ describePostgres('project plan persistence', () => {
       ['project_passport', 'Manual passport'], ['solution_architecture', 'Manual architecture'], ['client_requirements', 'Manual requirements']
     ] as const;
     await db.insert(projects).values({id: manualProjectId, workspaceId, name: 'Manual', slug: `manual-${randomUUID()}`});
-    await db.insert(projectMemberships).values({id: randomUUID(), projectId: manualProjectId, actorId: ownerId, role: 'project_owner'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: manualProjectId, actorId: ownerId, roles: ['project_owner']});
     await db.insert(projectSetups).values({id: randomUUID(), projectId: manualProjectId, state: 'pending', configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none', clientChat: 'none', executionMode: 'manual', agentProfileId: null}});
     const manualManifest = manualArtifacts.map(([, content]) => ({artifactId: randomUUID(), version: 1, sha256: sourceArtifactDigest(content)}));
     await db.insert(projectSourceArtifacts).values(manualArtifacts.map(([sourceKind, content], index) => ({id: manualManifest[index]!.artifactId, workspaceId, projectId: manualProjectId, name: sourceKind, sourceKind, mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, createdByActorId: ownerId})));
@@ -114,9 +114,9 @@ describePostgres('project plan persistence', () => {
       {id: inactiveOwnerId, workspaceId, type: 'human', role: 'developer', displayName: 'Former PO', authMode: 'user'}
     ]);
     await db.insert(projectMemberships).values([
-      {id: randomUUID(), projectId, actorId: ownerId, role: 'project_owner'},
-      {id: randomUUID(), projectId: otherProjectId, actorId: ownerId, role: 'project_owner'},
-      {id: randomUUID(), projectId, actorId: inactiveOwnerId, role: 'project_owner', active: false}
+      {id: randomUUID(), projectId, actorId: ownerId, roles: ['project_owner']},
+      {id: randomUUID(), projectId: otherProjectId, actorId: ownerId, roles: ['project_owner']},
+      {id: randomUUID(), projectId, actorId: inactiveOwnerId, roles: ['project_owner'], active: false}
     ]);
     const store = createPostgresProjectPlanStore(db); const content = 'Подтверждённый результат\nКритерий приёмки';
     const envelope = (type: string, payload: unknown, key: string, actorId = ownerId) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId}, type, payload});
@@ -208,7 +208,7 @@ describePostgres('project plan persistence', () => {
     await db.insert(workspaces).values({id: foreignWorkspaceId, name: 'Foreign', slug: `foreign-${randomUUID()}`});
     await db.insert(projects).values({id: foreignProjectId, workspaceId: foreignWorkspaceId, name: 'Foreign', slug: `foreign-project-${randomUUID()}`});
     await db.insert(actors).values({id: foreignActorId, workspaceId: foreignWorkspaceId, type: 'human', role: 'developer', displayName: 'Foreign PO', authMode: 'user'});
-    await db.insert(projectMemberships).values({id: randomUUID(), projectId: foreignProjectId, actorId: foreignActorId, role: 'project_owner'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: foreignProjectId, actorId: foreignActorId, roles: ['project_owner']});
     await expect(store.inspect({workspaceId: foreignWorkspaceId, projectId, actorId: foreignActorId})).resolves.toBeNull();
     await expect(store.simulate({workspaceId: foreignWorkspaceId, projectId, actorId: foreignActorId, definition})).resolves.toBeNull();
 
@@ -310,7 +310,7 @@ describePostgres('project plan persistence', () => {
     await db.insert(workspaces).values({id: workspaceId, name: 'Concurrent', slug: `concurrent-${randomUUID()}`});
     await db.insert(projects).values({id: projectId, workspaceId, name: 'Concurrent', slug: `concurrent-project-${randomUUID()}`});
     await db.insert(actors).values({id: ownerId, workspaceId, type: 'human', role: 'developer', displayName: 'PO', authMode: 'user'});
-    await db.insert(projectMemberships).values({id: randomUUID(), projectId, actorId: ownerId, role: 'project_owner'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId, actorId: ownerId, roles: ['project_owner']});
     const assumption = {kind: 'assumption' as const, statement: 'Product Owner подтвердит результат'};
     const definition = {title: 'Исполняемый план', outcomes: Array.from({length: 5}, (_, index) => ({key: `outcome_${index}`, title: `Результат ${index}`, weight: 20, evidence: assumption})),
       milestones: [{key: 'm1', title: 'Приёмка', checkpoint: 'PO принимает результат', targetAt: null, evidence: assumption}],
@@ -338,7 +338,7 @@ describePostgres('project plan persistence', () => {
 
     const rollbackProjectId = randomUUID(); const rollbackPlanId = randomUUID(); const rollbackVersionId = randomUUID();
     await db.insert(projects).values({id: rollbackProjectId, workspaceId, name: 'Rollback', slug: `rollback-${randomUUID()}`});
-    await db.insert(projectMemberships).values({id: randomUUID(), projectId: rollbackProjectId, actorId: ownerId, role: 'project_owner'});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: rollbackProjectId, actorId: ownerId, roles: ['project_owner']});
     await db.insert(projectPlanDrafts).values({id: rollbackPlanId, workspaceId, projectId: rollbackProjectId, state: 'approved', definition, contentHash, revision: 1, createdByActorId: ownerId, approvedByActorId: ownerId, approvedAt: new Date()});
     await db.insert(projectPlanVersions).values({id: rollbackVersionId, workspaceId, projectId: rollbackProjectId, planId: rollbackPlanId, version: 1, sourceRevision: 1, definition, contentHash, sourceManifest: [], simulation: {} as never, approvedByActorId: ownerId, approvedAt: new Date()});
     await db.insert(projectSetups).values({id: randomUUID(), projectId: rollbackProjectId, state: 'pending', configuration: {repositoryBinding: 'none', trackerBinding: 'create_managed', internalChat: 'none', clientChat: 'none', executionMode: 'manual', agentProfileId: null}});
