@@ -5,6 +5,8 @@ import {
   conversationChannelConfigurations,
   createDatabase,
   createPostgresUnitOfWork,
+  accessRequests,
+  projectEnvironments,
   projectMemberships,
   projects,
   resourceAccessGrants
@@ -70,6 +72,26 @@ export type AccessManagementRuntime = Readonly<{
     expectedVersion: number | null;
     desiredLevel: AccessLevel;
   }>): Promise<MutationStatus>;
+  setProjectEnvironment(input: Readonly<{
+    workspaceId: string; operatorActorId: string; environmentId: string; projectId: string;
+    kind: 'development' | 'production'; provider: string; endpoint: string; port: number;
+    purpose: string; adapterKey: string; adapterCredentialRefId: string; reconcilerActorId: string; enabled: boolean;
+    expectedVersion: number | null;
+  }>): Promise<MutationStatus>;
+  requestEnvironmentAccess(input: Readonly<{
+    workspaceId: string; operatorActorId: string; requestId: string; projectId: string;
+    subjectActorId: string; environmentId: string; credentialRefId: string; expiresAt: string;
+  }>): Promise<MutationStatus>;
+  decideEnvironmentAccess(input: Readonly<{
+    workspaceId: string; operatorActorId: string; requestId: string;
+    status: 'granted' | 'rejected'; expectedVersion: number;
+  }>): Promise<MutationStatus>;
+  setEnvironmentAccess(input: Readonly<{
+    workspaceId: string; operatorActorId: string; grantId: string; projectId: string;
+    subjectActorId: string; environmentId: string; credentialRefId: string | null;
+    approvalRequestId: string | null; expiresAt: string | null;
+    desiredLevel: 'none' | 'write'; expectedVersion: number | null;
+  }>): Promise<MutationStatus>;
 }>;
 
 const createRuntime = (db: Database): AccessManagementRuntime => {
@@ -78,7 +100,8 @@ const createRuntime = (db: Database): AccessManagementRuntime => {
     operatorActorId: string,
     input: Readonly<{
       idempotencyKey: string;
-      type: 'project_membership.set' | 'resource_access_grant.set' | 'actor.onboard';
+      type: 'project_membership.set' | 'resource_access_grant.set' | 'actor.onboard' |
+        'project_environment.set' | 'environment_access.request' | 'access_request.decide';
       payload: Record<string, unknown>;
     }>
   ): Promise<MutationStatus> => {
@@ -264,6 +287,84 @@ const createRuntime = (db: Database): AccessManagementRuntime => {
           resourceId: input.channelId,
           desiredLevel: input.desiredLevel,
           expectedVersion: input.expectedVersion
+        }
+      });
+    },
+
+    async setProjectEnvironment(input) {
+      const inputHash = createHash('sha256').update(canonicalJson({
+        projectId: input.projectId, kind: input.kind, provider: input.provider,
+        endpoint: input.endpoint, port: input.port, purpose: input.purpose,
+        adapterKey: input.adapterKey, adapterCredentialRefId: input.adapterCredentialRefId,
+        reconcilerActorId: input.reconcilerActorId,
+        enabled: input.enabled
+      })).digest('hex');
+      return execute(input.workspaceId, input.operatorActorId, {
+        idempotencyKey: `project_environment.set.v1:${input.environmentId}:${input.expectedVersion ?? 0}:${inputHash}`,
+        type: 'project_environment.set', payload: {
+          environmentId: input.environmentId, projectId: input.projectId, kind: input.kind,
+          provider: input.provider, endpoint: input.endpoint, port: input.port,
+          purpose: input.purpose, adapterKey: input.adapterKey,
+          adapterCredentialRefId: input.adapterCredentialRefId,
+          reconcilerActorId: input.reconcilerActorId, enabled: input.enabled,
+          expectedVersion: input.expectedVersion
+        }
+      });
+    },
+
+    async requestEnvironmentAccess(input) {
+      return execute(input.workspaceId, input.operatorActorId, {
+        idempotencyKey: `environment_access.request.v1:${input.requestId}`,
+        type: 'environment_access.request', payload: {
+          requestId: input.requestId, projectId: input.projectId,
+          subjectActorId: input.subjectActorId, environmentId: input.environmentId,
+          credentialRefId: input.credentialRefId, expiresAt: input.expiresAt
+        }
+      });
+    },
+
+    async decideEnvironmentAccess(input) {
+      const [request] = await db.select({id: accessRequests.id}).from(accessRequests)
+        .where(and(eq(accessRequests.id, input.requestId), eq(accessRequests.workspaceId, input.workspaceId),
+          eq(accessRequests.resourceType, 'environment'))).limit(1);
+      if (request === undefined) return 'not_found';
+      return execute(input.workspaceId, input.operatorActorId, {
+        idempotencyKey: `access_request.decide.v1:${input.requestId}:${input.expectedVersion}:${input.status}`,
+        type: 'access_request.decide', payload: {
+          requestId: input.requestId, status: input.status, expectedVersion: input.expectedVersion
+        }
+      });
+    },
+
+    async setEnvironmentAccess(input) {
+      const [environment] = await db.select({id: projectEnvironments.id})
+        .from(projectEnvironments).innerJoin(projects, eq(projects.id, projectEnvironments.projectId))
+        .innerJoin(projectMemberships, and(eq(projectMemberships.projectId, projectEnvironments.projectId),
+          eq(projectMemberships.actorId, input.subjectActorId), eq(projectMemberships.active, true)))
+        .where(and(eq(projectEnvironments.id, input.environmentId),
+          eq(projectEnvironments.projectId, input.projectId), eq(projects.workspaceId, input.workspaceId))).limit(1);
+      if (environment === undefined) return 'not_found';
+      const [current] = await db.select({id: resourceAccessGrants.id, version: resourceAccessGrants.version})
+        .from(resourceAccessGrants).where(and(eq(resourceAccessGrants.projectId, input.projectId),
+          eq(resourceAccessGrants.actorId, input.subjectActorId),
+          eq(resourceAccessGrants.resourceType, 'environment'),
+          eq(resourceAccessGrants.resourceId, input.environmentId))).limit(1);
+      if ((input.expectedVersion === null && current !== undefined) ||
+        (input.expectedVersion !== null && (current?.id !== input.grantId || current.version !== input.expectedVersion))) {
+        return 'stale';
+      }
+      const inputHash = createHash('sha256').update(canonicalJson({
+        desiredLevel: input.desiredLevel, credentialRefId: input.credentialRefId,
+        approvalRequestId: input.approvalRequestId, expiresAt: input.expiresAt
+      })).digest('hex');
+      return execute(input.workspaceId, input.operatorActorId, {
+        idempotencyKey: `environment_access.set.v1:${input.grantId}:${input.expectedVersion ?? 0}:${inputHash}`,
+        type: 'resource_access_grant.set', payload: {
+          grantId: input.grantId, projectId: input.projectId,
+          subjectActorId: input.subjectActorId, resourceType: 'environment',
+          resourceId: input.environmentId, desiredLevel: input.desiredLevel,
+          credentialRefId: input.credentialRefId, approvalRequestId: input.approvalRequestId,
+          expiresAt: input.expiresAt, expectedVersion: input.expectedVersion
         }
       });
     }

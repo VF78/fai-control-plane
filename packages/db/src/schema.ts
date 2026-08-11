@@ -674,6 +674,9 @@ export const resourceAccessGrants = pgTable(
     resourceType: accessResourceTypeEnum('resource_type').notNull(),
     resourceId: uuid('resource_id').notNull(),
     desiredLevel: accessLevelEnum('desired_level').notNull(),
+    credentialRefId: uuid('credential_ref_id').references(() => secretRefs.id, {onDelete: 'restrict'}),
+    approvalRequestId: uuid('approval_request_id').references(() => accessRequests.id, {onDelete: 'restrict'}),
+    expiresAt: timestamp('expires_at', {withTimezone: true}),
     observedProvider: text('observed_provider'),
     observedExternalResourceRef: text('observed_external_resource_ref'),
     observedLevel: accessLevelEnum('observed_level'),
@@ -704,6 +707,20 @@ export const resourceAccessGrants = pgTable(
           and ${table.observedLevel} is not null
           and ${table.observedAt} is not null)`
     ),
+    check('resource_access_grants_environment_binding_complete', sql`
+      (${table.resourceType} <> 'environment' and ${table.credentialRefId} is null and
+       ${table.approvalRequestId} is null and ${table.expiresAt} is null)
+      or
+      (${table.resourceType} = 'environment' and ${table.desiredLevel} = 'none' and
+       ${table.approvalRequestId} is null and ${table.expiresAt} is null)
+      or
+      (${table.resourceType} = 'environment' and ${table.desiredLevel} = 'write' and
+       ${table.credentialRefId} is not null and ${table.expiresAt} is not null)
+    `),
+    check('resource_access_grants_environment_observed_level', sql`
+      ${table.resourceType} <> 'environment' or ${table.observedLevel} is null or
+      ${table.observedLevel} in ('none', 'write')
+    `),
     check(
       'resource_access_grants_observed_provider_key',
       sql`${table.observedProvider} is null
@@ -2163,6 +2180,40 @@ export const secretRefs = pgTable(
   ]
 );
 
+/** Canonical provider-neutral identity for a project's SSH-capable environment. */
+export const projectEnvironments = pgTable(
+  'project_environments',
+  {
+    id: id(),
+    projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+    kind: text('kind').$type<'development' | 'production'>().notNull(),
+    provider: text('provider').notNull(),
+    endpoint: text('endpoint').notNull(),
+    port: integer('port').notNull(),
+    purpose: text('purpose').notNull(),
+    adapterKey: text('adapter_key').notNull(),
+    adapterCredentialRefId: uuid('adapter_credential_ref_id').notNull()
+      .references(() => secretRefs.id, {onDelete: 'restrict'}),
+    reconcilerActorId: uuid('reconciler_actor_id').notNull()
+      .references(() => actors.id, {onDelete: 'restrict'}),
+    enabled: boolean('enabled').default(false).notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex('project_environments_kind_unique').on(table.projectId, table.kind),
+    index('project_environments_reconciler_idx').on(table.reconcilerActorId),
+    check('project_environments_kind', sql`${table.kind} in ('development', 'production')`),
+    check('project_environments_provider_key', sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`),
+    check('project_environments_adapter_key', sql`${table.adapterKey} ~ '^[a-z][a-z0-9_-]{0,63}$'`),
+    check('project_environments_endpoint_bounded', sql`length(${table.endpoint}) between 1 and 255`),
+    check('project_environments_port', sql`${table.port} between 1 and 65535`),
+    check('project_environments_purpose_bounded', sql`length(${table.purpose}) between 1 and 240`),
+    check('project_environments_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
 /** Immutable configured repository identity used to authorize tracker reads before bootstrap. */
 export const projectTrackerRepositoryScopes = pgTable(
   'project_tracker_repository_scopes',
@@ -2591,6 +2642,12 @@ export const accessRequests = pgTable(
       .array()
       .default(sql`'{}'::text[]`)
       .notNull(),
+    projectId: uuid('project_id').references(() => projects.id, {onDelete: 'restrict'}),
+    subjectActorId: uuid('subject_actor_id').references(() => actors.id, {onDelete: 'restrict'}),
+    resourceType: accessResourceTypeEnum('resource_type'),
+    resourceId: uuid('resource_id'),
+    requestedLevel: accessLevelEnum('requested_level'),
+    credentialRefId: uuid('credential_ref_id').references(() => secretRefs.id, {onDelete: 'restrict'}),
     status: accessRequestStatusEnum('status').default('pending').notNull(),
     decidedByActorId: uuid('decided_by_actor_id').references(
       () => actors.id,
@@ -2608,6 +2665,14 @@ export const accessRequests = pgTable(
       table.expiresAt
     ),
     check('access_requests_version_positive', sql`${table.version} > 0`)
+    ,check('access_requests_environment_binding_complete', sql`
+      (${table.resourceType} is null and ${table.projectId} is null and ${table.subjectActorId} is null and
+       ${table.resourceId} is null and ${table.requestedLevel} is null and ${table.credentialRefId} is null)
+      or
+      (${table.resourceType} = 'environment' and ${table.projectId} is not null and
+       ${table.subjectActorId} is not null and ${table.resourceId} is not null and
+       ${table.requestedLevel} = 'write' and ${table.credentialRefId} is not null and ${table.expiresAt} is not null)
+    `)
   ]
 );
 

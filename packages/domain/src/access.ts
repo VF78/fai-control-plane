@@ -121,7 +121,30 @@ export type ResourceAccessGrant = Readonly<{
   resourceType: AccessResourceType;
   resourceId: string;
   desiredLevel: AccessLevel;
+  /** Opaque host-owned public-key/CA reference; never credential material. */
+  credentialRefId?: string | null;
+  /** Exact production approval, when required. */
+  approvalRequestId?: string | null;
+  expiresAt?: string | null;
   providerObservation?: ProviderAccessObservation | null;
+  version: number;
+}>;
+
+export const projectEnvironmentKinds = ['development', 'production'] as const;
+export type ProjectEnvironmentKind = (typeof projectEnvironmentKinds)[number];
+
+export type ProjectEnvironment = Readonly<{
+  id: string;
+  projectId: string;
+  kind: ProjectEnvironmentKind;
+  provider: string;
+  endpoint: string;
+  port: number;
+  purpose: string;
+  adapterKey: string;
+  adapterCredentialRefId: string;
+  reconcilerActorId: string;
+  enabled: boolean;
   version: number;
 }>;
 

@@ -9,6 +9,8 @@ import {
   hashAgentProfileConfiguration,
   type CanonicalCommand,
   type TaskPacketContent,
+  type TrustedActorContext,
+  type TrustedSystemActorContext,
   type TrustedUserActorContext
 } from '@fai-control-plane/domain';
 import {
@@ -23,6 +25,8 @@ import {
   createPostgresUnitOfWork,
   outboxEvents,
   projectMemberships,
+  projectEnvironments,
+  accessRequests,
   resourceAccessGrants,
   runtimeRegistrations,
   statusTransitions,
@@ -95,7 +99,7 @@ const issueActor = (
 
 const command = <T extends CanonicalCommand['type']>(
   workspaceId: string,
-  actor: TrustedUserActorContext,
+  actor: TrustedActorContext,
   type: T,
   payload: Extract<CanonicalCommand, {type: T}>['payload'],
   idempotencyKey = `application-${randomUUID()}`
@@ -109,6 +113,16 @@ const command = <T extends CanonicalCommand['type']>(
   type,
   payload
 }) as Extract<CanonicalCommand, {type: T}>;
+
+const issueSystemActor = (actorId: string): TrustedSystemActorContext => {
+  const issuer = createActorContextIssuer({users: [], agents: [], systems: [{
+    actorId, capabilities: ['write:runtime_observation:development']
+  }]});
+  if (!issuer.ok) throw new Error('Integration system issuer failed.');
+  const actor = issuer.value.issueSystem(actorId);
+  if (!actor.ok) throw new Error('Integration system actor failed.');
+  return actor.value;
+};
 
 const packetContent = (
   workspace: 'primary' | 'other' = 'primary',
@@ -1020,6 +1034,255 @@ describePostgres(
       expect(receiptErrorCode(crossWorkspace)).toBe('NOT_FOUND');
       expect(await testDb.select().from(auditEvents)
         .where(eq(auditEvents.targetId, grantId))).toHaveLength(3);
+    });
+
+    it('governs dev and production SSH access with exact scoped approval and CAS', async () => {
+      const developerId = randomUUID(); const membershipId = randomUUID();
+      const reconcilerId = randomUUID(); const otherReconcilerId = randomUUID();
+      const crossReconcilerId = randomUUID();
+      const reconciler = issueSystemActor(reconcilerId);
+      const otherReconciler = issueSystemActor(otherReconcilerId);
+      const crossReconciler = issueSystemActor(crossReconcilerId);
+      const adminRef = randomUUID(); const principalRef = randomUUID();
+      const rotatedPrincipalRef = randomUUID(); const otherRef = randomUUID();
+      const environmentAgentId = randomUUID(); const environmentAgentProfileId = randomUUID();
+      await testPool.query(`insert into actors (id, workspace_id, type, role, display_name, auth_mode)
+        values ($1, $2, 'human', 'developer', 'SSH developer', 'user')`, [developerId, fixture.workspaceId]);
+      await testPool.query(`insert into actors
+        (id, workspace_id, type, role, display_name, auth_mode, capabilities) values
+        ($1, $2, 'system', 'agent_operator', 'Environment reconciler', 'system',
+          '{"write:runtime_observation:development":true}'::jsonb),
+        ($3, $2, 'system', 'agent_operator', 'Other reconciler', 'system',
+          '{"write:runtime_observation:development":true}'::jsonb),
+        ($4, $5, 'system', 'agent_operator', 'Cross reconciler', 'system',
+          '{"write:runtime_observation:development":true}'::jsonb)`,
+      [reconcilerId, fixture.workspaceId, otherReconcilerId, crossReconcilerId, fixture.otherWorkspaceId]);
+      await testPool.query(`insert into project_memberships (id, project_id, actor_id, roles, active)
+        values ($1, $2, $3, array['contributor']::project_membership_role[], true)`,
+      [membershipId, fixture.projectId, developerId]);
+      await testPool.query(`insert into actors (id, workspace_id, type, role, display_name, auth_mode)
+        values ($1, $2, 'agent', 'agent_operator', 'Environment test agent', 'agent')`,
+      [environmentAgentId, fixture.workspaceId]);
+      await testPool.query(`insert into agent_profiles
+        (id, workspace_id, actor_id, runtime_id, runtime_profile, enabled)
+        values ($1, $2, $3, 'codex-cli', 'environment-test', true)`,
+      [environmentAgentProfileId, fixture.workspaceId, environmentAgentId]);
+      await testPool.query(`insert into project_memberships (id, project_id, actor_id, roles, active)
+        values ($1, $2, $3, array['agent']::project_membership_role[], true)`,
+      [randomUUID(), fixture.projectId, environmentAgentId]);
+      await testPool.query(`insert into runtime_registrations
+        (id, project_id, actor_id, agent_profile_id, provider, runtime_key, enabled)
+        values ($1, $2, $3, $4, 'codex', 'environment-access-test', true)`,
+      [randomUUID(), fixture.projectId, environmentAgentId, environmentAgentProfileId]);
+      await testPool.query(`insert into secret_refs (id, workspace_id, provider, reference, scope)
+        values ($1, $2, 'file', 'opaque-admin', array['environment_access:admin']),
+               ($3, $2, 'file', 'opaque-principal', array['ssh:principal']),
+               ($4, $2, 'file', 'opaque-principal-rotated', array['ssh:principal']),
+               ($5, $6, 'file', 'cross-workspace', array['ssh:principal'])`,
+      [adminRef, fixture.workspaceId, principalRef, rotatedPrincipalRef, otherRef, fixture.otherWorkspaceId]);
+      const developmentId = randomUUID(); const productionId = randomUUID();
+      for (const [environmentId, kind, endpoint] of [
+        [developmentId, 'development', 'dev.internal'], [productionId, 'production', 'prod.internal']
+      ] as const) {
+        const configured = await service().execute(command(fixture.workspaceId, primaryActor,
+          'project_environment.set', {environmentId, projectId: fixture.projectId, kind,
+            provider: 'fake', endpoint, port: 22, purpose: `${kind} environment`, adapterKey: 'fake',
+            adapterCredentialRefId: adminRef, reconcilerActorId: reconcilerId,
+            enabled: true, expectedVersion: null}));
+        expect(configured).toMatchObject({receipt: {result: {ok: true, value: {version: 1}}}});
+      }
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      const devGrantId = randomUUID();
+      const devGrant = await service().execute(command(fixture.workspaceId, primaryActor,
+        'resource_access_grant.set', {grantId: devGrantId, projectId: fixture.projectId,
+          subjectActorId: developerId, resourceType: 'environment', resourceId: developmentId,
+          desiredLevel: 'write', credentialRefId: principalRef, approvalRequestId: null,
+          expiresAt, expectedVersion: null}));
+      expect(devGrant).toMatchObject({receipt: {result: {ok: true, value: {version: 1}}}});
+      const agentDevGrantId = randomUUID();
+      const agentDevGrant = await service().execute(command(fixture.workspaceId, primaryActor,
+        'resource_access_grant.set', {grantId: agentDevGrantId, projectId: fixture.projectId,
+          subjectActorId: environmentAgentId, resourceType: 'environment', resourceId: developmentId,
+          desiredLevel: 'write', credentialRefId: principalRef, approvalRequestId: null,
+          expiresAt, expectedVersion: null}));
+      expect(agentDevGrant).toMatchObject({receipt: {result: {ok: true, value: {version: 1}}}});
+      await expect(service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: agentDevGrantId, provider: 'fake',
+          externalResourceRef: 'dev:agent', confirmedLevel: 'write',
+          observedAt: new Date().toISOString(), expectedVersion: 1})))
+        .resolves.toMatchObject({receipt: {result: {ok: true, value: {version: 2}}}});
+      const crossWorkspace = await service().execute(command(fixture.workspaceId, primaryActor,
+        'resource_access_grant.set', {grantId: randomUUID(), projectId: fixture.projectId,
+          subjectActorId: developerId, resourceType: 'environment', resourceId: developmentId,
+          desiredLevel: 'write', credentialRefId: otherRef, approvalRequestId: null,
+          expiresAt, expectedVersion: null}));
+      expect(receiptErrorCode(crossWorkspace)).toBe('CAPABILITY_DENIED');
+
+      const wrongObserver = await service().execute(command(fixture.workspaceId, otherReconciler,
+        'resource_access_grant.observe', {grantId: devGrantId, provider: 'fake',
+          externalResourceRef: 'dev:developer', confirmedLevel: 'write',
+          observedAt: new Date().toISOString(), expectedVersion: 1}));
+      expect(receiptErrorCode(wrongObserver)).toBe('CAPABILITY_DENIED');
+      const crossObserver = await service().execute(command(fixture.otherWorkspaceId, crossReconciler,
+        'resource_access_grant.observe', {grantId: devGrantId, provider: 'fake',
+          externalResourceRef: 'dev:developer', confirmedLevel: 'write',
+          observedAt: new Date().toISOString(), expectedVersion: 1}));
+      expect(receiptErrorCode(crossObserver)).toBe('NOT_FOUND');
+      for (const level of ['read', 'admin'] as const) {
+        const invalidLevel = await service().execute(command(fixture.workspaceId, reconciler,
+          'resource_access_grant.observe', {grantId: devGrantId, provider: 'fake',
+            externalResourceRef: 'dev:developer', confirmedLevel: level,
+            observedAt: new Date().toISOString(), expectedVersion: 1}));
+        expect(receiptErrorCode(invalidLevel)).toBe('CAPABILITY_DENIED');
+      }
+      const observed = await service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: devGrantId, provider: 'fake',
+          externalResourceRef: 'dev:developer', confirmedLevel: 'write',
+          observedAt: new Date().toISOString(), expectedVersion: 1}));
+      expect(observed).toMatchObject({receipt: {result: {ok: true, value: {version: 2}}}});
+      const rotated = await service().execute(command(fixture.workspaceId, primaryActor,
+        'resource_access_grant.set', {grantId: devGrantId, projectId: fixture.projectId,
+          subjectActorId: developerId, resourceType: 'environment', resourceId: developmentId,
+          desiredLevel: 'write', credentialRefId: rotatedPrincipalRef, approvalRequestId: null,
+          expiresAt, expectedVersion: 2}));
+      expect(rotated).toMatchObject({receipt: {result: {ok: true, value: {version: 3}}}});
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, devGrantId)))
+        .toMatchObject([{credentialRefId: rotatedPrincipalRef, observedLevel: null, version: 3}]);
+      await service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: devGrantId, provider: 'fake',
+          externalResourceRef: 'dev:developer:rotated', confirmedLevel: 'write',
+          observedAt: new Date().toISOString(), expectedVersion: 3}));
+      const environmentChanged = await service().execute(command(fixture.workspaceId, primaryActor,
+        'project_environment.set', {environmentId: developmentId, projectId: fixture.projectId,
+          kind: 'development', provider: 'fake', endpoint: 'dev-next.internal', port: 22,
+          purpose: 'development environment', adapterKey: 'fake', adapterCredentialRefId: adminRef,
+          reconcilerActorId: reconcilerId, enabled: true, expectedVersion: 1}));
+      expect(environmentChanged).toMatchObject({receipt: {result: {ok: true, value: {version: 2}}}});
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, devGrantId)))
+        .toMatchObject([{observedLevel: null, version: 5}]);
+      await expect(service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: devGrantId, provider: 'fake',
+          externalResourceRef: 'dev:developer:next', confirmedLevel: 'write',
+          observedAt: new Date().toISOString(), expectedVersion: 5})))
+        .resolves.toMatchObject({receipt: {result: {ok: true, value: {version: 6}}}});
+      await expect(service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: agentDevGrantId, provider: 'fake',
+          externalResourceRef: 'dev:agent:next', confirmedLevel: 'write',
+          observedAt: new Date().toISOString(), expectedVersion: 3})))
+        .resolves.toMatchObject({receipt: {result: {ok: true, value: {version: 4}}}});
+
+      const prodGrantId = randomUUID();
+      const denied = await service().execute(command(fixture.workspaceId, primaryActor,
+        'resource_access_grant.set', {grantId: prodGrantId, projectId: fixture.projectId,
+          subjectActorId: developerId, resourceType: 'environment', resourceId: productionId,
+          desiredLevel: 'write', credentialRefId: principalRef, approvalRequestId: null,
+          expiresAt, expectedVersion: null}));
+      expect(receiptErrorCode(denied)).toBe('CAPABILITY_DENIED');
+      const agentRequest = await service().execute(command(fixture.workspaceId, primaryActor,
+        'environment_access.request', {requestId: randomUUID(), projectId: fixture.projectId,
+          subjectActorId: environmentAgentId, environmentId: productionId,
+          credentialRefId: principalRef, expiresAt}));
+      expect(receiptErrorCode(agentRequest)).toBe('CAPABILITY_DENIED');
+      const hostileApprovalId = randomUUID();
+      await testPool.query(`insert into access_requests
+        (id, workspace_id, requester_actor_id, target_surface, requested_scope, project_id,
+         subject_actor_id, resource_type, resource_id, requested_level, credential_ref_id,
+         expires_at, status, decided_by_actor_id, decided_at, version)
+        values ($1, $2, $3, 'runner', array['ssh:login'], $4, $5, 'environment', $6,
+          'write', $7, $8, 'granted', $3, now(), 2)`,
+      [hostileApprovalId, fixture.workspaceId, fixture.actorId, fixture.projectId,
+        environmentAgentId, productionId, principalRef, new Date(expiresAt)]);
+      const agentProdGrant = await service().execute(command(fixture.workspaceId, primaryActor,
+        'resource_access_grant.set', {grantId: randomUUID(), projectId: fixture.projectId,
+          subjectActorId: environmentAgentId, resourceType: 'environment', resourceId: productionId,
+          desiredLevel: 'write', credentialRefId: principalRef,
+          approvalRequestId: hostileApprovalId, expiresAt, expectedVersion: null}));
+      expect(receiptErrorCode(agentProdGrant)).toBe('CAPABILITY_DENIED');
+      const requestId = randomUUID();
+      const requested = await service().execute(command(fixture.workspaceId, primaryActor,
+        'environment_access.request', {requestId, projectId: fixture.projectId,
+          subjectActorId: developerId, environmentId: productionId,
+          credentialRefId: principalRef, expiresAt}));
+      expect(requested).toMatchObject({receipt: {result: {ok: true, value: {status: 'pending'}}}});
+      const approved = await service().execute(command(fixture.workspaceId, primaryActor,
+        'access_request.decide', {requestId, status: 'granted', expectedVersion: 1}));
+      expect(approved).toMatchObject({receipt: {result: {ok: true, value: {status: 'granted', version: 2}}}});
+      const prod = command(fixture.workspaceId, primaryActor, 'resource_access_grant.set', {
+        grantId: prodGrantId, projectId: fixture.projectId, subjectActorId: developerId,
+        resourceType: 'environment', resourceId: productionId, desiredLevel: 'write',
+        credentialRefId: principalRef, approvalRequestId: requestId, expiresAt, expectedVersion: null
+      }, `prod-ssh-${randomUUID()}`);
+      const first = await service().execute(prod); const replay = await service().execute(prod);
+      expect(first).toMatchObject({receipt: {result: {ok: true, value: {version: 1}}}});
+      expect(replay.status).toBe('replayed');
+      expect(await testDb.select().from(projectEnvironments)).toHaveLength(2);
+      expect(await testDb.select().from(accessRequests).where(eq(accessRequests.id, requestId)))
+        .toMatchObject([{resourceType: 'environment', status: 'granted', version: 2}]);
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, prodGrantId)))
+        .toMatchObject([{desiredLevel: 'write', approvalRequestId: requestId, version: 1}]);
+
+      await expect(service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: prodGrantId, provider: 'fake',
+          externalResourceRef: 'prod:developer', confirmedLevel: 'write',
+          observedAt: new Date().toISOString(), expectedVersion: 1})))
+        .resolves.toMatchObject({receipt: {result: {ok: true, value: {version: 2}}}});
+      const disableEnvironment = command(fixture.workspaceId, primaryActor, 'project_environment.set', {
+        environmentId: productionId, projectId: fixture.projectId, kind: 'production', provider: 'fake',
+        endpoint: 'prod.internal', port: 22, purpose: 'production environment', adapterKey: 'fake',
+        adapterCredentialRefId: adminRef, reconcilerActorId: reconcilerId,
+        enabled: false, expectedVersion: 1
+      }, `disable-environment-${randomUUID()}`);
+      await expect(service().execute(disableEnvironment)).resolves.toMatchObject({
+        receipt: {result: {ok: true, value: {version: 2}}}
+      });
+      await expect(service().execute(disableEnvironment)).resolves.toMatchObject({status: 'replayed'});
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, prodGrantId)))
+        .toMatchObject([{desiredLevel: 'none', credentialRefId: principalRef,
+          approvalRequestId: null, expiresAt: null, observedLevel: null, version: 3}]);
+      await expect(service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: prodGrantId, provider: 'fake',
+          externalResourceRef: 'prod:developer:revoked', confirmedLevel: 'none',
+          observedAt: new Date().toISOString(), expectedVersion: 3})))
+        .resolves.toMatchObject({receipt: {result: {ok: true, value: {version: 4}}}});
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, prodGrantId)))
+        .toMatchObject([{desiredLevel: 'none', credentialRefId: null, observedLevel: 'none', version: 4}]);
+
+      const deactivateMembership = command(fixture.workspaceId, primaryActor, 'project_membership.set', {
+        membershipId, projectId: fixture.projectId, subjectActorId: developerId,
+        roles: ['contributor'], active: false, expectedVersion: 1
+      }, `deactivate-environment-member-${randomUUID()}`);
+      await expect(service().execute(deactivateMembership)).resolves.toMatchObject({
+        receipt: {result: {ok: true, value: {version: 2}}}
+      });
+      await expect(service().execute(deactivateMembership)).resolves.toMatchObject({status: 'replayed'});
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, devGrantId)))
+        .toMatchObject([{desiredLevel: 'none', credentialRefId: rotatedPrincipalRef,
+          observedLevel: null, version: 7}]);
+      await expect(service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: devGrantId, provider: 'fake',
+          externalResourceRef: 'dev:developer:revoked', confirmedLevel: 'none',
+          observedAt: new Date().toISOString(), expectedVersion: 7})))
+        .resolves.toMatchObject({receipt: {result: {ok: true, value: {version: 8}}}});
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, devGrantId)))
+        .toMatchObject([{credentialRefId: null, observedLevel: 'none', version: 8}]);
+
+      const retireAgent = command(fixture.workspaceId, primaryActor, 'actor.retire', {
+        agentId: environmentAgentId
+      }, `retire-environment-agent-${randomUUID()}`);
+      await expect(service().execute(retireAgent)).resolves.toMatchObject({
+        receipt: {result: {ok: true}}
+      });
+      await expect(service().execute(retireAgent)).resolves.toMatchObject({status: 'replayed'});
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, agentDevGrantId)))
+        .toMatchObject([{desiredLevel: 'none', credentialRefId: principalRef,
+          observedLevel: null, version: 5}]);
+      await expect(service().execute(command(fixture.workspaceId, reconciler,
+        'resource_access_grant.observe', {grantId: agentDevGrantId, provider: 'fake',
+          externalResourceRef: 'dev:agent:revoked', confirmedLevel: 'none',
+          observedAt: new Date().toISOString(), expectedVersion: 5})))
+        .resolves.toMatchObject({receipt: {result: {ok: true, value: {version: 6}}}});
+      expect(await testDb.select().from(resourceAccessGrants).where(eq(resourceAccessGrants.id, agentDevGrantId)))
+        .toMatchObject([{credentialRefId: null, observedLevel: 'none', version: 6}]);
     });
 
     it('persists isolated runtime registration create, update, disable, CAS, replay, and audit', async () => {
