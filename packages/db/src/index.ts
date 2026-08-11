@@ -64,6 +64,8 @@ export {
   createPostgresProjectExecutionDispatcher,
   createPostgresProjectExecutionStore,
   loadProjectExecutionProjection,
+  type AutonomousQaClaimTransport,
+  type AutonomousQaClaimTransportIdentity,
   type ProjectExecutionDispatchInput,
   type ProjectExecutionDispatchResult
 } from './project-orchestration';

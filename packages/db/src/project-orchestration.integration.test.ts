@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {defaultDeliveryProtocolDefinition, MVP_AGENT_RUN_RETRY_POLICY} from '@fai-control-plane/domain';
 import {
@@ -7,7 +7,7 @@ import {
   validateDeliveryEvidenceReferences
 } from '@fai-control-plane/domain';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
-import {and, eq, inArray} from 'drizzle-orm';
+import {and, eq, inArray, isNull} from 'drizzle-orm';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
@@ -27,7 +27,9 @@ import {
   projectScopeOutcomeObservations, projectScopeOutcomes,
   projectReleaseWaivers, projectUatProtocols, projectUatResults, projectUatSignoffs,
   projects, runbooks, runtimeRegistrations, secretRefs, taskPackets, trackerBindings,
-  riskSignals, statusTransitions, workItemDependencies, workItemScopeOutcomes, workItems, workspaces
+  qaReviewReceipts, qaTaskPackets, riskSignals, runtimeAvailabilityObservations, statusTransitions,
+  workItemDependencies, workItemScopeOutcomes, workItems, workspaces,
+  createPostgresGovernedQaStore
 } from './index';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -220,6 +222,54 @@ describePostgres('governed project orchestration persistence', () => {
       payload: {runId: run.id, receiptSha256: expectedReceiptSha256, expectedWorkItemVersion}
     });
     return {...fixture, run, receiptSha256, store, command, idempotencyKey};
+  };
+
+  const seedAutonomousQaProject = async () => {
+    const fixture = await seedAutonomousProject(false);
+    const profile = {runtimeId: 'hermes', runtimeProfile: 'read_safe',
+      allowedTools: ['repository_read'], forbiddenSurfaces: ['production'],
+      instructions: 'Complete only the immutable task packet.',
+      settings: {resultFormat: 'structured_v1' as const, includeEvidence: true},
+      enabled: true, version: 1};
+    await db.update(agentProfiles).set({runtimeId: profile.runtimeId,
+      configHash: hashAgentProfileConfiguration(profile)}).where(eq(agentProfiles.id, fixture.ids.profile));
+    await db.update(runtimeRegistrations).set({runtimeKey: 'hermes-governed-qa',
+      serviceMaxAgeSeconds: 300, schedulerMaxAgeSeconds: 300, deliveryMaxAgeSeconds: 300})
+      .where(and(eq(runtimeRegistrations.projectId, fixture.ids.project),
+        eq(runtimeRegistrations.agentProfileId, fixture.ids.profile)));
+    const responsibility = {kind: 'actor' as const, actorId: fixture.ids.agent,
+      actorType: 'agent' as const, agentProfileId: fixture.ids.profile};
+    const definition = {schemaVersion: 1 as const, stages: [
+      {key: 'development', name: 'Development', enabled: true, taskStatus: 'in_dev' as const,
+        responsibility, executionMode: 'autonomous' as const, entryCriteria: ['Ready'],
+        requiredEvidence: ['Implementation change'], allowedNextStageKey: 'qa'},
+      {key: 'qa', name: 'QA', enabled: true, taskStatus: 'qa' as const,
+        responsibility, executionMode: 'autonomous' as const, entryCriteria: ['Implementation ready'],
+        requiredEvidence: ['QA result'], allowedNextStageKey: 'acceptance'},
+      {key: 'acceptance', name: 'Acceptance', enabled: true, taskStatus: 'acceptance' as const,
+        responsibility: {kind: 'project_role' as const, role: 'project_owner' as const},
+        executionMode: 'human_approval' as const, entryCriteria: ['QA passed'],
+        requiredEvidence: ['Owner acceptance'], allowedNextStageKey: null}
+    ]};
+    await db.update(runbooks).set({definition,
+      contentHash: hashDeliveryProtocolDefinition(definition)}).where(eq(runbooks.id, fixture.ids.protocol));
+    await db.update(workItems).set({status: 'qa'}).where(eq(workItems.id, fixture.ids.task));
+    await db.update(deliveryJourneys).set({stageKey: 'qa'})
+      .where(eq(deliveryJourneys.workItemId, fixture.ids.task));
+    const [registration] = await db.select().from(runtimeRegistrations).where(and(
+      eq(runtimeRegistrations.projectId, fixture.ids.project),
+      eq(runtimeRegistrations.agentProfileId, fixture.ids.profile)));
+    if (registration === undefined) throw new Error('Hermes registration fixture missing');
+    return {...fixture, registration};
+  };
+
+  const observeHermes = async (registrationId: string, observedAt: Date) => {
+    await db.insert(runtimeAvailabilityObservations).values(
+      (['service', 'scheduler', 'delivery'] as const).map((component) => ({
+        runtimeRegistrationId: registrationId, component, state: 'available' as const,
+        observedAt, ttlSeconds: 300, evidenceReference: `test://hermes/${component}/${observedAt.toISOString()}`
+      }))
+    );
   };
 
   type ResponsibilityDrift = 'membership' | 'role' | 'profile' | 'registration';
@@ -986,6 +1036,257 @@ describePostgres('governed project orchestration persistence', () => {
       .toMatchObject({policyDecision: 'allow', outcome: 'failed', reasonCode: 'selection_preconditions_stale'});
   });
 
+  it('fails closed before creating an autonomous QA packet when exact Hermes transport is unavailable', async () => {
+    const fixture = await seedAutonomousQaProject();
+    await fixture.store.execute({command: fixture.command('project_execution.start', 0,
+      `qa-unavailable-start-${randomUUID()}`) as never, requestHash: 'u'.repeat(64), authorized: true});
+    const now = new Date('2026-08-09T10:00:00.000Z');
+    await observeHermes(fixture.registration.id, now);
+    await expect(createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
+      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => now,
+      autonomousQaClaimTransport: {status: 'unavailable', reason: 'No Hermes claim adapter is configured.'}
+    }).run({workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner}))
+      .resolves.toEqual({dispatched: 0, blocked: 1, replayed: 0, denied: 0});
+    expect(await db.select().from(taskPackets).where(eq(taskPackets.workItemId, fixture.ids.task)))
+      .toHaveLength(0);
+    expect(await db.select().from(qaTaskPackets).where(eq(qaTaskPackets.workItemId, fixture.ids.task)))
+      .toHaveLength(0);
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.workItemId, fixture.ids.task)))
+      .toHaveLength(0);
+    await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project))
+      .resolves.toMatchObject({status: 'blocked', blockReason: 'autonomous_qa_transport_unavailable'});
+  });
+
+  it('binds autonomous QA to Hermes, denies stale claim, persists one machine pass, and awaits explicit human acceptance', async () => {
+    const fixture = await seedAutonomousQaProject();
+    await fixture.store.execute({command: fixture.command('project_execution.start', 0,
+      `qa-pass-start-${randomUUID()}`) as never, requestHash: 'p'.repeat(64), authorized: true});
+    const observedAt = new Date(Date.now() - 6 * 60_000);
+    await observeHermes(fixture.registration.id, observedAt);
+    const runnerId = 'authenticated-hermes-runner';
+    const transport = {status: 'available' as const, identity: {
+      kind: 'hermes_authenticated_claim_v1' as const, runnerId,
+      workspaceId: fixture.ids.workspace, projectIds: [fixture.ids.project],
+      repositories: [{owner: 'owner', name: 'repository'}], runtimeIds: ['hermes'],
+      runtimeRegistrationKeys: [fixture.registration.runtimeKey]
+    }};
+    await expect(createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
+      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => observedAt,
+      autonomousQaClaimTransport: transport
+    }).run({workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner}))
+      .resolves.toEqual({dispatched: 1, blocked: 0, replayed: 0, denied: 0});
+    const [packet] = await db.select({qa: qaTaskPackets, packet: taskPackets,
+      run: agentRuns, dispatch: projectExecutionDispatches}).from(qaTaskPackets)
+      .innerJoin(taskPackets, eq(taskPackets.id, qaTaskPackets.taskPacketId))
+      .innerJoin(agentRuns, eq(agentRuns.taskPacketId, qaTaskPackets.taskPacketId))
+      .innerJoin(projectExecutionDispatches,
+        eq(projectExecutionDispatches.agentRunId, agentRuns.id))
+      .where(eq(qaTaskPackets.workItemId, fixture.ids.task));
+    expect(packet).toMatchObject({qa: {projectId: fixture.ids.project,
+      planVersionId: fixture.ids.planVersion, workItemVersion: 1, protocolId: fixture.ids.protocol,
+      protocolVersion: 1, journeyVersion: 1, stageKey: 'qa'},
+    packet: {agentProfileSnapshotId: fixture.ids.profile,
+      agentProfileSnapshotRuntimeId: 'hermes', agentProfileSnapshotVersion: 1},
+    run: {status: 'queued', attempt: 0},
+    dispatch: {runtimeRegistrationId: fixture.registration.id,
+      runtimeRegistrationVersion: fixture.registration.version}});
+    expect(packet?.packet.dataPolicy).toMatchObject({governedQa: {
+      runtimeId: 'hermes', runtimeRegistrationId: fixture.registration.id,
+      runtimeRegistrationVersion: fixture.registration.version,
+      claimTransportKind: 'hermes_authenticated_claim_v1', claimTransportRunnerId: runnerId}});
+
+    const runnerStore = createPostgresRunnerClaimStore(db, {activationEnvironment: {
+      RUNNER_ENABLED: 'true', LOCAL_RUNNER_TRANSPORT_ENABLED: 'true'
+    }});
+    const authorization = {workspaceId: fixture.ids.workspace, runnerId,
+      projectIds: [fixture.ids.project], repositories: [{owner: 'owner', name: 'repository'}],
+      runtimeIds: ['hermes']};
+    const leaseTokenHash = 'f'.repeat(64);
+    const staleClaimedAt = new Date();
+    await expect(runnerStore.claim({...authorization, leaseTokenHash,
+      claimedAt: staleClaimedAt,
+      leaseExpiresAt: new Date(staleClaimedAt.getTime() + 60_000)}, (record) => record))
+      .resolves.toBeNull();
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, packet!.run.id)))[0])
+      .toMatchObject({status: 'queued', attempt: 0});
+    const claimedAt = new Date(staleClaimedAt.getTime() + 1_000);
+    await observeHermes(fixture.registration.id, claimedAt);
+    const claim = await runnerStore.claim({...authorization, leaseTokenHash, claimedAt,
+      leaseExpiresAt: new Date(claimedAt.getTime() + 60_000)}, (record) => record);
+    expect(claim).toMatchObject({runId: packet!.run.id, attempt: 1, runtimeId: 'hermes'});
+
+    const receiptSha256 = 'a'.repeat(64);
+    const reference = `runs/${packet!.run.id}`;
+    const metadata = {runtimeId: 'hermes', artifactStore: {provider: 'fixture', reference,
+      correlationId: `artifact-run-${packet!.run.id}`}, receiptArtifact: {
+      name: 'agent-run-receipt.json', reference: `${reference}/agent-run-receipt.json`,
+      sha256: receiptSha256, sizeBytes: 512}, pathManifest: {
+      name: 'observed-path-manifest.json', reference: `${reference}/observed-path-manifest.json`,
+      sha256: 'b'.repeat(64), sizeBytes: 128}, qaResult: {outcome: 'passed',
+      checks: [{name: 'focused QA', status: 'passed',
+        reference: {kind: 'receipt', sha256: receiptSha256}}],
+      artifacts: [{kind: 'report', reference: {kind: 'receipt', sha256: receiptSha256}}],
+      failures: [], risks: [],
+      evidenceReferences: [
+        {requirement: 'QA result', reference: {kind: 'receipt', sha256: receiptSha256}}
+      ]}};
+    const completionInput = {...authorization, runId: packet!.run.id, attempt: 1, leaseTokenHash,
+      completionReplayHash: 'c'.repeat(64), terminal: 'done' as const, receiptSha256,
+      receiptSizeBytes: 512, metadata, at: new Date(claimedAt.getTime() + 1_000)};
+    const representativeSecret = ['github', 'pat', 'A'.repeat(24)].join('_');
+    await expect(runnerStore.complete({...completionInput,
+      metadata: {...metadata, qaResult: {...metadata.qaResult,
+        checks: [{name: 'hostile', status: 'passed', reference: 'https://provider.test/secret'}]}} as never}))
+      .resolves.toEqual({status: 'denied'});
+    await expect(runnerStore.complete({...completionInput,
+      metadata: {...metadata, qaResult: {...metadata.qaResult,
+        checks: [{...metadata.qaResult.checks[0], name: `smoke ${representativeSecret}`}]}}}))
+      .resolves.toEqual({status: 'denied'});
+    expect(await db.select().from(qaReviewReceipts).where(eq(
+      qaReviewReceipts.taskPacketId, packet!.qa.taskPacketId))).toHaveLength(0);
+    expect(await db.select().from(agentRunReceipts).where(eq(
+      agentRunReceipts.agentRunId, packet!.run.id))).toHaveLength(0);
+    expect(await db.select().from(artifacts).where(eq(
+      artifacts.agentRunId, packet!.run.id))).toHaveLength(0);
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, packet!.run.id)))[0])
+      .toMatchObject({status: 'running', attempt: 1});
+    const completed = await Promise.all([
+      runnerStore.complete(completionInput), runnerStore.complete(completionInput)
+    ]);
+    expect(completed.map(({status}) => status).sort()).toEqual(['completed', 'replayed']);
+    const [machineReceipt] = await db.select().from(qaReviewReceipts).where(eq(
+      qaReviewReceipts.taskPacketId, packet!.qa.taskPacketId));
+    expect(machineReceipt).toMatchObject({
+      outcome: 'passed', agentRunId: packet!.run.id, agentRunAttempt: 1,
+      agentRunReceiptSha256: receiptSha256,
+      checks: [{reference: {artifactId: expect.any(String), sha256: receiptSha256}}]});
+    const [retainedReceiptArtifact] = await db.select().from(artifacts).where(and(
+      eq(artifacts.agentRunId, packet!.run.id), eq(artifacts.sha256, receiptSha256),
+      eq(artifacts.redacted, false)));
+    expect((machineReceipt!.checks[0]!.reference as {artifactId: string}).artifactId)
+      .toBe(retainedReceiptArtifact!.id);
+    expect(await db.select().from(approvalRequests).where(eq(
+      approvalRequests.agentRunId, packet!.run.id))).toHaveLength(1);
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'qa', version: 1});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0]).toMatchObject({stageKey: 'qa', version: 1});
+    const genericAcceptance = createPostgresAgentRunAcceptanceStore(db, {
+      parseCompletion: () => ({} as never), evidenceFor: () => ({ok: false as const,
+        error: {code: 'INVALID_COMMAND' as const, message: 'must not run'}})
+    });
+    const genericCommand = {commandId: randomUUID(), workspaceId: fixture.ids.workspace,
+      correlationId: randomUUID(), idempotencyKey: `hostile-generic-qa-${packet!.run.id}`,
+      actor: {actorId: fixture.ids.owner}, type: 'agent_run.accept_result.v1' as const,
+      payload: {runId: packet!.run.id, receiptSha256, expectedWorkItemVersion: 1}};
+    await expect(genericAcceptance.execute({command: genericCommand,
+      requestHash: createHash('sha256').update(JSON.stringify(genericCommand)).digest('hex'),
+      authorized: true})).resolves.toMatchObject({receipt: {result: {error: {
+      code: 'INVALID_TRANSITION'}}}});
+    const pendingProjection = await loadProjectExecutionProjection(db,
+      fixture.ids.workspace, fixture.ids.project);
+    expect(pendingProjection.decisions).toHaveLength(1);
+    expect(pendingProjection.decisions[0]).toMatchObject({source: 'approval'});
+
+    const qa = createPostgresGovernedQaStore(db);
+    const accept = {commandId: randomUUID(), workspaceId: fixture.ids.workspace,
+      correlationId: randomUUID(), idempotencyKey: `qa-machine-accept-${packet!.run.id}`,
+      actor: {actorId: fixture.ids.owner}, type: 'qa_review.record.v1' as const,
+      payload: {workItemId: fixture.ids.task, expectedWorkItemVersion: 1,
+        expectedJourneyVersion: 1, taskPacketId: packet!.qa.taskPacketId}};
+    const accepted = await Promise.all([qa.execute({command: accept as never,
+      requestHash: createHash('sha256').update(JSON.stringify(accept)).digest('hex'), authorized: true}),
+    qa.execute({command: accept as never,
+      requestHash: createHash('sha256').update(JSON.stringify(accept)).digest('hex'), authorized: true})]);
+    expect(accepted.map(({status}) => status).sort()).toEqual(['completed', 'replayed']);
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'acceptance', version: 2});
+    expect((await db.select().from(approvalRequests).where(eq(
+      approvalRequests.agentRunId, packet!.run.id)))[0]).toMatchObject({
+      status: 'approved', decidedByActorId: fixture.ids.owner});
+  });
+
+  it('atomically returns a failed machine QA to its sole allowed predecessor with one owner-backed risk', async () => {
+    const fixture = await seedAutonomousQaProject();
+    await fixture.store.execute({command: fixture.command('project_execution.start', 0,
+      `qa-fail-start-${randomUUID()}`) as never, requestHash: 'q'.repeat(64), authorized: true});
+    const at = new Date('2026-08-09T12:00:00.000Z');
+    await observeHermes(fixture.registration.id, at);
+    const runnerId = 'hermes-failure-runner';
+    const authorization = {workspaceId: fixture.ids.workspace, runnerId,
+      projectIds: [fixture.ids.project], repositories: [{owner: 'owner', name: 'repository'}],
+      runtimeIds: ['hermes']};
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
+      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => at,
+      autonomousQaClaimTransport: {status: 'available', identity: {
+        kind: 'hermes_authenticated_claim_v1', runnerId, workspaceId: fixture.ids.workspace,
+        projectIds: [fixture.ids.project], repositories: authorization.repositories,
+        runtimeIds: ['hermes'], runtimeRegistrationKeys: [fixture.registration.runtimeKey]
+      }}}).run({workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner});
+    const [run] = await db.select().from(agentRuns).where(eq(agentRuns.workItemId, fixture.ids.task));
+    if (run === undefined) throw new Error('failed QA run fixture missing');
+    const runnerStore = createPostgresRunnerClaimStore(db, {activationEnvironment: {
+      RUNNER_ENABLED: 'true', LOCAL_RUNNER_TRANSPORT_ENABLED: 'true'
+    }});
+    const leaseTokenHash = 'd'.repeat(64);
+    await runnerStore.claim({...authorization, leaseTokenHash, claimedAt: at,
+      leaseExpiresAt: new Date(at.getTime() + 60_000)}, (record) => record);
+    const receiptSha256 = 'e'.repeat(64); const reference = `runs/${run.id}`;
+    const completion = {...authorization, runId: run.id, attempt: 1, leaseTokenHash,
+      completionReplayHash: 'f'.repeat(64), terminal: 'done' as const, receiptSha256,
+      receiptSizeBytes: 512, at: new Date(at.getTime() + 1_000), metadata: {
+        runtimeId: 'hermes', artifactStore: {provider: 'fixture', reference,
+          correlationId: `artifact-run-${run.id}`}, receiptArtifact: {
+          name: 'agent-run-receipt.json', reference: `${reference}/agent-run-receipt.json`,
+          sha256: receiptSha256, sizeBytes: 512}, pathManifest: {
+          name: 'observed-path-manifest.json', reference: `${reference}/observed-path-manifest.json`,
+          sha256: '1'.repeat(64), sizeBytes: 128}, qaResult: {outcome: 'failed',
+          checks: [{name: 'focused QA', status: 'failed',
+            reference: {kind: 'path_manifest', sha256: '1'.repeat(64)}}],
+          artifacts: [], failures: [{summary: 'Regression',
+            reference: {kind: 'path_manifest', sha256: '1'.repeat(64)}}],
+          risks: [], evidenceReferences: []}
+      }};
+    const representativeSecret = ['github', 'pat', 'B'.repeat(24)].join('_');
+    await expect(runnerStore.complete({...completion, metadata: {...completion.metadata,
+      qaResult: {...completion.metadata.qaResult, failures: [{...completion.metadata.qaResult.failures[0],
+        summary: `Regression ${representativeSecret}`}], risks: [{summary: 'Potential exposure',
+        reference: {kind: 'path_manifest', sha256: '1'.repeat(64)}}]}}}))
+      .resolves.toEqual({status: 'denied'});
+    expect(await db.select().from(qaReviewReceipts).where(eq(
+      qaReviewReceipts.taskPacketId, run.taskPacketId))).toHaveLength(0);
+    expect(await db.select().from(agentRunReceipts).where(eq(
+      agentRunReceipts.agentRunId, run.id))).toHaveLength(0);
+    expect(await db.select().from(artifacts).where(eq(artifacts.agentRunId, run.id))).toHaveLength(0);
+    expect(await db.select().from(riskSignals).where(eq(riskSignals.workItemId, fixture.ids.task)))
+      .toHaveLength(0);
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, run.id)))[0])
+      .toMatchObject({status: 'running', attempt: 1});
+    await expect(runnerStore.complete(completion)).resolves.toMatchObject({status: 'completed'});
+    await expect(runnerStore.complete(completion)).resolves.toMatchObject({status: 'replayed'});
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'in_dev', blocked: false, version: 2});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0]).toMatchObject({
+      stageKey: 'development', version: 2});
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({
+      status: 'blocked', blockReason: 'qa_review_failed', selectedWorkItemId: null, version: 2});
+    const risks = await db.select().from(riskSignals).where(and(
+      eq(riskSignals.workItemId, fixture.ids.task), isNull(riskSignals.resolvedAt)));
+    expect(risks).toHaveLength(1);
+    expect(risks[0]).toMatchObject({ownerActorId: fixture.ids.owner,
+      deduplicationKey: `governed_qa_failure:${fixture.ids.task}`});
+    expect(await db.select().from(approvalRequests).where(eq(
+      approvalRequests.agentRunId, run.id))).toHaveLength(0);
+    await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project))
+      .resolves.toMatchObject({status: 'blocked', dispatch: {agentRunId: run.id,
+        qa: {outcome: 'failed', failures: [{summary: 'Regression'}], approvalStatus: null}}});
+  });
+
   it('queues the existing isolated-runner claim contract without exposing provider credentials', async () => {
     const {ids, store, command} = await seedAutonomousProject(false);
     await store.execute({command: command('project_execution.start', 0, 'claim-start') as never,
@@ -1502,5 +1803,78 @@ describePostgres('governed project orchestration persistence', () => {
       [disabledQueueRunId, disabledRegistrationRunId]))).toHaveLength(0);
     expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId,
       fixture.ids.project)))[0]).toMatchObject({status: 'running', version: 1});
+  });
+
+  it('refuses autonomous QA retry without the exact injected Hermes identity or fresh three-component availability', async () => {
+    const fixture = await seedAutonomousQaProject();
+    await fixture.store.execute({command: fixture.command('project_execution.start', 0,
+      `qa-retry-start-${randomUUID()}`) as never, requestHash: 'h'.repeat(64), authorized: true});
+    const observedAt = new Date(); await observeHermes(fixture.registration.id, observedAt);
+    const runnerId = 'qa-retry-hermes';
+    const identity = {kind: 'hermes_authenticated_claim_v1' as const, runnerId,
+      workspaceId: fixture.ids.workspace, projectIds: [fixture.ids.project],
+      repositories: [{owner: 'owner', name: 'repository'}], runtimeIds: ['hermes'],
+      runtimeRegistrationKeys: [fixture.registration.runtimeKey]};
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true,
+      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => observedAt,
+      autonomousQaClaimTransport: {status: 'available', identity}}).run({
+      workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner});
+    const [failed] = await db.select().from(agentRuns).where(eq(agentRuns.workItemId, fixture.ids.task));
+    if (failed === undefined) throw new Error('QA retry fixture missing');
+    await db.update(agentRuns).set({status: 'failed', attempt: 1, failureCode: 'transport_failed',
+      completedAt: observedAt, version: failed.version + 1}).where(eq(agentRuns.id, failed.id));
+    const commandFor = (retryRunId: string) => ({commandId: randomUUID(),
+      workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `agent-run-retry-continuation:v1:${failed.id}:${retryRunId}:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'agent_run.retry_continuation.v1' as const,
+      payload: {projectId: fixture.ids.project, failedRunId: failed.id, retryRunId,
+        expectedExecutionVersion: 1}});
+    const unavailableRunId = randomUUID();
+    await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true,
+      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => observedAt,
+      autonomousQaClaimTransport: {status: 'unavailable', reason: 'not configured'}}).execute({
+      command: commandFor(unavailableRunId) as never, requestHash: 'i'.repeat(64),
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true
+    })).resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'POLICY_DENIED'}}}});
+    const staleRunId = randomUUID();
+    await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true,
+      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'},
+      now: () => new Date(observedAt.getTime() + 301_000),
+      autonomousQaClaimTransport: {status: 'available', identity}}).execute({
+      command: commandFor(staleRunId) as never, requestHash: 'j'.repeat(64),
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true
+    })).resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'POLICY_DENIED'}}}});
+    expect(await db.select().from(agentRuns).where(inArray(agentRuns.id,
+      [unavailableRunId, staleRunId]))).toHaveLength(0);
+    expect(await db.select().from(projectExecutionDispatches).where(and(
+      eq(projectExecutionDispatches.projectId, fixture.ids.project),
+      eq(projectExecutionDispatches.executionVersion, 2)))).toHaveLength(0);
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({status: 'running', version: 1});
+
+    await db.insert(commandReceipts).values({workspaceId: fixture.ids.workspace,
+      idempotencyKey: `qa-retry-cost-${randomUUID()}`, requestHash: 'k'.repeat(64),
+      commandId: randomUUID(), correlationId: randomUUID(), state: 'completed',
+      commandType: 'agent_run.cost.record.v1', aggregateType: 'agent_run', aggregateId: failed.id,
+      result: {ok: true, value: {kind: 'cost', agentRunId: failed.id,
+        cost: {state: 'calculated', amountMinor: 500, currency: 'RUB'}}}, completedAt: observedAt});
+    const freshAt = new Date(observedAt.getTime() + 302_000);
+    await observeHermes(fixture.registration.id, freshAt);
+    const exactRetryRunId = randomUUID();
+    await expect(createPostgresAgentRunRetryContinuationStore(db, {runnerQueueEnabled: true,
+      runtimeEnvironment: {HERMES_RUNNER_ENABLED: 'true'}, now: () => freshAt,
+      autonomousQaClaimTransport: {status: 'available', identity}}).execute({
+      command: commandFor(exactRetryRunId) as never, requestHash: 'l'.repeat(64),
+      policy: MVP_AGENT_RUN_RETRY_POLICY, authorized: true
+    })).resolves.toMatchObject({receipt: {result: {ok: true, value: {
+      disposition: 'queued', retryRunId: exactRetryRunId, executionVersion: 2
+    }}}});
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, exactRetryRunId)))[0])
+      .toMatchObject({status: 'queued', retryOfAgentRunId: failed.id});
+    expect((await db.select().from(projectExecutionDispatches).where(and(
+      eq(projectExecutionDispatches.projectId, fixture.ids.project),
+      eq(projectExecutionDispatches.executionVersion, 2))))[0])
+      .toMatchObject({agentRunId: exactRetryRunId});
   });
 });

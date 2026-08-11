@@ -196,6 +196,7 @@ import {
   transitionApproval,
   transitionWorkItem,
   updateAgentProfile,
+  validateQaMachineReviewEvidence,
   workItemStatuses,
   type AccessRequest,
   type ActorOnboarding,
@@ -227,6 +228,7 @@ import {
   type PolicyRequest,
   type ProjectMembership,
   type ProjectEnvironment,
+  type QaMachineReviewEvidence,
   type ResourceAccessGrant,
   type RetirableAgent,
   type RuntimeRegistration,
@@ -393,6 +395,8 @@ export type RunnerCompletionPayload = Readonly<{
     name: string;
     status: 'passed' | 'failed' | 'not_run';
   }>[];
+  /** Present only for a governed autonomous QA TaskPacket. */
+  qaResult?: QaMachineReviewEvidence;
   riskCount: number;
   nextAction: 'review_receipt' | 'review_worktree' | 'retry_explicitly';
   branch?: string;
@@ -477,7 +481,7 @@ export const parseRunnerCompletionPayload = (
   const keys = [
     'runId', 'attempt', 'terminal', 'receiptSha256', 'receiptSizeBytes',
     'finalStatus', 'runtimeId', 'runtimeProfile', 'durationMs', 'cost', 'usage',
-    'changedFiles', 'checks', 'riskCount', 'nextAction',
+    'changedFiles', 'checks', 'qaResult', 'riskCount', 'nextAction',
     'summaryArtifact', 'artifactStore', 'receiptArtifact', 'pathManifest', 'branch', 'worktreeRef', 'artifactRef'
   ];
   if (!isRecord(value) || Object.keys(value).some((key) => !keys.includes(key))) return null;
@@ -529,6 +533,10 @@ export const parseRunnerCompletionPayload = (
       : null
   );
   if (changedFiles === null || checks === null) return null;
+  const qaResult = 'qaResult' in value && value.qaResult !== undefined
+    ? validateQaMachineReviewEvidence(value.qaResult)
+    : null;
+  if (qaResult !== null && !qaResult.ok) return null;
   const optionalReference = (key: 'branch' | 'worktreeRef' | 'artifactRef'): string | undefined =>
     key in value && value[key] !== undefined
       ? safeReference(value[key]) ? value[key] : undefined
@@ -631,6 +639,7 @@ export const parseRunnerCompletionPayload = (
     ...(summaryArtifact === undefined ? {} : {summaryArtifact}),
     changedFiles,
     checks,
+    ...(qaResult === null ? {} : {qaResult: qaResult.value}),
     riskCount,
     nextAction: value.nextAction as RunnerCompletionPayload['nextAction'],
     ...(branch === undefined ? {} : {branch}),

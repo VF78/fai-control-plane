@@ -237,6 +237,13 @@ export const createPostgresAgentRunAcceptanceStore = (
       if (binding === undefined || binding.workItemDeletedAt !== null) {
         return fail('NOT_FOUND', 'The exact workspace/run/work item binding was not found.');
       }
+      const [qaPacket] = await tx.select({taskPacketId: schema.qaTaskPackets.taskPacketId})
+        .from(schema.qaTaskPackets).where(eq(schema.qaTaskPackets.taskPacketId, binding.packetId))
+        .limit(1).for('update');
+      if (qaPacket !== undefined) {
+        return fail('INVALID_TRANSITION',
+          'Governed QA receipts may be accepted only through qa_review.record.v1.', binding.projectId);
+      }
 
       const [journey] = await tx.select().from(schema.deliveryJourneys)
         .where(eq(schema.deliveryJourneys.workItemId, binding.workItemId)).limit(1).for('update');

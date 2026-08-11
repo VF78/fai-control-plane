@@ -16,7 +16,7 @@ import type {
   AgentRunRetryContinuationValue,
   ProjectExecutionStore
 } from '@fai-control-plane/application';
-import {and, asc, desc, eq, inArray, isNull, sql} from 'drizzle-orm';
+import {and, asc, desc, eq, inArray, isNotNull, isNull, lte, or, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 import {isRuntimeAvailable} from './runtime-availability';
@@ -82,8 +82,10 @@ const decisionQueue = async (
         eq(schema.approvalRequests.status, 'pending'))).orderBy(schema.approvalRequests.createdAt, schema.approvalRequests.id),
     tx.select({id: schema.agentRuns.id, workItemId: schema.agentRuns.workItemId,
       status: schema.agentRuns.status,
-      failureCode: schema.agentRuns.failureCode, updatedAt: schema.agentRuns.updatedAt})
+      failureCode: schema.agentRuns.failureCode, updatedAt: schema.agentRuns.updatedAt,
+      qaTaskPacketId: schema.qaTaskPackets.taskPacketId})
       .from(schema.agentRuns).innerJoin(schema.workItems, eq(schema.workItems.id, schema.agentRuns.workItemId))
+      .leftJoin(schema.qaTaskPackets, eq(schema.qaTaskPackets.taskPacketId, schema.agentRuns.taskPacketId))
       .where(and(eq(schema.workItems.projectId, projectId), isNull(schema.workItems.deletedAt)))
       .orderBy(desc(schema.agentRuns.updatedAt), desc(schema.agentRuns.id)),
     selection === null ? Promise.resolve([]) : tx.select({id: schema.projectPublicationIntents.id,
@@ -123,7 +125,7 @@ const decisionQueue = async (
     nextAction: 'Проверить receipt и выбрать безопасное следующее действие.', createdAt: run.updatedAt.toISOString()
   })));
   decisions.push(...[...latestRunByItem.values()].filter((run) =>
-    run.status === 'done' && selection?.workItemId === run.workItemId
+    run.status === 'done' && run.qaTaskPacketId === null && selection?.workItemId === run.workItemId
   ).map((run) => ({
     id: `agent_run:${run.id}:receipt_review`, kind: 'approval' as const,
     source: 'agent_run' as const, workItemId: run.workItemId, targetId: run.id,
@@ -184,6 +186,14 @@ const decisionQueue = async (
       summary: 'Выбранный профиль или его runtime registration больше не доступны.',
       nextAction: 'Восстановить активные profile и runtime registration, затем повторить Resume.'
     },
+    runtime_availability_unavailable: {
+      summary: 'Для автономного QA нет полного свежего наблюдения runtime.',
+      nextAction: 'Подтвердить доступность service, scheduler и delivery точными наблюдаемыми фактами; очередь не создаётся.'
+    },
+    autonomous_qa_transport_unavailable: {
+      summary: 'Аутентифицированный transport Hermes для QA не настроен.',
+      nextAction: 'Утвердить и подключить точную identity/data scope Hermes transport; локальный Codex runner не выдаётся за Hermes.'
+    },
     repository_base_commit_unavailable: {
       summary: 'Нет подтверждённого base commit для безопасного изолированного запуска.',
       nextAction: 'Обновить наблюдение default branch и проверить единственный repository scope, затем повторить Resume.'
@@ -227,14 +237,34 @@ const dispatchProjection = async (
     failureCode: schema.agentRuns.failureCode,
     queuedAt: schema.projectExecutionDispatches.createdAt,
     claimedAt: schema.agentRuns.startedAt,
-    completedAt: schema.agentRuns.completedAt
+    completedAt: schema.agentRuns.completedAt,
+    qaReceiptId: schema.qaReviewReceipts.id,
+    qaOutcome: schema.qaReviewReceipts.outcome,
+    qaChecks: schema.qaReviewReceipts.checks,
+    qaArtifacts: schema.qaReviewReceipts.artifacts,
+    qaFailures: schema.qaReviewReceipts.failures,
+    qaRisks: schema.qaReviewReceipts.risks,
+    qaRecordedAt: schema.qaReviewReceipts.createdAt
   }).from(schema.projectExecutionDispatches)
     .innerJoin(schema.taskPackets, eq(schema.taskPackets.id, schema.projectExecutionDispatches.taskPacketId))
     .innerJoin(schema.agentRuns, eq(schema.agentRuns.id, schema.projectExecutionDispatches.agentRunId))
-    .where(and(eq(schema.projectExecutionDispatches.projectId, projectId),
-      eq(schema.projectExecutionDispatches.executionVersion, executionVersion))).limit(1);
+    .leftJoin(schema.qaReviewReceipts, eq(schema.qaReviewReceipts.agentRunId, schema.agentRuns.id))
+    .where(and(eq(schema.projectExecutionDispatches.projectId, projectId), or(
+      eq(schema.projectExecutionDispatches.executionVersion, executionVersion),
+      and(lte(schema.projectExecutionDispatches.executionVersion, executionVersion),
+        isNotNull(schema.qaReviewReceipts.id))
+    ))).orderBy(desc(schema.projectExecutionDispatches.executionVersion)).limit(1);
   if (dispatch === undefined) return null;
-  const nextAction = dispatch.agentRunStatus === 'queued'
+  const [qaApproval] = dispatch.qaReceiptId === null ? [] : await tx.select({
+    id: schema.approvalRequests.id, status: schema.approvalRequests.status
+  }).from(schema.approvalRequests).where(eq(
+    schema.approvalRequests.agentRunId, dispatch.agentRunId
+  )).orderBy(desc(schema.approvalRequests.createdAt), desc(schema.approvalRequests.id)).limit(1);
+  const nextAction = dispatch.qaOutcome === 'passed' && qaApproval?.status === 'pending'
+    ? 'Проверить структурированный QA receipt и явно принять его командой manager/Product Owner.'
+    : dispatch.qaOutcome === 'failed'
+      ? 'Исправить структурированные findings; задача возвращена только по разрешённому пути протокола либо заблокирована.'
+      : dispatch.agentRunStatus === 'queued'
     ? 'Wait for an authorized isolated runner to claim this run.'
     : dispatch.agentRunStatus === 'running'
       ? 'Monitor the runner heartbeat and wait for its immutable receipt.'
@@ -243,9 +273,33 @@ const dispatchProjection = async (
         : dispatch.agentRunStatus === 'failed'
           ? 'Inspect the receipt and failure code before choosing a safe retry.'
           : 'Review the receipt and required evidence; advance the protocol stage explicitly.';
-  return {...dispatch, queuedAt: dispatch.queuedAt.toISOString(),
+  const qaReferenceLabel = (value: unknown): string => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'Некорректная внутренняя ссылка';
+    const reference = value as Record<string, unknown>;
+    return typeof reference.artifactId === 'string' && typeof reference.sha256 === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        .test(reference.artifactId) && /^[0-9a-f]{64}$/.test(reference.sha256)
+      ? `Артефакт ${reference.artifactId.slice(0, 8)} · sha256 ${reference.sha256.slice(0, 12)}…`
+      : 'Некорректная внутренняя ссылка';
+  };
+  return {selectionHash: dispatch.selectionHash, taskPacketId: dispatch.taskPacketId,
+    taskPacketHash: dispatch.taskPacketHash, agentRunId: dispatch.agentRunId,
+    agentRunStatus: dispatch.agentRunStatus, attempt: dispatch.attempt,
+    failureCode: dispatch.failureCode, queuedAt: dispatch.queuedAt.toISOString(),
     claimedAt: dispatch.claimedAt?.toISOString() ?? null,
-    completedAt: dispatch.completedAt?.toISOString() ?? null, nextAction};
+    completedAt: dispatch.completedAt?.toISOString() ?? null, nextAction,
+    qa: dispatch.qaReceiptId === null || dispatch.qaOutcome === null || dispatch.qaRecordedAt === null
+      ? null : {receiptId: dispatch.qaReceiptId, outcome: dispatch.qaOutcome,
+          checks: (dispatch.qaChecks as readonly {name: string; status: string; reference: unknown}[])
+            .map((entry) => ({...entry, reference: qaReferenceLabel(entry.reference)})),
+          artifacts: (dispatch.qaArtifacts as readonly {kind: string; reference: unknown}[])
+            .map((entry) => ({...entry, reference: qaReferenceLabel(entry.reference)})),
+          failures: (dispatch.qaFailures as readonly {summary: string; reference: unknown}[])
+            .map((entry) => ({...entry, reference: qaReferenceLabel(entry.reference)})),
+          risks: (dispatch.qaRisks as readonly {summary: string; reference: unknown}[])
+            .map((entry) => ({...entry, reference: qaReferenceLabel(entry.reference)})),
+          recordedAt: dispatch.qaRecordedAt.toISOString(), approvalId: qaApproval?.id ?? null,
+          approvalStatus: qaApproval?.status ?? null}};
 };
 
 const selectionSnapshot = (selection: ProjectExecutionSelection | null) => selection === null ? {
@@ -360,6 +414,7 @@ export const createPostgresAgentRunRetryContinuationStore = (
     now?: () => Date;
     runnerQueueEnabled?: boolean;
     runtimeEnvironment?: Readonly<Record<string, string | undefined>>;
+    autonomousQaClaimTransport?: AutonomousQaClaimTransport;
   }> = {}
 ): AgentRunRetryContinuationStore => ({
   async execute(input) {
@@ -515,12 +570,20 @@ export const createPostgresAgentRunRetryContinuationStore = (
         registrationId: schema.runtimeRegistrations.id,
         registrationVersion: schema.runtimeRegistrations.version,
         registrationEnabled: schema.runtimeRegistrations.enabled,
+        registrationRuntimeKey: schema.runtimeRegistrations.runtimeKey,
+        serviceMaxAgeSeconds: schema.runtimeRegistrations.serviceMaxAgeSeconds,
+        schedulerMaxAgeSeconds: schema.runtimeRegistrations.schedulerMaxAgeSeconds,
+        deliveryMaxAgeSeconds: schema.runtimeRegistrations.deliveryMaxAgeSeconds,
         packetProfileId: schema.taskPackets.agentProfileSnapshotId,
         packetProfileRuntimeId: schema.taskPackets.agentProfileSnapshotRuntimeId,
         packetProfileRuntimeProfile: schema.taskPackets.runtimeProfile,
         packetProfileEnabled: schema.taskPackets.agentProfileSnapshotEnabled,
         packetProfileVersion: schema.taskPackets.agentProfileSnapshotVersion,
-        packetProfileHash: schema.taskPackets.agentProfileSnapshotHash
+        packetProfileHash: schema.taskPackets.agentProfileSnapshotHash,
+        packetDataPolicy: schema.taskPackets.dataPolicy,
+        qaTaskPacketId: schema.qaTaskPackets.taskPacketId,
+        repositoryOwner: schema.projectTrackerRepositoryScopes.repositoryOwner,
+        repositoryName: schema.projectTrackerRepositoryScopes.repositoryName
       }).from(schema.agentProfiles)
         .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
         .innerJoin(schema.runtimeRegistrations, and(
@@ -530,6 +593,9 @@ export const createPostgresAgentRunRetryContinuationStore = (
           eq(schema.runtimeRegistrations.actorId, schema.agentProfiles.actorId)
         ))
         .innerJoin(schema.taskPackets, eq(schema.taskPackets.id, failedRun.taskPacketId))
+        .leftJoin(schema.qaTaskPackets, eq(schema.qaTaskPackets.taskPacketId, schema.taskPackets.id))
+        .innerJoin(schema.projectTrackerRepositoryScopes, eq(
+          schema.projectTrackerRepositoryScopes.id, failedRun.repositoryScopeId))
         .where(and(
           eq(schema.agentProfiles.id, failedRun.agentProfileId),
           eq(schema.agentProfiles.workspaceId, command.workspaceId)
@@ -550,6 +616,37 @@ export const createPostgresAgentRunRetryContinuationStore = (
         profileBinding.packetProfileHash !== profileBinding.profileConfigHash) {
         return complete({ok: false, error: {code: 'POLICY_DENIED',
           message: 'The exact enabled profile, runtime registration, or Task Packet snapshot is unavailable.'}});
+      }
+      if (profileBinding.qaTaskPacketId !== null) {
+        const policy = typeof profileBinding.packetDataPolicy === 'object' &&
+          profileBinding.packetDataPolicy !== null && !Array.isArray(profileBinding.packetDataPolicy) &&
+          typeof profileBinding.packetDataPolicy.governedQa === 'object' &&
+          profileBinding.packetDataPolicy.governedQa !== null &&
+          !Array.isArray(profileBinding.packetDataPolicy.governedQa)
+          ? profileBinding.packetDataPolicy.governedQa as Record<string, unknown> : null;
+        const admission = await autonomousQaAdmission(tx, {at: now,
+          transport: options.autonomousQaClaimTransport, workspaceId: command.workspaceId,
+          projectId: project.id, repository: {owner: profileBinding.repositoryOwner,
+            name: profileBinding.repositoryName}, runtimeId: profileBinding.profileRuntimeId,
+          registration: {id: profileBinding.registrationId, version: profileBinding.registrationVersion,
+            runtimeKey: profileBinding.registrationRuntimeKey,
+            serviceMaxAgeSeconds: profileBinding.serviceMaxAgeSeconds,
+            schedulerMaxAgeSeconds: profileBinding.schedulerMaxAgeSeconds,
+            deliveryMaxAgeSeconds: profileBinding.deliveryMaxAgeSeconds}});
+        const transport = options.autonomousQaClaimTransport?.status === 'available'
+          ? options.autonomousQaClaimTransport.identity : null;
+        if (policy === null || policy.mode !== 'autonomous' || policy.runtimeId !== 'hermes' ||
+          policy.runtimeRegistrationId !== profileBinding.registrationId ||
+          policy.runtimeRegistrationVersion !== profileBinding.registrationVersion ||
+          policy.runtimeRegistrationKey !== profileBinding.registrationRuntimeKey ||
+          policy.claimTransportKind !== 'hermes_authenticated_claim_v1' ||
+          transport === null || policy.claimTransportRunnerId !== transport.runnerId ||
+          admission !== 'available') {
+          return complete({ok: false, error: {code: 'POLICY_DENIED',
+            message: admission === 'availability_unavailable'
+              ? 'Autonomous QA retry requires fresh service, scheduler, and delivery observations.'
+              : 'Autonomous QA retry requires the exact authenticated Hermes transport identity.'}});
+        }
       }
       const history = await tx.select({id: schema.agentRuns.id, status: schema.agentRuns.status,
         createdAt: schema.agentRuns.createdAt}).from(schema.agentRuns).where(
@@ -901,15 +998,78 @@ type DispatchBlockReason =
   | 'selection_preconditions_stale'
   | 'runner_queue_unavailable'
   | 'runtime_registration_unavailable'
+  | 'runtime_availability_unavailable'
+  | 'autonomous_qa_transport_unavailable'
   | 'repository_base_commit_unavailable'
   | 'dispatch_policy_denied'
   | 'dispatch_packet_invalid'
   | 'active_agent_run_exists';
 
+export type AutonomousQaClaimTransportIdentity = Readonly<{
+  kind: 'hermes_authenticated_claim_v1';
+  runnerId: string;
+  workspaceId: string;
+  projectIds: readonly string[];
+  repositories: readonly Readonly<{owner: string; name: string}>[];
+  runtimeIds: readonly string[];
+  runtimeRegistrationKeys: readonly string[];
+}>;
+export type AutonomousQaClaimTransport =
+  | Readonly<{status: 'unavailable'; reason: string}>
+  | Readonly<{status: 'available'; identity: AutonomousQaClaimTransportIdentity}>;
+
+type AutonomousQaAdmission = 'available' | 'transport_unavailable' | 'availability_unavailable';
+const autonomousQaAdmission = async (tx: Queryable, input: Readonly<{
+  at: Date;
+  transport: AutonomousQaClaimTransport | undefined;
+  workspaceId: string;
+  projectId: string;
+  repository: Readonly<{owner: string; name: string}>;
+  runtimeId: string;
+  registration: Readonly<{id: string; version: number; runtimeKey: string;
+    serviceMaxAgeSeconds: number | null; schedulerMaxAgeSeconds: number | null;
+    deliveryMaxAgeSeconds: number | null}>;
+}>): Promise<AutonomousQaAdmission> => {
+  const transport = input.transport?.status === 'available' ? input.transport.identity : null;
+  if (input.runtimeId !== 'hermes' || transport === null ||
+    transport.kind !== 'hermes_authenticated_claim_v1' ||
+    transport.workspaceId !== input.workspaceId || !transport.projectIds.includes(input.projectId) ||
+    !transport.runtimeIds.includes(input.runtimeId) ||
+    !transport.runtimeRegistrationKeys.includes(input.registration.runtimeKey) ||
+    !transport.repositories.some(({owner, name}) => owner === input.repository.owner &&
+      name === input.repository.name)) return 'transport_unavailable';
+  const observations = await tx.select({component: schema.runtimeAvailabilityObservations.component,
+    state: schema.runtimeAvailabilityObservations.state,
+    observedAt: schema.runtimeAvailabilityObservations.observedAt,
+    ttlSeconds: schema.runtimeAvailabilityObservations.ttlSeconds
+  }).from(schema.runtimeAvailabilityObservations).where(eq(
+    schema.runtimeAvailabilityObservations.runtimeRegistrationId, input.registration.id
+  )).orderBy(schema.runtimeAvailabilityObservations.component,
+    desc(schema.runtimeAvailabilityObservations.observedAt),
+    desc(schema.runtimeAvailabilityObservations.id));
+  const latest = new Map<string, (typeof observations)[number]>();
+  for (const observation of observations) if (!latest.has(observation.component)) {
+    latest.set(observation.component, observation);
+  }
+  const thresholds = new Map<string, number | null>([
+    ['service', input.registration.serviceMaxAgeSeconds],
+    ['scheduler', input.registration.schedulerMaxAgeSeconds],
+    ['delivery', input.registration.deliveryMaxAgeSeconds]
+  ]);
+  return ['service', 'scheduler', 'delivery'].every((component) => {
+    const threshold = thresholds.get(component); const observation = latest.get(component);
+    if (threshold === null || threshold === undefined || observation === undefined ||
+      observation.state !== 'available' || observation.ttlSeconds === null) return false;
+    const ageMs = input.at.getTime() - observation.observedAt.getTime();
+    return ageMs >= 0 && ageMs <= Math.min(threshold, observation.ttlSeconds) * 1_000;
+  }) ? 'available' : 'availability_unavailable';
+};
+
 type DispatchOptions = Readonly<{
   now?: () => Date;
   runnerQueueEnabled?: boolean;
   runtimeEnvironment?: Readonly<Record<string, string | undefined>>;
+  autonomousQaClaimTransport?: AutonomousQaClaimTransport;
 }>;
 
 export type ProjectExecutionDispatchResult = Readonly<{
@@ -1062,7 +1222,11 @@ export const createPostgresProjectExecutionDispatcher = (
             .from(schema.agentProfiles).innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
             .where(and(eq(schema.agentProfiles.id, selection.responsibleActor.agentProfileId),
               eq(schema.agentProfiles.workspaceId, project.workspaceId))).limit(1),
-          tx.select({id: schema.runtimeRegistrations.id, version: schema.runtimeRegistrations.version})
+          tx.select({id: schema.runtimeRegistrations.id, version: schema.runtimeRegistrations.version,
+            provider: schema.runtimeRegistrations.provider, runtimeKey: schema.runtimeRegistrations.runtimeKey,
+            serviceMaxAgeSeconds: schema.runtimeRegistrations.serviceMaxAgeSeconds,
+            schedulerMaxAgeSeconds: schema.runtimeRegistrations.schedulerMaxAgeSeconds,
+            deliveryMaxAgeSeconds: schema.runtimeRegistrations.deliveryMaxAgeSeconds})
             .from(schema.runtimeRegistrations).where(and(
               eq(schema.runtimeRegistrations.projectId, execution.projectId),
               eq(schema.runtimeRegistrations.actorId, selection.responsibleActor.id),
@@ -1070,6 +1234,8 @@ export const createPostgresProjectExecutionDispatcher = (
               eq(schema.runtimeRegistrations.enabled, true))).orderBy(asc(schema.runtimeRegistrations.id)).limit(2),
           tx.select({id: schema.projectTrackerRepositoryScopes.id,
             provider: schema.projectTrackerRepositoryScopes.provider,
+            repositoryOwner: schema.projectTrackerRepositoryScopes.repositoryOwner,
+            repositoryName: schema.projectTrackerRepositoryScopes.repositoryName,
             repositoryExternalId: schema.projectTrackerRepositoryScopes.repositoryExternalId})
             .from(schema.projectTrackerRepositoryScopes)
             .where(eq(schema.projectTrackerRepositoryScopes.projectId, execution.projectId)).limit(2)
@@ -1096,6 +1262,26 @@ export const createPostgresProjectExecutionDispatcher = (
             canonicalJson(planTask.acceptanceEvidence as never)) {
           return block('selection_preconditions_stale', 'VERSION_CONFLICT',
             'The selected plan task or autonomous protocol stage is no longer exact.');
+        }
+        const autonomousQa = stage.taskStatus === 'qa';
+        const autonomousQaTransportIdentity = options.autonomousQaClaimTransport?.status === 'available'
+          ? options.autonomousQaClaimTransport.identity : null;
+        if (autonomousQa) {
+          const registration = registrations[0]!;
+          const repository = repositoryScopes[0]!;
+          const admission = await autonomousQaAdmission(tx, {at: now,
+            transport: options.autonomousQaClaimTransport, workspaceId: project.workspaceId,
+            projectId: execution.projectId,
+            repository: {owner: repository.repositoryOwner, name: repository.repositoryName},
+            runtimeId: profile.runtimeId, registration});
+          if (admission === 'transport_unavailable') {
+            return block('autonomous_qa_transport_unavailable', 'POLICY_DENIED',
+              'Autonomous QA requires an exact Hermes profile and authenticated Hermes claim transport identity.');
+          }
+          if (admission === 'availability_unavailable') {
+            return block('runtime_availability_unavailable', 'POLICY_DENIED',
+              'Autonomous QA requires fresh available service, scheduler, and delivery observations.');
+          }
         }
         const [binding] = await tx.select({metadata: schema.trackerBindings.metadata})
           .from(schema.trackerBindings).where(and(
@@ -1152,10 +1338,23 @@ export const createPostgresProjectExecutionDispatcher = (
             protocolId: selection.protocolId, protocolVersion: selection.protocolVersion,
             protocolHash: protocol[0].contentHash, journeyVersion: selection.journeyVersion,
             stageKey: selection.stageKey, planAcceptanceEvidence: acceptanceEvidence,
-            protocolRequiredEvidence: stage.requiredEvidence},
+            protocolRequiredEvidence: stage.requiredEvidence,
+            ...(autonomousQa ? {governedQa: {
+              mode: 'autonomous', runtimeId: profile.runtimeId,
+              runtimeRegistrationId: registrations[0]!.id,
+              runtimeRegistrationVersion: registrations[0]!.version,
+              runtimeRegistrationKey: registrations[0]!.runtimeKey,
+              claimTransportKind: autonomousQaTransportIdentity!.kind,
+              claimTransportRunnerId: autonomousQaTransportIdentity!.runnerId
+            }} : {})},
           timeboxMinutes: 120,
-          expectedOutputSchema: {schemaVersion: 1, resultFormat: 'structured_v1',
-            requiredEvidence: acceptanceCriteria, stageTransition: 'explicit_human_or_canonical_command'},
+          expectedOutputSchema: autonomousQa
+            ? {schemaVersion: 1, resultFormat: 'governed_qa_receipt_v1',
+                checks: {maximum: 50}, artifacts: {maximum: 25}, failures: {maximum: 25},
+                risks: {maximum: 25}, requiredEvidence: stage.requiredEvidence,
+                stageTransition: 'explicit_human_manager_command_after_pass'}
+            : {schemaVersion: 1, resultFormat: 'structured_v1',
+                requiredEvidence: acceptanceCriteria, stageTransition: 'explicit_human_or_canonical_command'},
           reviewerActorId: approver.id, approverActorId: approver.id,
           runtimeProfile: profile.runtimeProfile, authMode: 'agent', secretsRef: null,
           agentProfileSnapshot: {profileId: profile.profileId, runtimeId: profile.runtimeId,
@@ -1217,6 +1416,15 @@ export const createPostgresProjectExecutionDispatcher = (
           agentProfileSnapshotHash: profile.configHash, agentProfileSnapshotInstructions: profile.instructions,
           agentProfileSnapshotSettings: profile.settings, createdFromEventId: eventId,
           contentHash: packet.contentHash, createdByActorId: input.requestedByActorId, createdAt: now});
+        if (autonomousQa) {
+          await tx.insert(schema.qaTaskPackets).values({taskPacketId: packet.packetId,
+            projectId: execution.projectId, planVersionId: selection.planVersionId,
+            workItemId: selection.workItemId, workItemVersion: selection.workItemVersion,
+            protocolId: selection.protocolId, protocolVersion: selection.protocolVersion,
+            journeyVersion: selection.journeyVersion, stageKey: selection.stageKey,
+            responsibility: stage.responsibility, requiredEvidence: [...stage.requiredEvidence],
+            preparedByActorId: input.requestedByActorId, createdAt: now});
+        }
         const runIdempotencyKey = `${project.workspaceId}:project-execution-dispatch:v1:${execution.projectId}:${execution.version}`;
         await tx.insert(schema.agentRuns).values({id: runId, taskPacketId: packet.packetId,
           agentProfileId: profile.profileId, workItemId: selection.workItemId,

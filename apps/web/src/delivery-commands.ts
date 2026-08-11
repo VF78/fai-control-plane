@@ -152,6 +152,15 @@ export async function governedQaCommand(request: Request, workItemId: string, ov
           taskPacketId: body.taskPacketId, evidence: body.evidence as never}});
       return governedQaResponse(result);
     }
+    if (body.action === 'accept_machine' && exact(body, [
+      '_csrf', 'action', 'expectedWorkItemVersion', 'expectedJourneyVersion', 'taskPacketId'
+    ]) && typeof body.taskPacketId === 'string' && UUID.test(body.taskPacketId)) {
+      const result = await runtime.governedQa.execute({...base,
+        idempotencyKey: `governed_qa.accept_machine.v1:${body.taskPacketId}:${expectedWorkItemVersion}:${expectedJourneyVersion}`,
+        type: 'qa_review.record.v1', payload: {workItemId, expectedWorkItemVersion,
+          expectedJourneyVersion, taskPacketId: body.taskPacketId}});
+      return governedQaResponse(result);
+    }
     return invalid('invalid_request');
   } catch { return invalid('unavailable', 503); }
 }

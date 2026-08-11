@@ -12,6 +12,7 @@ import {workspaceRoute} from './operator-workspace-route';
 import {WorkspaceShell, type WorkspaceData} from './workspace-ui';
 import {ProjectPlanControls} from './project-plan-controls';
 import {RiskDispositionControls} from './risk-disposition-controls';
+import {ProjectExecutionControls} from './project-execution-controls';
 
 vi.mock('next/navigation', () => ({useRouter: () => ({refresh: vi.fn()})}));
 
@@ -425,6 +426,45 @@ it('renders a compact eight-step management route at the 390px breakpoint struct
   expect(markup).toContain('href="/projects/ascon/setup#plan"');
   expect(markup).toContain('Есть запрос; нужен наблюдаемый факт.');
   expect(markup).not.toContain('Наблюдаемый факт развёртывания зафиксирован.');
+});
+
+it('keeps autonomous QA truthful and actionable only after a structured pass at the 390px structure', () => {
+  const selection = {planVersionId: 'plan-1', workItemId: 'work-1', title: 'QA work',
+    workItemVersion: 4, protocolId: 'protocol-1', protocolVersion: 2, journeyVersion: 3,
+    stageKey: 'qa', stageName: 'Quality assurance', executionMode: 'autonomous',
+    responsibleActor: {id: 'agent-1', displayName: 'Hermes', type: 'agent', agentProfileId: 'profile-1'},
+    boundary: 'autonomous_ready'};
+  const base = {projectId: 'project-1', status: 'running', version: 7, selection,
+    dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null,
+    completedAt: null, updatedAt: null};
+  const unavailable = renderToStaticMarkup(createElement(ProjectExecutionControls, {
+    projectId: 'project-1', execution: base as never, csrfToken: 'csrf', canManage: true,
+    hasWriteCapability: true, runnerQueueAvailable: true, autonomousQaStage: true,
+    autonomousQaTransportAvailable: false
+  }));
+  expect(unavailable).toContain('точный Hermes transport/identity не настроен');
+  expect(unavailable).toContain('Локальный Codex runner не считается Hermes');
+  expect(unavailable).not.toContain('Подготовить запуск агента');
+
+  const receipt = renderToStaticMarkup(createElement(ProjectExecutionControls, {
+    projectId: 'project-1', csrfToken: 'csrf', canManage: true, hasWriteCapability: true,
+    runnerQueueAvailable: true, autonomousQaStage: true, autonomousQaTransportAvailable: true,
+    execution: {...base, dispatch: {selectionHash: 'a'.repeat(64), taskPacketId: 'packet-1',
+      taskPacketHash: 'b'.repeat(64), agentRunId: 'run-1', agentRunStatus: 'done', attempt: 1,
+      failureCode: null, queuedAt: '2026-08-09T10:00:00.000Z', claimedAt: '2026-08-09T10:01:00.000Z',
+      completedAt: '2026-08-09T10:02:00.000Z', nextAction: 'Явно принять manager command.',
+      qa: {receiptId: 'receipt-1', outcome: 'passed',
+        checks: [{name: 'focused', status: 'passed', reference: 'Артефакт 12345678 · sha256 abcdef123456…'}],
+        artifacts: [{kind: 'report', reference: 'Артефакт 12345678 · sha256 abcdef123456…'}],
+        failures: [], risks: [],
+        recordedAt: '2026-08-09T10:02:00.000Z', approvalId: 'approval-1', approvalStatus: 'pending'}}
+    } as never
+  }));
+  expect(receipt).toContain('Структурированный QA receipt');
+  expect(receipt).toContain('focused: passed (Артефакт 12345678 · sha256 abcdef123456…)');
+  expect(receipt).not.toContain('qa://');
+  expect(receipt).toContain('Ожидается manager / Product Owner');
+  expect(receipt).toContain('Принять machine QA');
 });
 
 it('keeps the selected workspace area when changing between authorized projects', () => {

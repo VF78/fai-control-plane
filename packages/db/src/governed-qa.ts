@@ -1,10 +1,12 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {
+  canonicalJson,
   createTaskPacket,
   nextEnabledDeliveryStage,
   transitionWorkItem,
   validateDeliveryEvidenceReferences,
   validateDeliveryProtocolDefinition,
+  validateQaCanonicalReviewEvidence,
   validateQaReviewEvidence,
   type CommandError,
   type DeliveryProtocol,
@@ -181,9 +183,16 @@ export const createPostgresGovernedQaStore = (db: Database): GovernedQaStore => 
         eq(schema.runbooks.projectId, item.projectId))).limit(1).for('update');
       const protocol = protocolRow === undefined ? null : protocolFrom(protocolRow);
       const stage = protocol?.definition.stages.find((candidate) => candidate.enabled && candidate.key === journey.stageKey);
+      const humanGovernedStage = stage !== undefined && ['manual', 'human_approval'].includes(stage.executionMode);
+      const autonomousGovernedStage = stage?.executionMode === 'autonomous';
+      const machineAcceptance = command.type === 'qa_review.record.v1' &&
+        !Object.hasOwn(command.payload, 'evidence');
       if (protocol === null || stage === undefined || stage.taskStatus !== 'qa' ||
-        !['manual', 'human_approval'].includes(stage.executionMode) || item.status !== 'qa' || item.blocked) {
-        return fail('INVALID_TRANSITION', 'An enabled, unblocked human-governed QA stage is required.');
+        (!humanGovernedStage && !autonomousGovernedStage) || item.status !== 'qa' || item.blocked ||
+        autonomousGovernedStage !== machineAcceptance) {
+        return fail('INVALID_TRANSITION', machineAcceptance
+          ? 'A current autonomous QA stage with a pending machine receipt is required.'
+          : 'An enabled, unblocked human-governed QA stage is required.');
       }
       const [executionState] = await tx.select({status: schema.projectExecutions.status})
         .from(schema.projectExecutions).where(eq(schema.projectExecutions.projectId, item.projectId))
@@ -191,9 +200,9 @@ export const createPostgresGovernedQaStore = (db: Database): GovernedQaStore => 
       if (executionState?.status === 'completed') {
         return fail('INVALID_TRANSITION', 'Completed project execution cannot accept a new QA packet or review.');
       }
-      const reviewerActorId = await responsibleHuman(tx, command.workspaceId, item.projectId, stage.responsibility);
-      if (reviewerActorId === null) return fail('INVALID_COMMAND', 'QA stage responsibility must resolve to exactly one active human.');
       if (command.type === 'qa_task_packet.prepare.v1') {
+        const reviewerActorId = await responsibleHuman(tx, command.workspaceId, item.projectId, stage.responsibility);
+        if (reviewerActorId === null) return fail('INVALID_COMMAND', 'QA stage responsibility must resolve to exactly one active human.');
         const packetId = uuid(`governed-qa-packet:v1:${item.id}:${item.version}:${journey.version}:${stage.key}`);
         const [prepared] = await tx.select({taskPacketId: schema.qaTaskPackets.taskPacketId})
           .from(schema.qaTaskPackets).where(eq(schema.qaTaskPackets.taskPacketId, packetId))
@@ -252,8 +261,7 @@ export const createPostgresGovernedQaStore = (db: Database): GovernedQaStore => 
           correlationId: command.correlationId, idempotencyKey: command.idempotencyKey, requestHash: input.requestHash,
           commandType: command.type, result, createdAt: claimed.createdAt.toISOString()}};
       }
-      const evidence = validateQaReviewEvidence(command.payload.evidence);
-      if (!evidence.ok) return fail(evidence.error.code, evidence.error.message);
+      const now = new Date();
       const [packetBinding] = await tx.select({qa: schema.qaTaskPackets, packet: schema.taskPackets})
         .from(schema.qaTaskPackets).innerJoin(schema.taskPackets, eq(schema.taskPackets.id, schema.qaTaskPackets.taskPacketId))
         .where(eq(schema.qaTaskPackets.taskPacketId, command.payload.taskPacketId)).limit(1).for('update');
@@ -262,13 +270,71 @@ export const createPostgresGovernedQaStore = (db: Database): GovernedQaStore => 
         packetBinding.qa.workItemVersion !== item.version || packetBinding.qa.protocolId !== journey.protocolId ||
         packetBinding.qa.protocolVersion !== journey.protocolVersion || packetBinding.qa.journeyVersion !== journey.version ||
         packetBinding.qa.stageKey !== stage.key || packetBinding.packet.workItemVersion !== item.version ||
-        packetBinding.packet.approverActorId !== command.actor.actorId) return fail('VERSION_CONFLICT', 'Immutable QA packet binding is no longer current.');
-      const [reviewed] = await tx.select({id: schema.qaReviewReceipts.id}).from(schema.qaReviewReceipts)
+        (!machineAcceptance && packetBinding.packet.approverActorId !== command.actor.actorId)) {
+        return fail('VERSION_CONFLICT', 'Immutable QA packet binding is no longer current.');
+      }
+      const [reviewed] = await tx.select().from(schema.qaReviewReceipts)
         .where(eq(schema.qaReviewReceipts.taskPacketId, command.payload.taskPacketId)).limit(1).for('update');
-      if (reviewed !== undefined) return fail('INVALID_TRANSITION', 'This immutable QA packet already has a retained review.');
-      const validEvidence = validateDeliveryEvidenceReferences(stage, evidence.value.evidenceReferences);
+      let evidence;
+      let machineApproval: typeof schema.approvalRequests.$inferSelect | null = null;
+      if (machineAcceptance) {
+        if (reviewed === undefined || reviewed.agentRunId === null || reviewed.agentRunAttempt === null ||
+          reviewed.agentRunReceiptSha256 === null || reviewed.outcome !== 'passed') {
+          return fail('INVALID_TRANSITION', 'A passed machine QA receipt bound to this packet is required.');
+        }
+        const [runReceipt] = await tx.select({run: schema.agentRuns, receipt: schema.agentRunReceipts})
+          .from(schema.agentRuns).innerJoin(schema.agentRunReceipts,
+            eq(schema.agentRunReceipts.agentRunId, schema.agentRuns.id))
+          .where(and(eq(schema.agentRuns.id, reviewed.agentRunId),
+            eq(schema.agentRuns.taskPacketId, command.payload.taskPacketId))).limit(1).for('update');
+        const approvals = await tx.select().from(schema.approvalRequests).where(and(
+          eq(schema.approvalRequests.agentRunId, reviewed.agentRunId),
+          eq(schema.approvalRequests.status, 'pending'))).limit(2).for('update');
+        const approval = approvals.length === 1 ? approvals[0] : undefined;
+        const expectedActionHash = createHash('sha256').update(canonicalJson({schemaVersion: 1,
+          action: 'qa_review.record.v1', taskPacketId: command.payload.taskPacketId,
+          agentRunId: reviewed.agentRunId, attempt: reviewed.agentRunAttempt,
+          receiptSha256: reviewed.agentRunReceiptSha256})).digest('hex');
+        if (runReceipt === undefined || runReceipt.run.status !== 'done' ||
+          runReceipt.run.attempt !== reviewed.agentRunAttempt ||
+          runReceipt.receipt.attempt !== reviewed.agentRunAttempt ||
+          runReceipt.receipt.terminal !== 'done' ||
+          runReceipt.receipt.receiptSha256 !== reviewed.agentRunReceiptSha256 ||
+          approval === undefined || approval.expiresAt.getTime() <= now.getTime() ||
+          approval.projectId !== item.projectId || approval.executionIdentity !== reviewed.agentRunId ||
+          approval.subjectHash !== packetBinding.packet.contentHash || approval.actionHash !== expectedActionHash ||
+          approval.requestedByActorId !== reviewed.recordedByActorId) {
+          return fail('VERSION_CONFLICT', 'Machine QA receipt or pending human gate is stale.');
+        }
+        machineApproval = approval;
+        evidence = validateQaCanonicalReviewEvidence({outcome: reviewed.outcome, checks: reviewed.checks,
+          artifacts: reviewed.artifacts, failures: reviewed.failures, risks: reviewed.risks,
+          evidenceReferences: reviewed.evidenceReferences});
+      } else {
+        if (reviewed !== undefined) return fail('INVALID_TRANSITION', 'This immutable QA packet already has a retained review.');
+        evidence = validateQaReviewEvidence(command.payload.evidence);
+      }
+      if (!evidence.ok) return fail(evidence.error.code, evidence.error.message);
+      const validEvidence = machineAcceptance && evidence.ok
+        ? (() => {
+            const submitted = evidence.value.evidenceReferences;
+            const requirements = submitted.map(({requirement}) => requirement);
+            if (requirements.length !== stage.requiredEvidence.length ||
+              new Set(requirements).size !== requirements.length ||
+              stage.requiredEvidence.some((requirement) => !requirements.includes(requirement)) ||
+              submitted.some(({reference}) => typeof reference === 'string')) {
+              return {ok: false as const, error: {code: 'INVALID_COMMAND' as const,
+                message: 'Every required delivery evidence item must have one retained artifact locator.'}};
+            }
+            return {ok: true as const, value: submitted.map(({requirement, reference}) => {
+              if (typeof reference === 'string') throw new Error('governed_qa_machine_locator_type');
+              return {requirement,
+                reference: `artifact:${reference.artifactId}:sha256:${reference.sha256}`};
+            })};
+          })()
+        : validateDeliveryEvidenceReferences(stage, evidence.value.evidenceReferences);
       if (evidence.value.outcome === 'passed' && !validEvidence.ok) return fail(validEvidence.error.code, validEvidence.error.message);
-      const now = new Date(); let nextStage: DeliveryProtocolStage = stage; let nextStatus: WorkItemStatus = item.status; let nextJourneyVersion = journey.version;
+      let nextStage: DeliveryProtocolStage = stage; let nextStatus: WorkItemStatus = item.status; let nextJourneyVersion = journey.version;
       let remediation: string | null = null; let executionStatus: GovernedQaValue['executionStatus'];
       if (evidence.value.outcome === 'passed') {
         const next = nextEnabledDeliveryStage(protocol, stage.key);
@@ -330,9 +396,21 @@ export const createPostgresGovernedQaStore = (db: Database): GovernedQaStore => 
         target: [schema.commandReceipts.workspaceId, schema.commandReceipts.idempotencyKey]
       }).returning();
       if (claimed === undefined) throw new Error('governed_qa_review_receipt_claim');
-      await tx.insert(schema.qaReviewReceipts).values({taskPacketId: command.payload.taskPacketId, outcome: evidence.value.outcome,
-        checks: evidence.value.checks, artifacts: evidence.value.artifacts, failures: evidence.value.failures, risks: evidence.value.risks,
-        evidenceReferences: evidence.value.evidenceReferences, recordedByActorId: command.actor.actorId, commandId: command.commandId});
+      if (!machineAcceptance) await tx.insert(schema.qaReviewReceipts).values({taskPacketId: command.payload.taskPacketId,
+        outcome: evidence.value.outcome, checks: evidence.value.checks, artifacts: evidence.value.artifacts,
+        failures: evidence.value.failures, risks: evidence.value.risks,
+        evidenceReferences: evidence.value.evidenceReferences,
+        recordedByActorId: command.actor.actorId, commandId: command.commandId});
+      if (machineApproval !== null) {
+        const [approved] = await tx.update(schema.approvalRequests).set({status: 'approved',
+          decidedByActorId: command.actor.actorId, decisionReason: 'governed_qa_machine_receipt_accepted',
+          decidedAt: now, version: machineApproval.version + 1, updatedAt: now})
+          .where(and(eq(schema.approvalRequests.id, machineApproval.id),
+            eq(schema.approvalRequests.status, 'pending'),
+            eq(schema.approvalRequests.version, machineApproval.version)))
+          .returning({id: schema.approvalRequests.id});
+        if (approved === undefined) throw new Error('governed_qa_machine_approval_cas');
+      }
       if (evidence.value.outcome === 'passed' && validEvidence.ok) await tx.insert(schema.deliveryJourneyEvidence).values(validEvidence.value.map((entry) => ({
         workItemId: item.id, stageKey: stage.key, requirement: entry.requirement, evidenceReference: entry.reference, commandId: command.commandId
       })));

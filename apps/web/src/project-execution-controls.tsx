@@ -15,23 +15,32 @@ const runStatusLabel: Record<NonNullable<ProjectExecutionProjection['dispatch']>
 };
 
 export function ProjectExecutionControls({projectId, execution, csrfToken, canManage,
-  hasWriteCapability, runnerQueueAvailable}: Readonly<{
+  hasWriteCapability, runnerQueueAvailable, autonomousQaStage = false,
+  autonomousQaTransportAvailable = false}: Readonly<{
   projectId: string;
   execution: ProjectExecutionProjection;
   csrfToken: string | null;
   canManage: boolean;
   hasWriteCapability: boolean;
   runnerQueueAvailable: boolean;
+  autonomousQaStage?: boolean;
+  autonomousQaTransportAvailable?: boolean;
 }>) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const run = async (action: 'start' | 'pause' | 'resume' | 'dispatch' | 'retry') => {
+  const run = async (action: 'start' | 'pause' | 'resume' | 'dispatch' | 'retry' | 'accept_qa') => {
     setBusy(true); setNotice(null);
     try {
       const response = await fetch(action === 'dispatch' ? '/api/project-execution/dispatch'
+        : action === 'accept_qa' ? `/api/governed-qa/${execution.selection!.workItemId}`
         : action === 'retry' ? '/api/project-execution/retry' : '/api/project-execution', {
         method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(action === 'dispatch'
           ? {_csrf: csrfToken, projectId, executionVersion: execution.version}
+          : action === 'accept_qa'
+            ? {_csrf: csrfToken, action: 'accept_machine',
+                expectedWorkItemVersion: execution.selection!.workItemVersion,
+                expectedJourneyVersion: execution.selection!.journeyVersion,
+                taskPacketId: execution.dispatch!.taskPacketId}
           : action === 'retry'
             ? {_csrf: csrfToken, projectId, failedRunId: execution.dispatch!.agentRunId,
                 retryRunId: crypto.randomUUID(), expectedExecutionVersion: execution.version}
@@ -47,9 +56,13 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
   const actionable = canManage && hasWriteCapability && csrfToken !== null;
   const dispatchFactual = execution.status === 'running' && execution.selection?.boundary === 'autonomous_ready' &&
     execution.dispatch === null;
-  const dispatchEligible = dispatchFactual && hasWriteCapability && runnerQueueAvailable;
+  const dispatchEligible = dispatchFactual && hasWriteCapability && runnerQueueAvailable &&
+    (!autonomousQaStage || autonomousQaTransportAvailable);
   const retryEligible = runnerQueueAvailable && execution.status === 'running' &&
-    execution.selection?.boundary === 'autonomous_ready' && execution.dispatch?.agentRunStatus === 'failed';
+    execution.selection?.boundary === 'autonomous_ready' && execution.dispatch?.agentRunStatus === 'failed' &&
+    (!autonomousQaStage || autonomousQaTransportAvailable);
+  const qaAcceptanceEligible = execution.status === 'running' && execution.selection !== null &&
+    execution.dispatch?.qa?.outcome === 'passed' && execution.dispatch.qa.approvalStatus === 'pending';
   return <section className="fcp-section fcp-orchestrator" aria-label="Управление исполнением проекта">
     <div className="fcp-section-head"><div><h2>Исполнение проекта</h2><span>Канонический выбор следующей работы · без автоматического запуска runner</span></div><strong className={`fcp-orchestrator-status ${execution.status}`}>{statusLabel[execution.status]}</strong></div>
     <div className="fcp-orchestrator-summary">
@@ -61,11 +74,16 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
         {execution.status === 'paused' ? <button className="fcp-primary-button" disabled={!actionable || busy} onClick={() => void run('resume')}><RotateCcw aria-hidden="true" size={16}/>Продолжить</button> : null}
         {dispatchEligible ? <button className="fcp-primary-button" disabled={!actionable || busy} onClick={() => void run('dispatch')}><PackageCheck aria-hidden="true" size={16}/>Подготовить запуск агента</button> : null}
         {retryEligible ? <button className="fcp-primary-button" disabled={!actionable || busy} onClick={() => void run('retry')}><RefreshCcw aria-hidden="true" size={16}/>Повторить в пределах политики</button> : null}
+        {qaAcceptanceEligible ? <button className="fcp-primary-button" disabled={!actionable || busy} onClick={() => void run('accept_qa')}><PackageCheck aria-hidden="true" size={16}/>Принять machine QA</button> : null}
         {!canManage ? <small>Управление доступно владельцу проекта или delivery-администратору.</small>
           : !hasWriteCapability ? <small>Нужна capability write:control_plane:development; запросите её у администратора рабочей области.</small>
             : csrfToken === null ? <small>Нужна авторизованная operator-сессия.</small> : null}
         {dispatchFactual && hasWriteCapability && !runnerQueueAvailable
           ? <small>Подготовка запуска недоступна: очередь runner или локальный transport не включены.</small> : null}
+        {dispatchFactual && hasWriteCapability && autonomousQaStage && !autonomousQaTransportAvailable
+          ? <small>Автономный QA недоступен: точный Hermes transport/identity не настроен. Локальный Codex runner не считается Hermes; Task Packet и AgentRun не создаются.</small> : null}
+        {execution.dispatch?.agentRunStatus === 'failed' && autonomousQaStage && !autonomousQaTransportAvailable
+          ? <small>Повтор автономного QA недоступен: текущий точный Hermes transport/identity не подтверждён. Новый AgentRun и dispatch не создаются.</small> : null}
         {retryEligible ? <small>Правило допуска повтора: не более 3 попыток; новая попытка не ставится в очередь после 120 минут с первой попытки, при 100 ₽ уже наблюдённой стоимости прошлых попыток или неизвестной стоимости. Это пороги допуска, а не бюджет следующего запуска; его отдельный неизменяемый timebox остаётся в Task Packet. Переход через подтверждение, production или release запрещён.</small> : null}
       </div>
     </div>
@@ -75,6 +93,13 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
           <div><span>Task Packet</span><strong>{execution.dispatch.taskPacketId}</strong><small>hash {execution.dispatch.taskPacketHash.slice(0, 12)}… · selection {execution.dispatch.selectionHash.slice(0, 12)}…</small></div>
           <div><span>AgentRun</span><strong>{runStatusLabel[execution.dispatch.agentRunStatus]}</strong><small>{execution.dispatch.agentRunId} · попытка {execution.dispatch.attempt} · queued {execution.dispatch.queuedAt}</small></div>
           <div><span>Claim / результат</span><strong>{execution.dispatch.claimedAt === null ? 'Runner ещё не принял' : `Принят ${execution.dispatch.claimedAt}`}</strong><small>{execution.dispatch.completedAt === null ? execution.dispatch.nextAction : `Завершён ${execution.dispatch.completedAt}${execution.dispatch.failureCode === null ? '' : ` · ${execution.dispatch.failureCode}`}`}</small></div>
+        </div>}
+    {execution.dispatch?.qa === null || execution.dispatch?.qa === undefined ? null
+      : <div className="fcp-orchestrator-summary" aria-label="Структурированный QA receipt">
+          <div><span>QA receipt</span><strong>{execution.dispatch.qa.outcome === 'passed' ? 'Проверки пройдены машиной' : 'QA не пройден'}</strong><small>{execution.dispatch.qa.receiptId} · {execution.dispatch.qa.recordedAt}</small></div>
+          <div><span>Проверки и артефакты</span><strong>{execution.dispatch.qa.checks.length} / {execution.dispatch.qa.artifacts.length}</strong><small>{execution.dispatch.qa.checks.map((check) => `${check.name}: ${check.status} (${check.reference})`).join(' · ')}</small></div>
+          <div><span>Findings / риски</span><strong>{execution.dispatch.qa.failures.length} / {execution.dispatch.qa.risks.length}</strong><small>{[...execution.dispatch.qa.failures, ...execution.dispatch.qa.risks].map((entry) => `${entry.summary} (${entry.reference})`).join(' · ') || 'Не зафиксированы'}</small></div>
+          <div><span>Следующий шаг человека</span><strong>{execution.dispatch.qa.approvalStatus === 'pending' ? 'Ожидается manager / Product Owner' : execution.dispatch.qa.approvalStatus === 'approved' ? 'Явно принято человеком' : 'Активного подтверждения нет'}</strong><small>{execution.dispatch.nextAction}</small></div>
         </div>}
     <div className="fcp-decision-queue"><header><h3>Очередь решений</h3><span>{execution.decisions.length}</span></header>{execution.decisions.length === 0
       ? <p className="fcp-empty-line">Явных подтверждений, ошибок или внешних передач не зафиксировано.</p>

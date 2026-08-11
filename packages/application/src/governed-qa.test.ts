@@ -19,4 +19,25 @@ describe('governed QA application service', () => {
     await service.execute({commandId: ids.command, workspaceId: ids.workspace, correlationId: ids.correlation, idempotencyKey: 'qa', issuedAt: new Date().toISOString(), actor, type: 'qa_task_packet.prepare.v1', payload: {workItemId: 'bad', expectedWorkItemVersion: 1, expectedJourneyVersion: 1}} as never);
     expect(execute).toHaveBeenCalledOnce();
   });
+
+  it('accepts the existing review command without client evidence only for machine-receipt acceptance', async () => {
+    const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {
+      commandId: ids.command, workspaceId: ids.workspace, correlationId: ids.correlation,
+      idempotencyKey: 'qa-machine', requestHash: 'b'.repeat(64), commandType: 'qa_review.record.v1',
+      result: {ok: true, value: {}}, createdAt: new Date().toISOString()
+    }});
+    const service = createGovernedQaService({execute});
+    await service.execute({commandId: ids.command, workspaceId: ids.workspace,
+      correlationId: ids.correlation, idempotencyKey: 'qa-machine', issuedAt: new Date().toISOString(),
+      actor, type: 'qa_review.record.v1', payload: {workItemId: ids.work,
+        expectedWorkItemVersion: 1, expectedJourneyVersion: 1,
+        taskPacketId: '66666666-6666-4666-8666-666666666666'}});
+    expect(execute).toHaveBeenCalledOnce();
+    await service.execute({commandId: ids.command, workspaceId: ids.workspace,
+      correlationId: ids.correlation, idempotencyKey: 'qa-machine', issuedAt: new Date().toISOString(),
+      actor, type: 'qa_review.record.v1', payload: {workItemId: ids.work,
+        expectedWorkItemVersion: 1, expectedJourneyVersion: 1,
+        taskPacketId: '66666666-6666-4666-8666-666666666666', unexpected: true}} as never);
+    expect(execute).toHaveBeenCalledOnce();
+  });
 });

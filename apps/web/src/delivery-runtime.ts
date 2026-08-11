@@ -4,6 +4,7 @@ import {createActorContextIssuer, type Capability, type CommandResult, type Trus
 import {and, eq, isNull} from 'drizzle-orm';
 import {runnerActivationEnabled} from './runner-activation-policy';
 import {createHermesSemanticPlanner} from './hermes-semantic-planner';
+import {autonomousQaClaimTransport} from './autonomous-qa-transport';
 
 type Database = ReturnType<typeof createDatabase>['db'];
 const capabilities = (value: Record<string, boolean>): Capability[] => Object.entries(value)
@@ -33,7 +34,8 @@ const createRuntime = (db: Database): DeliveryRuntime => ({
   projectExecution: createProjectExecutionService(createPostgresProjectExecutionStore(db)),
   agentRunRetryContinuation: createAgentRunRetryContinuationService(
     createPostgresAgentRunRetryContinuationStore(db, {
-      runnerQueueEnabled: runnerActivationEnabled(), runtimeEnvironment: process.env
+      runnerQueueEnabled: runnerActivationEnabled(), runtimeEnvironment: process.env,
+      autonomousQaClaimTransport
     })
   ),
   projectOutcomeAcceptance: createProjectOutcomeAcceptanceService(
@@ -41,7 +43,8 @@ const createRuntime = (db: Database): DeliveryRuntime => ({
   ),
   projectAcceptance: createProjectAcceptanceService(createPostgresProjectAcceptanceStore(db)),
   projectExecutionDispatch: createPostgresProjectExecutionDispatcher(db, {
-    runnerQueueEnabled: runnerActivationEnabled(), runtimeEnvironment: process.env
+    runnerQueueEnabled: runnerActivationEnabled(), runtimeEnvironment: process.env,
+    autonomousQaClaimTransport
   }),
   projectExecutionProjection: (workspaceId, projectId) => loadProjectExecutionProjection(db, workspaceId, projectId),
   async actor(workspaceId, actorId) {
