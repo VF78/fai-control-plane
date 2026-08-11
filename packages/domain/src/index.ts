@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 export * from './instruction-versioning.ts';
 export * from './delivery-protocol.ts';
 export * from './delivery-journey.ts';
+export * from './qa-review.ts';
 export * from './project-plan.ts';
 export * from './project-orchestration.ts';
 export * from './agent-run-retry-policy.ts';

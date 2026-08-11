@@ -183,7 +183,7 @@ describePostgres('delivery journey persistence', () => {
     let terminalJourney = (await db.select().from(deliveryJourneys)
       .where(eq(deliveryJourneys.workItemId, ids.task)))[0]!;
     for (const stage of definition.stages.slice(1, -1)) {
-      await expect(store.execute({
+      const advance = store.execute({
         command: envelope('delivery_journey.advance', {
           workItemId: ids.task, expectedWorkItemVersion: terminalTask.version,
           expectedJourneyVersion: terminalJourney.version,
@@ -192,7 +192,21 @@ describePostgres('delivery journey persistence', () => {
           }))
         }, `to-${stage.key}`) as never,
         requestHash: createHash('sha256').update(`to-${stage.key}`).digest('hex'), authorized: true
-      })).resolves.toMatchObject({receipt: {result: {ok: true}}});
+      });
+      if (stage.taskStatus === 'qa') {
+        await expect(advance).resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+        const nextStage = definition.stages.find((candidate) => candidate.key === stage.allowedNextStageKey)!;
+        await db.insert(deliveryJourneyEvidence).values(stage.requiredEvidence.map((requirement) => ({
+          workItemId: ids.task, stageKey: stage.key, requirement,
+          evidenceReference: `artifact://governed-qa/${stage.key}/${requirement}`, commandId: randomUUID()
+        })));
+        await db.update(workItems).set({status: nextStage.taskStatus, version: terminalTask.version + 1})
+          .where(eq(workItems.id, ids.task));
+        await db.update(deliveryJourneys).set({stageKey: nextStage.key, version: terminalJourney.version + 1})
+          .where(eq(deliveryJourneys.workItemId, ids.task));
+      } else {
+        await expect(advance).resolves.toMatchObject({receipt: {result: {ok: true}}});
+      }
       terminalTask = (await db.select().from(workItems).where(eq(workItems.id, ids.task)))[0]!;
       terminalJourney = (await db.select().from(deliveryJourneys)
         .where(eq(deliveryJourneys.workItemId, ids.task)))[0]!;

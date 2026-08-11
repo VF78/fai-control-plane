@@ -385,6 +385,11 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
         result = errorResult('INVALID_COMMAND', 'Bound delivery protocol context is incomplete.');
         return complete();
       }
+      if (command.type === 'delivery_journey.advance' && stage.taskStatus === 'qa') {
+        result = errorResult('INVALID_TRANSITION',
+          'QA evidence must be recorded through the governed QA receipt command.');
+        return complete();
+      }
       const responsibility = await responsibilityProjection(tx, item.projectId, stage);
       if (!responsibility.resolved) {
         result = errorResult('INVALID_COMMAND', 'Delivery stage responsibility is unresolved.');

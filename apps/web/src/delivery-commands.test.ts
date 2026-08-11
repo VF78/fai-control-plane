@@ -1,5 +1,5 @@
 import {expect, it, vi} from 'vitest';
-import {deliveryProtocolCommand, type DeliveryCommandDependencies} from './delivery-commands';
+import {deliveryProtocolCommand, governedQaCommand, type DeliveryCommandDependencies} from './delivery-commands';
 
 const workspaceId = '11111111-1111-4111-8111-111111111111';
 const projectId = '22222222-2222-4222-8222-222222222222';
@@ -37,7 +37,15 @@ it('rejects malformed and oversized delivery protocol bodies before a runtime co
   const oversized = await deliveryProtocolCommand(new Request('https://control.test/api/delivery-protocol', {
     method: 'POST', headers: {'content-type': 'application/json', 'content-length': '32769'}, body: '{}'
   }), deps);
-  expect(malformed.status).toBe(400); expect(oversized.status).toBe(400); expect(execute).not.toHaveBeenCalled();
+  const chunkedOversized = await deliveryProtocolCommand(new Request('https://control.test/api/delivery-protocol', {
+    method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({padding: 'x'.repeat(32 * 1024)})
+  }), deps);
+  const invalidUtf8 = await deliveryProtocolCommand(new Request('https://control.test/api/delivery-protocol', {
+    method: 'POST', headers: {'content-type': 'application/json'}, body: new Uint8Array([0xc3, 0x28])
+  }), deps);
+  expect(malformed.status).toBe(400); expect(oversized.status).toBe(400);
+  expect(chunkedOversized.status).toBe(400); expect(invalidUtf8.status).toBe(400);
+  expect(execute).not.toHaveBeenCalled();
 });
 
 it('returns a receipt only when the canonical draft command persisted', async () => {
@@ -75,4 +83,14 @@ it('creates an immutable-source draft revision without mutating the active proto
       protocolId: expect.stringMatching(/^[0-9a-f-]{36}$/)
     })
   }));
+});
+
+it('requires session, CSRF-shaped body, and canonical QA evidence before dispatch', async () => {
+  const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {result: {ok: true, value: {taskPacketId: commandId, remediation: null}}}});
+  const deps: DeliveryCommandDependencies = {requireSession: authorized(), nextId: () => commandId,
+    getRuntime: async () => ({actor: async () => ({ok: true, value: {} as never}), governedQa: {execute}} as never)};
+  const invalid = await governedQaCommand(request({_csrf: 'csrf', action: 'record', expectedWorkItemVersion: 1, expectedJourneyVersion: 1, taskPacketId: commandId, evidence: {}}), commandId, deps);
+  expect(invalid.status).toBe(400); expect(execute).not.toHaveBeenCalled();
+  const prepared = await governedQaCommand(request({_csrf: 'csrf', action: 'prepare', expectedWorkItemVersion: 1, expectedJourneyVersion: 1}), commandId, deps);
+  expect(prepared.status).toBe(200); expect(execute).toHaveBeenCalledWith(expect.objectContaining({type: 'qa_task_packet.prepare.v1'}));
 });

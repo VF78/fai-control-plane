@@ -1,7 +1,7 @@
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
-import {DeliveryJourneyAction, DeliveryProtocolEditor} from './delivery-controls';
+import {DeliveryJourneyAction, DeliveryProtocolEditor, GovernedQaControls} from './delivery-controls';
 
 const journey = {
   version: 4,
@@ -54,5 +54,23 @@ describe('manager protocol terminology', () => {
     expect(markup).toContain('Активная версия останется неизменной');
     expect(markup).not.toContain('Published delivery protocol stages');
     expect(markup).not.toContain('Configured agent');
+  });
+});
+
+describe('governed QA controls', () => {
+  it('uses the canonical QA task status instead of a hard-coded stage key', () => {
+    const customQa = {...journey, stageKey: 'verification_lane', requiredEvidence: ['QA result'],
+      stage: {taskStatus: 'qa', executionMode: 'human_approval'}};
+    const qa = renderToStaticMarkup(createElement(GovernedQaControls, {
+      workItemId: '22222222-2222-4222-8222-222222222222', taskVersion: 6,
+      journey: customQa, csrfToken: 'csrf'
+    }));
+    expect(qa).toContain('Подготовить QA-пакет');
+
+    const generic = renderToStaticMarkup(createElement(DeliveryJourneyAction, {
+      workItemId: '22222222-2222-4222-8222-222222222222', taskVersion: 6,
+      journey: customQa, activeProtocolId: null, csrfToken: 'csrf'
+    }));
+    expect(generic).toBe('');
   });
 });
