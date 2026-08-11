@@ -6,6 +6,7 @@ export * from './qa-review.ts';
 export * from './release-evidence.ts';
 export * from './project-plan.ts';
 export * from './project-orchestration.ts';
+export * from './project-acceptance.ts';
 export * from './agent-run-retry-policy.ts';
 export * from './runner-activation.ts';
 import type {

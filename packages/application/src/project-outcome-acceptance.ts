@@ -15,7 +15,7 @@ export type ProjectOutcomeAcceptanceValue = Readonly<{
   outcomeId: string;
   acceptedWeight: number;
   totalWeight: number;
-  executionStatus: 'paused' | 'blocked' | 'completed';
+  executionStatus: 'paused' | 'blocked';
   executionVersion: number;
 }>;
 export type ProjectOutcomeAcceptanceReceipt = Readonly<{

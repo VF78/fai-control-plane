@@ -53,6 +53,7 @@ export {createPostgresDeliveryJourneyStore} from './delivery-journey';
 export {createPostgresGovernedQaStore} from './governed-qa';
 export {createPostgresDeploymentEvidenceStore} from './release-evidence';
 export {createPostgresProjectOutcomeAcceptanceStore} from './project-outcome-acceptance';
+export {createPostgresProjectAcceptanceStore, loadProjectAcceptanceProjection} from './project-acceptance';
 export {
   createPostgresAgentRunAcceptanceStore,
   type PostgresAgentRunAcceptanceOptions

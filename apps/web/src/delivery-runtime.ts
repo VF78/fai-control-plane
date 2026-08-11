@@ -1,5 +1,5 @@
-import {createAgentRunRetryContinuationService, createDeliveryJourneyService, createDeliveryProtocolService, createDeploymentEvidenceService, createGovernedQaService, createProjectExecutionService, createProjectOutcomeAcceptanceService, createProjectPlanService} from '@fai-control-plane/application';
-import {actors, createDatabase, createPostgresAgentRunRetryContinuationStore, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresDeploymentEvidenceStore, createPostgresGovernedQaStore, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore, createPostgresProjectOutcomeAcceptanceStore, createPostgresProjectPlanStore, loadProjectExecutionProjection} from '@fai-control-plane/db';
+import {createAgentRunRetryContinuationService, createDeliveryJourneyService, createDeliveryProtocolService, createDeploymentEvidenceService, createGovernedQaService, createProjectAcceptanceService, createProjectExecutionService, createProjectOutcomeAcceptanceService, createProjectPlanService} from '@fai-control-plane/application';
+import {actors, createDatabase, createPostgresAgentRunRetryContinuationStore, createPostgresDeliveryJourneyStore, createPostgresDeliveryProtocolStore, createPostgresDeploymentEvidenceStore, createPostgresGovernedQaStore, createPostgresProjectAcceptanceStore, createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore, createPostgresProjectOutcomeAcceptanceStore, createPostgresProjectPlanStore, loadProjectExecutionProjection} from '@fai-control-plane/db';
 import {createActorContextIssuer, type Capability, type CommandResult, type TrustedUserActorContext} from '@fai-control-plane/domain';
 import {and, eq, isNull} from 'drizzle-orm';
 import {runnerActivationEnabled} from './runner-activation-policy';
@@ -18,6 +18,7 @@ export type DeliveryRuntime = Readonly<{
   projectExecution: ReturnType<typeof createProjectExecutionService>;
   agentRunRetryContinuation: ReturnType<typeof createAgentRunRetryContinuationService>;
   projectOutcomeAcceptance: ReturnType<typeof createProjectOutcomeAcceptanceService>;
+  projectAcceptance: ReturnType<typeof createProjectAcceptanceService>;
   projectExecutionDispatch: ReturnType<typeof createPostgresProjectExecutionDispatcher>;
   projectExecutionProjection(workspaceId: string, projectId: string): ReturnType<typeof loadProjectExecutionProjection>;
   actor(workspaceId: string, actorId: string): Promise<CommandResult<TrustedUserActorContext>>;
@@ -38,6 +39,7 @@ const createRuntime = (db: Database): DeliveryRuntime => ({
   projectOutcomeAcceptance: createProjectOutcomeAcceptanceService(
     createPostgresProjectOutcomeAcceptanceStore(db)
   ),
+  projectAcceptance: createProjectAcceptanceService(createPostgresProjectAcceptanceStore(db)),
   projectExecutionDispatch: createPostgresProjectExecutionDispatcher(db, {
     runnerQueueEnabled: runnerActivationEnabled(), runtimeEnvironment: process.env
   }),

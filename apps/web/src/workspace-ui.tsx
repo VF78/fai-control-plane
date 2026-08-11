@@ -9,6 +9,7 @@ import {DeliveryJourneyAction, DeliveryProtocolEditor, GovernedQaControls} from 
 import {RunActionControls, TaskPacketBuildControls, TaskPacketPreview} from './delivery-workspace-controls';
 import {ProjectExecutionControls} from './project-execution-controls';
 import {ProjectOutcomeAcceptanceControls} from './project-outcome-acceptance-controls';
+import {ProjectAcceptanceControls} from './project-acceptance-controls';
 import {ReleaseEvidenceControls} from './release-evidence-controls';
 import {type OperatorScreenRef, type OperatorScopeRef} from '@fai/operator-contracts';
 import {operatorTokens} from '@fai/operator-tokens';
@@ -355,7 +356,10 @@ function ScopeBaseline({project, csrfToken, canApproveOutcome}: {
   const executionCanAccept = project.execution.status === 'paused' || project.execution.status === 'blocked';
   return <section className="fcp-scope-baseline" id="scope"><header><div><span>Принятый скоп · версия {baseline.version}</span><strong>{totalWeight === 0 ? 'Не настроено' : `${acceptedWeight} / ${totalWeight}`}</strong><small>вес результатов, а не количество задач · обновлено {ruDate(baseline.updatedAt)}</small></div><Link href="#scope-checkpoint">Контрольная точка <ChevronRight aria-hidden="true" size={16}/></Link></header><div className="fcp-scope-outcomes"><ul aria-label="Состав принятого скопа">{outcomes.map((outcome) => <li key={outcome.key} className={`fcp-scope-${outcome.key}`}><span aria-hidden="true"/><b>{outcome.label} {outcome.value}</b></li>)}</ul>{totalWeight === 0 ? <p className="fcp-empty-line">Не настроено: результатам не назначено подтверждённое состояние.</p> : <div className="fcp-scope-bar" aria-label={outcomes.map((outcome) => `${outcome.label}: ${outcome.value}`).join(', ')}>{outcomes.map((outcome) => <span className={`fcp-scope-${outcome.key}`} key={outcome.key} style={{width: `${outcome.value / totalWeight * 100}%`}}/>)}</div>}<ScopeBurnUp baseline={baseline}/></div><div className="fcp-scope-records">{baseline.outcomes.map((outcome) => <article key={outcome.key}><strong>{outcome.title}</strong><span>{outcome.weight} · {outcome.state === 'not_configured' ? 'Не настроено' : statusLabel(outcome.state)}</span><small>{outcome.evidenceReference === null ? outcome.acceptanceBlockReason ?? 'Подтверждение не зафиксировано' : `${outcome.evidenceReference}${outcome.acceptedBy === null ? '' : ` · ${outcome.acceptedBy}`}`}</small><ProjectOutcomeAcceptanceControls projectId={project.project.id} baselineId={baseline.id} outcomeId={outcome.id} expectedExecutionVersion={project.execution.version} weight={outcome.weight} csrfToken={csrfToken} enabled={canApproveOutcome && executionCanAccept && outcome.state !== 'accepted' && outcome.acceptanceReady}/></article>)}</div><section className="fcp-checkpoint" id="scope-checkpoint"><header><h2>Ближайшая контрольная точка</h2><span>{baseline.checkpoint?.targetAt === null || baseline.checkpoint === null ? 'Срок не задан' : ruDate(baseline.checkpoint.targetAt)}</span></header>{baseline.checkpoint === null ? <p>Контрольная точка ещё не зафиксирована.</p> : <><strong>{baseline.checkpoint.title}</strong><div><Status value={baseline.checkpoint.status}/><span>{baseline.checkpoint.owner === null ? 'Ответственный не назначен' : `Ответственный: ${baseline.checkpoint.owner}`}</span></div></>}</section></section>;
 }
-function Overview({route, project, runs, portfolio, csrfToken, canManage, hasWriteCapability, canApproveOutcome}: {route: WorkspaceUiRoute; project: ProjectData; runs: RunsData | null; portfolio: PortfolioData | null; csrfToken: string | null; canManage: boolean; hasWriteCapability: boolean; canApproveOutcome: boolean}) {
+function Overview({route, project, runs, portfolio, csrfToken, canManage, hasWriteCapability, canApproveOutcome,
+  canClientSignoff}: {route: WorkspaceUiRoute; project: ProjectData; runs: RunsData | null; portfolio: PortfolioData | null;
+    csrfToken: string | null; canManage: boolean; hasWriteCapability: boolean; canApproveOutcome: boolean;
+    canClientSignoff: boolean}) {
   const active = project.workItems.filter(({status}) => status !== 'backlog' && status !== 'done');
   const attention = project.workItems.filter((task) => taskNeedsAttention(task, project)).slice(0, 3);
   const execution = project.execution;
@@ -365,6 +369,8 @@ function Overview({route, project, runs, portfolio, csrfToken, canManage, hasWri
     <ContextTabs label="Разделы обзора" items={[{label: 'Сводка', href: projectUrl(project.project.slug, 'overview', route.scope), active: true}, {label: 'Скоп', href: '#scope', active: false}, {label: 'Риски', href: '#risks', active: false}]}/>
     <ProjectExecutionControls projectId={project.project.id} execution={execution} csrfToken={csrfToken} canManage={canManage} hasWriteCapability={hasWriteCapability} runnerQueueAvailable={runnerActivationEnabled()}/>
     <ScopeBaseline project={project} csrfToken={csrfToken} canApproveOutcome={canApproveOutcome}/>
+    <ProjectAcceptanceControls projectId={project.project.id} execution={execution} csrfToken={csrfToken}
+      canProductOwner={canApproveOutcome} canClientRepresentative={canClientSignoff}/>
     <ReleaseEvidenceControls projectId={project.project.id} projectVersion={project.project.version}
       materialization={project.plan?.materialization ?? null} workItems={project.workItems}
       deployments={project.deployments ?? []} csrfToken={csrfToken} canManage={canManage && hasWriteCapability}/>
@@ -928,7 +934,7 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
       const canEditPlan = canApprovePlan || membership?.role === 'workspace_owner' || operator?.role === 'workspace_admin' || operator?.role === 'delivery_lead';
       return <ProjectSetup route={route} project={project} csrfToken={data.csrfToken ?? null} canEditPlan={canEditPlan} canApprovePlan={canApprovePlan}/>;
     }
-    case 'overview': return <Overview route={route} project={project} runs={runs} portfolio={ready(data.portfolio)} csrfToken={data.csrfToken ?? null} canManage={canManageExecution ?? false} hasWriteCapability={hasExecutionWriteCapability} canApproveOutcome={executionMembership?.role === 'project_owner' && hasExecutionWriteCapability}/>;
+    case 'overview': return <Overview route={route} project={project} runs={runs} portfolio={ready(data.portfolio)} csrfToken={data.csrfToken ?? null} canManage={canManageExecution ?? false} hasWriteCapability={hasExecutionWriteCapability} canApproveOutcome={executionMembership?.role === 'project_owner' && hasExecutionWriteCapability} canClientSignoff={executionMembership?.role === 'client_viewer' && hasExecutionWriteCapability}/>;
     case 'tasks': return <Tasks route={route} project={project} access={access} operatorActorId={data.operatorActorId ?? null}/>;
     case 'task': return <TaskDetail route={route} project={project} runs={runs} lifecycleLoad={data.lifecycle ?? null} csrfToken={data.csrfToken ?? null} operatorActorId={data.operatorActorId ?? null} canRecordTerminalEvidence={executionMembership?.role === 'project_owner' && hasExecutionWriteCapability}/>;
     case 'protocol': return <Protocol route={route} project={project} access={access} csrfToken={data.csrfToken ?? null}/>;

@@ -16,13 +16,15 @@ import {
   canonicalEvents, commandReceipts,
   createDatabase, createPostgresAgentRunRetryContinuationStore,
   createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore,
-  createPostgresAgentRunAcceptanceStore, createPostgresProjectOutcomeAcceptanceStore, createPostgresRunnerClaimStore,
-  deliveryJourneyEvidence, deliveryJourneys,
-  outboxEvents, projectExecutionDispatches, projectExecutions,
+  createPostgresAgentRunAcceptanceStore, createPostgresProjectAcceptanceStore,
+  createPostgresProjectOutcomeAcceptanceStore, createPostgresRunnerClaimStore,
+  deliveryJourneyEvidence, deliveryJourneys, deployments,
+  outboxEvents, projectAcceptanceSessions, projectExecutionDispatches, projectExecutions,
   loadProjectExecutionProjection,
   projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPlanVersions,
   projectPublicationIntents, projectScopeBaselineVersions, projectTrackerRepositoryScopes,
   projectScopeOutcomeObservations, projectScopeOutcomes,
+  projectReleaseWaivers, projectUatProtocols, projectUatResults, projectUatSignoffs,
   projects, runbooks, runtimeRegistrations, secretRefs, taskPackets, trackerBindings,
   riskSignals, statusTransitions, workItemDependencies, workItemScopeOutcomes, workItems, workspaces
 } from './index';
@@ -31,6 +33,14 @@ const databaseUrl = process.env.DATABASE_URL;
 if (process.env.CI && databaseUrl === undefined) throw new Error('DATABASE_URL is required for project orchestration integration tests in CI.');
 const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 const databaseName = `fai_project_execution_${randomUUID().replaceAll('-', '')}`;
+const expectImmutableRejection = async (operation: Promise<unknown>, tableName: string) => {
+  try { await operation; throw new Error('Expected immutable write to fail.'); }
+  catch (error) {
+    const cause = (error as {cause?: {code?: string; message?: string}}).cause;
+    expect(cause?.code).toBe('55000');
+    expect(cause?.message).toContain(`${tableName} is immutable`);
+  }
+};
 
 describePostgres('governed project orchestration persistence', () => {
   let adminPool: Pool; let testPool: Pool; let db: ReturnType<typeof createDatabase>['db'];
@@ -338,7 +348,7 @@ describePostgres('governed project orchestration persistence', () => {
       auditEvents.action, 'agent_run.accept_result.v1'))).toHaveLength(1);
   });
 
-  it('records weighted Product Owner decisions atomically and completes only the final accepted outcome', async () => {
+  it('records weighted Product Owner decisions atomically and leaves final completion at the UAT gate', async () => {
     const fixture = await seedOutcomeAcceptance();
     await db.update(runbooks).set({active: false, protocolState: 'retired'})
       .where(eq(runbooks.id, fixture.ids.protocol));
@@ -354,9 +364,10 @@ describePostgres('governed project orchestration persistence', () => {
     ]));
     await expect(fixture.store.execute({command: fixture.command(fixture.second) as never,
       requestHash: 'p'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true,
-      value: {acceptedWeight: 100, totalWeight: 100, executionStatus: 'completed', executionVersion: 4}}}});
+      value: {acceptedWeight: 100, totalWeight: 100, executionStatus: 'blocked', executionVersion: 4}}}});
     expect((await db.select().from(projectExecutions).where(eq(
-      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({status: 'completed', version: 4});
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({status: 'blocked',
+        blockReason: 'uat_required', version: 4});
     expect(await db.select().from(projectScopeOutcomes).where(eq(
       projectScopeOutcomes.baselineId, fixture.ids.baseline))).toEqual(expect.arrayContaining([
       expect.objectContaining({id: fixture.first, state: 'accepted', acceptedByActorId: fixture.ids.owner}),
@@ -424,7 +435,149 @@ describePostgres('governed project orchestration persistence', () => {
       requestHash: 'w'.repeat(64), authorized: true})]);
     expect(results.every((result) => 'receipt' in result && result.receipt.result.ok)).toBe(true);
     expect((await db.select().from(projectExecutions).where(eq(
-      projectExecutions.projectId, different.ids.project)))[0]).toMatchObject({status: 'completed', version: 4});
+      projectExecutions.projectId, different.ids.project)))[0]).toMatchObject({status: 'blocked',
+        blockReason: 'uat_required', version: 4});
+  });
+
+  it('completes only after immutable UAT, separate signoffs, and an explicit bounded release waiver', async () => {
+    const fixture = await seedOutcomeAcceptance();
+    await fixture.store.execute({command: fixture.command(fixture.first) as never,
+      requestHash: 'a'.repeat(64), authorized: true});
+    await fixture.store.execute({command: fixture.command(fixture.second) as never,
+      requestHash: 'b'.repeat(64), authorized: true});
+    const client = randomUUID();
+    await db.insert(actors).values({id: client, workspaceId: fixture.ids.workspace, type: 'human', role: 'developer',
+      displayName: 'Client representative', authMode: 'user', capabilities: {'write:control_plane:development': true}});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
+      actorId: client, role: 'client_viewer'});
+    const acceptance = createPostgresProjectAcceptanceStore(db, {now: () => new Date('2026-08-09T13:00:00.000Z')});
+    const protocolId = randomUUID();
+    const prepare = {commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `project-uat-prepare:v1:${fixture.ids.project}:4:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'project_uat.prepare.v1' as const,
+      payload: {projectId: fixture.ids.project, protocolId, expectedExecutionVersion: 4,
+        requiredSmokeChecks: ['health'], requiredDeploymentEnvironment: 'production' as const}};
+    const foreignWorkspace = randomUUID();
+    await db.insert(workspaces).values({id: foreignWorkspace, name: 'Foreign', slug: `foreign-${randomUUID()}`});
+    await expect(acceptance.execute({command: {...prepare, workspaceId: foreignWorkspace} as never,
+      requestHash: '0'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+        error: {code: 'NOT_FOUND'}}}});
+    await expect(acceptance.execute({command: prepare as never, requestHash: 'c'.repeat(64), authorized: false,
+      policyError: {code: 'POLICY_DENIED', message: 'fixture'}})).resolves.toMatchObject({receipt: {result: {ok: false}}});
+    const prepared = await acceptance.execute({command: prepare as never, requestHash: 'c'.repeat(64), authorized: true});
+    expect(prepared).toMatchObject({status: 'completed', receipt: {result: {ok: true,
+      value: {version: 1, protocol: {id: protocolId, requiredDeploymentEnvironment: 'production'},
+        blockers: expect.arrayContaining(['uat_passed_required'])}}}});
+    if (!('receipt' in prepared) || !prepared.receipt.result.ok) throw new Error('prepared UAT fixture missing');
+    const protocol = prepared.receipt.result.value.protocol; const resultId = randomUUID();
+    const secondOwner = randomUUID();
+    await db.insert(actors).values({id: secondOwner, workspaceId: fixture.ids.workspace, type: 'human', role: 'developer',
+      displayName: 'Second Product Owner', authMode: 'user', capabilities: {'write:control_plane:development': true}});
+    await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
+      actorId: secondOwner, role: 'project_owner'});
+    const duplicatePrepare = {...prepare, commandId: randomUUID(), actor: {actorId: secondOwner},
+      idempotencyKey: `project-uat-prepare:v1:${fixture.ids.project}:4:${secondOwner}`, payload: {...prepare.payload,
+        protocolId: randomUUID()}};
+    await expect(acceptance.execute({command: duplicatePrepare as never, requestHash: '7'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'INVALID_TRANSITION'}}}});
+    const checks = protocol.checklist.map((item) => ({key: item.key, outcome: 'passed' as const,
+      evidenceReferences: item.requiredEvidence.map((requirement) => `uat:evidence:${item.key}:${requirement}`),
+      artifactReferences: [`artifact:uat:${item.key}`]}));
+    const record = {commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `project-uat-result:v1:${protocolId}:1:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'project_uat.record_result.v1' as const,
+      payload: {projectId: fixture.ids.project, protocolId, resultId, expectedVersion: 1, outcome: 'passed' as const, checks}};
+    await expect(acceptance.execute({command: {...record, commandId: randomUUID(),
+      idempotencyKey: `project-uat-result:v1:${protocolId}:2:${fixture.ids.owner}`,
+      payload: {...record.payload, expectedVersion: 2}} as never, requestHash: '3'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'VERSION_CONFLICT'}}}});
+    const recorded = await acceptance.execute({command: record as never, requestHash: 'd'.repeat(64), authorized: true});
+    await expect(acceptance.execute({command: record as never, requestHash: 'd'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({status: 'replayed'});
+    expect(recorded).toMatchObject({receipt: {result: {ok: true, value: {version: 2}}}});
+    const signoff = (kind: 'product_owner' | 'client_representative', actorId: string, expectedVersion: number) => ({
+      commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `project-uat-signoff:v1:${kind}:${resultId}:${expectedVersion}:${actorId}`,
+      actor: {actorId}, type: 'project_uat.signoff.v1' as const,
+      payload: {projectId: fixture.ids.project, protocolId, resultId, expectedVersion, kind,
+        evidenceReference: `signoff:${kind}`}});
+    await expect(acceptance.execute({command: signoff('product_owner', client, 2) as never,
+      requestHash: '4'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+        error: {code: 'CAPABILITY_DENIED'}}}});
+    await expect(acceptance.execute({command: signoff('product_owner', fixture.ids.owner, 1) as never,
+      requestHash: '5'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+        error: {code: 'VERSION_CONFLICT'}}}});
+    await expect(acceptance.execute({command: signoff('product_owner', fixture.ids.owner, 2) as never,
+      requestHash: 'e'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true,
+        value: {version: 3}}}});
+    const duplicateSignoff = signoff('product_owner', fixture.ids.owner, 3);
+    await expect(acceptance.execute({command: duplicateSignoff as never,
+      requestHash: '6'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {
+        idempotencyKey: expect.stringMatching(/^project-acceptance-attempt:v1:/),
+        result: {ok: false, error: {code: 'INVALID_TRANSITION'}}}});
+    expect((await db.select().from(projectAcceptanceSessions).where(eq(
+      projectAcceptanceSessions.protocolId, protocolId)))[0]).toMatchObject({version: 3});
+    expect(await db.select().from(commandReceipts).where(eq(
+      commandReceipts.commandId, duplicateSignoff.commandId))).toEqual([
+        expect.objectContaining({result: {ok: false, error: expect.objectContaining({code: 'INVALID_TRANSITION'})}})
+      ]);
+    const concurrentClient = signoff('client_representative', client, 3);
+    const clientResults = await Promise.all([1, 2].map(() => acceptance.execute({
+      command: concurrentClient as never, requestHash: 'f'.repeat(64), authorized: true})));
+    expect(clientResults.map(({status}) => status).sort()).toEqual(['completed', 'replayed']);
+    await db.insert(deployments).values({workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      environment: 'staging', revision: 'git-commit:staging', referenceKind: 'commit', status: 'observed',
+      planVersionId: protocol.planVersionId, materializationId: protocol.materializationId,
+      requestedByActorId: fixture.ids.owner, requestedAt: new Date('2026-08-09T12:30:00.000Z'),
+      approvedByActorId: fixture.ids.owner, approvedAt: new Date('2026-08-09T12:31:00.000Z'),
+      observedByActorId: fixture.ids.owner, observedAt: new Date('2026-08-09T12:35:00.000Z'),
+      observedResult: {outcome: 'succeeded', reference: 'deployment:staging'},
+      smokeChecks: [{name: 'health', status: 'passed', reference: 'smoke:staging:health'}],
+      rollbackEvidence: {outcome: 'not_required', reference: null},
+      startedAt: new Date('2026-08-09T12:32:00.000Z'), completedAt: new Date('2026-08-09T12:34:00.000Z'),
+      lifecycleVersion: 1});
+    await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project))
+      .resolves.toMatchObject({acceptance: {release: {state: 'pending'}, completionReady: false,
+        blockers: expect.arrayContaining(['release_evidence_or_waiver_required'])}});
+    const waiver = {commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `project-release-not-required:v1:${protocolId}:4:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'project_release.not_required.v1' as const,
+      payload: {projectId: fixture.ids.project, protocolId, expectedVersion: 4,
+        reason: 'The accepted deliverable does not require deployment.'}};
+    await acceptance.execute({command: waiver as never, requestHash: '1'.repeat(64), authorized: true});
+    const duplicateWaiver = {...waiver, commandId: randomUUID(),
+      idempotencyKey: `project-release-not-required:v1:${protocolId}:5:${fixture.ids.owner}`,
+      payload: {...waiver.payload, expectedVersion: 5}};
+    await expect(acceptance.execute({command: duplicateWaiver as never,
+      requestHash: '8'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+        error: {code: 'INVALID_TRANSITION'}}}});
+    expect((await db.select().from(projectAcceptanceSessions).where(eq(
+      projectAcceptanceSessions.protocolId, protocolId)))[0]).toMatchObject({version: 5});
+    const complete = {commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `project-execution-complete:v1:${fixture.ids.project}:4:5:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'project_execution.complete.v1' as const,
+      payload: {projectId: fixture.ids.project, protocolId, expectedVersion: 5, expectedExecutionVersion: 4}};
+    await expect(acceptance.execute({command: complete as never, requestHash: '2'.repeat(64), authorized: true}))
+      .resolves.toMatchObject({receipt: {result: {ok: true, value: {version: 6, completionReady: true}}}});
+    expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId, fixture.ids.project)))[0])
+      .toMatchObject({status: 'completed', version: 5, completedAt: new Date('2026-08-09T13:00:00.000Z')});
+    await expectImmutableRejection(db.update(projectUatProtocols).set({contentHash: '9'.repeat(64)})
+      .where(eq(projectUatProtocols.id, protocolId)), 'project_uat_protocols');
+    await expectImmutableRejection(db.delete(projectUatProtocols).where(eq(projectUatProtocols.id, protocolId)),
+      'project_uat_protocols');
+    await expectImmutableRejection(db.update(projectUatResults).set({outcome: 'failed'})
+      .where(eq(projectUatResults.id, resultId)), 'project_uat_results');
+    await expectImmutableRejection(db.delete(projectUatResults).where(eq(projectUatResults.id, resultId)),
+      'project_uat_results');
+    await expectImmutableRejection(db.update(projectUatSignoffs).set({evidenceReference: 'changed'}).where(and(
+      eq(projectUatSignoffs.resultId, resultId), eq(projectUatSignoffs.kind, 'product_owner'))),
+    'project_uat_signoffs');
+    await expectImmutableRejection(db.delete(projectUatSignoffs).where(eq(projectUatSignoffs.resultId, resultId)),
+      'project_uat_signoffs');
+    await expectImmutableRejection(db.update(projectReleaseWaivers).set({reason: 'Changed'}).where(eq(
+      projectReleaseWaivers.protocolId, protocolId)), 'project_release_waivers');
+    await expectImmutableRejection(db.delete(projectReleaseWaivers).where(eq(
+      projectReleaseWaivers.protocolId, protocolId)), 'project_release_waivers');
   });
 
   it('completes and audits policy denial, Product Owner denial, and a stale selection', async () => {

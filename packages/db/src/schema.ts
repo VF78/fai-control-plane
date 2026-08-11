@@ -1205,6 +1205,104 @@ export const projectExecutions = pgTable(
   ]
 );
 
+/** Immutable, exact-scope protocol prepared from the active approved materialization. */
+export const projectUatProtocols = pgTable('project_uat_protocols', {
+  id: id(),
+  workspaceId: uuid('workspace_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  planVersionId: uuid('plan_version_id').notNull(),
+  materializationId: uuid('materialization_id').notNull(),
+  baselineId: uuid('baseline_id').notNull(),
+  checklist: jsonb('checklist').$type<readonly import('@fai-control-plane/domain').ProjectUatChecklistItem[]>().notNull(),
+  requiredSmokeChecks: text('required_smoke_checks').array().notNull(),
+  requiredDeploymentEnvironment: text('required_deployment_environment').$type<'staging' | 'production'>().notNull(),
+  contentHash: text('content_hash').notNull(),
+  preparedByActorId: uuid('prepared_by_actor_id').notNull(),
+  commandId: uuid('command_id').notNull(),
+  createdAt: createdAt()
+}, (table) => [
+  uniqueIndex('project_uat_protocols_project_unique').on(table.projectId),
+  uniqueIndex('project_uat_protocols_command_unique').on(table.commandId),
+  foreignKey({columns: [table.workspaceId, table.projectId], foreignColumns: [projects.workspaceId, projects.id],
+    name: 'project_uat_protocols_workspace_project_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.planVersionId, table.workspaceId, table.projectId],
+    foreignColumns: [projectPlanVersions.id, projectPlanVersions.workspaceId, projectPlanVersions.projectId],
+    name: 'project_uat_protocols_plan_scope_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.materializationId, table.workspaceId, table.projectId, table.planVersionId],
+    foreignColumns: [projectPlanMaterializations.id, projectPlanMaterializations.workspaceId,
+      projectPlanMaterializations.projectId, projectPlanMaterializations.planVersionId],
+    name: 'project_uat_protocols_materialization_scope_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.baselineId, table.projectId, table.planVersionId],
+    foreignColumns: [projectScopeBaselineVersions.id, projectScopeBaselineVersions.projectId,
+      projectScopeBaselineVersions.sourcePlanVersionId], name: 'project_uat_protocols_baseline_scope_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.workspaceId, table.preparedByActorId],
+    foreignColumns: [actors.workspaceId, actors.id], name: 'project_uat_protocols_workspace_actor_fk'}).onDelete('restrict'),
+  check('project_uat_protocols_checklist_array', sql`jsonb_typeof(${table.checklist}) = 'array' and jsonb_array_length(${table.checklist}) > 0`),
+  check('project_uat_protocols_smoke_nonempty', sql`cardinality(${table.requiredSmokeChecks}) between 1 and 50`),
+  check('project_uat_protocols_release_environment', sql`${table.requiredDeploymentEnvironment} in ('staging', 'production')`),
+  check('project_uat_protocols_hash_sha256', sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`)
+]);
+
+/** CAS head for append-only UAT/signoff/release facts. */
+export const projectAcceptanceSessions = pgTable('project_acceptance_sessions', {
+  protocolId: uuid('protocol_id').primaryKey().references(() => projectUatProtocols.id, {onDelete: 'restrict'}),
+  projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'restrict'}),
+  version: integer('version').default(1).notNull(),
+  updatedAt: updatedAt()
+}, (table) => [
+  uniqueIndex('project_acceptance_sessions_project_unique').on(table.projectId),
+  check('project_acceptance_sessions_version_positive', sql`${table.version} > 0`)
+]);
+
+/** Immutable UAT attempts; a later attempt does not rewrite earlier evidence. */
+export const projectUatResults = pgTable('project_uat_results', {
+  id: id(),
+  protocolId: uuid('protocol_id').notNull().references(() => projectUatProtocols.id, {onDelete: 'restrict'}),
+  sequence: integer('sequence').notNull(),
+  outcome: text('outcome').$type<'passed' | 'failed'>().notNull(),
+  checks: jsonb('checks').$type<readonly import('@fai-control-plane/domain').ProjectUatCheckResult[]>().notNull(),
+  recordedByActorId: uuid('recorded_by_actor_id').notNull().references(() => actors.id, {onDelete: 'restrict'}),
+  commandId: uuid('command_id').notNull(),
+  createdAt: createdAt()
+}, (table) => [
+  uniqueIndex('project_uat_results_protocol_sequence_unique').on(table.protocolId, table.sequence),
+  uniqueIndex('project_uat_results_command_unique').on(table.commandId),
+  check('project_uat_results_sequence_positive', sql`${table.sequence} > 0`),
+  check('project_uat_results_outcome_valid', sql`${table.outcome} in ('passed', 'failed')`),
+  check('project_uat_results_checks_array', sql`jsonb_typeof(${table.checks}) = 'array' and jsonb_array_length(${table.checks}) > 0`)
+]);
+
+/** Distinct immutable human facts bound to one exact passed UAT result. */
+export const projectUatSignoffs = pgTable('project_uat_signoffs', {
+  id: id(),
+  protocolId: uuid('protocol_id').notNull().references(() => projectUatProtocols.id, {onDelete: 'restrict'}),
+  resultId: uuid('result_id').notNull().references(() => projectUatResults.id, {onDelete: 'restrict'}),
+  kind: text('kind').$type<'product_owner' | 'client_representative'>().notNull(),
+  actorId: uuid('actor_id').notNull().references(() => actors.id, {onDelete: 'restrict'}),
+  evidenceReference: text('evidence_reference').notNull(),
+  commandId: uuid('command_id').notNull(),
+  createdAt: createdAt()
+}, (table) => [
+  uniqueIndex('project_uat_signoffs_result_kind_unique').on(table.resultId, table.kind),
+  uniqueIndex('project_uat_signoffs_command_unique').on(table.commandId),
+  check('project_uat_signoffs_kind_valid', sql`${table.kind} in ('product_owner', 'client_representative')`),
+  check('project_uat_signoffs_evidence_bounded', sql`length(${table.evidenceReference}) between 1 and 2048 and btrim(${table.evidenceReference}) <> '' and ${table.evidenceReference} !~ '[[:cntrl:]]'`)
+]);
+
+/** Product Owner's explicit, bounded alternative to observed deployment evidence. */
+export const projectReleaseWaivers = pgTable('project_release_waivers', {
+  id: id(),
+  protocolId: uuid('protocol_id').notNull().references(() => projectUatProtocols.id, {onDelete: 'restrict'}),
+  reason: text('reason').notNull(),
+  waivedByActorId: uuid('waived_by_actor_id').notNull().references(() => actors.id, {onDelete: 'restrict'}),
+  commandId: uuid('command_id').notNull(),
+  createdAt: createdAt()
+}, (table) => [
+  uniqueIndex('project_release_waivers_protocol_unique').on(table.protocolId),
+  uniqueIndex('project_release_waivers_command_unique').on(table.commandId),
+  check('project_release_waivers_reason_bounded', sql`length(${table.reason}) between 1 and 500 and btrim(${table.reason}) <> '' and ${table.reason} !~ '[[:cntrl:]]'`)
+]);
+
 export const scopeOutcomeStateEnum = pgEnum('scope_outcome_state', ['accepted', 'review', 'in_progress', 'not_started', 'not_configured']);
 export const projectScopeBaselineVersions = pgTable('project_scope_baseline_versions', {
   id: id(), projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),

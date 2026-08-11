@@ -64,13 +64,14 @@ export type ProjectExecutionProjection = Readonly<{
   pausedAt: string | null;
   completedAt: string | null;
   updatedAt: string | null;
+  acceptance?: import('./project-acceptance.ts').ProjectAcceptanceProjection | null;
 }>;
 
 const transitions: Readonly<Record<ProjectExecutionStatus, readonly ProjectExecutionStatus[]>> = {
-  stopped: ['running', 'blocked', 'completed'],
+  stopped: ['running', 'blocked'],
   running: ['paused'],
-  paused: ['running', 'blocked', 'completed'],
-  blocked: ['paused', 'completed'],
+  paused: ['running', 'blocked'],
+  blocked: ['paused'],
   completed: []
 };
 
