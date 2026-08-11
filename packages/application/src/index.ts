@@ -48,6 +48,23 @@ export {
   type ProjectOutcomeAcceptanceValue
 } from './project-outcome-acceptance.ts';
 export {
+  PROJECT_EXECUTION_COMPLETE_COMMAND,
+  PROJECT_RELEASE_NOT_REQUIRED_COMMAND,
+  PROJECT_UAT_PREPARE_COMMAND,
+  PROJECT_UAT_RECORD_RESULT_COMMAND,
+  PROJECT_UAT_SIGNOFF_COMMAND,
+  createProjectAcceptanceService,
+  type CompleteProjectExecutionCommand,
+  type PrepareProjectUatCommand,
+  type ProjectAcceptanceCommand,
+  type ProjectAcceptanceExecution,
+  type ProjectAcceptanceReceipt,
+  type ProjectAcceptanceStore,
+  type RecordProjectUatResultCommand,
+  type SignoffProjectUatCommand,
+  type WaiveProjectReleaseCommand
+} from './project-acceptance.ts';
+export {
   AGENT_RUN_RETRY_CONTINUATION_COMMAND,
   MVP_AGENT_RUN_RETRY_POLICY,
   createAgentRunRetryContinuationService,

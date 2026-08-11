@@ -1,12 +1,12 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {and, desc, eq, isNull} from 'drizzle-orm';
-import {transitionProjectExecution, validateDeliveryProtocolDefinition, type CommandError} from '@fai-control-plane/domain';
+import {validateDeliveryProtocolDefinition, type CommandError} from '@fai-control-plane/domain';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
 type Database = NodePgDatabase<typeof schema>;
 type Command = Readonly<{commandId: string; workspaceId: string; correlationId: string; idempotencyKey: string; actor: Readonly<{actorId: string}>; type: 'project_scope_outcome.accept.v1'; payload: Readonly<{projectId: string; baselineId: string; outcomeId: string; expectedExecutionVersion: number}>}>;
-type Value = Readonly<{projectId: string; outcomeId: string; acceptedWeight: number; totalWeight: number; executionStatus: 'paused' | 'blocked' | 'completed'; executionVersion: number}>;
+type Value = Readonly<{projectId: string; outcomeId: string; acceptedWeight: number; totalWeight: number; executionStatus: 'paused' | 'blocked'; executionVersion: number}>;
 type Result = Readonly<{ok: true; value: Value}> | Readonly<{ok: false; error: CommandError}>;
 const fail = (code: CommandError['code'], message: string): Result => ({ok: false, error: {code, message}});
 const attemptReceiptKey = (command: Command, requestHash: string): string =>
@@ -101,10 +101,6 @@ export const createPostgresProjectOutcomeAcceptanceStore = (db: Database, option
       const acceptedWeight = outcomes.reduce((total, item) =>
         total + (isAccepted(item) || item.id === outcome.id ? item.weight : 0), 0);
       const everyOutcomeAccepted = outcomes.every((item) => isAccepted(item) || item.id === outcome.id);
-      if (everyOutcomeAccepted) {
-        const transition = transitionProjectExecution(execution.status, 'completed');
-        if (!transition.ok) { result = transition; return complete(project.id); }
-      }
       const claimed = (await tx.insert(schema.commandReceipts).values({workspaceId: command.workspaceId, idempotencyKey: command.idempotencyKey, requestHash: input.requestHash, commandId: command.commandId, correlationId: command.correlationId, commandType: command.type}).onConflictDoNothing({target: [schema.commandReceipts.workspaceId, schema.commandReceipts.idempotencyKey]}).returning())[0];
       if (claimed === undefined) {
         const [concurrent] = await tx.select().from(schema.commandReceipts).where(and(eq(schema.commandReceipts.workspaceId, command.workspaceId), eq(schema.commandReceipts.idempotencyKey, command.idempotencyKey))).limit(1).for('update');
@@ -126,10 +122,10 @@ export const createPostgresProjectOutcomeAcceptanceStore = (db: Database, option
         resultVersion = execution.version; result = {ok: true, value: {projectId: project.id, outcomeId: outcome.id, acceptedWeight, totalWeight, executionStatus: execution.status, executionVersion: execution.version}};
         return complete(project.id, 'allow', claimed);
       }
-      const [updated] = await tx.update(schema.projectExecutions).set({status: 'completed', blockReason: null, selectedWorkItemId: null, selectedPlanVersionId: null, selectedWorkItemVersion: null, selectedProtocolId: null, selectedProtocolVersion: null, selectedJourneyVersion: null, selectedStageKey: null, selectedResponsibleActorId: null, selectedAgentProfileId: null, pausedAt: null, completedAt: nowBase, version: execution.version + 1, updatedAt: nowBase}).where(and(eq(schema.projectExecutions.projectId, project.id), eq(schema.projectExecutions.version, execution.version), eq(schema.projectExecutions.status, execution.status))).returning({version: schema.projectExecutions.version});
+      const [updated] = await tx.update(schema.projectExecutions).set({status: 'blocked', blockReason: 'uat_required', selectedWorkItemId: null, selectedPlanVersionId: null, selectedWorkItemVersion: null, selectedProtocolId: null, selectedProtocolVersion: null, selectedJourneyVersion: null, selectedStageKey: null, selectedResponsibleActorId: null, selectedAgentProfileId: null, pausedAt: null, completedAt: null, version: execution.version + 1, updatedAt: nowBase}).where(and(eq(schema.projectExecutions.projectId, project.id), eq(schema.projectExecutions.version, execution.version), eq(schema.projectExecutions.status, execution.status))).returning({version: schema.projectExecutions.version});
       if (updated === undefined) throw new Error('project_outcome_acceptance_execution_cas');
       await tx.insert(schema.projectScopeOutcomeObservations).values({id: randomUUID(), projectId: project.id, baselineId: baseline.id, acceptedWeight, totalWeight, observedAt, evidenceReference: `outcome-acceptance:${outcome.id}:${command.commandId}`});
-      resultVersion = updated.version; result = {ok: true, value: {projectId: project.id, outcomeId: outcome.id, acceptedWeight, totalWeight, executionStatus: 'completed', executionVersion: updated.version}};
+      resultVersion = updated.version; result = {ok: true, value: {projectId: project.id, outcomeId: outcome.id, acceptedWeight, totalWeight, executionStatus: 'blocked', executionVersion: updated.version}};
       return complete(project.id, 'allow', claimed);
     });
   }

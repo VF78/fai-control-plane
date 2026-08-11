@@ -21,6 +21,7 @@ import {and, asc, desc, eq, inArray, isNull, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 import {isRuntimeAvailable} from './runtime-availability';
+import {loadProjectAcceptanceProjection} from './project-acceptance';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -394,7 +395,8 @@ const projectionFrom = async (
     decisions: await decisionQueue(tx, projectId, persisted.selection,
       persisted.stale ? 'selection_preconditions_stale' : blockReason, row?.selectedWorkItemId ?? null),
     startedAt: row?.startedAt.toISOString() ?? null, pausedAt: row?.pausedAt?.toISOString() ?? null,
-    completedAt: row?.completedAt?.toISOString() ?? null, updatedAt: row?.updatedAt.toISOString() ?? null
+    completedAt: row?.completedAt?.toISOString() ?? null, updatedAt: row?.updatedAt.toISOString() ?? null,
+    acceptance: await loadProjectAcceptanceProjection(tx, workspaceId, projectId)
   };
 };
 
@@ -408,7 +410,8 @@ export const loadProjectExecutionProjection = async (
   )).limit(1);
   if (project === undefined) return {
     projectId, status: 'stopped', version: 0, selection: null, blockReason: null,
-    dispatch: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null
+    dispatch: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null,
+    acceptance: null
   };
   const [row] = await db.select().from(schema.projectExecutions)
     .where(eq(schema.projectExecutions.projectId, projectId)).limit(1);
@@ -783,7 +786,7 @@ const nextState = async (tx: Transaction, workspaceId: string, projectId: string
       outcome.state === 'accepted' && outcome.acceptedByActorId !== null &&
       outcome.acceptedAt !== null && outcome.evidenceReference !== null);
     return accepted
-      ? {status: 'completed' as const, selection: null, blockReason: null}
+      ? {status: 'blocked' as const, selection: null, blockReason: 'uat_required'}
       : {status: 'blocked' as const, selection: null, blockReason: 'scope_acceptance_required'};
   }
   const dependencies = items.length === 0 ? [] : await tx.select({
@@ -899,7 +902,7 @@ export const createPostgresProjectExecutionStore = (db: Database): ProjectExecut
         [resultVersion] = [1];
         await tx.insert(schema.projectExecutions).values({projectId: project.id, status: state.status,
           blockReason: state.blockReason, ...selectionSnapshot(state.selection), version: 1,
-          startedAt: now, completedAt: state.status === 'completed' ? now : null, updatedAt: now});
+          startedAt: now, completedAt: null, updatedAt: now});
       } else if (command.type === 'project_execution.pause') {
         if (current === undefined || (current.status !== 'running' && current.status !== 'blocked')) {
           result = failure('INVALID_TRANSITION', 'Only running or blocked project execution can be paused.'); return complete();
@@ -945,7 +948,7 @@ export const createPostgresProjectExecutionStore = (db: Database): ProjectExecut
         resultVersion = current.version + 1;
         await tx.update(schema.projectExecutions).set({status: state.status, blockReason: state.blockReason,
           ...selectionSnapshot(state.selection), pausedAt: null,
-          completedAt: state.status === 'completed' ? now : null, version: resultVersion, updatedAt: now})
+          completedAt: null, version: resultVersion, updatedAt: now})
           .where(and(eq(schema.projectExecutions.projectId, project.id), eq(schema.projectExecutions.version, current.version)));
       }
       const [updated] = await tx.select().from(schema.projectExecutions)
