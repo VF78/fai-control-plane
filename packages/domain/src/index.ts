@@ -14,6 +14,8 @@ import type {
   ProjectMembership,
   ProjectMembershipRole,
   ResourceAccessGrant,
+  ProjectEnvironment,
+  ProjectEnvironmentKind,
   AccessLevel,
   AccessResourceType
 } from './access.ts';
@@ -246,6 +248,15 @@ export type AccessRequest = Readonly<{
   requesterActorId: string;
   targetSurface: PolicySurface;
   requestedScope: readonly string[];
+  projectId?: string | null;
+  subjectActorId?: string | null;
+  resourceType?: AccessResourceType | null;
+  resourceId?: string | null;
+  requestedLevel?: import('./access.ts').AccessLevel | null;
+  credentialRefId?: string | null;
+  expiresAt?: string | null;
+  decidedByActorId?: string | null;
+  decidedAt?: string | null;
   status: AccessRequestStatus;
   version: number;
 }>;
@@ -768,6 +779,17 @@ export type RequestAccessCommand = CanonicalCommandEnvelope<
   'access_request.request',
   Readonly<{requestId: string; targetSurface: PolicySurface; requestedScope: readonly string[]}>
 >;
+export type RequestEnvironmentAccessCommand = CanonicalCommandEnvelope<
+  'environment_access.request',
+  Readonly<{
+    requestId: string;
+    projectId: string;
+    subjectActorId: string;
+    environmentId: string;
+    credentialRefId: string;
+    expiresAt: string;
+  }>
+>;
 export type DecideAccessRequestCommand = CanonicalCommandEnvelope<
   'access_request.decide',
   Readonly<{requestId: string; status: Exclude<AccessRequestStatus, 'pending'>; expectedVersion: number}>
@@ -853,6 +875,26 @@ export type SetResourceAccessGrantCommand = CanonicalCommandEnvelope<
     resourceType: AccessResourceType;
     resourceId: string;
     desiredLevel: AccessLevel;
+    credentialRefId?: string | null;
+    approvalRequestId?: string | null;
+    expiresAt?: string | null;
+    expectedVersion: number | null;
+  }>
+>;
+export type SetProjectEnvironmentCommand = CanonicalCommandEnvelope<
+  'project_environment.set',
+  Readonly<{
+    environmentId: string;
+    projectId: string;
+    kind: ProjectEnvironmentKind;
+    provider: string;
+    endpoint: string;
+    port: number;
+    purpose: string;
+    adapterKey: string;
+    adapterCredentialRefId: string;
+    reconcilerActorId: string;
+    enabled: boolean;
     expectedVersion: number | null;
   }>
 >;
@@ -939,6 +981,7 @@ export type CanonicalCommand =
   | RequestApprovalCommand
   | DecideApprovalCommand
   | RequestAccessCommand
+  | RequestEnvironmentAccessCommand
   | DecideAccessRequestCommand
   | SetProjectMembershipCommand
   | CreateProjectCommand
@@ -947,6 +990,7 @@ export type CanonicalCommand =
   | RetireActorCommand
   | SetResourceAccessGrantCommand
   | ObserveResourceAccessGrantCommand
+  | SetProjectEnvironmentCommand
   | CreateRuntimeRegistrationCommand
   | UpdateRuntimeRegistrationCommand
   | DisableRuntimeRegistrationCommand
@@ -2515,6 +2559,12 @@ export type ResourceAccessGrantMutation = Readonly<{
   expectedPersistedVersion: number | null;
   aggregate: ResourceAccessGrant;
 }>;
+export type ProjectEnvironmentMutation = Readonly<{
+  aggregateType: 'project_environment';
+  aggregateId: string;
+  expectedPersistedVersion: number | null;
+  aggregate: ProjectEnvironment;
+}>;
 export type RuntimeRegistrationMutation = Readonly<{
   aggregateType: 'runtime_registration';
   aggregateId: string;
@@ -2560,6 +2610,7 @@ export type CanonicalMutation =
   | ActorExternalIdentityMutation
   | ActorRetirementMutation
   | ResourceAccessGrantMutation
+  | ProjectEnvironmentMutation
   | RuntimeRegistrationMutation
   | RuntimeAvailabilityObservationMutation
   | RuntimeRecoveryPolicyMutation;
@@ -2694,6 +2745,35 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     grantId: string
   ): Promise<ResourceAccessGrant | null>;
+  loadProjectEnvironment?(
+    claimToken: ReceiptClaimToken,
+    environmentId: string
+  ): Promise<ProjectEnvironment | null>;
+  loadProjectEnvironmentContext?(
+    claimToken: ReceiptClaimToken,
+    input: Readonly<{projectId: string; adapterCredentialRefId: string; reconcilerActorId: string}>
+  ): Promise<Readonly<{
+    projectExists: boolean;
+    credentialRefValid: boolean;
+    reconcilerActorValid: boolean;
+  }> | null>;
+  loadEnvironmentAccessContext?(
+    claimToken: ReceiptClaimToken,
+    input: Readonly<{
+      projectId: string;
+      subjectActorId: string;
+      environmentId: string;
+      credentialRefId: string;
+      approvalRequestId: string | null;
+    }>
+  ): Promise<Readonly<{
+    environmentKind: ProjectEnvironmentKind;
+    environmentEnabled: boolean;
+    subjectType: 'human' | 'agent' | null;
+    subjectEligible: boolean;
+    credentialRefValid: boolean;
+    approval: AccessRequest | null;
+  }> | null>;
   loadRuntimeRegistration(
     claimToken: ReceiptClaimToken,
     registrationId: string

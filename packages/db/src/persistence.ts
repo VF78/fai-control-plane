@@ -43,7 +43,7 @@ import type {
   UnitOfWork,
   WorkItem
 } from '@fai-control-plane/domain';
-import {and, eq, exists, inArray, isNull, lte, sql} from 'drizzle-orm';
+import {and, eq, exists, inArray, isNotNull, isNull, lte, or, sql} from 'drizzle-orm';
 import type {ExtractTablesWithRelations, SQL} from 'drizzle-orm';
 import type {
   NodePgDatabase,
@@ -416,6 +416,9 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
       uuid(mutation.aggregate.projectId, 'resourceAccessGrant.projectId');
       uuid(mutation.aggregate.actorId, 'resourceAccessGrant.actorId');
       uuid(mutation.aggregate.resourceId, 'resourceAccessGrant.resourceId');
+      if (mutation.aggregate.credentialRefId != null) uuid(mutation.aggregate.credentialRefId, 'resourceAccessGrant.credentialRefId');
+      if (mutation.aggregate.approvalRequestId != null) uuid(mutation.aggregate.approvalRequestId, 'resourceAccessGrant.approvalRequestId');
+      if (mutation.aggregate.expiresAt != null) date(mutation.aggregate.expiresAt, 'resourceAccessGrant.expiresAt');
       if (mutation.aggregate.providerObservation != null) {
         invariant(
           /^[a-z][a-z0-9_-]{0,63}$/.test(
@@ -431,6 +434,16 @@ const validateAggregateIdentity = (mutation: CanonicalMutation): void => {
           'Access observation timestamp must be canonical.'
         );
       }
+      validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
+      break;
+    case 'project_environment':
+      uuid(mutation.aggregate.id, 'projectEnvironment.id');
+      uuid(mutation.aggregate.projectId, 'projectEnvironment.projectId');
+      uuid(mutation.aggregate.adapterCredentialRefId, 'projectEnvironment.adapterCredentialRefId');
+      uuid(mutation.aggregate.reconcilerActorId, 'projectEnvironment.reconcilerActorId');
+      invariant(['development', 'production'].includes(mutation.aggregate.kind), 'Project environment kind is invalid.');
+      invariant(/^[a-z][a-z0-9_-]{0,63}$/.test(mutation.aggregate.provider), 'Project environment provider is invalid.');
+      invariant(/^[a-z][a-z0-9_-]{0,63}$/.test(mutation.aggregate.adapterKey), 'Project environment adapter is invalid.');
       validateVersionMode(mutation.expectedPersistedVersion, mutation.aggregate.version);
       break;
     case 'runtime_registration':
@@ -877,6 +890,14 @@ const currentVersion = async (
           eq(schema.resourceAccessGrants.id, mutation.aggregateId),
           eq(schema.projects.workspaceId, workspaceId)
         ));
+      return row?.version ?? null;
+    }
+    case 'project_environment': {
+      const [row] = await tx.select({version: schema.projectEnvironments.version})
+        .from(schema.projectEnvironments)
+        .innerJoin(schema.projects, eq(schema.projects.id, schema.projectEnvironments.projectId))
+        .where(and(eq(schema.projectEnvironments.id, mutation.aggregateId),
+          eq(schema.projects.workspaceId, workspaceId)));
       return row?.version ?? null;
     }
     case 'runtime_registration': {
@@ -1440,6 +1461,30 @@ const persistAccessRequest = async (
     'AccessRequest workspace does not match claim.'
   );
   if (!await workspaceHasActor(tx, workspaceId, aggregate.requesterActorId)) return {status: 'not_found'};
+  if (aggregate.resourceType === 'environment' && (
+    aggregate.projectId == null || aggregate.subjectActorId == null || aggregate.resourceId == null ||
+    aggregate.requestedLevel !== 'write' || aggregate.credentialRefId == null || aggregate.expiresAt == null ||
+    !await accessSubjectIsScoped(tx, workspaceId, aggregate.projectId, aggregate.subjectActorId)
+  )) return {status: 'not_found'};
+  if (aggregate.resourceType === 'environment') {
+    const [binding] = await tx.select({kind: schema.projectEnvironments.kind, type: schema.actors.type})
+      .from(schema.projectEnvironments)
+      .innerJoin(schema.projects, eq(schema.projects.id, schema.projectEnvironments.projectId))
+      .innerJoin(schema.actors, eq(schema.actors.id, aggregate.subjectActorId!))
+      .innerJoin(schema.projectMemberships, and(
+        eq(schema.projectMemberships.projectId, aggregate.projectId!),
+        eq(schema.projectMemberships.actorId, aggregate.subjectActorId!),
+        eq(schema.projectMemberships.active, true),
+        sql`${schema.projectMemberships.roles} @> array['contributor']::project_membership_role[]`
+      ))
+      .where(and(eq(schema.projectEnvironments.id, aggregate.resourceId!),
+        eq(schema.projectEnvironments.projectId, aggregate.projectId!),
+        eq(schema.projects.workspaceId, workspaceId), eq(schema.actors.workspaceId, workspaceId),
+        isNull(schema.actors.disabledAt))).limit(1);
+    if (binding === undefined || (binding.kind === 'production' && binding.type !== 'human')) {
+      return {status: 'not_found'};
+    }
+  }
   if (mutation.expectedPersistedVersion === null) {
     const [row] = await tx
       .insert(schema.accessRequests)
@@ -1449,6 +1494,13 @@ const persistAccessRequest = async (
         requesterActorId: aggregate.requesterActorId,
         targetSurface: aggregate.targetSurface,
         requestedScope: [...aggregate.requestedScope],
+        projectId: aggregate.projectId ?? null,
+        subjectActorId: aggregate.subjectActorId ?? null,
+        resourceType: aggregate.resourceType ?? null,
+        resourceId: aggregate.resourceId ?? null,
+        requestedLevel: aggregate.requestedLevel ?? null,
+        credentialRefId: aggregate.credentialRefId ?? null,
+        expiresAt: aggregate.expiresAt == null ? null : new Date(aggregate.expiresAt),
         status: aggregate.status,
         version: 1
       })
@@ -1466,6 +1518,8 @@ const persistAccessRequest = async (
     .update(schema.accessRequests)
     .set({
       status: aggregate.status,
+      decidedByActorId: aggregate.decidedByActorId ?? null,
+      decidedAt: aggregate.decidedAt == null ? null : new Date(aggregate.decidedAt),
       version: sql`${schema.accessRequests.version} + 1`,
       updatedAt: new Date()
     })
@@ -1478,7 +1532,13 @@ const persistAccessRequest = async (
           aggregate.requesterActorId
         ),
         eq(schema.accessRequests.targetSurface, aggregate.targetSurface),
-        sql`${schema.accessRequests.requestedScope} = ${aggregate.requestedScope}`,
+        eq(schema.accessRequests.requestedScope, [...aggregate.requestedScope]),
+        sql`${schema.accessRequests.projectId} is not distinct from ${aggregate.projectId ?? null}`,
+        sql`${schema.accessRequests.subjectActorId} is not distinct from ${aggregate.subjectActorId ?? null}`,
+        sql`${schema.accessRequests.resourceType} is not distinct from ${aggregate.resourceType ?? null}`,
+        sql`${schema.accessRequests.resourceId} is not distinct from ${aggregate.resourceId ?? null}`,
+        sql`${schema.accessRequests.requestedLevel} is not distinct from ${aggregate.requestedLevel ?? null}`,
+        sql`${schema.accessRequests.credentialRefId} is not distinct from ${aggregate.credentialRefId ?? null}`,
         eq(schema.accessRequests.version, mutation.expectedPersistedVersion)
       )
     )
@@ -1517,6 +1577,22 @@ const projectMembershipActorIsCompatible = async (
   return actor.type === 'agent'
     ? roles.length === 1 && roles[0] === 'agent'
     : actor.type === 'human' && !roles.includes('agent');
+};
+
+/** Queue provider revocation without discarding the opaque principal binding needed by the adapter. */
+const markEnvironmentAccessRevoked = async (
+  tx: Transaction,
+  scope: SQL,
+  changedAt = new Date()
+): Promise<void> => {
+  await tx.update(schema.resourceAccessGrants).set({
+    desiredLevel: 'none', approvalRequestId: null, expiresAt: null,
+    observedProvider: null, observedExternalResourceRef: null, observedLevel: null, observedAt: null,
+    version: sql`${schema.resourceAccessGrants.version} + 1`, updatedAt: changedAt
+  }).where(and(eq(schema.resourceAccessGrants.resourceType, 'environment'), scope,
+    or(eq(schema.resourceAccessGrants.desiredLevel, 'write'),
+      sql`${schema.resourceAccessGrants.observedLevel} is not null and
+        ${schema.resourceAccessGrants.observedLevel} <> 'none'`)));
 };
 
 const persistProjectMembership = async (
@@ -1558,6 +1634,14 @@ const persistProjectMembership = async (
     eq(schema.projectMemberships.actorId, aggregate.actorId),
     eq(schema.projectMemberships.version, mutation.expectedPersistedVersion)
   )).returning({version: schema.projectMemberships.version});
+  const remainsEnvironmentEligible = aggregate.active &&
+    (aggregate.roles.includes('contributor') ||
+      aggregate.roles.length === 1 && aggregate.roles[0] === 'agent');
+  if (row !== undefined && !remainsEnvironmentEligible) await markEnvironmentAccessRevoked(
+    tx,
+    and(eq(schema.resourceAccessGrants.projectId, aggregate.projectId),
+      eq(schema.resourceAccessGrants.actorId, aggregate.actorId))!
+  );
   return row === undefined
     ? conflictOrNotFound(tx, workspaceId, mutation)
     : {
@@ -1689,15 +1773,122 @@ const persistResourceAccessGrant = async (
   if (!await accessSubjectIsScoped(
     tx, workspaceId, aggregate.projectId, aggregate.actorId
   )) return {status: 'not_found'};
-  const [membership] = await tx.select({id: schema.projectMemberships.id})
-    .from(schema.projectMemberships)
-    .where(and(
-      eq(schema.projectMemberships.projectId, aggregate.projectId),
-      eq(schema.projectMemberships.actorId, aggregate.actorId),
-      eq(schema.projectMemberships.active, true)
-    ));
-  if (membership === undefined) return {status: 'not_found'};
-  const observation = aggregate.providerObservation;
+  let environmentKind: 'development' | 'production' | null = null;
+  if (aggregate.resourceType === 'environment') {
+    const [environment] = await tx.select({kind: schema.projectEnvironments.kind, enabled: schema.projectEnvironments.enabled})
+      .from(schema.projectEnvironments)
+      .innerJoin(schema.projects, eq(schema.projects.id, schema.projectEnvironments.projectId))
+      .where(and(eq(schema.projectEnvironments.id, aggregate.resourceId),
+        eq(schema.projectEnvironments.projectId, aggregate.projectId),
+        eq(schema.projects.workspaceId, workspaceId))).limit(1);
+    if (environment === undefined) return {status: 'not_found'};
+    environmentKind = environment.kind;
+    if (aggregate.desiredLevel === 'none') {
+      if (aggregate.approvalRequestId != null || aggregate.expiresAt != null) {
+        return {status: 'not_found'};
+      }
+      if (aggregate.credentialRefId != null) {
+        const [credential] = await tx.select({id: schema.secretRefs.id}).from(schema.secretRefs).where(and(
+          eq(schema.secretRefs.id, aggregate.credentialRefId), eq(schema.secretRefs.workspaceId, workspaceId),
+          sql`${schema.secretRefs.scope} @> ARRAY['ssh:principal']::text[]`
+        )).limit(1);
+        if (credential === undefined) return {status: 'not_found'};
+      }
+    } else {
+      if (aggregate.desiredLevel !== 'write' || aggregate.credentialRefId == null ||
+        aggregate.expiresAt == null || !environment.enabled ||
+        new Date(aggregate.expiresAt).getTime() <= Date.now()) return {status: 'not_found'};
+      const maximumDays = environment.kind === 'production' ? 30 : 90;
+      if (new Date(aggregate.expiresAt).getTime() > Date.now() + maximumDays * 24 * 60 * 60 * 1000) {
+        return {status: 'not_found'};
+      }
+      const [credential] = await tx.select({id: schema.secretRefs.id}).from(schema.secretRefs).where(and(
+        eq(schema.secretRefs.id, aggregate.credentialRefId), eq(schema.secretRefs.workspaceId, workspaceId),
+        sql`${schema.secretRefs.scope} @> ARRAY['ssh:principal']::text[]`
+      )).limit(1);
+      if (credential === undefined) return {status: 'not_found'};
+      if (environment.kind === 'production') {
+        if (aggregate.approvalRequestId == null) return {status: 'not_found'};
+        const [approval] = await tx.select({id: schema.accessRequests.id})
+          .from(schema.accessRequests).where(and(
+            eq(schema.accessRequests.id, aggregate.approvalRequestId),
+            eq(schema.accessRequests.workspaceId, workspaceId),
+            eq(schema.accessRequests.projectId, aggregate.projectId),
+            eq(schema.accessRequests.subjectActorId, aggregate.actorId),
+            eq(schema.accessRequests.resourceType, 'environment'),
+            eq(schema.accessRequests.resourceId, aggregate.resourceId),
+            eq(schema.accessRequests.requestedLevel, 'write'),
+            eq(schema.accessRequests.credentialRefId, aggregate.credentialRefId),
+            eq(schema.accessRequests.status, 'granted'),
+            eq(schema.accessRequests.expiresAt, new Date(aggregate.expiresAt))
+          )).limit(1);
+        if (approval === undefined) return {status: 'not_found'};
+      } else if (aggregate.approvalRequestId != null) return {status: 'not_found'};
+    }
+  }
+  if (aggregate.resourceType !== 'environment' || aggregate.desiredLevel === 'write') {
+    const [membership] = await tx.select({id: schema.projectMemberships.id})
+      .from(schema.projectMemberships)
+      .where(and(
+        eq(schema.projectMemberships.projectId, aggregate.projectId),
+        eq(schema.projectMemberships.actorId, aggregate.actorId),
+        eq(schema.projectMemberships.active, true)
+      ));
+    if (membership === undefined) return {status: 'not_found'};
+  }
+  if (aggregate.resourceType === 'environment' && aggregate.desiredLevel === 'write') {
+    const [eligible] = await tx.select({
+      type: schema.actors.type, roles: schema.projectMemberships.roles,
+      profileEnabled: schema.agentProfiles.enabled, registrationEnabled: schema.runtimeRegistrations.enabled
+    }).from(schema.actors)
+      .innerJoin(schema.projectMemberships, and(
+        eq(schema.projectMemberships.projectId, aggregate.projectId),
+        eq(schema.projectMemberships.actorId, schema.actors.id),
+        eq(schema.projectMemberships.active, true)
+      ))
+      .leftJoin(schema.agentProfiles, eq(schema.agentProfiles.actorId, schema.actors.id))
+      .leftJoin(schema.runtimeRegistrations, and(
+        eq(schema.runtimeRegistrations.actorId, schema.actors.id),
+        eq(schema.runtimeRegistrations.projectId, aggregate.projectId)
+      ))
+      .where(and(eq(schema.actors.id, aggregate.actorId), eq(schema.actors.workspaceId, workspaceId),
+        isNull(schema.actors.disabledAt))).limit(1);
+    const allowed = eligible !== undefined && (eligible.type === 'human'
+      ? eligible.roles.includes('contributor')
+      : eligible.type === 'agent' && eligible.roles.length === 1 && eligible.roles[0] === 'agent' &&
+        eligible.profileEnabled === true && eligible.registrationEnabled === true);
+    if (!allowed || (environmentKind === 'production' && eligible?.type !== 'human')) {
+      return {status: 'not_found'};
+    }
+  }
+  const [persisted] = mutation.expectedPersistedVersion === null ? [] : await tx.select({
+    desiredLevel: schema.resourceAccessGrants.desiredLevel,
+    credentialRefId: schema.resourceAccessGrants.credentialRefId,
+    approvalRequestId: schema.resourceAccessGrants.approvalRequestId,
+    expiresAt: schema.resourceAccessGrants.expiresAt
+  }).from(schema.resourceAccessGrants).where(and(
+    eq(schema.resourceAccessGrants.id, aggregate.id),
+    eq(schema.resourceAccessGrants.projectId, aggregate.projectId),
+    eq(schema.resourceAccessGrants.actorId, aggregate.actorId),
+    eq(schema.resourceAccessGrants.resourceType, aggregate.resourceType),
+    eq(schema.resourceAccessGrants.resourceId, aggregate.resourceId),
+    eq(schema.resourceAccessGrants.version, mutation.expectedPersistedVersion!)
+  )).limit(1);
+  const exactBindingUnchanged = persisted !== undefined &&
+    persisted.desiredLevel === aggregate.desiredLevel &&
+    persisted.credentialRefId === (aggregate.credentialRefId ?? null) &&
+    persisted.approvalRequestId === (aggregate.approvalRequestId ?? null) &&
+    (persisted.expiresAt?.toISOString() ?? null) === (aggregate.expiresAt ?? null);
+  const confirmedRevocationCleanup = aggregate.resourceType === 'environment' &&
+    persisted?.desiredLevel === 'none' && aggregate.desiredLevel === 'none' &&
+    persisted.credentialRefId !== null && aggregate.credentialRefId === null &&
+    persisted.approvalRequestId === null && aggregate.approvalRequestId == null &&
+    persisted.expiresAt === null && aggregate.expiresAt == null &&
+    aggregate.providerObservation?.confirmedLevel === 'none';
+  const observation = aggregate.resourceType === 'environment' &&
+    !exactBindingUnchanged && !confirmedRevocationCleanup
+    ? null
+    : aggregate.providerObservation;
   if (mutation.expectedPersistedVersion === null) {
     const [row] = await tx.insert(schema.resourceAccessGrants).values({
       id: aggregate.id,
@@ -1706,6 +1897,9 @@ const persistResourceAccessGrant = async (
       resourceType: aggregate.resourceType,
       resourceId: aggregate.resourceId,
       desiredLevel: aggregate.desiredLevel,
+      credentialRefId: aggregate.credentialRefId ?? null,
+      approvalRequestId: aggregate.approvalRequestId ?? null,
+      expiresAt: aggregate.expiresAt == null ? null : new Date(aggregate.expiresAt),
       observedProvider: observation?.provider ?? null,
       observedExternalResourceRef: observation?.externalResourceRef ?? null,
       observedLevel: observation?.confirmedLevel ?? null,
@@ -1722,6 +1916,9 @@ const persistResourceAccessGrant = async (
   }
   const [row] = await tx.update(schema.resourceAccessGrants).set({
     desiredLevel: aggregate.desiredLevel,
+    credentialRefId: aggregate.credentialRefId ?? null,
+    approvalRequestId: aggregate.approvalRequestId ?? null,
+    expiresAt: aggregate.expiresAt == null ? null : new Date(aggregate.expiresAt),
     observedProvider: observation?.provider ?? null,
     observedExternalResourceRef: observation?.externalResourceRef ?? null,
     observedLevel: observation?.confirmedLevel ?? null,
@@ -1746,6 +1943,95 @@ const persistResourceAccessGrant = async (
         },
         projectId: aggregate.projectId
       };
+};
+
+const persistProjectEnvironment = async (
+  tx: Transaction,
+  workspaceId: string,
+  mutation: Extract<CanonicalMutation, {aggregateType: 'project_environment'}>
+): Promise<PersistedAggregate | PersistenceFailure> => {
+  const aggregate = mutation.aggregate;
+  const [scope] = await tx.select({projectId: schema.projects.id})
+    .from(schema.projects)
+    .innerJoin(schema.secretRefs, and(
+      eq(schema.secretRefs.id, aggregate.adapterCredentialRefId),
+      eq(schema.secretRefs.workspaceId, workspaceId),
+      sql`${schema.secretRefs.scope} @> ARRAY['environment_access:admin']::text[]`
+    ))
+    .innerJoin(schema.actors, and(
+      eq(schema.actors.id, aggregate.reconcilerActorId),
+      eq(schema.actors.workspaceId, workspaceId),
+      eq(schema.actors.type, 'system'), eq(schema.actors.authMode, 'system'),
+      isNull(schema.actors.disabledAt),
+      sql`${schema.actors.capabilities} @> '{"write:runtime_observation:development":true}'::jsonb`
+    ))
+    .where(and(eq(schema.projects.id, aggregate.projectId), eq(schema.projects.workspaceId, workspaceId)))
+    .limit(1);
+  if (scope === undefined) return {status: 'not_found'};
+  if (mutation.expectedPersistedVersion === null) {
+    const [row] = await tx.insert(schema.projectEnvironments).values({
+      id: aggregate.id, projectId: aggregate.projectId, kind: aggregate.kind,
+      provider: aggregate.provider, endpoint: aggregate.endpoint, port: aggregate.port,
+      purpose: aggregate.purpose, adapterKey: aggregate.adapterKey,
+      adapterCredentialRefId: aggregate.adapterCredentialRefId,
+      reconcilerActorId: aggregate.reconcilerActorId,
+      enabled: aggregate.enabled, version: 1
+    }).onConflictDoNothing().returning({version: schema.projectEnvironments.version});
+    return row === undefined ? conflictOrNotFound(tx, workspaceId, mutation) : {
+      status: 'persisted', cas: {expectedPersistedVersion: null, persistedVersion: row.version},
+      projectId: aggregate.projectId
+    };
+  }
+  const [current] = await tx.select({
+    provider: schema.projectEnvironments.provider, endpoint: schema.projectEnvironments.endpoint,
+    port: schema.projectEnvironments.port, adapterKey: schema.projectEnvironments.adapterKey,
+    adapterCredentialRefId: schema.projectEnvironments.adapterCredentialRefId,
+    reconcilerActorId: schema.projectEnvironments.reconcilerActorId,
+    enabled: schema.projectEnvironments.enabled
+  }).from(schema.projectEnvironments).where(and(
+    eq(schema.projectEnvironments.id, aggregate.id),
+    eq(schema.projectEnvironments.projectId, aggregate.projectId),
+    eq(schema.projectEnvironments.kind, aggregate.kind),
+    eq(schema.projectEnvironments.version, mutation.expectedPersistedVersion)
+  )).limit(1);
+  if (current === undefined) return conflictOrNotFound(tx, workspaceId, mutation);
+  const accessConfigurationChanged = current.provider !== aggregate.provider ||
+    current.endpoint !== aggregate.endpoint || current.port !== aggregate.port ||
+    current.adapterKey !== aggregate.adapterKey ||
+    current.adapterCredentialRefId !== aggregate.adapterCredentialRefId ||
+    current.reconcilerActorId !== aggregate.reconcilerActorId || current.enabled !== aggregate.enabled;
+  const [row] = await tx.update(schema.projectEnvironments).set({
+    provider: aggregate.provider, endpoint: aggregate.endpoint, port: aggregate.port,
+    purpose: aggregate.purpose, adapterKey: aggregate.adapterKey,
+    adapterCredentialRefId: aggregate.adapterCredentialRefId,
+    reconcilerActorId: aggregate.reconcilerActorId, enabled: aggregate.enabled,
+    version: sql`${schema.projectEnvironments.version} + 1`, updatedAt: new Date()
+  }).where(and(
+    eq(schema.projectEnvironments.id, aggregate.id),
+    eq(schema.projectEnvironments.projectId, aggregate.projectId),
+    eq(schema.projectEnvironments.kind, aggregate.kind),
+    eq(schema.projectEnvironments.version, mutation.expectedPersistedVersion)
+  )).returning({version: schema.projectEnvironments.version});
+  if (row !== undefined && !aggregate.enabled) await markEnvironmentAccessRevoked(
+    tx,
+    and(eq(schema.resourceAccessGrants.projectId, aggregate.projectId),
+      eq(schema.resourceAccessGrants.resourceId, aggregate.id))!
+  );
+  if (row !== undefined && accessConfigurationChanged) await tx.update(schema.resourceAccessGrants).set({
+    observedProvider: null, observedExternalResourceRef: null, observedLevel: null, observedAt: null,
+    version: sql`${schema.resourceAccessGrants.version} + 1`, updatedAt: new Date()
+  }).where(and(eq(schema.resourceAccessGrants.projectId, aggregate.projectId),
+    eq(schema.resourceAccessGrants.resourceType, 'environment'),
+    eq(schema.resourceAccessGrants.resourceId, aggregate.id),
+    or(isNotNull(schema.resourceAccessGrants.observedProvider),
+      isNotNull(schema.resourceAccessGrants.observedExternalResourceRef),
+      isNotNull(schema.resourceAccessGrants.observedLevel), isNotNull(schema.resourceAccessGrants.observedAt))));
+  return row === undefined ? conflictOrNotFound(tx, workspaceId, mutation) : {
+    status: 'persisted', cas: {
+      expectedPersistedVersion: mutation.expectedPersistedVersion,
+      persistedVersion: row.version
+    }, projectId: aggregate.projectId
+  };
 };
 
 const runtimeRegistrationSubjectIsScoped = async (
@@ -2053,6 +2339,9 @@ const persistActorRetirement = async (
   // but make every executable/project-facing projection inactive in the same
   // transaction so the manager UI can never advertise a retired agent as live.
   if (updated !== undefined) {
+    await markEnvironmentAccessRevoked(
+      tx, eq(schema.resourceAccessGrants.actorId, mutation.aggregateId), disabledAt
+    );
     await tx.update(schema.agentProfiles).set({
       enabled: false,
       updatedAt: disabledAt
@@ -2218,6 +2507,8 @@ const persistAggregate = (
       return persistActorRetirement(tx, workspaceId, mutation);
     case 'resource_access_grant':
       return persistResourceAccessGrant(tx, workspaceId, mutation);
+    case 'project_environment':
+      return persistProjectEnvironment(tx, workspaceId, mutation);
     case 'runtime_registration':
       return persistRuntimeRegistration(tx, workspaceId, mutation);
     case 'runtime_availability_observation':
@@ -2645,6 +2936,15 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
               requesterActorId: schema.accessRequests.requesterActorId,
               targetSurface: schema.accessRequests.targetSurface,
               requestedScope: schema.accessRequests.requestedScope,
+              projectId: schema.accessRequests.projectId,
+              subjectActorId: schema.accessRequests.subjectActorId,
+              resourceType: schema.accessRequests.resourceType,
+              resourceId: schema.accessRequests.resourceId,
+              requestedLevel: schema.accessRequests.requestedLevel,
+              credentialRefId: schema.accessRequests.credentialRefId,
+              expiresAt: schema.accessRequests.expiresAt,
+              decidedByActorId: schema.accessRequests.decidedByActorId,
+              decidedAt: schema.accessRequests.decidedAt,
               status: schema.accessRequests.status,
               version: schema.accessRequests.version
             })
@@ -2655,6 +2955,8 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             ));
           return row === undefined ? null : {
             ...row,
+            expiresAt: row.expiresAt?.toISOString() ?? null,
+            decidedAt: row.decidedAt?.toISOString() ?? null,
             targetSurface: row.targetSurface as AccessRequest['targetSurface'],
             status: row.status as AccessRequest['status']
           };
@@ -2734,6 +3036,9 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             resourceType: schema.resourceAccessGrants.resourceType,
             resourceId: schema.resourceAccessGrants.resourceId,
             desiredLevel: schema.resourceAccessGrants.desiredLevel,
+            credentialRefId: schema.resourceAccessGrants.credentialRefId,
+            approvalRequestId: schema.resourceAccessGrants.approvalRequestId,
+            expiresAt: schema.resourceAccessGrants.expiresAt,
             observedProvider: schema.resourceAccessGrants.observedProvider,
             observedExternalResourceRef:
               schema.resourceAccessGrants.observedExternalResourceRef,
@@ -2755,6 +3060,9 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
             resourceType: row.resourceType,
             resourceId: row.resourceId,
             desiredLevel: row.desiredLevel,
+            credentialRefId: row.credentialRefId,
+            approvalRequestId: row.approvalRequestId,
+            expiresAt: row.expiresAt?.toISOString() ?? null,
             providerObservation: row.observedProvider === null
               ? null
               : {
@@ -2764,6 +3072,119 @@ export const createPostgresUnitOfWork = (db: Database): UnitOfWork => ({
                   observedAt: row.observedAt!.toISOString()
                 },
             version: row.version
+          };
+        },
+
+        async loadProjectEnvironment(token, environmentId) {
+          const state = requireClaim(token);
+          if (!isUuid(environmentId)) return null;
+          const [row] = await tx.select({
+            id: schema.projectEnvironments.id, projectId: schema.projectEnvironments.projectId,
+            kind: schema.projectEnvironments.kind, provider: schema.projectEnvironments.provider,
+            endpoint: schema.projectEnvironments.endpoint, port: schema.projectEnvironments.port,
+            purpose: schema.projectEnvironments.purpose, adapterKey: schema.projectEnvironments.adapterKey,
+            adapterCredentialRefId: schema.projectEnvironments.adapterCredentialRefId,
+            reconcilerActorId: schema.projectEnvironments.reconcilerActorId,
+            enabled: schema.projectEnvironments.enabled, version: schema.projectEnvironments.version
+          }).from(schema.projectEnvironments)
+            .innerJoin(schema.projects, eq(schema.projects.id, schema.projectEnvironments.projectId))
+            .where(and(eq(schema.projectEnvironments.id, environmentId),
+              eq(schema.projects.workspaceId, state.claim.workspaceId)));
+          return row ?? null;
+        },
+
+        async loadProjectEnvironmentContext(token, input) {
+          const state = requireClaim(token);
+          if (!isUuid(input.projectId) || !isUuid(input.adapterCredentialRefId) ||
+            !isUuid(input.reconcilerActorId)) return null;
+          const [[project], [credential], [reconciler]] = await Promise.all([
+            tx.select({id: schema.projects.id}).from(schema.projects).where(and(
+              eq(schema.projects.id, input.projectId), eq(schema.projects.workspaceId, state.claim.workspaceId)
+            )).limit(1),
+            tx.select({id: schema.secretRefs.id}).from(schema.secretRefs).where(and(
+              eq(schema.secretRefs.id, input.adapterCredentialRefId),
+              eq(schema.secretRefs.workspaceId, state.claim.workspaceId),
+              sql`${schema.secretRefs.scope} @> ARRAY['environment_access:admin']::text[]`
+            )).limit(1),
+            tx.select({id: schema.actors.id}).from(schema.actors).where(and(
+              eq(schema.actors.id, input.reconcilerActorId),
+              eq(schema.actors.workspaceId, state.claim.workspaceId),
+              eq(schema.actors.type, 'system'), eq(schema.actors.authMode, 'system'),
+              isNull(schema.actors.disabledAt),
+              sql`${schema.actors.capabilities} @> '{"write:runtime_observation:development":true}'::jsonb`
+            )).limit(1)
+          ]);
+          return {projectExists: project !== undefined, credentialRefValid: credential !== undefined,
+            reconcilerActorValid: reconciler !== undefined};
+        },
+
+        async loadEnvironmentAccessContext(token, input) {
+          const state = requireClaim(token);
+          if (![input.projectId, input.subjectActorId, input.environmentId, input.credentialRefId]
+            .every(isUuid) || (input.approvalRequestId !== null && !isUuid(input.approvalRequestId))) return null;
+          const [environment] = await tx.select({
+            kind: schema.projectEnvironments.kind, enabled: schema.projectEnvironments.enabled
+          }).from(schema.projectEnvironments)
+            .innerJoin(schema.projects, eq(schema.projects.id, schema.projectEnvironments.projectId))
+            .where(and(eq(schema.projectEnvironments.id, input.environmentId),
+              eq(schema.projectEnvironments.projectId, input.projectId),
+              eq(schema.projects.workspaceId, state.claim.workspaceId))).limit(1);
+          if (environment === undefined) return null;
+          const [[subject], [credential], approvalRows] = await Promise.all([
+            tx.select({
+              type: schema.actors.type, roles: schema.projectMemberships.roles,
+              profileEnabled: schema.agentProfiles.enabled,
+              registrationEnabled: schema.runtimeRegistrations.enabled
+            }).from(schema.actors)
+              .innerJoin(schema.projectMemberships, and(
+                eq(schema.projectMemberships.actorId, schema.actors.id),
+                eq(schema.projectMemberships.projectId, input.projectId),
+                eq(schema.projectMemberships.active, true)
+              ))
+              .leftJoin(schema.agentProfiles, eq(schema.agentProfiles.actorId, schema.actors.id))
+              .leftJoin(schema.runtimeRegistrations, and(
+                eq(schema.runtimeRegistrations.actorId, schema.actors.id),
+                eq(schema.runtimeRegistrations.projectId, input.projectId)
+              ))
+              .where(and(eq(schema.actors.id, input.subjectActorId),
+                eq(schema.actors.workspaceId, state.claim.workspaceId), isNull(schema.actors.disabledAt)))
+              .limit(1),
+            tx.select({id: schema.secretRefs.id}).from(schema.secretRefs).where(and(
+              eq(schema.secretRefs.id, input.credentialRefId),
+              eq(schema.secretRefs.workspaceId, state.claim.workspaceId),
+              sql`${schema.secretRefs.scope} @> ARRAY['ssh:principal']::text[]`
+            )).limit(1),
+            input.approvalRequestId === null ? Promise.resolve([]) : tx.select({
+              id: schema.accessRequests.id, workspaceId: schema.accessRequests.workspaceId,
+              requesterActorId: schema.accessRequests.requesterActorId,
+              targetSurface: schema.accessRequests.targetSurface, requestedScope: schema.accessRequests.requestedScope,
+              projectId: schema.accessRequests.projectId, subjectActorId: schema.accessRequests.subjectActorId,
+              resourceType: schema.accessRequests.resourceType, resourceId: schema.accessRequests.resourceId,
+              requestedLevel: schema.accessRequests.requestedLevel, credentialRefId: schema.accessRequests.credentialRefId,
+              expiresAt: schema.accessRequests.expiresAt, status: schema.accessRequests.status,
+              decidedByActorId: schema.accessRequests.decidedByActorId,
+              decidedAt: schema.accessRequests.decidedAt,
+              version: schema.accessRequests.version
+            }).from(schema.accessRequests).where(and(
+              eq(schema.accessRequests.id, input.approvalRequestId),
+              eq(schema.accessRequests.workspaceId, state.claim.workspaceId)
+            )).limit(1)
+          ]);
+          const subjectEligible = subject !== undefined && (subject.type === 'human'
+            ? subject.roles.includes('contributor')
+            : subject.type === 'agent' && subject.roles.length === 1 && subject.roles[0] === 'agent' &&
+              subject.profileEnabled === true && subject.registrationEnabled === true);
+          const approval = approvalRows[0];
+          return {
+            environmentKind: environment.kind, environmentEnabled: environment.enabled,
+            subjectType: subject?.type === 'human' || subject?.type === 'agent' ? subject.type : null,
+            subjectEligible, credentialRefValid: credential !== undefined,
+            approval: approval === undefined ? null : {
+              ...approval, targetSurface: approval.targetSurface as AccessRequest['targetSurface'],
+              status: approval.status as AccessRequest['status'],
+              expiresAt: approval.expiresAt?.toISOString() ?? null,
+              decidedAt: approval.decidedAt?.toISOString() ?? null
+            }
           };
         },
 

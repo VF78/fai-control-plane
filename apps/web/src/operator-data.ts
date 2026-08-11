@@ -43,6 +43,7 @@ import {
   projectPlanVersions,
   projectExecutionDispatches,
   projectExecutions,
+  projectEnvironments,
   projectSourceArtifacts,
   resourceAccessGrants,
   runtimeAvailabilityObservations,
@@ -1695,9 +1696,11 @@ export type AccessData = Readonly<{
     previous: Readonly<{id: string; version: number; instructions: string; createdAt: Date; rollbackOfVersionId: string | null}> | null;
   }>[];
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
+  environmentReconcilers?: readonly Readonly<{id: string; displayName: string}>[];
   memberships: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; roles: readonly string[]; active: boolean; version: number; canManage: boolean}>[];
   externalIdentities: readonly Readonly<{actorId: string; provider: string; active: boolean}>[];
-  resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; desiredLevel: string; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; observationState: 'confirmed' | 'unobserved' | 'unsupported'; remediation: string | null; providerAccessUrl: string | null; version: number}>[];
+  resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; resourceId: string; desiredLevel: string; credentialConfigured: boolean; approvalRequestId: string | null; expiresAt: Date | null; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; observationState: 'confirmed' | 'unobserved' | 'unsupported'; remediation: string | null; providerAccessUrl: string | null; version: number}>[];
+  environments: readonly Readonly<{id: string; projectId: string; kind: 'development' | 'production'; provider: string; endpoint: string; port: number; purpose: string; adapterKey: string; adapterConfigured: boolean; reconcilerActorId: string; reconcilerName: string; enabled: boolean; version: number}>[];
   agentSystems: readonly Readonly<{
     actorId: string;
     profiles: readonly Readonly<{
@@ -1750,7 +1753,7 @@ export type AccessData = Readonly<{
       }>;
     }>[];
   }>[];
-  requests: readonly Readonly<{id: string; requester: string; targetSurface: string; requestedScope: readonly string[]; status: string; expiresAt: Date | null; decidedAt: Date | null}>[];
+  requests: readonly Readonly<{id: string; requester: string; targetSurface: string; requestedScope: readonly string[]; status: string; projectId: string | null; subjectActorId: string | null; resourceId: string | null; requestedLevel: string | null; expiresAt: Date | null; decidedAt: Date | null; version: number}>[];
   secretRefs: readonly Readonly<{id: string; provider: string; scope: readonly string[]; lastRotatedAt: Date | null}>[];
   policy: readonly Readonly<{actorType: string; allow: number; ask: number; deny: number}>[];
   sharing: Readonly<{
@@ -1897,6 +1900,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       memberships: [],
       externalIdentities: [],
       resourceGrants: [],
+      environments: [],
       agentSystems: [],
       requests: [],
       secretRefs: [],
@@ -1905,10 +1909,10 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     };
   }
   const projectIds = configuredProjects.map(({id}) => id);
-  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, availabilityObservations, recoveryPolicies, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants, accessBindings] = await Promise.all([
+  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, availabilityObservations, recoveryPolicies, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants, persistedEnvironments, accessBindings] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
-    db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt})
+    db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, projectId: accessRequests.projectId, subjectActorId: accessRequests.subjectActorId, resourceId: accessRequests.resourceId, requestedLevel: accessRequests.requestedLevel, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt, version: accessRequests.version})
       .from(accessRequests).leftJoin(actors, eq(accessRequests.requesterActorId, actors.id)).where(inArray(accessRequests.workspaceId, workspaceIds)).orderBy(desc(accessRequests.updatedAt), accessRequests.id),
     db.select({id: secretRefs.id, provider: secretRefs.provider, scope: secretRefs.scope, lastRotatedAt: secretRefs.lastRotatedAt})
       .from(secretRefs).where(inArray(secretRefs.workspaceId, workspaceIds)).orderBy(secretRefs.provider, secretRefs.id),
@@ -2001,9 +2005,17 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       .from(actorExternalIdentities).innerJoin(actors, eq(actors.id, actorExternalIdentities.actorId))
       .where(inArray(actors.workspaceId, workspaceIds))
       .orderBy(actorExternalIdentities.actorId, actorExternalIdentities.provider),
-    db.select({id: resourceAccessGrants.id, projectId: resourceAccessGrants.projectId, actorId: resourceAccessGrants.actorId, resourceType: resourceAccessGrants.resourceType, desiredLevel: resourceAccessGrants.desiredLevel, observedProvider: resourceAccessGrants.observedProvider, observedExternalResourceRef: resourceAccessGrants.observedExternalResourceRef, observedLevel: resourceAccessGrants.observedLevel, observedAt: resourceAccessGrants.observedAt, version: resourceAccessGrants.version})
+    db.select({id: resourceAccessGrants.id, projectId: resourceAccessGrants.projectId, actorId: resourceAccessGrants.actorId, resourceType: resourceAccessGrants.resourceType, resourceId: resourceAccessGrants.resourceId, desiredLevel: resourceAccessGrants.desiredLevel, credentialRefId: resourceAccessGrants.credentialRefId, approvalRequestId: resourceAccessGrants.approvalRequestId, expiresAt: resourceAccessGrants.expiresAt, observedProvider: resourceAccessGrants.observedProvider, observedExternalResourceRef: resourceAccessGrants.observedExternalResourceRef, observedLevel: resourceAccessGrants.observedLevel, observedAt: resourceAccessGrants.observedAt, version: resourceAccessGrants.version})
       .from(resourceAccessGrants).where(inArray(resourceAccessGrants.projectId, projectIds))
       .orderBy(resourceAccessGrants.projectId, resourceAccessGrants.actorId, resourceAccessGrants.resourceType),
+    db.select({id: projectEnvironments.id, projectId: projectEnvironments.projectId,
+      kind: projectEnvironments.kind, provider: projectEnvironments.provider,
+      endpoint: projectEnvironments.endpoint, port: projectEnvironments.port,
+      purpose: projectEnvironments.purpose, adapterKey: projectEnvironments.adapterKey,
+      reconcilerActorId: projectEnvironments.reconcilerActorId,
+      enabled: projectEnvironments.enabled, version: projectEnvironments.version})
+      .from(projectEnvironments).where(inArray(projectEnvironments.projectId, projectIds))
+      .orderBy(projectEnvironments.projectId, projectEnvironments.kind),
     db.select({projectId: projectTrackerRepositoryScopes.projectId})
       .from(projectTrackerRepositoryScopes)
       .innerJoin(trackerBindings, and(
@@ -2200,6 +2212,9 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       previous: workspaceInstructionHistory.get(workspaceId)?.[1] ?? null
     })),
     actors: persistedActors,
+    environmentReconcilers: persistedActors.flatMap((actor) => actor.type === 'system' &&
+      actor.disabledAt === null && actor.capabilities['write:runtime_observation:development'] === true
+      ? [{id: actor.id, displayName: actor.displayName}] : []),
     memberships: memberships.flatMap((membership) => {
       const project = projectById.get(membership.projectId);
       return project === undefined ? [] : [{
@@ -2214,7 +2229,9 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     externalIdentities,
     resourceGrants: resourceGrants.flatMap((grant) => {
       const project = projectById.get(grant.projectId);
-      const confirmed = grant.observedProvider !== null && grant.observedLevel !== null && grant.observedAt !== null;
+      const {credentialRefId, ...publicGrant} = grant;
+      const confirmed = grant.observedProvider !== null && grant.observedLevel === grant.desiredLevel &&
+        grant.observedAt !== null;
       const observationState = confirmed
         ? 'confirmed' as const
         : grant.resourceType === 'tracker' && githubProjectV2ProjectIds.has(grant.projectId)
@@ -2224,9 +2241,12 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
         ? null
         : observationState === 'unsupported'
           ? 'GitHub Project V2 не поддерживает проверку прав участников через этот адаптер. Проверьте доступ в GitHub.'
-          : 'Факт провайдера ещё не зафиксирован. Проверьте привязку ресурса и дождитесь синхронизации.';
+          : grant.resourceType === 'environment' && grant.desiredLevel === 'none'
+            ? 'Отзыв SSH-доступа ожидает подтверждения доверенного reconciler.'
+            : 'Факт провайдера ещё не зафиксирован. Проверьте привязку ресурса и дождитесь синхронизации.';
       return project === undefined ? [] : [{
-        ...grant,
+        ...publicGrant,
+        credentialConfigured: credentialRefId !== null,
         project: project.name,
         projectSlug: project.slug,
         observationState,
@@ -2238,6 +2258,12 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
           : safeExternalUrlValue(grant.observedExternalResourceRef)
       }];
     }),
+    environments: persistedEnvironments.map((environment) => ({
+      ...environment,
+      reconcilerName: persistedActors.find((actor) => actor.id === environment.reconcilerActorId)?.displayName ?? 'Не найден',
+      adapterConfigured: process.env.ENVIRONMENT_ACCESS_RECONCILER_ENABLED === 'true' &&
+        process.env.ENVIRONMENT_ACCESS_ADAPTER_KEY === environment.adapterKey
+    })),
     agentSystems,
     requests: requests.map((request) => ({...request, requester: request.requester ?? 'No recorded requester'})),
     secretRefs: persistedSecretRefs,

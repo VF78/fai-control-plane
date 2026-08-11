@@ -597,3 +597,27 @@ code { color: #4f5a4f; }
   .fcp-orchestrator-actions button { justify-content: center; width: 100%; }
   .fcp-decision-queue article { grid-template-columns: minmax(0, 1fr); gap: 5px; }
 }
+
+.fcp-environments { padding: 20px 24px 0; }
+.fcp-environments > div:last-child { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.fcp-environment-card { min-width: 0; border: 1px solid var(--fcp-rule); border-radius: 8px; background: #fff; padding: 16px; }
+.fcp-environment-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.fcp-environment-card > header > div { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.fcp-environment-card header small, .fcp-environment-principal small { display: block; color: var(--fcp-muted); margin-top: 2px; }
+.fcp-environment-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 14px 0; }
+.fcp-environment-card dt { color: var(--fcp-muted); font-size: 12px; }
+.fcp-environment-card dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.fcp-environment-card > section { border-top: 1px solid var(--fcp-rule); margin-top: 14px; padding-top: 14px; }
+.fcp-environment-card h3 { font-size: 14px; margin: 0 0 10px; }
+.fcp-environment-principal { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(220px, auto) auto; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--fcp-rule); }
+.fcp-inline-form, .fcp-environment-request, .fcp-environment-request form { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.fcp-inline-form select, .fcp-inline-form input { max-width: 165px; }
+.fcp-environment-request { justify-content: space-between; border-top: 1px solid var(--fcp-rule); padding: 10px 0; font-size: 13px; }
+@media (max-width: 760px) {
+  .fcp-environments { padding: 14px 12px 0; }
+  .fcp-environments > div:last-child { grid-template-columns: 1fr; }
+  .fcp-environment-card { padding: 14px; }
+  .fcp-environment-principal { grid-template-columns: 1fr; align-items: stretch; }
+  .fcp-inline-form select, .fcp-inline-form input { max-width: none; width: 100%; }
+  .fcp-environment-card dl { grid-template-columns: 1fr; }
+}
