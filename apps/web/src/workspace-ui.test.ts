@@ -442,8 +442,9 @@ it('keeps autonomous QA truthful and actionable only after a structured pass at 
     hasWriteCapability: true, runnerQueueAvailable: true, autonomousQaStage: true,
     autonomousQaTransportAvailable: false
   }));
-  expect(unavailable).toContain('точный Hermes transport/identity не настроен');
-  expect(unavailable).toContain('Локальный Codex runner не считается Hermes');
+  expect(unavailable).toContain('Codex CLI — исполнитель, но не заменяет Hermes-оркестратор');
+  expect(unavailable).toContain('Hermes 0.18.2 → Codex CLI');
+  expect(unavailable).toContain('Идентификация не настроена');
   expect(unavailable).not.toContain('Подготовить запуск агента');
 
   const receipt = renderToStaticMarkup(createElement(ProjectExecutionControls, {
