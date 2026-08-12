@@ -9,7 +9,7 @@ Group=fai-codex-executor
 SupplementaryGroups=fai-hermes-transport
 Environment=HOME=/var/lib/fai-codex-executor/codex-home
 EnvironmentFile=/etc/fai-codex-executor/executor.env
-ExecStart=/usr/local/lib/hermes-agent/venv/bin/python /opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@/packages/runners/runtime/codex_executor_socket.py
+ExecStart=/opt/fai-control-plane-runner/hermes-runtime/0.18.2/venv/bin/python /opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@/packages/runners/runtime/codex_executor_socket.py
 Restart=on-failure
 RestartSec=10s
 UMask=0077
@@ -28,7 +28,7 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ /usr/local/lib/hermes-agent /usr/bin/codex /usr/bin/git
+ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ /opt/fai-control-plane-runner/hermes-runtime/0.18.2 /usr/bin/codex /usr/bin/git
 ReadWritePaths=/var/lib/fai-codex-executor/repository /var/lib/fai-codex-executor/worktrees /var/lib/fai-codex-executor/artifacts /run/fai-hermes-executor /var/lib/fai-codex-executor/codex-home
 InaccessiblePaths=/etc/fai-control-plane /etc/fai-hermes-controller /var/lib/fai-hermes-controller
 

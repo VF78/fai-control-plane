@@ -212,7 +212,14 @@ class BundleTest(unittest.TestCase):
             executor,
         )
         self.assertIn("UMask=0077\n", executor)
+        runtime = "/opt/fai-control-plane-runner/hermes-runtime/0.18.2"
+        self.assertIn(f"ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ {runtime} ", controller)
+        self.assertIn(f"ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ {runtime} ", executor)
+        self.assertIn(f"ExecStart={runtime}/venv/bin/python ", executor)
+        self.assertNotIn("/root/", controller + executor)
+        self.assertNotIn("/usr/local/lib/hermes-agent", controller + executor)
         activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
+        self.assertIn("hermes_runtime=/opt/fai-control-plane-runner/hermes-runtime/0.18.2", activation)
         self.assertIn("assert_unit_path_set fai-hermes-runner.service ReadWritePaths", activation)
         self.assertIn("assert_unit_path_set fai-codex-executor.service ReadWritePaths", activation)
 

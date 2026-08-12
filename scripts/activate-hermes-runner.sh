@@ -29,12 +29,30 @@ bundle_verifier="$repo_root/scripts/hermes_runner_bundle.py"
   echo "release bundle provenance validation failed" >&2; exit 1;
 }
 
+hermes_runtime=/opt/fai-control-plane-runner/hermes-runtime/0.18.2
+hermes_python=$hermes_runtime/venv/bin/python
 for command in /usr/bin/node /usr/bin/codex /usr/bin/git /usr/bin/systemctl /usr/bin/systemd-tmpfiles \
-  /usr/bin/python3 /usr/local/bin/hermes /usr/local/lib/hermes-agent/venv/bin/python; do
+  /usr/bin/python3 "$hermes_python"; do
   [[ -x "$command" ]] || { echo "missing prerequisite: $command" >&2; exit 1; }
 done
 [[ "$(/usr/bin/codex --version)" == "codex-cli 0.144.1" ]] || { echo "Codex version mismatch" >&2; exit 1; }
-[[ "$(/usr/local/bin/hermes --version 2>/dev/null)" == *"0.18.2"* ]] || { echo "Hermes version mismatch" >&2; exit 1; }
+[[ -d "$hermes_runtime" && ! -L "$hermes_runtime" && -f "$hermes_python" && ! -L "$hermes_python" &&
+   "$(stat -c '%U:%G:%a' "$hermes_runtime")" == "root:root:555" &&
+   "$(stat -c '%U:%G:%a' "$hermes_python")" == "root:root:555" ]] || {
+  echo "dedicated Hermes runtime binding mismatch" >&2; exit 1;
+}
+[[ -z "$(find "$hermes_runtime" -xdev \( ! -user root -o -type d -perm /222 -o -type f -perm /222 \) -print -quit)" ]] || {
+  echo "dedicated Hermes runtime is not immutable" >&2; exit 1;
+}
+while IFS= read -r link; do
+  target="$(readlink -f "$link")"
+  [[ "$target" == "$hermes_runtime"/* ]] || { echo "Hermes runtime symlink escapes its root" >&2; exit 1; }
+done < <(find "$hermes_runtime" -xdev -type l -print)
+hermes_runtime_version="$("$hermes_python" -c \
+  'import importlib.metadata,platform; print(platform.python_version()+"|"+importlib.metadata.version("hermes-agent"))')"
+[[ "$hermes_runtime_version" == "3.11.15|0.18.2" ]] || {
+  echo "Hermes runtime version mismatch" >&2; exit 1;
+}
 
 transport_group=fai-hermes-transport
 controller_user=fai-hermes-controller
@@ -187,9 +205,9 @@ assert_unit_path_set fai-hermes-runner.service ReadWritePaths \
 assert_unit_path_set fai-codex-executor.service ReadWritePaths \
   "/var/lib/fai-codex-executor/repository /var/lib/fai-codex-executor/worktrees /var/lib/fai-codex-executor/artifacts /run/fai-hermes-executor /var/lib/fai-codex-executor/codex-home"
 assert_unit_path_set fai-hermes-runner.service ReadOnlyPaths \
-  "$release_root /usr/local/lib/hermes-agent /var/lib/fai-hermes-controller/hermes/config.yaml /var/lib/fai-hermes-controller/credentials"
+  "$release_root $hermes_runtime /var/lib/fai-hermes-controller/hermes/config.yaml /var/lib/fai-hermes-controller/credentials"
 assert_unit_path_set fai-codex-executor.service ReadOnlyPaths \
-  "$release_root /usr/local/lib/hermes-agent /usr/bin/codex /usr/bin/git"
+  "$release_root $hermes_runtime /usr/bin/codex /usr/bin/git"
 executor_inaccessible="$(systemctl show fai-codex-executor.service --property=InaccessiblePaths --value)"
 for path in /etc/fai-control-plane /etc/fai-hermes-controller /var/lib/fai-hermes-controller; do
   [[ " $executor_inaccessible " == *" $path "* ]] || { echo "effective executor isolation mismatch" >&2; exit 1; }
