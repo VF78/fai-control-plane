@@ -3,8 +3,9 @@
 - Status: Accepted product direction; implementation gated by issue #159
 - Date: 2026-08-12
 - Issue: #158
-- Supersedes: task/workflow/run authority portions of ADR 0002 and execution
-  architecture in ADR 0004
+- Supersedes: workflow/runner scope in ADR 0001, task/workflow/run authority in
+  ADR 0002, runner-specific product scope in ADR 0003/0005, and Control-Plane
+  execution architecture in ADR 0004
 
 ## Context
 

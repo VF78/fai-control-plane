@@ -1,10 +1,17 @@
 # ADR 0005: Telemetry, Retention, and Public Sharing
 
-- Status: Accepted
+- Status: Accepted security guidance; run/artifact product scope superseded by ADR 0006
 - Date: 2026-07-25
 - Issue: #2
 
 ## Context
+
+> Current-scope notice: data minimization, retention and sharing safeguards
+> remain mandatory wherever those capabilities are retained. References below
+> to internal runs, runner envelopes, artifact lifecycle and public sharing are
+> not launch requirements and do not authorize extending the legacy execution
+> platform. Issue #159/#162 decides whether each existing surface is kept or
+> deleted under ADR 0006.
 
 Web requests, background jobs, tracker effects, and isolated runs cross process
 boundaries and need end-to-end diagnostics. Telemetry and retained artifacts
