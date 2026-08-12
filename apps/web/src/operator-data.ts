@@ -88,6 +88,7 @@ import {
   policyMatrix,
   policySurfaces,
   validateDeliveryProtocolDefinition,
+  hashDeliveryProtocolDefinition,
   validateProjectPlanDefinition,
   hashProjectPlanSourceManifest,
   projectSourceArtifactKinds,
@@ -108,6 +109,7 @@ import {
 } from './attention-queue';
 import {runnerActivationEnabled} from './runner-activation-policy';
 import {autonomousQaTransportAvailable} from './autonomous-qa-transport';
+import {checkHermesSemanticPlannerHealth, hermesSemanticPlanningConfiguration} from './hermes-semantic-planner';
 
 export type OperatorProjectSlug = string;
 export const isOperatorProjectSlug = (value: string): value is OperatorProjectSlug =>
@@ -1071,7 +1073,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   ]);
   const setup = setups[0];
   const configuredPlannerProfileId = setup !== undefined && setup.configuration.executionMode === 'managed_agent' ? setup.configuration.agentProfileId : null;
-  const plannerEligibility = configuredPlannerProfileId === null
+  const plannerProfileEligibility = configuredPlannerProfileId === null
     ? {eligible: false, remediation: 'Hermes planning недоступен: настройте для проекта managed Hermes profile.'}
     : await (async (profileId: string) => {
       const [profile] = await db.select({id: agentProfiles.id}).from(agentProfiles)
@@ -1123,13 +1125,21 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   const protocols = protocolRows.flatMap((row): DeliveryProtocol[] => {
     if (row.state === null || row.revision === null || row.contentHash === null) return [];
     const definition = validateDeliveryProtocolDefinition(row.definition);
-    return definition.ok ? [{
+    return definition.ok && row.contentHash === hashDeliveryProtocolDefinition(definition.value) ? [{
       id: row.id, projectId: row.projectId, name: row.name, version: row.version,
       revision: row.revision, state: row.state, active: row.active,
       definition: definition.value, contentHash: row.contentHash
     }] : [];
   });
-  const protocol = protocols.find((item) => item.state === 'published' && item.active) ?? null;
+  const activePublishedProtocols = protocols.filter((item) => item.state === 'published' && item.active);
+  const protocol = activePublishedProtocols.length === 1 ? activePublishedProtocols[0]! : null;
+  const planningTransport = hermesSemanticPlanningConfiguration();
+  const planningHealth = planningTransport.configured ? await checkHermesSemanticPlannerHealth() : null;
+  const plannerEligibility = !plannerProfileEligibility.eligible ? plannerProfileEligibility
+    : protocol === null ? {eligible: false, remediation: 'Hermes planning недоступен: нужен ровно один активный опубликованный delivery protocol.'}
+      : !planningTransport.configured ? {eligible: false, remediation: planningTransport.remediation}
+        : planningHealth?.healthy !== true ? {eligible: false, remediation: planningHealth?.remediation ?? 'Hermes planning service недоступен.'}
+          : {eligible: true, remediation: 'Hermes profile, protocol и live planning service готовы.'};
   const protocolRevision = protocols.find((item) => item.state === 'draft') ??
     protocols.find((item) => item.state === 'published' && !item.active) ?? null;
   const draftRow = planDraftRows[0];

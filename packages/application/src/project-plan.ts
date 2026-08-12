@@ -15,6 +15,8 @@ import {
   type ProjectPlanMaterialization,
   type ProjectPlanSourceManifest,
   type ProjectPlanSimulation,
+  type DeliveryProtocolDefinition,
+  type ProjectMembershipRole,
   type SourceArtifact,
   type CommandResult,
   type SourceFileProvenance,
@@ -63,8 +65,29 @@ export type ProjectPlanMutationCommand = RecordSourceArtifactCommand | GenerateP
 export type SemanticProjectPlanRequest = Readonly<{
   idempotencyKey: string;
   sourceManifest: ProjectPlanSourceManifest;
+  sourceManifestHash: string;
   artifacts: readonly SourceArtifact[];
+  planningContext: SemanticProjectPlanningContext;
+  planningContextHash: string;
 }>;
+export type SemanticProjectPlanningResponsibilityCandidate =
+  | Readonly<{kind: 'human'; actorId: string; displayName: string; roles: readonly Exclude<ProjectMembershipRole, 'agent'>[]}>
+  | Readonly<{kind: 'project_role'; role: Exclude<ProjectMembershipRole, 'agent'>}>
+  | Readonly<{kind: 'agent_profile'; agentProfileId: string; displayName: string}>;
+export type SemanticProjectPlanningContext = Readonly<{
+  schemaVersion: 1;
+  projectId: string;
+  deliveryProtocol: Readonly<{
+    id: string;
+    revision: number;
+    contentHash: string;
+    stages: readonly Readonly<Pick<DeliveryProtocolDefinition['stages'][number],
+      'key' | 'name' | 'taskStatus' | 'responsibility' | 'executionMode' | 'requiredEvidence' | 'allowedNextStageKey'>>[];
+  }>;
+  responsibilityCandidates: readonly SemanticProjectPlanningResponsibilityCandidate[];
+}>;
+export const hashSemanticProjectPlanningContext = (context: SemanticProjectPlanningContext): string =>
+  createHash('sha256').update(canonicalJson(context as never)).digest('hex');
 export interface ProjectPlanSemanticPlanner {
   generate(input: SemanticProjectPlanRequest): Promise<CommandResult<ProjectPlanDefinition>>;
 }
@@ -83,7 +106,7 @@ export type ProjectPlanWorkspace = Readonly<{
 export type ProjectPlanReceipt = Readonly<{
   commandId: string;
   commandType: ProjectPlanMutationCommand['type'];
-  result: Readonly<{ok: true; value: Readonly<{artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation; materialization?: ProjectPlanMaterialization}>}> |
+  result: Readonly<{ok: true; value: Readonly<{artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation; materialization?: ProjectPlanMaterialization; semanticPlanningContextHash?: string}>}> |
     Readonly<{ok: false; error: CommandError}>;
 }>;
 export type ProjectPlanExecution =
@@ -91,7 +114,7 @@ export type ProjectPlanExecution =
   | Readonly<{status: 'key_reused' | 'rejected'; error: CommandError}>;
 
 export interface ProjectPlanStore {
-  execute(input: Readonly<{command: ProjectPlanMutationCommand; requestHash: string; authorized: boolean; policyError?: CommandError; semanticGeneration?: CommandResult<ProjectPlanDefinition>}>): Promise<
+  execute(input: Readonly<{command: ProjectPlanMutationCommand; requestHash: string; authorized: boolean; policyError?: CommandError; semanticGeneration?: CommandResult<ProjectPlanDefinition>; semanticPlanningContextHash?: string}>): Promise<
     | Readonly<{status: 'completed' | 'replayed'; receipt: ProjectPlanReceipt}>
     | Readonly<{status: 'key_reused'; existingRequestHash: string}>
   >;
@@ -121,10 +144,21 @@ const semanticCitationsMatch = (definition: ProjectPlanDefinition, artifacts: re
     return artifact.mediaType === 'application/json' && pointerExists(artifact.content, item.locator.pointer);
   });
 };
-export const validateSemanticProjectPlanDefinition = (definition: unknown, artifacts: readonly SourceArtifact[]): CommandResult<ProjectPlanDefinition> => {
+const semanticResponsibilitiesMatch = (definition: ProjectPlanDefinition, context: SemanticProjectPlanningContext) => {
+  const humans = new Set(context.responsibilityCandidates.flatMap((candidate) => candidate.kind === 'human' ? [candidate.actorId] : []));
+  const roles = new Set(context.responsibilityCandidates.flatMap((candidate) => candidate.kind === 'project_role' ? [candidate.role] : []));
+  const profiles = new Set(context.responsibilityCandidates.flatMap((candidate) => candidate.kind === 'agent_profile' ? [candidate.agentProfileId] : []));
+  return definition.tasks.every((task) => task.responsibility !== undefined && (task.responsibility.kind === 'human'
+    ? humans.has(task.responsibility.actorId)
+    : task.responsibility.kind === 'project_role'
+      ? roles.has(task.responsibility.role)
+      : profiles.has(task.responsibility.agentProfileId)));
+};
+export const validateSemanticProjectPlanDefinition = (definition: unknown, artifacts: readonly SourceArtifact[], context: SemanticProjectPlanningContext): CommandResult<ProjectPlanDefinition> => {
   const validated = validateAssignedProjectPlanDefinition(definition);
   if (!validated.ok) return validated;
-  return semanticCitationsMatch(validated.value, artifacts) ? validated : {ok: false, error: {code: 'INVALID_COMMAND', message: 'Semantic plan citations must resolve inside the exact selected corpus.'}};
+  if (!semanticCitationsMatch(validated.value, artifacts)) return {ok: false, error: {code: 'INVALID_COMMAND', message: 'Semantic plan citations must resolve inside the exact selected corpus.'}};
+  return semanticResponsibilitiesMatch(validated.value, context) ? validated : {ok: false, error: {code: 'INVALID_COMMAND', message: 'Semantic plan responsibilities must resolve inside the exact canonical planning context.'}};
 };
 const unavailableSemanticPlanner: ProjectPlanSemanticPlanner = {generate: async () => ({ok: false, error: {code: 'INVALID_TRANSITION', message: 'Hermes semantic planning is unavailable. Configure and explicitly enable its private runtime before generating a draft.'}})};
 
@@ -218,9 +252,10 @@ export const createProjectPlanService = (store: ProjectPlanStore, semanticPlanne
         let semanticGeneration: CommandResult<ProjectPlanDefinition>;
         try { semanticGeneration = await semanticPlanner.generate(preparation.value.request); }
         catch { semanticGeneration = {ok: false, error: {code: 'INVALID_TRANSITION', message: 'Hermes semantic planning is unavailable. No draft was created.'}}; }
-        if (semanticGeneration.ok) semanticGeneration = validateSemanticProjectPlanDefinition(semanticGeneration.value, preparation.value.request.artifacts);
+        if (semanticGeneration.ok) semanticGeneration = validateSemanticProjectPlanDefinition(semanticGeneration.value, preparation.value.request.artifacts, preparation.value.request.planningContext);
         const persistedCommand = semanticGeneration.ok ? command : attemptedCommand;
-        const result = await store.execute({command: persistedCommand, requestHash: requestHash(persistedCommand), authorized: true, semanticGeneration});
+        const result = await store.execute({command: persistedCommand, requestHash: requestHash(persistedCommand), authorized: true, semanticGeneration,
+          semanticPlanningContextHash: preparation.value.request.planningContextHash});
         return result.status === 'key_reused' ? rejected('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was already used for another request.') : result;
       }
       const result = await store.execute({command: attemptedCommand, requestHash: requestHash(attemptedCommand), authorized: false,

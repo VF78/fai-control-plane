@@ -128,7 +128,7 @@ it('keeps ASCON/manual-Codex drafting, simulation, and saving available when Her
     const index = markup.indexOf(label);
     return markup.slice(markup.lastIndexOf('<button', index), markup.indexOf('</button>', index));
   };
-  expect(markup).toContain('Для ручного планирования (например ASCON/manual-Codex) Hermes не нужен');
+  expect(markup).toContain('Для ручного планирования Hermes не нужен');
   expect(button('Собрать черновик через Hermes')).toContain('disabled');
   expect(button('Проверить последствия')).not.toContain('disabled');
   expect(button('Сохранить черновик')).not.toContain('disabled');

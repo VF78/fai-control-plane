@@ -18,6 +18,8 @@ describe('release evidence', () => {
     if (result.ok) expect(hashDeploymentReleasePackage(result.value)).toMatch(/^[0-9a-f]{64}$/);
     expect(validateDeploymentReleasePackage({...value, sourceCommit: 'main'}).ok).toBe(false);
     expect(validateDeploymentReleasePackage({...value, artifactReference: 'bearer redacted'}).ok).toBe(false);
+    expect(validateDeploymentReleasePackage({...value, artifactReference: 'https://example.test/release.tgz'}).ok).toBe(false);
+    expect(validateDeploymentReleasePackage({...value, artifactReference: 'artifact:release-package:../escape'}).ok).toBe(false);
   });
 
   it('accepts only exact reference-only desired facts', () => {

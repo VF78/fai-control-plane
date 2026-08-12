@@ -1,6 +1,7 @@
 import {sql} from 'drizzle-orm';
 import {NextResponse} from 'next/server';
 import {createDatabase} from '@fai-control-plane/db';
+import {checkHermesSemanticPlannerHealth, hermesSemanticPlanningConfiguration} from '../../../src/hermes-semantic-planner';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,8 +19,16 @@ export async function GET() {
 
   try {
     await db.execute(sql`select 1`);
+    const planning = hermesSemanticPlanningConfiguration();
+    const planner = planning.configured ? await checkHermesSemanticPlannerHealth() : null;
+    if (planning.configured && planner?.healthy !== true) {
+      return NextResponse.json(
+        {status: 'not_ready', service: 'web', checks: {database: 'ok', hermesPlanner: 'failed'}},
+        {status: 503, headers: {'Cache-Control': 'no-store'}}
+      );
+    }
     return NextResponse.json(
-      {status: 'ready', service: 'web', checks: {database: 'ok'}},
+      {status: 'ready', service: 'web', checks: {database: 'ok', hermesPlanner: planning.configured ? 'ok' : 'disabled'}},
       {headers: {'Cache-Control': 'no-store'}}
     );
   } catch {

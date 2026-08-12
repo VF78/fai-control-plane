@@ -81,13 +81,14 @@ export async function projectPlanCommand(request: Request, overrides: ProjectPla
         type: 'project_plan.draft.save', payload: {planId: value.planId, projectId: value.projectId, expectedRevision: value.expectedRevision as number | null, definition}});
       return mutationResponse(result);
     }
-    if (value.action === 'generate_draft' && exact(value, ['_csrf', 'action', 'projectId', 'planId', 'expectedRevision', 'sourceManifest']) &&
-      typeof value.planId === 'string' && UUID.test(value.planId) && (value.expectedRevision === null || Number.isSafeInteger(value.expectedRevision) && (value.expectedRevision as number) > 0)) {
+    if (value.action === 'generate_draft' && exact(value, ['_csrf', 'action', 'projectId', 'planId', 'attemptId', 'expectedRevision', 'sourceManifest']) &&
+      typeof value.planId === 'string' && UUID.test(value.planId) && typeof value.attemptId === 'string' && UUID.test(value.attemptId) &&
+      (value.expectedRevision === null || Number.isSafeInteger(value.expectedRevision) && (value.expectedRevision as number) > 0)) {
       const sourceManifest = parsedManifest(value.sourceManifest); if (sourceManifest === null) return invalid('invalid_source_corpus', 422);
       const stableManifest = [...sourceManifest].sort((left, right) => left.artifactId.localeCompare(right.artifactId));
       const manifestHash = hashProjectPlanSourceManifest(stableManifest);
       const result = await runtime.plan.execute({...base,
-        idempotencyKey: `project_plan.draft.generate.v1:${value.planId}:${value.expectedRevision ?? 0}:${manifestHash}`,
+        idempotencyKey: `project_plan.draft.generate.v2:${value.planId}:${value.expectedRevision ?? 0}:${manifestHash}:${value.attemptId}`,
         type: 'project_plan.draft.generate', payload: {planId: value.planId, projectId: value.projectId,
           expectedRevision: value.expectedRevision as number | null, sourceManifest: stableManifest}});
       return mutationResponse(result);

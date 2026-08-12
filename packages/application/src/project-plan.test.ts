@@ -9,6 +9,12 @@ const semanticDefinition = {
   risks: [{key: 'r1', statement: 'Interpretation risk', mitigation: 'Review citations.', evidence: {kind: 'assumption' as const, statement: 'Product Owner reviews interpretation.'}}],
   tasks: [{key: 't1', title: 'Prepare outcome', responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, outcomeKeys: ['outcome_1'], milestoneKey: 'm1', dependsOn: [], acceptanceEvidence: [{description: 'Product Owner verifies.', evidence: {kind: 'assumption' as const, statement: 'Product Owner verifies the result.'}}]}]
 };
+const planningContext = {schemaVersion: 1 as const, projectId: '20000000-0000-4000-8000-000000000004',
+  deliveryProtocol: {id: '20000000-0000-4000-8000-000000000007', revision: 1, contentHash: 'b'.repeat(64),
+    stages: [{key: 'delivery', name: 'Delivery', taskStatus: 'in_dev' as const,
+      responsibility: {kind: 'project_role' as const, role: 'contributor' as const}, executionMode: 'manual' as const,
+      requiredEvidence: ['Change'], allowedNextStageKey: null}]},
+  responsibilityCandidates: [{kind: 'project_role' as const, role: 'project_owner' as const}]};
 
 describe('project plan service', () => {
   it('passes an authenticated manager command with a stable request hash', async () => {
@@ -44,7 +50,7 @@ describe('project plan service', () => {
     const user = actor.value.issueUser('10000000-0000-4000-8000-000000000001'); if (!user.ok) throw new Error('actor');
     const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: '20000000-0000-4000-8000-000000000001', commandType: 'project_plan.draft.generate', result: {ok: true, value: {}}}});
     const artifact = {id: '20000000-0000-4000-8000-000000000006', projectId: '20000000-0000-4000-8000-000000000004', name: 'Passport', sourceKind: 'project_passport' as const, mediaType: 'text/plain' as const, content: 'Confirmed project passport', sizeBytes: 25, sha256: sourceArtifactDigest('Confirmed project passport'), sourceFile: null, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1 as const};
-    const preparation = {idempotencyKey: 'generate:1', sourceManifest: [{artifactId: artifact.id, version: 1, sha256: artifact.sha256}], artifacts: [artifact]};
+    const preparation = {idempotencyKey: 'generate:1', sourceManifest: [{artifactId: artifact.id, version: 1, sha256: artifact.sha256}], sourceManifestHash: 'd'.repeat(64), artifacts: [artifact], planningContext, planningContextHash: 'c'.repeat(64)};
     const prepareSemanticGeneration = vi.fn().mockResolvedValue({ok: true, value: {kind: 'ready', request: preparation}});
     const generate = vi.fn().mockResolvedValue({ok: false, error: {code: 'INVALID_TRANSITION', message: 'Hermes unavailable'}});
     const service = createProjectPlanService({execute, prepareSemanticGeneration, inspect: vi.fn(), simulate: vi.fn()} as unknown as ProjectPlanStore, {generate});
@@ -57,7 +63,7 @@ describe('project plan service', () => {
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({authorized: true, semanticGeneration: expect.objectContaining({ok: false}), command: expect.objectContaining({idempotencyKey: expect.stringMatching(/^project_plan\.semantic_attempt\.v1:/)} )}));
     generate.mockResolvedValueOnce({ok: true, value: semanticDefinition});
     await expect(service.execute({...command, commandId: '30000000-0000-4000-8000-000000000001', correlationId: '30000000-0000-4000-8000-000000000002'})).resolves.toMatchObject({status: 'completed'});
-    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({semanticGeneration: {ok: true, value: semanticDefinition}, command: expect.objectContaining({idempotencyKey: 'generate:1'})}));
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({semanticGeneration: {ok: true, value: semanticDefinition}, semanticPlanningContextHash: 'c'.repeat(64), command: expect.objectContaining({idempotencyKey: 'generate:1'})}));
     prepareSemanticGeneration.mockResolvedValueOnce({ok: false, error: {code: 'INVALID_TRANSITION', message: 'Dossier incomplete'}});
     await service.execute(command);
     expect(generate).toHaveBeenCalledTimes(2);
@@ -69,7 +75,7 @@ describe('project plan service', () => {
     const user = actor.value.issueUser('10000000-0000-4000-8000-000000000001'); if (!user.ok) throw new Error('actor');
     const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: '20000000-0000-4000-8000-000000000001', commandType: 'project_plan.draft.generate', result: {ok: true, value: {}}}});
     const artifact = {id: '20000000-0000-4000-8000-000000000006', projectId: '20000000-0000-4000-8000-000000000004', name: 'Passport', sourceKind: 'project_passport' as const, mediaType: 'text/plain' as const, content: 'Confirmed project passport', sizeBytes: 25, sha256: sourceArtifactDigest('Confirmed project passport'), sourceFile: null, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1 as const};
-    const preparation = {idempotencyKey: 'generate:po', sourceManifest: [{artifactId: artifact.id, version: 1, sha256: artifact.sha256}], artifacts: [artifact]};
+    const preparation = {idempotencyKey: 'generate:po', sourceManifest: [{artifactId: artifact.id, version: 1, sha256: artifact.sha256}], sourceManifestHash: 'd'.repeat(64), artifacts: [artifact], planningContext, planningContextHash: 'c'.repeat(64)};
     const prepareSemanticGeneration = vi.fn()
       .mockResolvedValueOnce({ok: false, error: {code: 'CAPABILITY_DENIED', message: 'Only Product Owner'}})
       .mockResolvedValueOnce({ok: true, value: {kind: 'ready', request: preparation}});

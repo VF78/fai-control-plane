@@ -1318,10 +1318,32 @@ const isOpaqueSecretRef = (value: unknown): value is OpaqueSecretRef =>
 
 const profileConfigHashPattern = /^[0-9a-f]{64}$/;
 const secretValuePattern =
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:^|[\s"'=])(github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|bearer\s+\S+|(?:password|token|api[_ -]?key|credential)\s*[:=]\s*\S+)/i;
+  /-----BEGIN [A-Z0-9 ]*(?:PRIVATE KEY|SECRET|CREDENTIAL)[A-Z0-9 ]*-----|\b(?:basic\s+[A-Za-z0-9+/]{12,}={0,2}|bearer\s+[A-Za-z0-9._~+\/-]{12,}=*)\b|\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,})\b|\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@|(?:^|[\s,{;"'])(?:password|passwd|pwd|token|secret|client[_ -]?secret|api[_ -]?key|private[_ -]?key|credential|authorization)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;}]{4,})/i;
+const secretMaterialKey = (key: string): boolean => {
+  const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return ['password', 'passwd', 'pwd', 'token', 'secret', 'clientsecret', 'apikey', 'privatekey',
+    'credential', 'credentials', 'authorization'].includes(normalized) ||
+    ['password', 'token', 'secret', 'apikey', 'privatekey'].some((suffix) => normalized.endsWith(suffix));
+};
+const structuredSecretMaterial = (value: unknown): boolean => {
+  if (Array.isArray(value)) return value.some(structuredSecretMaterial);
+  if (typeof value === 'string') {
+    if (secretValuePattern.test(value)) return true;
+    const trimmed = value.trim();
+    if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return false;
+    try { return structuredSecretMaterial(JSON.parse(trimmed)); } catch { return false; }
+  }
+  if (!isPlainObject(value)) return false;
+  return Object.entries(value).some(([key, nested]) => secretMaterialKey(key) || structuredSecretMaterial(nested));
+};
 
-export const containsHighConfidenceSecretContent = (value: string): boolean =>
-  secretValuePattern.test(value);
+/** Canonical server-side detector used at every outbound model boundary. */
+export const containsHighConfidenceSecretContent = (value: string): boolean => {
+  if (secretValuePattern.test(value)) return true;
+  const trimmed = value.trim();
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return false;
+  try { return structuredSecretMaterial(JSON.parse(trimmed)); } catch { return false; }
+};
 
 export const DEFAULT_AGENT_INSTRUCTIONS =
   'Act only from canonical Task Packets. Return a structured result with status, evidence, artifacts, and next action.';

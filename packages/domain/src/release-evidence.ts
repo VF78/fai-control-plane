@@ -51,6 +51,8 @@ const reference = (value: unknown, maximum = 2_048): value is string =>
   typeof value === 'string' && value.trim() === value && value.length > 0 &&
   value.length <= maximum && !/[\u0000-\u001f\u007f]/.test(value) &&
   !containsHighConfidenceSecretContent(value);
+const releasePackageReference = (value: unknown): value is string =>
+  typeof value === 'string' && /^artifact:release-package:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const timestamp = (value: unknown): value is string => {
   if (typeof value !== 'string') return false;
   try { return new Date(value).toISOString() === value; } catch { return false; }
@@ -67,7 +69,7 @@ export const validateDeploymentReleasePackage = (
     'schemaVersion', 'sourceCommit', 'artifactReference', 'artifactSha256'
   ]) || value.schemaVersion !== 1 || typeof value.sourceCommit !== 'string' ||
     !/^[0-9a-f]{40}$/.test(value.sourceCommit) ||
-    !reference(value.artifactReference, 512) || typeof value.artifactSha256 !== 'string' ||
+    !releasePackageReference(value.artifactReference) || typeof value.artifactSha256 !== 'string' ||
     !/^[0-9a-f]{64}$/.test(value.artifactSha256)) {
     return invalid('Deployment release package is not an immutable canonical binding.');
   }

@@ -224,21 +224,8 @@ const invalid = <T>(message: string): CommandResult<T> => ({
   ok: false,
   error: {code: 'INVALID_COMMAND', message}
 });
-const secretKey = (key: string) => {
-  const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
-  return ['password', 'passwd', 'token', 'secret', 'secrets', 'apikey', 'privatekey', 'credential', 'credentials', 'authorization'].includes(normalized) ||
-    ['password', 'token', 'secret', 'apikey', 'privatekey'].some((suffix) => normalized.endsWith(suffix));
-};
 const containsStructuredSecret = (value: unknown): boolean => {
-  if (typeof value === 'string') {
-    if (containsHighConfidenceSecretContent(value)) return true;
-    const trimmed = value.trim();
-    if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return false;
-    try { return containsStructuredSecret(JSON.parse(trimmed)); } catch { return false; }
-  }
-  if (Array.isArray(value)) return value.some(containsStructuredSecret);
-  if (!isObject(value)) return false;
-  return Object.entries(value).some(([key, nested]) => secretKey(key) || containsStructuredSecret(nested));
+  try { return containsHighConfidenceSecretContent(canonicalJson(value as never)); } catch { return true; }
 };
 
 const sourceFilename = (value: unknown): value is string => typeof value === 'string' &&

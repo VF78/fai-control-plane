@@ -225,6 +225,7 @@ class BundleTest(unittest.TestCase):
         root = MODULE_PATH.parents[1]
         controller = (root / "infra/production/fai-hermes-runner.service").read_text()
         executor = (root / "infra/production/fai-codex-executor.service").read_text()
+        planner = (root / "infra/production/fai-hermes-planner.service").read_text()
         self.assertIn(
             "ReadWritePaths=/var/lib/fai-hermes-controller/state "
             "/var/lib/fai-hermes-controller/hermes\n",
@@ -247,8 +248,16 @@ class BundleTest(unittest.TestCase):
         self.assertIn(f"ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ {runtime} ", controller)
         self.assertIn(f"ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ {runtime} ", executor)
         self.assertIn(f"ExecStart={runtime}/venv/bin/python ", executor)
-        self.assertNotIn("/root/", controller + executor)
-        self.assertNotIn("/usr/local/lib/hermes-agent", controller + executor)
+        self.assertIn("User=fai-hermes-planner\n", planner)
+        self.assertIn("Group=fai-hermes-planner\n", planner)
+        self.assertIn("ReadWritePaths=/run/fai-hermes-planner\n", planner)
+        self.assertIn("Environment=HOME=/var/lib/fai-hermes-planner/hermes\n", planner)
+        self.assertIn("Environment=HERMES_HOME=/var/lib/fai-hermes-planner/hermes\n", planner)
+        self.assertIn("/var/lib/fai-hermes-controller", planner)
+        self.assertIn("/var/lib/fai-codex-executor", planner)
+        self.assertIn("MemoryDenyWriteExecute=true\n", planner)
+        self.assertNotIn("/root/", controller + executor + planner)
+        self.assertNotIn("/usr/local/lib/hermes-agent", controller + executor + planner)
         activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
         self.assertIn("hermes_runtime=/opt/fai-control-plane-runner/hermes-runtime/0.18.2", activation)
         self.assertIn(
@@ -267,6 +276,73 @@ class BundleTest(unittest.TestCase):
         )
         self.assertIn("assert_unit_path_set fai-hermes-runner.service ReadWritePaths", activation)
         self.assertIn("assert_unit_path_set fai-codex-executor.service ReadWritePaths", activation)
+
+    def test_planning_bridge_is_explicitly_disabled_and_exactly_bound(self):
+        root = MODULE_PATH.parents[1]
+        planner_environment = (root / "infra/production/fai-hermes-planner.env.example").read_text()
+        production_environment = (root / "infra/production/production.env.example").read_text()
+        compose = (root / "infra/production/compose.yaml").read_text()
+        activation = MODULE_PATH.with_name("activate-hermes-planner.sh").read_text()
+        self.assertIn("FAI_HERMES_PLANNING_ENABLED=false\n", planner_environment)
+        self.assertIn("HERMES_SEMANTIC_PLANNING_ENABLED=false\n", production_environment)
+        self.assertIn("/run/fai-hermes-planner/planner.sock", planner_environment + production_environment + compose)
+        self.assertIn("HERMES_SEMANTIC_PLANNING_TOKEN_HOST_FILE", production_environment + compose)
+        self.assertIn('systemctl disable --now fai-hermes-planner.service', activation)
+        self.assertIn('systemctl enable fai-hermes-planner.service', activation)
+        self.assertIn('systemctl restart fai-hermes-planner.service', activation)
+        self.assertIn('FAI_HERMES_PLANNING_EXPECTED_CLIENT_UID', activation)
+        self.assertIn('planner_token_hash="$(credential_hash "$planner_token")"', activation)
+        self.assertIn('[[ "$planner_token_hash" != "$model_credential_hash" ]]', activation)
+        self.assertNotIn("HERMES_SEMANTIC_PLANNING_URL", production_environment + compose)
+
+    def test_planner_activation_is_atomic_and_never_mutates_unrelated_units(self):
+        activation = MODULE_PATH.with_name("activate-hermes-planner.sh").read_text()
+        runner_activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
+        self.assertIn("rollback()", activation)
+        self.assertIn("planner activation rolled back without changing controller or executor", activation)
+        self.assertIn('mv -T -- "$unit_staged" "$unit"', activation)
+        self.assertIn('mv -T -- "$tmpfiles_staged" "$tmpfiles"', activation)
+        self.assertIn("FAI_HERMES_PLANNING_RELEASE_COMMIT", (MODULE_PATH.parents[1] / "infra/production/fai-hermes-planner.service").read_text())
+        self.assertNotIn("/etc/systemd/system/fai-hermes-runner.service", activation)
+        self.assertNotIn("/etc/systemd/system/fai-codex-executor.service", activation)
+        self.assertNotRegex(activation, r"systemctl\s+(?:start|restart|enable|disable|stop)[^\n]*(?:fai-hermes-runner|fai-codex-executor)")
+        self.assertNotIn("fai-hermes-planner", runner_activation)
+        self.assertIn('"$(readlink -f "/proc/$pid/exe")" == "$hermes_python"', activation)
+        self.assertIn('--release-commit "$release_commit"', activation)
+
+    def test_planner_installs_exact_bundle_without_service_mutation(self):
+        installer = MODULE_PATH.with_name("install-hermes-release.sh").read_text()
+        activation = MODULE_PATH.with_name("activate-hermes-planner.sh").read_text()
+        self.assertIn('"$installer" "${installer_arguments[@]}"', activation)
+        self.assertIn('artifact_parent=/opt/fai-control-plane-runner/release-artifacts', installer)
+        self.assertIn('mv -T -- "$release_staged" "$release_root"', installer)
+        self.assertIn('mv -T -- "$artifact_staged" "$artifact"', installer)
+        self.assertIn('verify-install', installer)
+        self.assertNotIn("systemctl", installer)
+        self.assertNotIn("fai-hermes-runner.service", installer)
+        self.assertNotIn("fai-codex-executor.service", installer)
+
+    def test_web_deploy_activates_and_restores_only_enabled_planner_release(self):
+        deployment = MODULE_PATH.with_name("deploy-prod.sh").read_text()
+        self.assertIn('if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == \'true\' ]]; then', deployment)
+        self.assertIn('planner_previous_bundle="/opt/fai-control-plane-runner/release-artifacts/', deployment)
+        self.assertIn('"$REPO/scripts/activate-hermes-planner.sh"', deployment)
+        self.assertIn('restore_planner()', deployment)
+        self.assertIn('restore_planner\n  if ((migration_ran == 1))', deployment)
+        self.assertIn('readonly PLANNER_ACTIVATION_LOCK=\'/var/lock/fai-hermes-planner-activation.lock\'', deployment)
+        self.assertIn('readonly planner_lock=/var/lock/fai-hermes-planner-activation.lock',
+                      MODULE_PATH.with_name("activate-hermes-planner.sh").read_text())
+        self.assertEqual(deployment.count('FCP_HERMES_PLANNER_LOCK_FD=8'), 2)
+        self.assertIn('unset FCP_HERMES_PLANNER_LOCK_FD',
+                      MODULE_PATH.with_name("activate-hermes-planner.sh").read_text())
+        self.assertIn('[[ "$planner_previous_commit" == "$previous_tag" ]]', deployment)
+        self.assertIn("'prior application readiness baseline' prior_app_ready", deployment)
+        self.assertIn("'restored prior application readiness' prior_app_ready", deployment)
+        target_activation = deployment.index('--release-commit="$TARGET"')
+        web_stop = deployment.index('compose stop web worker', target_activation)
+        self.assertLess(target_activation, web_stop)
+        self.assertNotIn("activate-hermes-runner.sh", deployment)
+        self.assertNotIn("fai-codex-executor.service", deployment)
 
 
 if __name__ == "__main__":

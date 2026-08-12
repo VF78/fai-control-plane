@@ -74,17 +74,32 @@ it('accepts an exact materialization CAS payload and derives a stable replay key
 it('creates a canonical draft-generation command from an exact source manifest', async () => {
   const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: id, commandType: 'project_plan.draft.generate', result: {ok: true, value: {plan: {revision: 2}}}}});
   const manifest = [{artifactId: id, version: 1, sha256: 'a'.repeat(64)}];
-  const response = await projectPlanCommand(request({_csrf: 'csrf', action: 'generate_draft', projectId, planId: id, expectedRevision: 1, sourceManifest: manifest}), dependencies(execute));
+  const response = await projectPlanCommand(request({_csrf: 'csrf', action: 'generate_draft', projectId,
+    planId: id, attemptId: id, expectedRevision: 1, sourceManifest: manifest}), dependencies(execute));
   expect(response.status).toBe(200);
   expect(execute).toHaveBeenCalledWith(expect.objectContaining({
-    idempotencyKey: `project_plan.draft.generate.v1:${id}:1:${hashProjectPlanSourceManifest(manifest)}`,
+    idempotencyKey: `project_plan.draft.generate.v2:${id}:1:${hashProjectPlanSourceManifest(manifest)}:${id}`,
     type: 'project_plan.draft.generate', payload: {planId: id, projectId, expectedRevision: 1, sourceManifest: manifest}
   }));
 });
 
+it('gives an explicit retry a fresh canonical generation key', async () => {
+  const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: id,
+    commandType: 'project_plan.draft.generate', result: {ok: false, error: {code: 'INVALID_TRANSITION'}}}});
+  const firstAttemptId = '55555555-5555-4555-8555-555555555555';
+  const secondAttemptId = '66666666-6666-4666-8666-666666666666';
+  const payload = {_csrf: 'csrf', action: 'generate_draft', projectId, planId: id,
+    expectedRevision: null, sourceManifest: [{artifactId: id, version: 1, sha256: 'a'.repeat(64)}]};
+  await projectPlanCommand(request({...payload, attemptId: firstAttemptId}), dependencies(execute));
+  await projectPlanCommand(request({...payload, attemptId: secondAttemptId}), dependencies(execute));
+  const keys = execute.mock.calls.map(([command]) => command.idempotencyKey);
+  expect(keys).toHaveLength(2);
+  expect(keys[0]).not.toBe(keys[1]);
+});
+
 it('rejects an empty or oversized generation corpus before execution', async () => {
   const execute = vi.fn();
-  const base = {_csrf: 'csrf', action: 'generate_draft', projectId, planId: id, expectedRevision: null};
+  const base = {_csrf: 'csrf', action: 'generate_draft', projectId, planId: id, attemptId: id, expectedRevision: null};
   expect((await projectPlanCommand(request({...base, sourceManifest: []}), dependencies(execute))).status).toBe(422);
   expect((await projectPlanCommand(request({...base, sourceManifest: Array.from({length: 33}, () => ({artifactId: id, version: 1, sha256: 'a'.repeat(64)}))}), dependencies(execute))).status).toBe(422);
   expect(execute).not.toHaveBeenCalled();

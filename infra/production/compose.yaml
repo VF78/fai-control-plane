@@ -179,6 +179,10 @@ services:
       <<: *runtime-environment
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
+      FCP_RELEASE_COMMIT: ${FCP_IMAGE_TAG}
+      HERMES_SEMANTIC_PLANNING_ENABLED: ${HERMES_SEMANTIC_PLANNING_ENABLED:-false}
+      HERMES_SEMANTIC_PLANNING_SOCKET: /run/fai-hermes-planner/planner.sock
+      HERMES_SEMANTIC_PLANNING_TOKEN_FILE: /run/secrets/hermes-semantic-planning-token
     ports:
       - "127.0.0.1:${WEB_BIND_PORT}:3000"
     volumes:
@@ -218,6 +222,14 @@ services:
       - type: bind
         source: ${RUNTIME_OBSERVATION_TOKEN_HOST_FILE}
         target: /run/secrets/runtime-observation-token
+        read_only: true
+      - type: bind
+        source: ${HERMES_SEMANTIC_PLANNING_TOKEN_HOST_FILE:-../compose/secrets/hermes-semantic-planning-token.disabled}
+        target: /run/secrets/hermes-semantic-planning-token
+        read_only: true
+      - type: bind
+        source: ${HERMES_SEMANTIC_PLANNING_SOCKET_HOST_DIR:-../compose/hermes-planner-disabled}
+        target: /run/fai-hermes-planner
         read_only: true
       - type: bind
         source: ${SHARE_SIGNING_KEY_HOST_FILE}
