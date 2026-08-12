@@ -5,17 +5,19 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=fai-hermes-controller
-Group=fai-hermes-controller
-Environment=HOME=/var/lib/fai-hermes-controller/hermes
-Environment=HERMES_HOME=/var/lib/fai-hermes-controller/hermes
+User=fai-hermes-planner
+Group=fai-hermes-planner
+Environment=HOME=/var/lib/fai-hermes-planner/hermes
+Environment=HERMES_HOME=/var/lib/fai-hermes-planner/hermes
 Environment=HERMES_IGNORE_RULES=1
 Environment=PYTHONNOUSERSITE=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=NO_COLOR=1
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=FCP_HERMES_EXPECTED_VERSION=0.18.2
-EnvironmentFile=/etc/fai-hermes-controller/controller.env
+UnsetEnvironment=ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_API_KEY GEMINI_API_KEY
+Environment=FAI_HERMES_PLANNING_RELEASE_COMMIT=@RELEASE_COMMIT@
+EnvironmentFile=/etc/fai-hermes-planner/planner.env
 ExecStartPre=/opt/fai-control-plane-runner/hermes-runtime/0.18.2/venv/bin/python /opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@/packages/runners/runtime/hermes_project_planner_socket.py --preflight
 ExecStart=/opt/fai-control-plane-runner/hermes-runtime/0.18.2/venv/bin/python /opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@/packages/runners/runtime/hermes_project_planner_socket.py
 Restart=on-failure
@@ -39,9 +41,9 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ /opt/fai-control-plane-runner/hermes-runtime/0.18.2 /var/lib/fai-hermes-controller/hermes/config.yaml /var/lib/fai-hermes-controller/credentials
-ReadWritePaths=/run/fai-hermes-planner /var/lib/fai-hermes-controller/hermes
-InaccessiblePaths=/var/lib/fai-codex-executor /etc/fai-codex-executor /etc/fai-control-plane
+ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ /opt/fai-control-plane-runner/hermes-runtime/0.18.2 /var/lib/fai-hermes-planner/hermes/config.yaml /var/lib/fai-hermes-planner/credentials/planning-token /var/lib/fai-hermes-planner/credentials/model-credential
+ReadWritePaths=/run/fai-hermes-planner
+InaccessiblePaths=/var/lib/fai-hermes-controller /etc/fai-hermes-controller /var/lib/fai-codex-executor /etc/fai-codex-executor /etc/fai-control-plane /root /home
 
 [Install]
 WantedBy=multi-user.target

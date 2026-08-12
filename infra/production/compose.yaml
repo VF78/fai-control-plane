@@ -179,6 +179,7 @@ services:
       <<: *runtime-environment
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
+      FCP_RELEASE_COMMIT: ${FCP_IMAGE_TAG}
       HERMES_SEMANTIC_PLANNING_ENABLED: ${HERMES_SEMANTIC_PLANNING_ENABLED:-false}
       HERMES_SEMANTIC_PLANNING_SOCKET: /run/fai-hermes-planner/planner.sock
       HERMES_SEMANTIC_PLANNING_TOKEN_FILE: /run/secrets/hermes-semantic-planning-token

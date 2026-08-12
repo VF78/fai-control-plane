@@ -1,4 +1,6 @@
 import {describe, expect, it} from 'vitest';
+import secretContract from './high-confidence-secret-contract.json';
+import {containsHighConfidenceSecretContent} from './index';
 import {deterministicProjectPlanUuid, hashProjectPlanDefinition, hashProjectPlanSourceManifest, projectDossierReadiness, projectPlanScheduleReadiness, simulateProjectPlan, sourceArtifactDigest, validateAssignedProjectPlanDefinition, validateProjectPlanDefinition, validateSourceArtifact, type ProjectPlanDefinition} from './project-plan';
 
 const assumption = {kind: 'assumption' as const, statement: 'Требует проверки Product Owner'};
@@ -11,6 +13,10 @@ const definition: ProjectPlanDefinition = {
 };
 
 describe('project plan', () => {
+  it('enforces the canonical high-confidence outbound secret contract', () => {
+    for (const value of secretContract.reject) expect(containsHighConfidenceSecretContent(value)).toBe(true);
+    for (const value of secretContract.allow) expect(containsHighConfidenceSecretContent(value)).toBe(false);
+  });
   it('validates bounded artifacts and rejects mismatched hashes', () => {
     const content = 'Строка 1\nСтрока 2';
     const artifact = {id: '10000000-0000-4000-8000-000000000001', projectId: '10000000-0000-4000-8000-000000000002', name: 'Интервью', sourceKind: 'client_requirements', mediaType: 'text/plain', content, sizeBytes: Buffer.byteLength(content), sha256: sourceArtifactDigest(content), sourceFile: null, provenance: {kind: 'manager_note', label: 'Встреча', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1};
@@ -39,7 +45,7 @@ describe('project plan', () => {
     expect(validateProjectPlanDefinition({...definition, tasks: [{...definition.tasks[0], responsibility: {kind: 'agent_profile', agentProfileId: 'not-a-uuid'}}]})).toMatchObject({ok: false});
     expect(validateProjectPlanDefinition({...definition, milestones: [{...definition.milestones[0], targetAt: '2026-99-99'}]})).toMatchObject({ok: false});
     for (const title of ['{"apiKey":"hidden"}', '{"password":"hidden"}', 'token: hidden-value', '-----BEGIN PRIVATE KEY-----\nabc']) {
-      expect(validateProjectPlanDefinition({...definition, title})).toMatchObject({ok: false});
+      expect(validateProjectPlanDefinition({...definition, title}), title).toMatchObject({ok: false});
     }
     expect(validateProjectPlanDefinition({...definition, title: 'Обсудить хранение токена без значения'})).toMatchObject({ok: true});
     const badPointer = {kind: 'citation' as const, artifactId: '10000000-0000-4000-8000-000000000001', locator: {kind: 'json_pointer' as const, pointer: '/bad~2token'}};

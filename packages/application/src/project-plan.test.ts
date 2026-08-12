@@ -11,9 +11,9 @@ const semanticDefinition = {
 };
 const planningContext = {schemaVersion: 1 as const, projectId: '20000000-0000-4000-8000-000000000004',
   deliveryProtocol: {id: '20000000-0000-4000-8000-000000000007', revision: 1, contentHash: 'b'.repeat(64),
-    definition: {schemaVersion: 1 as const, stages: [{key: 'delivery', name: 'Delivery', enabled: true, taskStatus: 'in_dev' as const,
+    stages: [{key: 'delivery', name: 'Delivery', taskStatus: 'in_dev' as const,
       responsibility: {kind: 'project_role' as const, role: 'contributor' as const}, executionMode: 'manual' as const,
-      entryCriteria: ['Approved plan'], requiredEvidence: ['Change'], allowedNextStageKey: null}]}},
+      requiredEvidence: ['Change'], allowedNextStageKey: null}]},
   responsibilityCandidates: [{kind: 'project_role' as const, role: 'project_owner' as const}]};
 
 describe('project plan service', () => {
@@ -50,7 +50,7 @@ describe('project plan service', () => {
     const user = actor.value.issueUser('10000000-0000-4000-8000-000000000001'); if (!user.ok) throw new Error('actor');
     const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: '20000000-0000-4000-8000-000000000001', commandType: 'project_plan.draft.generate', result: {ok: true, value: {}}}});
     const artifact = {id: '20000000-0000-4000-8000-000000000006', projectId: '20000000-0000-4000-8000-000000000004', name: 'Passport', sourceKind: 'project_passport' as const, mediaType: 'text/plain' as const, content: 'Confirmed project passport', sizeBytes: 25, sha256: sourceArtifactDigest('Confirmed project passport'), sourceFile: null, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1 as const};
-    const preparation = {idempotencyKey: 'generate:1', sourceManifest: [{artifactId: artifact.id, version: 1, sha256: artifact.sha256}], artifacts: [artifact], planningContext, planningContextHash: 'c'.repeat(64)};
+    const preparation = {idempotencyKey: 'generate:1', sourceManifest: [{artifactId: artifact.id, version: 1, sha256: artifact.sha256}], sourceManifestHash: 'd'.repeat(64), artifacts: [artifact], planningContext, planningContextHash: 'c'.repeat(64)};
     const prepareSemanticGeneration = vi.fn().mockResolvedValue({ok: true, value: {kind: 'ready', request: preparation}});
     const generate = vi.fn().mockResolvedValue({ok: false, error: {code: 'INVALID_TRANSITION', message: 'Hermes unavailable'}});
     const service = createProjectPlanService({execute, prepareSemanticGeneration, inspect: vi.fn(), simulate: vi.fn()} as unknown as ProjectPlanStore, {generate});
@@ -75,7 +75,7 @@ describe('project plan service', () => {
     const user = actor.value.issueUser('10000000-0000-4000-8000-000000000001'); if (!user.ok) throw new Error('actor');
     const execute = vi.fn().mockResolvedValue({status: 'completed', receipt: {commandId: '20000000-0000-4000-8000-000000000001', commandType: 'project_plan.draft.generate', result: {ok: true, value: {}}}});
     const artifact = {id: '20000000-0000-4000-8000-000000000006', projectId: '20000000-0000-4000-8000-000000000004', name: 'Passport', sourceKind: 'project_passport' as const, mediaType: 'text/plain' as const, content: 'Confirmed project passport', sizeBytes: 25, sha256: sourceArtifactDigest('Confirmed project passport'), sourceFile: null, provenance: {kind: 'manager_note' as const, label: 'PO', capturedAt: '2026-08-09T10:00:00.000Z'}, version: 1 as const};
-    const preparation = {idempotencyKey: 'generate:po', sourceManifest: [{artifactId: artifact.id, version: 1, sha256: artifact.sha256}], artifacts: [artifact], planningContext, planningContextHash: 'c'.repeat(64)};
+    const preparation = {idempotencyKey: 'generate:po', sourceManifest: [{artifactId: artifact.id, version: 1, sha256: artifact.sha256}], sourceManifestHash: 'd'.repeat(64), artifacts: [artifact], planningContext, planningContextHash: 'c'.repeat(64)};
     const prepareSemanticGeneration = vi.fn()
       .mockResolvedValueOnce({ok: false, error: {code: 'CAPABILITY_DENIED', message: 'Only Product Owner'}})
       .mockResolvedValueOnce({ok: true, value: {kind: 'ready', request: preparation}});

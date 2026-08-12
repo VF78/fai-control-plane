@@ -109,7 +109,7 @@ import {
 } from './attention-queue';
 import {runnerActivationEnabled} from './runner-activation-policy';
 import {autonomousQaTransportAvailable} from './autonomous-qa-transport';
-import {hermesSemanticPlanningConfiguration} from './hermes-semantic-planner';
+import {checkHermesSemanticPlannerHealth, hermesSemanticPlanningConfiguration} from './hermes-semantic-planner';
 
 export type OperatorProjectSlug = string;
 export const isOperatorProjectSlug = (value: string): value is OperatorProjectSlug =>
@@ -1134,10 +1134,12 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   const activePublishedProtocols = protocols.filter((item) => item.state === 'published' && item.active);
   const protocol = activePublishedProtocols.length === 1 ? activePublishedProtocols[0]! : null;
   const planningTransport = hermesSemanticPlanningConfiguration();
+  const planningHealth = planningTransport.configured ? await checkHermesSemanticPlannerHealth() : null;
   const plannerEligibility = !plannerProfileEligibility.eligible ? plannerProfileEligibility
     : protocol === null ? {eligible: false, remediation: 'Hermes planning недоступен: нужен ровно один активный опубликованный delivery protocol.'}
       : !planningTransport.configured ? {eligible: false, remediation: planningTransport.remediation}
-        : {eligible: true, remediation: 'Hermes profile, protocol и аутентифицированный planning transport настроены.'};
+        : planningHealth?.healthy !== true ? {eligible: false, remediation: planningHealth?.remediation ?? 'Hermes planning service недоступен.'}
+          : {eligible: true, remediation: 'Hermes profile, protocol и live planning service готовы.'};
   const protocolRevision = protocols.find((item) => item.state === 'draft') ??
     protocols.find((item) => item.state === 'published' && !item.active) ?? null;
   const draftRow = planDraftRows[0];

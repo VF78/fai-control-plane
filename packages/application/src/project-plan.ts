@@ -65,6 +65,7 @@ export type ProjectPlanMutationCommand = RecordSourceArtifactCommand | GenerateP
 export type SemanticProjectPlanRequest = Readonly<{
   idempotencyKey: string;
   sourceManifest: ProjectPlanSourceManifest;
+  sourceManifestHash: string;
   artifacts: readonly SourceArtifact[];
   planningContext: SemanticProjectPlanningContext;
   planningContextHash: string;
@@ -80,7 +81,8 @@ export type SemanticProjectPlanningContext = Readonly<{
     id: string;
     revision: number;
     contentHash: string;
-    definition: DeliveryProtocolDefinition;
+    stages: readonly Readonly<Pick<DeliveryProtocolDefinition['stages'][number],
+      'key' | 'name' | 'taskStatus' | 'responsibility' | 'executionMode' | 'requiredEvidence' | 'allowedNextStageKey'>>[];
   }>;
   responsibilityCandidates: readonly SemanticProjectPlanningResponsibilityCandidate[];
 }>;

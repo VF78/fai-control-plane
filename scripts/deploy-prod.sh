@@ -100,6 +100,9 @@ validate_environment() {
       die 'Hermes semantic planning token binding is unavailable'
     [[ "$planning_socket_dir" == '/run/fai-hermes-planner' && -d "$planning_socket_dir" &&
        ! -L "$planning_socket_dir" ]] || die 'Hermes semantic planning socket directory is unavailable'
+    [[ -S "$planning_socket_dir/planner.sock" && ! -L "$planning_socket_dir/planner.sock" &&
+       -x "/opt/fai-control-plane-runner/releases/$TARGET/scripts/hermes_planner_health.py" ]] ||
+      die 'Hermes semantic planning live health binding is unavailable for the target commit'
   fi
   compose config --quiet
 }
@@ -286,9 +289,18 @@ local_ready() { curl --fail --silent --show-error --max-time 15 "http://127.0.0.
 public_health() { curl --fail --silent --show-error --max-time 15 https://app.f-ai.studio/api/health >/dev/null; }
 public_ready() { curl --fail --silent --show-error --max-time 15 https://app.f-ai.studio/api/ready >/dev/null; }
 public_dashboard() { curl --fail --silent --show-error --max-time 15 https://app.f-ai.studio/dashboard >/dev/null; }
+planner_ready() {
+  [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" != true ]] ||
+    runuser -u "$(getent passwd 1000 | cut -d: -f1)" -- \
+    /usr/bin/python3 "/opt/fai-control-plane-runner/releases/$TARGET/scripts/hermes_planner_health.py" \
+      --socket /run/fai-hermes-planner/planner.sock \
+      --token-file /etc/fai-control-plane/secrets/hermes-semantic-planning-token \
+      --release-commit "$TARGET"
+}
 
 retry 30 5 'PostgreSQL readiness' database_ready
 retry 30 5 'worker readiness' worker_ready
+retry 6 5 'Hermes planner authenticated readiness' planner_ready
 retry 30 5 'local web health' local_health
 retry 30 5 'local web readiness' local_ready
 retry 30 5 'public health' public_health

@@ -222,7 +222,10 @@ const semanticPlanningContext = async (
   ];
   if (responsibilityCandidates.length === 0) return fail('INVALID_TRANSITION', 'Hermes planning requires at least one canonical responsibility candidate.');
   const context: SemanticProjectPlanningContext = {schemaVersion: 1, projectId,
-    deliveryProtocol: {id: protocol.id, revision: protocol.revision, contentHash: protocol.contentHash, definition: definition.value},
+    deliveryProtocol: {id: protocol.id, revision: protocol.revision, contentHash: protocol.contentHash,
+      stages: definition.value.stages.filter(({enabled}) => enabled).map(({key, name, taskStatus, responsibility, executionMode,
+        requiredEvidence, allowedNextStageKey}) => ({key, name, taskStatus, responsibility, executionMode,
+        requiredEvidence, allowedNextStageKey}))},
     responsibilityCandidates};
   const serialized = canonicalJson(context as never);
   if (Buffer.byteLength(serialized, 'utf8') > SEMANTIC_CONTEXT_LIMIT_BYTES || containsHighConfidenceSecretContent(serialized)) {
@@ -295,7 +298,8 @@ const prepareSemanticGeneration = async (tx: Transaction, input: Readonly<{comma
   const planningContext = await semanticPlanningContext(tx, command.workspaceId, command.payload.projectId);
   if (!planningContext.ok) return planningContext;
   return {ok: true, value: {kind: 'ready', request: {idempotencyKey: command.idempotencyKey,
-    sourceManifest: requestedManifest, artifacts, planningContext: planningContext.value.context,
+    sourceManifest: requestedManifest, sourceManifestHash: hashProjectPlanSourceManifest(requestedManifest), artifacts,
+    planningContext: planningContext.value.context,
     planningContextHash: planningContext.value.hash}}};
 };
 
