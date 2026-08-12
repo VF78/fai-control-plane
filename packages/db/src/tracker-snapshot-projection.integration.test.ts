@@ -3,7 +3,7 @@ import type {TrackerRepositorySnapshot} from '@fai-control-plane/domain';
 import {eq} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
-import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import {afterAll, beforeAll, beforeEach, describe, expect, it} from 'vitest';
 import {
   createDatabase,
   createPostgresProjectTaskProjectionReader,
@@ -102,6 +102,10 @@ describePostgres('provider-native tracker snapshot projection', () => {
       reference: '/test/github-token',
       scope: ['read:project']
     });
+  });
+
+  beforeEach(async () => {
+    await db.delete(trackerBindings);
   });
 
   afterAll(async () => {
