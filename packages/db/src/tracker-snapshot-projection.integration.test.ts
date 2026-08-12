@@ -258,12 +258,13 @@ describePostgres('provider-native tracker snapshot projection', () => {
 
   it('keeps the last successful provider snapshot visible after any number of failed attempts', async () => {
     const projectId = await createProject();
-    const value = snapshot('github:sha256:v1');
+    const successfulSnapshot = snapshot('github:sha256:v1');
+    const conflictingSnapshot = snapshot('github:sha256:v2');
     const projector = createPostgresTrackerSnapshotProjector(db);
-    await projector.bootstrap(operation(projectId, value));
+    await projector.bootstrap(operation(projectId, successfulSnapshot));
     for (let index = 0; index < 21; index += 1) {
       await projector.synchronize({
-        ...operation(projectId, value),
+        ...operation(projectId, conflictingSnapshot),
         expectedPreviousExternalVersion: `github:sha256:stale:${index}`
       });
     }
@@ -287,7 +288,7 @@ describePostgres('provider-native tracker snapshot projection', () => {
       actionCategory: 'write',
       action: 'tracker_snapshot.reconcile',
       targetType: 'tracker_repository',
-      targetId: value.repository.externalId,
+      targetId: successfulSnapshot.repository.externalId,
       outcome: 'failed',
       reasonCode: 'REPOSITORY_READ_FAILED',
       correlationId: randomUUID(),
