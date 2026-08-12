@@ -12,16 +12,24 @@ import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
   actors,
   auditEvents,
+  commandReceipts,
   createDatabase,
   createPostgresDeliveryJourneyStore,
   deliveryJourneyEvidence,
   deliveryJourneys,
+  loadProjectExecutionProjection,
   projectMemberships,
+  projectExecutions,
+  projectPlanDrafts,
+  projectPlanMaterializations,
+  projectPlanVersions,
+  projectScopeBaselineVersions,
   projects,
   runbooks,
   workItems,
   workspaces
 } from './index';
+import {resolveCurrentExecutionResponsibility} from './work-item-responsibility';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (process.env.CI && databaseUrl === undefined) {
@@ -53,6 +61,99 @@ describePostgres('delivery journey persistence', () => {
       finally { await adminPool.end(); }
     }
   }, 30_000);
+
+  const seedSelectedManualJourney = async () => {
+    const ids = {
+      workspace: randomUUID(), project: randomUUID(), owner: randomUUID(),
+      membership: randomUUID(), plan: randomUUID(), planVersion: randomUUID(),
+      baseline: randomUUID(), protocol: randomUUID(), task: randomUUID()
+    };
+    const planDefinition = {
+      title: 'Manual delivery plan',
+      outcomes: [{key: 'outcome_1', title: 'Accepted result', weight: 100,
+        evidence: {kind: 'assumption' as const, statement: 'Owner-approved result.'}}],
+      milestones: [{key: 'milestone_1', title: 'Delivery', checkpoint: 'Owner review',
+        targetAt: null, evidence: {kind: 'assumption' as const, statement: 'Owner checkpoint.'}}],
+      risks: [],
+      tasks: [{key: 'task_1', title: 'Manual task',
+        responsibility: {kind: 'human' as const, actorId: ids.owner},
+        outcomeKeys: ['outcome_1'], milestoneKey: 'milestone_1', dependsOn: [],
+        acceptanceEvidence: [{description: 'Owner evidence',
+          evidence: {kind: 'assumption' as const, statement: 'Evidence is required.'}}]}]
+    };
+    const definition = {
+      schemaVersion: 1 as const,
+      stages: [{
+        key: 'intake', name: 'Intake', enabled: true, taskStatus: 'ready' as const,
+        responsibility: {kind: 'project_role' as const, role: 'project_owner' as const},
+        executionMode: 'manual' as const, entryCriteria: ['Context ready'],
+        requiredEvidence: ['Accepted task brief'], allowedNextStageKey: 'development'
+      }, {
+        key: 'development', name: 'Development', enabled: true, taskStatus: 'in_dev' as const,
+        responsibility: {kind: 'project_role' as const, role: 'project_owner' as const},
+        executionMode: 'manual' as const, entryCriteria: ['Brief accepted'],
+        requiredEvidence: ['Implementation result'], allowedNextStageKey: null
+      }]
+    };
+    await db.insert(workspaces).values({id: ids.workspace, name: 'Selected journey',
+      slug: `selected-journey-${randomUUID()}`});
+    await db.insert(projects).values({id: ids.project, workspaceId: ids.workspace,
+      name: 'Selected journey project', slug: `selected-project-${randomUUID()}`});
+    await db.insert(actors).values({id: ids.owner, workspaceId: ids.workspace, type: 'human',
+      role: 'workspace_admin', displayName: 'Product Owner', authMode: 'user'});
+    await db.insert(projectMemberships).values({id: ids.membership, projectId: ids.project,
+      actorId: ids.owner, roles: ['project_owner']});
+    const approvedAt = new Date('2026-08-12T08:00:00.000Z');
+    await db.insert(projectPlanDrafts).values({id: ids.plan, workspaceId: ids.workspace,
+      projectId: ids.project, state: 'approved', definition: planDefinition,
+      contentHash: 'a'.repeat(64), revision: 1, createdByActorId: ids.owner,
+      approvedByActorId: ids.owner, approvedAt});
+    await db.insert(projectPlanVersions).values({id: ids.planVersion, workspaceId: ids.workspace,
+      projectId: ids.project, planId: ids.plan, version: 1, sourceRevision: 1,
+      definition: planDefinition, contentHash: 'a'.repeat(64), sourceManifest: [],
+      simulation: {} as never, approvedByActorId: ids.owner, approvedAt});
+    await db.insert(projectScopeBaselineVersions).values({id: ids.baseline,
+      projectId: ids.project, version: 1, sourcePlanVersionId: ids.planVersion,
+      sourcePlanHash: 'a'.repeat(64)});
+    await db.insert(projectPlanMaterializations).values({workspaceId: ids.workspace,
+      projectId: ids.project, planVersionId: ids.planVersion, baselineId: ids.baseline,
+      commandId: randomUUID(), planVersion: 1, planHash: 'a'.repeat(64),
+      sourceManifestHash: createHash('sha256').update('[]').digest('hex'),
+      outcomeCount: 1, milestoneCount: 1, workItemCount: 1, dependencyCount: 0,
+      journeyCount: 1, publicationIntentCount: 0, createdByActorId: ids.owner});
+    await db.insert(runbooks).values({id: ids.protocol, projectId: ids.project,
+      name: 'Manual delivery', version: 1, definition, active: true,
+      protocolState: 'published', revision: 1,
+      contentHash: hashDeliveryProtocolDefinition(definition)});
+    await db.insert(workItems).values({id: ids.task, projectId: ids.project,
+      title: 'Manual task', status: 'ready', sourcePlanVersionId: ids.planVersion,
+      sourceTaskKey: 'task_1', responsibility: planDefinition.tasks[0]!.responsibility,
+      acceptanceEvidence: planDefinition.tasks[0]!.acceptanceEvidence});
+    await db.insert(deliveryJourneys).values({workItemId: ids.task,
+      protocolId: ids.protocol, protocolVersion: 1, stageKey: 'intake'});
+    const selection = await resolveCurrentExecutionResponsibility(db, {
+      workspaceId: ids.workspace, projectId: ids.project, workItemId: ids.task
+    });
+    if (selection === null) throw new Error('selected journey fixture did not resolve');
+    await db.insert(projectExecutions).values({projectId: ids.project, status: 'blocked',
+      blockReason: 'provider_handoff_required', selectedWorkItemId: ids.task,
+      selectedPlanVersionId: ids.planVersion, selectedWorkItemVersion: 1,
+      selectedProtocolId: ids.protocol, selectedProtocolVersion: 1,
+      selectedJourneyVersion: 1, selectedStageKey: 'intake',
+      selectedResponsibleActorId: selection.actor.id,
+      selectedAgentProfileId: selection.actor.agentProfileId,
+      selectedResponsibilityHash: selection.factHash, startedAt: approvedAt});
+    const store = createPostgresDeliveryJourneyStore(db);
+    const command = (key: string, reference: string) => ({
+      commandId: randomUUID(), workspaceId: ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: key, actor: {actorId: ids.owner}, type: 'delivery_journey.advance' as const,
+      payload: {workItemId: ids.task, expectedWorkItemVersion: 1,
+        expectedJourneyVersion: 1, evidenceReferences: [{
+          requirement: 'Accepted task brief', reference
+        }]}
+    });
+    return {ids, store, command};
+  };
 
   it('binds immutable protocol version, denies missing evidence, advances with CAS, and projects legacy state', async () => {
     const ids = {
@@ -258,5 +359,118 @@ describePostgres('delivery journey persistence', () => {
     await expect(store.execute({command: terminalCommand as never,
       requestHash: createHash('sha256').update('terminal-evidence').digest('hex'), authorized: true}))
       .resolves.toMatchObject({status: 'replayed', receipt: {result: {ok: true}}});
+  });
+
+  it('atomically pauses an exact selected journey, clears its snapshot, and serializes concurrent advances', async () => {
+    const fixture = await seedSelectedManualJourney();
+    const attempts = [
+      {command: fixture.command('selected-advance-a', 'artifact://brief/a'),
+        requestHash: createHash('sha256').update('selected-advance-a').digest('hex'), authorized: true},
+      {command: fixture.command('selected-advance-b', 'artifact://brief/b'),
+        requestHash: createHash('sha256').update('selected-advance-b').digest('hex'), authorized: true}
+    ];
+    const results = await Promise.all(attempts.map((attempt) =>
+      fixture.store.execute({...attempt, command: attempt.command as never})));
+    const successIndex = results.findIndex((result) =>
+      'receipt' in result && result.receipt.result.ok);
+    expect(successIndex).toBeGreaterThanOrEqual(0);
+    expect(results.filter((result) => 'receipt' in result && result.receipt.result.ok)).toHaveLength(1);
+    expect(results.filter((result) => 'receipt' in result && !result.receipt.result.ok &&
+      result.receipt.result.error.code === 'VERSION_CONFLICT')).toHaveLength(1);
+
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'in_dev', version: 2});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0])
+      .toMatchObject({stageKey: 'development', version: 2});
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, fixture.ids.task))).toHaveLength(1);
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({
+      status: 'paused', blockReason: null, version: 2,
+      selectedWorkItemId: null, selectedPlanVersionId: null,
+      selectedWorkItemVersion: null, selectedProtocolId: null,
+      selectedProtocolVersion: null, selectedJourneyVersion: null,
+      selectedStageKey: null, selectedResponsibleActorId: null,
+      selectedAgentProfileId: null, selectedResponsibilityHash: null
+    });
+    await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project))
+      .resolves.toMatchObject({status: 'paused', version: 2, selection: null,
+        blockReason: null, decisions: []});
+
+    const winner = attempts[successIndex]!;
+    await expect(fixture.store.execute({...winner, command: winner.command as never}))
+      .resolves.toMatchObject({status: 'replayed', receipt: {result: {ok: true}}});
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({
+      status: 'paused', version: 2, selectedWorkItemId: null
+    });
+    expect(await db.select().from(commandReceipts).where(and(
+      eq(commandReceipts.workspaceId, fixture.ids.workspace),
+      eq(commandReceipts.commandType, 'delivery_journey.advance')))).toHaveLength(2);
+    expect(await db.select().from(auditEvents).where(and(
+      eq(auditEvents.workspaceId, fixture.ids.workspace),
+      eq(auditEvents.action, 'delivery_journey.advance')))).toHaveLength(2);
+  });
+
+  it('rejects a stale selected responsibility without partially advancing either aggregate', async () => {
+    const fixture = await seedSelectedManualJourney();
+    await db.update(projectMemberships).set({version: 2})
+      .where(eq(projectMemberships.id, fixture.ids.membership));
+    const command = fixture.command('stale-selected-advance', 'artifact://brief/stale');
+    await expect(fixture.store.execute({command: command as never,
+      requestHash: createHash('sha256').update('stale-selected-advance').digest('hex'),
+      authorized: true})).resolves.toMatchObject({receipt: {result: {
+      error: {code: 'VERSION_CONFLICT'}
+    }}});
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'ready', version: 1});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0])
+      .toMatchObject({stageKey: 'intake', version: 1});
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, fixture.ids.task))).toHaveLength(0);
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({
+      status: 'blocked', blockReason: 'provider_handoff_required', version: 1,
+      selectedWorkItemId: fixture.ids.task
+    });
+    await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project))
+      .resolves.toMatchObject({status: 'blocked', selection: null,
+        blockReason: 'selection_preconditions_stale'});
+  });
+
+  it('fails closed instead of deadlocking when another execution command owns the row lock', async () => {
+    const fixture = await seedSelectedManualJourney();
+    const client = await testPool.connect();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT project_id FROM project_executions WHERE project_id = $1 FOR UPDATE',
+        [fixture.ids.project]);
+      const command = fixture.command('locked-selected-advance', 'artifact://brief/locked');
+      const result = await Promise.race([
+        fixture.store.execute({command: command as never,
+          requestHash: createHash('sha256').update('locked-selected-advance').digest('hex'),
+          authorized: true}),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('delivery journey waited on execution lock')), 1_000);
+        })
+      ]);
+      expect(result).toMatchObject({receipt: {result: {
+        error: {code: 'VERSION_CONFLICT'}
+      }}});
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      await client.query('ROLLBACK');
+      client.release();
+    }
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'ready', version: 1});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0])
+      .toMatchObject({stageKey: 'intake', version: 1});
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, fixture.ids.task))).toHaveLength(0);
   });
 });

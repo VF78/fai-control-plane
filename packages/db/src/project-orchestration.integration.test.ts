@@ -17,6 +17,7 @@ import {
   actors, agentProfiles, agentRunReceipts, agentRuns, approvalRequests, artifacts, auditEvents,
   canonicalEvents, commandReceipts,
   createDatabase, createPostgresAgentRunRetryContinuationStore,
+  createPostgresDeliveryJourneyStore,
   createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore,
   createPostgresAgentRunAcceptanceStore, createPostgresProjectAcceptanceStore,
   createPostgresProjectOutcomeAcceptanceStore, createPostgresRunnerClaimStore,
@@ -472,6 +473,114 @@ describePostgres('governed project orchestration persistence', () => {
       }}}});
     expect((await db.select().from(agentRuns).where(eq(agentRuns.id, run!.id)))[0])
       .toMatchObject({status: 'failed', failureCode: 'operator_cancelled_before_claim'});
+  });
+
+  it('rejects generic journey advancement once an immutable AgentRun dispatch exists', async () => {
+    const fixture = await seedAutonomousProject(false);
+    await fixture.store.execute({
+      command: fixture.command('project_execution.start', 0, 'generic-advance-dispatch-start') as never,
+      requestHash: 'g'.repeat(64), authorized: true
+    });
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+      workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner
+    });
+    const [run] = await db.select().from(agentRuns)
+      .where(eq(agentRuns.workItemId, fixture.ids.task));
+    if (run === undefined) throw new Error('generic advance dispatch fixture missing');
+    const command = {
+      commandId: randomUUID(), workspaceId: fixture.ids.workspace,
+      correlationId: randomUUID(), idempotencyKey: `generic-advance-${run.id}`,
+      actor: {actorId: fixture.ids.owner}, type: 'delivery_journey.advance' as const,
+      payload: {workItemId: fixture.ids.task, expectedWorkItemVersion: 1,
+        expectedJourneyVersion: 1, evidenceReferences: [
+          {requirement: 'Implementation change', reference: `agent-run:${run.id}:change`},
+          {requirement: 'Relevant checks', reference: `agent-run:${run.id}:checks`}
+        ]}
+    };
+    const journeyStore = createPostgresDeliveryJourneyStore(db);
+    const input = {command: command as never,
+      requestHash: createHash('sha256').update(command.idempotencyKey).digest('hex'),
+      authorized: true};
+    await expect(journeyStore.execute(input)).resolves.toMatchObject({receipt: {result: {
+      error: {code: 'INVALID_TRANSITION'}
+    }}});
+    await expect(journeyStore.execute(input)).resolves.toMatchObject({receipt: {result: {
+      error: {code: 'INVALID_TRANSITION'}
+    }}});
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toMatchObject({status: 'in_dev', version: 1});
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0])
+      .toMatchObject({stageKey: 'development', version: 1});
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toMatchObject({
+      status: 'running', version: 1, selectedWorkItemId: fixture.ids.task
+    });
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, run.id)))[0])
+      .toMatchObject({status: 'queued', version: 1});
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, fixture.ids.task))).toHaveLength(0);
+    expect(await db.select().from(auditEvents).where(and(
+      eq(auditEvents.projectId, fixture.ids.project),
+      eq(auditEvents.action, 'delivery_journey.advance')))).toHaveLength(1);
+  });
+
+  it('keeps a paused cancelled dispatch behind the dedicated AgentRun acceptance gate', async () => {
+    const fixture = await seedAutonomousProject(false);
+    await fixture.store.execute({
+      command: fixture.command('project_execution.start', 0, 'paused-dispatch-start') as never,
+      requestHash: 'h'.repeat(64), authorized: true
+    });
+    await createPostgresProjectExecutionDispatcher(db, {runnerQueueEnabled: true}).run({
+      workspaceId: fixture.ids.workspace, projectId: fixture.ids.project,
+      expectedVersion: 1, requestedByActorId: fixture.ids.owner
+    });
+    const [run] = await db.select().from(agentRuns)
+      .where(eq(agentRuns.workItemId, fixture.ids.task));
+    if (run === undefined) throw new Error('paused dispatch fixture missing');
+    await fixture.store.execute({
+      command: fixture.command('project_execution.pause', 1, 'paused-dispatch-pause') as never,
+      requestHash: 'i'.repeat(64), authorized: true
+    });
+    expect((await db.select().from(agentRuns).where(eq(agentRuns.id, run.id)))[0])
+      .toMatchObject({status: 'failed', failureCode: 'operator_cancelled_before_claim', version: 2});
+
+    const before = {
+      item: (await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0],
+      journey: (await db.select().from(deliveryJourneys).where(eq(
+        deliveryJourneys.workItemId, fixture.ids.task)))[0],
+      execution: (await db.select().from(projectExecutions).where(eq(
+        projectExecutions.projectId, fixture.ids.project)))[0],
+      evidence: await db.select().from(deliveryJourneyEvidence).where(eq(
+        deliveryJourneyEvidence.workItemId, fixture.ids.task))
+    };
+    expect(before.execution).toMatchObject({status: 'paused', version: 2,
+      selectedWorkItemId: fixture.ids.task, selectedJourneyVersion: 1,
+      selectedStageKey: 'development'});
+
+    const command = {
+      commandId: randomUUID(), workspaceId: fixture.ids.workspace,
+      correlationId: randomUUID(), idempotencyKey: `paused-generic-advance-${run.id}`,
+      actor: {actorId: fixture.ids.owner}, type: 'delivery_journey.advance' as const,
+      payload: {workItemId: fixture.ids.task, expectedWorkItemVersion: 1,
+        expectedJourneyVersion: 1, evidenceReferences: [
+          {requirement: 'Implementation change', reference: `agent-run:${run.id}:change`},
+          {requirement: 'Relevant checks', reference: `agent-run:${run.id}:checks`}
+        ]}
+    };
+    const result = await createPostgresDeliveryJourneyStore(db).execute({command: command as never,
+      requestHash: createHash('sha256').update(command.idempotencyKey).digest('hex'), authorized: true});
+    expect(result).toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
+
+    expect((await db.select().from(workItems).where(eq(workItems.id, fixture.ids.task)))[0])
+      .toEqual(before.item);
+    expect((await db.select().from(deliveryJourneys).where(eq(
+      deliveryJourneys.workItemId, fixture.ids.task)))[0]).toEqual(before.journey);
+    expect((await db.select().from(projectExecutions).where(eq(
+      projectExecutions.projectId, fixture.ids.project)))[0]).toEqual(before.execution);
+    expect(await db.select().from(deliveryJourneyEvidence).where(eq(
+      deliveryJourneyEvidence.workItemId, fixture.ids.task))).toEqual(before.evidence);
   });
 
   it('accepts one exact AgentRun result atomically and replays concurrent Product Owner commands', async () => {
