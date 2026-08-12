@@ -19,5 +19,5 @@ export type {
   TrackerRepositoryReadInput,
   TrackerRepositoryRef,
   TrackerRepositorySnapshot,
-  TrackerWorkItemSnapshot
+  TrackerProjectItemSnapshot
 } from '@fai-control-plane/domain';

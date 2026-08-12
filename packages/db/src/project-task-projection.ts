@@ -1,135 +1,45 @@
-import type {
-  CanonicalDeploymentProjection,
-  ProjectTaskProjection,
-  ProjectTaskProjectionReader,
-  ProjectionAvailability
+import {
+  validateTrackerRepositorySnapshot,
+  type ProjectTaskProjection,
+  type ProjectTaskProjectionReader,
+  type TrackerRepositorySnapshot
 } from '@fai-control-plane/domain';
-import {hashDeploymentReleasePackage, validateDeploymentObservation,
-  validateDeploymentReleasePackage} from '@fai-control-plane/domain';
-import {and, eq, inArray, isNull} from 'drizzle-orm';
+import {and, desc, eq, or, sql} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
-import {providerEvidenceFromPersistedFact} from './tracker-evidence-projection';
 import * as schema from './schema';
 
 type Database = NodePgDatabase<typeof schema>;
-type Actor = typeof schema.actors.$inferSelect;
-type Deployment = typeof schema.deployments.$inferSelect;
-type DeploymentExecutorJob = typeof schema.deploymentExecutorJobs.$inferSelect;
+const staleAfterMs = 10 * 60_000;
 
-const unknown = <T>(): ProjectionAvailability<T> => ({availability: 'unknown'});
-const notConfigured = <T>(): ProjectionAvailability<T> => ({availability: 'not_configured'});
-const known = <T>(value: T): ProjectionAvailability<T> => ({availability: 'known', value});
+const object = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 
-const byText = <T>(left: T, right: T, value: (item: T) => string): number => {
-  const leftValue = value(left);
-  const rightValue = value(right);
-  return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+const resultSnapshot = (
+  value: unknown,
+  repository: Readonly<{owner: string; repository: string; externalId: string}>
+): TrackerRepositorySnapshot | null => {
+  const result = object(value);
+  if (result === null || (result.status !== 'applied' && result.status !== 'unchanged')) return null;
+  return validateTrackerRepositorySnapshot({
+    snapshot: result.snapshot,
+    repository: {owner: repository.owner, repository: repository.repository},
+    repositoryExternalId: repository.externalId
+  });
 };
 
-/** Do not pass unvalidated provider metadata through a control-plane projection. */
-const safeDeepLink = (value: unknown): string | null => {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) return null;
-  try {
-    const parsed = new URL(value);
-    return (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
-      parsed.username === '' && parsed.password === ''
-      ? value
-      : null;
-  } catch {
-    return null;
-  }
+const errorCode = (value: unknown): string | null => {
+  const result = object(value);
+  return result?.status === 'conflict' && typeof result.code === 'string'
+    ? result.code
+    : null;
 };
 
-const metadataDeepLink = (metadata: Record<string, unknown>): string | null =>
-  safeDeepLink(metadata.htmlUrl) ?? safeDeepLink(metadata.url);
-
-const actorProjection = (actor: Actor | undefined) => actor === undefined
-  ? unknown<Readonly<{id: string; displayName: string; type: Actor['type']; role: string}>>()
-  : known({
-      id: actor.id,
-      displayName: actor.displayName,
-      type: actor.type,
-      role: actor.role
-    });
-
-const deploymentProjection = (
-  deployment: Deployment,
-  actors: ReadonlyMap<string, Actor>,
-  executorJob: DeploymentExecutorJob | undefined
-): CanonicalDeploymentProjection => {
-  const canonical = [1, 2].includes(deployment.lifecycleVersion ?? 0) && deployment.referenceKind !== null &&
-    deployment.planVersionId !== null && deployment.materializationId !== null &&
-    deployment.requestedByActorId !== null && deployment.requestedAt !== null &&
-    ['development', 'staging', 'production'].includes(deployment.environment);
-  const releasePackage = validateDeploymentReleasePackage(deployment.releasePackage);
-  const canonicalReleasePackage = deployment.lifecycleVersion === 2 && releasePackage.ok &&
-    deployment.releasePackageHash !== null &&
-    hashDeploymentReleasePackage(releasePackage.value) === deployment.releasePackageHash;
-  const observation = deployment.observedResult === null || deployment.smokeChecks === null ||
-    deployment.rollbackEvidence === null || deployment.startedAt === null || deployment.completedAt === null
-    ? null : validateDeploymentObservation({
-        ...deployment.observedResult,
-        startedAt: deployment.startedAt.toISOString(),
-        completedAt: deployment.completedAt.toISOString(),
-        smokeChecks: deployment.smokeChecks,
-        rollback: deployment.rollbackEvidence
-      });
-  return {
-    id: deployment.id,
-    workItemId: deployment.workItemId,
-    environment: deployment.environment,
-    revision: deployment.revision,
-    status: deployment.status,
-    version: deployment.version,
-    externalRef: deployment.externalRef,
-    approvedBy: deployment.approvedByActorId === null
-      ? unknown()
-      : actorProjection(actors.get(deployment.approvedByActorId)),
-    startedAt: deployment.startedAt?.toISOString() ?? null,
-    completedAt: deployment.completedAt?.toISOString() ?? null,
-    desired: !canonical ? unknown() : known({
-      environment: deployment.environment as 'development' | 'staging' | 'production',
-      reference: {kind: deployment.referenceKind!, reference: deployment.revision},
-      planVersionId: deployment.planVersionId!,
-      materializationId: deployment.materializationId!,
-      workItemId: deployment.workItemId
-    }),
-    releasePackage: !canonicalReleasePackage || !releasePackage.ok ? unknown() : known({
-      value: releasePackage.value,
-      sha256: deployment.releasePackageHash!
-    }),
-    executorJob: executorJob === undefined ? unknown() : known({
-      id: executorJob.id,
-      status: executorJob.status as 'queued' | 'running' | 'succeeded' | 'failed' | 'rolled_back',
-      attempt: executorJob.attempt,
-      executorId: executorJob.executorId,
-      heartbeatAt: executorJob.heartbeatAt?.toISOString() ?? null,
-      startedAt: executorJob.startedAt?.toISOString() ?? null,
-      completedAt: executorJob.completedAt?.toISOString() ?? null
-    }),
-    requested: !canonical ? unknown() : known({
-      by: actorProjection(actors.get(deployment.requestedByActorId!)),
-      at: deployment.requestedAt!.toISOString()
-    }),
-    approval: !canonical ? unknown() : known({
-      state: deployment.status === 'requested' ? 'pending' : 'approved',
-      by: deployment.approvedByActorId === null ? unknown() : actorProjection(actors.get(deployment.approvedByActorId)),
-      at: deployment.approvedAt?.toISOString() ?? null
-    }),
-    externalEvidence: observation?.ok === true ? known(observation.value) : unknown(),
-    nextAction: !canonical ? 'migrate_legacy_record'
-      : deployment.status === 'requested' ? 'approve_production'
-        : deployment.status === 'approved' && deployment.lifecycleVersion === 2 ? 'await_executor'
-          : deployment.status === 'approved' ? 'record_observation' : 'review_observation'
-  };
-};
-
-/**
- * Reads only canonical PostgreSQL facts and persisted provider evidence.
- * Project lookup establishes workspace scope before any related fact is read.
- */
+/** Reads the last validated provider snapshot; PostgreSQL is only its mirror. */
 export const createPostgresProjectTaskProjectionReader = (
-  db: Database
+  db: Database,
+  now: () => Date = () => new Date()
 ): ProjectTaskProjectionReader => ({
   async read(input): Promise<ProjectTaskProjection | null> {
     const [project] = await db.select({
@@ -143,145 +53,106 @@ export const createPostgresProjectTaskProjectionReader = (
     ));
     if (project === undefined) return null;
 
-    const taskRows = await db.select().from(schema.workItems).where(and(
-      eq(schema.workItems.projectId, project.id),
-      isNull(schema.workItems.deletedAt)
+    const [scope] = await db.select({
+      owner: schema.projectTrackerRepositoryScopes.repositoryOwner,
+      repository: schema.projectTrackerRepositoryScopes.repositoryName,
+      externalId: schema.projectTrackerRepositoryScopes.repositoryExternalId
+    }).from(schema.projectTrackerRepositoryScopes).where(and(
+      eq(schema.projectTrackerRepositoryScopes.projectId, project.id),
+      eq(schema.projectTrackerRepositoryScopes.provider, 'github')
     ));
-    const taskIds = taskRows.map(({id}) => id);
-    const [actorRows, milestoneRows, journeyRows, bindingRows, prRows, checkRows, deploymentRows,
-      deploymentExecutorJobRows] = await Promise.all([
-      db.select().from(schema.actors).where(eq(schema.actors.workspaceId, input.workspaceId)),
-      db.select().from(schema.milestones).where(eq(schema.milestones.projectId, project.id)),
-      taskIds.length === 0
-        ? Promise.resolve([])
-        : db.select().from(schema.deliveryJourneys).where(
-            inArray(schema.deliveryJourneys.workItemId, taskIds)
-          ),
-      taskIds.length === 0
-        ? Promise.resolve([])
-        : db.select().from(schema.trackerBindings).where(and(
-            eq(schema.trackerBindings.projectId, project.id),
-            eq(schema.trackerBindings.entityType, 'work_item'),
-            inArray(schema.trackerBindings.entityId, taskIds)
-          )),
-      taskIds.length === 0
-        ? Promise.resolve([])
-        : db.select().from(schema.prLinks).where(inArray(schema.prLinks.workItemId, taskIds)),
-      taskIds.length === 0
-        ? Promise.resolve([])
-        : db.select({check: schema.buildChecks, pullRequest: schema.prLinks})
-            .from(schema.buildChecks)
-            .innerJoin(schema.prLinks, eq(schema.prLinks.id, schema.buildChecks.prLinkId))
-            .where(inArray(schema.prLinks.workItemId, taskIds)),
-      db.select().from(schema.deployments).where(eq(schema.deployments.projectId, project.id)),
-      db.select().from(schema.deploymentExecutorJobs).where(eq(schema.deploymentExecutorJobs.projectId, project.id))
+    const operationSelection = {
+      result: schema.trackerSnapshotOperations.result,
+      createdAt: schema.trackerSnapshotOperations.createdAt
+    } as const;
+    const operationScope = and(
+      eq(schema.trackerSnapshotOperations.projectId, project.id),
+      eq(schema.trackerSnapshotOperations.provider, 'github')
+    );
+    const [[latestAttempt], [successful], [latestReadFailure]] = await Promise.all([
+      db.select(operationSelection).from(schema.trackerSnapshotOperations)
+        .where(operationScope)
+        .orderBy(desc(schema.trackerSnapshotOperations.createdAt))
+        .limit(1),
+      db.select(operationSelection).from(schema.trackerSnapshotOperations)
+        .where(and(
+          operationScope,
+          or(
+            eq(sql<string>`${schema.trackerSnapshotOperations.result}->>'status'`, 'applied'),
+            eq(sql<string>`${schema.trackerSnapshotOperations.result}->>'status'`, 'unchanged')
+          )
+        ))
+        .orderBy(desc(schema.trackerSnapshotOperations.createdAt))
+        .limit(1),
+      db.select({
+        reasonCode: schema.auditEvents.reasonCode,
+        occurredAt: schema.auditEvents.occurredAt
+      }).from(schema.auditEvents).where(and(
+        eq(schema.auditEvents.projectId, project.id),
+        eq(schema.auditEvents.action, 'tracker_snapshot.reconcile'),
+        eq(schema.auditEvents.outcome, 'failed')
+      )).orderBy(desc(schema.auditEvents.occurredAt)).limit(1)
     ]);
 
-    const actors = new Map(actorRows.map((actor) => [actor.id, actor]));
-    const milestones = new Map(milestoneRows.map((milestone) => [milestone.id, milestone]));
-    const journeys = new Map(journeyRows.map((journey) => [journey.workItemId, journey]));
-    const bindingsByTask = new Map<string, typeof bindingRows>();
-    for (const binding of bindingRows) {
-      const bindings = bindingsByTask.get(binding.entityId) ?? [];
-      bindings.push(binding);
-      bindingsByTask.set(binding.entityId, bindings);
-    }
-    const checksByPullRequest = new Map<string, typeof checkRows>();
-    for (const row of checkRows) {
-      const checks = checksByPullRequest.get(row.check.prLinkId) ?? [];
-      checks.push(row);
-      checksByPullRequest.set(row.check.prLinkId, checks);
-    }
-    const pullRequestsByTask = new Map<string, typeof prRows>();
-    for (const pullRequest of prRows) {
-      const pullRequests = pullRequestsByTask.get(pullRequest.workItemId) ?? [];
-      pullRequests.push(pullRequest);
-      pullRequestsByTask.set(pullRequest.workItemId, pullRequests);
-    }
-    const deploymentsByTask = new Map<string, Deployment[]>();
-    const deploymentExecutorJobs = new Map(deploymentExecutorJobRows.map((job) => [job.deploymentId, job]));
-    for (const deployment of deploymentRows) {
-      if (deployment.workItemId === null || !taskIds.includes(deployment.workItemId)) continue;
-      const deployments = deploymentsByTask.get(deployment.workItemId) ?? [];
-      deployments.push(deployment);
-      deploymentsByTask.set(deployment.workItemId, deployments);
-    }
+    const snapshot = scope === undefined || successful === undefined
+      ? null
+      : resultSnapshot(successful.result, scope);
+    const observedAt = successful?.createdAt ?? null;
+    const freshness = observedAt === null
+      ? 'unavailable'
+      : now().getTime() - observedAt.getTime() > staleAfterMs
+        ? 'stale'
+        : 'fresh';
+    const repositoryName = scope === undefined ? null : `${scope.owner}/${scope.repository}`;
+    const repositoryUrl = repositoryName === null ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repositoryName)
+      ? null
+      : `https://github.com/${repositoryName}`;
+    const operationFailure = latestAttempt === undefined
+      ? null
+      : errorCode(latestAttempt.result) === null
+        ? null
+        : {code: errorCode(latestAttempt.result)!, occurredAt: latestAttempt.createdAt};
+    const readFailure = latestReadFailure?.reasonCode === null || latestReadFailure === undefined
+      ? null
+      : {code: latestReadFailure.reasonCode.toLowerCase(), occurredAt: latestReadFailure.occurredAt};
+    const latestFailure = [operationFailure, readFailure]
+      .filter((failure): failure is NonNullable<typeof failure> => failure !== null)
+      .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())[0] ?? null;
+    const latestError = latestFailure !== null &&
+      (observedAt === null || latestFailure.occurredAt.getTime() > observedAt.getTime())
+      ? latestFailure.code
+      : null;
 
     return {
       project: {
         ...project,
-        status: notConfigured(),
-        blocked: notConfigured(),
-        deployments: deploymentRows.slice().sort((left, right) => byText(left, right, (item) => item.id))
-          .map((deployment) => deploymentProjection(deployment, actors,
-            deploymentExecutorJobs.get(deployment.id)))
+        source: {provider: 'github', repository: repositoryName, url: repositoryUrl},
+        observedAt: observedAt?.toISOString() ?? null,
+        freshness,
+        error: scope === undefined
+          ? 'repository_scope_not_configured'
+          : snapshot === null
+            ? latestError ?? 'provider_snapshot_unavailable'
+            : latestError
       },
-      tasks: taskRows.slice().sort((left, right) => byText(left, right, (item) => item.id)).map((task) => {
-        const milestone = task.milestoneId === null ? undefined : milestones.get(task.milestoneId);
-        return {
-          id: task.id,
-          title: task.title,
-          summary: task.summary,
-          status: task.status,
-          blocked: task.blocked,
-          version: task.version,
-          owner: task.ownerActorId === null ? unknown() : actorProjection(actors.get(task.ownerActorId)),
-          milestone: milestone === undefined
-            ? unknown()
-            : known({
-                id: milestone.id,
-                title: milestone.title,
-                closedAt: milestone.closedAt?.toISOString() ?? null,
-                targetAt: milestone.targetAt === null
-                  ? unknown()
-                  : known(milestone.targetAt.toISOString())
-              }),
-          deadline: journeys.get(task.id)?.deadlineAt === undefined ||
-            journeys.get(task.id)?.deadlineAt === null
-            ? notConfigured()
-            : known(journeys.get(task.id)!.deadlineAt!.toISOString()),
-          sourceBindings: (bindingsByTask.get(task.id) ?? []).slice()
-            .sort((left, right) => byText(left, right, (item) => `${item.provider}\u0000${item.surface}\u0000${item.externalId}`))
-            .map((binding) => ({
-              bindingId: binding.id,
-              providerRef: binding.provider,
-              surface: binding.surface,
-              externalRef: binding.externalId,
-              deepLink: metadataDeepLink(binding.metadata),
-              evidence: providerEvidenceFromPersistedFact(binding)
-            })),
-          pullRequests: (pullRequestsByTask.get(task.id) ?? []).slice()
-            .sort((left, right) => byText(left, right, (item) => item.id))
-            .map((pullRequest) => ({
-              id: pullRequest.id,
-              providerRef: pullRequest.provider,
-              repositoryRef: pullRequest.repositoryRef,
-              externalRef: pullRequest.externalId,
-              url: safeDeepLink(pullRequest.url),
-              headRef: pullRequest.headRef,
-              baseRef: pullRequest.baseRef,
-              state: pullRequest.state,
-              draft: pullRequest.draft,
-              evidence: providerEvidenceFromPersistedFact(pullRequest),
-              checks: (checksByPullRequest.get(pullRequest.id) ?? []).slice()
-                .sort((left, right) => byText(left, right, (item) => item.check.id))
-                .map(({check}) => ({
-                  id: check.id,
-                  providerRef: check.provider,
-                  externalRef: check.externalId,
-                  name: check.name,
-                  status: check.status,
-                  conclusion: check.conclusion,
-                  detailsUrl: safeDeepLink(check.detailsUrl),
-                  evidence: providerEvidenceFromPersistedFact(check)
-                }))
-            })),
-          deployments: (deploymentsByTask.get(task.id) ?? []).slice()
-            .sort((left, right) => byText(left, right, (item) => item.id))
-            .map((deployment) => deploymentProjection(deployment, actors,
-              deploymentExecutorJobs.get(deployment.id)))
-        };
-      })
+      tasks: snapshot?.projectItems.map((item) => ({
+        id: item.externalId,
+        issueExternalId: item.issueExternalId,
+        title: item.title,
+        requirements: item.requirements ?? null,
+        state: item.state,
+        status: item.status,
+        assignees: item.assignees,
+        targetDate: item.targetDate,
+        parentIssueExternalId: item.parentIssueExternalId,
+        subIssueExternalIds: item.subIssueExternalIds,
+        dependencyExternalIds: item.dependencyExternalIds,
+        sourceUrl: item.htmlUrl,
+        observedVersion: item.externalVersion
+      })) ?? [],
+      pullRequests: snapshot?.pullRequests ?? [],
+      checks: snapshot?.checks ?? []
     };
   }
 });

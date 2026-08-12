@@ -20,7 +20,7 @@ const input = () => ({
       headSha: 'a'.repeat(40)
     },
     externalVersion: 'github:sha256:snapshot',
-    workItems: [],
+    projectItems: [],
     pullRequests: [],
     checks: []
   }

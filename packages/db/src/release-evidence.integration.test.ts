@@ -9,7 +9,7 @@ import {createActorContextIssuer, defaultDeliveryProtocolDefinition, hashDeliver
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
   actors, auditEvents, commandReceipts, createDatabase, createPostgresDeploymentEvidenceStore,
-  createPostgresDeploymentExecutorStore, createPostgresProjectTaskProjectionReader,
+  createPostgresDeploymentExecutorStore,
   deploymentExecutorJobs, deploymentExecutorRegistrations,
   deliveryJourneyEvidence, deliveryJourneys, deployments, projectMemberships, projectPlanDrafts,
   projectPlanMaterializations, projectPlanVersions, projectScopeBaselineVersions, projects, runbooks,
@@ -233,13 +233,6 @@ describePostgres('deployment evidence persistence', () => {
       observationReference: persisted?.observedResult?.reference});
     await expect(db.update(deploymentExecutorJobs).set({resultHash: null})
       .where(eq(deploymentExecutorJobs.deploymentId, ids.production))).rejects.toThrow();
-    const projection = await createPostgresProjectTaskProjectionReader(db).read({workspaceId: ids.workspace,
-      projectId: ids.project});
-    expect(projection?.project.deployments.find(({id}) => id === ids.production)).toMatchObject({
-      status: 'observed', nextAction: 'review_observation',
-      externalEvidence: {availability: 'known', value: {outcome: 'rolled_back'}}
-    });
-
     const stagingPayload = {...requestPayload, deploymentId: ids.staging, workItemId: null,
       environment: 'staging'};
     await expect(execute(command('deployment.request.v1', stagingPayload, 'staging-request')))

@@ -931,9 +931,9 @@ export type TrackerRepositorySnapshotReconciliationResult =
   | Readonly<{
       status: 'completed';
       result:
-        | Extract<TrackerSnapshotProjectionResult, {status: 'applied'}>
+        | Extract<TrackerSnapshotProjectionResult, {status: 'applied' | 'unchanged'}>
         | (Extract<TrackerSnapshotProjectionResult, {status: 'replayed'}> & Readonly<{
-            result: Extract<TrackerSnapshotProjectionResult, {status: 'applied'}>;
+            result: Extract<TrackerSnapshotProjectionResult, {status: 'applied' | 'unchanged'}>;
           }>);
     }>
   | Readonly<{
@@ -1406,7 +1406,7 @@ export const createTrackerRepositorySnapshotOrchestrationService = (
         readSnapshot = {
           ...repositorySnapshotObservation,
           externalVersion,
-          workItems: taskObservation.workItems
+          projectItems: taskObservation.projectItems
         };
       }
     } catch (error) {
@@ -1475,12 +1475,12 @@ export const createTrackerRepositorySnapshotReconciliationService = (
         correlationId: idGenerator.next(),
         mode: 'synchronize'
       });
-      if (result.status === 'applied') {
+      if (result.status === 'applied' || result.status === 'unchanged') {
         return {status: 'completed', result};
       }
       if (result.status === 'replayed') {
         const replayedResult = result.result;
-        return replayedResult.status === 'applied'
+        return replayedResult.status === 'applied' || replayedResult.status === 'unchanged'
           ? {status: 'completed', result: {status: 'replayed', result: replayedResult}}
           : replayedResult;
       }

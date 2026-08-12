@@ -1,14 +1,11 @@
 import {randomUUID} from 'node:crypto';
 import {
-  createCanonicalCommandService,
   createTrackerRepositorySnapshotOrchestrationService
 } from '@fai-control-plane/application';
 import {
   createDatabase,
   createPostgresTrackerRepositoryReadScopeAuthorizer,
-  createPostgresTrackerStatusObservationProcessor,
   createPostgresTrackerSnapshotProjector,
-  createPostgresUnitOfWork,
   actors,
   projectTrackerRepositoryScopes,
   projects,
@@ -46,8 +43,6 @@ requiredExactInteger('GITHUB_ASCON_INSTALLATION_ID', 149_112_973);
 const bootstrapSubject = required('FCP_BOOTSTRAP_HUMAN_SUBJECT');
 const {db, pool} = createDatabase(databaseUrl);
 const projectSlugs = ['msa', 'ascon'] as const;
-// Keep each local inbox drain short so bootstrap latency remains bounded.
-const maximumObservationsPerSnapshot = 10;
 
 try {
   console.info('GitHub App and Projects OAuth credentials: configured');
@@ -130,30 +125,6 @@ try {
     scopeAuthorizer: createPostgresTrackerRepositoryReadScopeAuthorizer(db),
     projector: createPostgresTrackerSnapshotProjector(db)
   });
-  const observationProcessor = createPostgresTrackerStatusObservationProcessor(
-    db,
-    createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)}),
-    trustedActor.value
-  );
-
-  const reconcileStatusObservations = async () => {
-    const counts = {applied: 0, acknowledged: 0, conflict: 0, retryable: 0};
-    for (let attempted = 0; attempted < maximumObservationsPerSnapshot; attempted += 1) {
-      const result = await observationProcessor.processAvailable();
-      if (result.status === 'idle') return {status: 'idle', attempted, counts};
-      if (result.status === 'retryable') {
-        counts.retryable += 1;
-        return {status: 'retryable', attempted: attempted + 1, counts};
-      }
-      if (result.status === 'conflict') {
-        counts.conflict += 1;
-        return {status: 'conflict', attempted: attempted + 1, counts};
-      }
-      counts[result.status] += 1;
-    }
-    return {status: 'limit_reached', attempted: maximumObservationsPerSnapshot, counts};
-  };
-
   let failed = false;
   for (const scope of scopes.sort((left, right) => left.projectSlug.localeCompare(right.projectSlug))) {
     const mode = scope.bindingId === null ? 'bootstrap' : 'synchronize';
@@ -174,9 +145,6 @@ try {
         ? {mode}
         : {mode, expectedPreviousExternalVersion: scope.lastInboundVersion ?? ''})
     });
-    const reconciliation = result.status === 'applied'
-      ? await reconcileStatusObservations()
-      : {status: 'skipped', attempted: 0, counts: {applied: 0, acknowledged: 0, conflict: 0, retryable: 0}};
     console.info(JSON.stringify({
       event: 'github_bootstrap_snapshot',
       project: scope.projectSlug,
@@ -184,12 +152,10 @@ try {
       snapshot: {
         status: result.status,
         ...('code' in result ? {code: result.code} : {})
-      },
-      reconciliation
+      }
     }));
     if (
-      result.status === 'denied' || result.status === 'failed' || result.status === 'conflict' ||
-      reconciliation.status === 'retryable' || reconciliation.status === 'conflict'
+      result.status === 'denied' || result.status === 'failed' || result.status === 'conflict'
     ) {
       failed = true;
     }
