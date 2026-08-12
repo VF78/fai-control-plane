@@ -204,6 +204,23 @@ class BundleTest(unittest.TestCase):
         self.assertIn('release_root="/opt/fai-control-plane-runner/releases/$release_commit"', activation)
         self.assertNotIn('release_root="/opt/fai-control-plane/releases/', activation)
 
+    def test_activation_and_example_bind_each_component_ttl(self):
+        root = MODULE_PATH.parents[1]
+        activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
+        environment = (root / "infra/production/fai-hermes-runner.env.example").read_text()
+        expected = {
+            "FAI_HERMES_RUNNER_SERVICE_TTL_SECONDS": "300",
+            "FAI_HERMES_RUNNER_SCHEDULER_TTL_SECONDS": "900",
+            "FAI_HERMES_RUNNER_DELIVERY_TTL_SECONDS": "93600",
+        }
+        self.assertNotIn("FAI_HERMES_RUNNER_OBSERVATION_TTL_SECONDS", environment + activation)
+        for key, value in expected.items():
+            self.assertIn(f"{key}={value}\n", environment)
+            self.assertIn(f'env_value "$controller_env" {key}', activation)
+        self.assertIn('"$service_ttl_seconds" == "300"', activation)
+        self.assertIn('"$scheduler_ttl_seconds" == "900"', activation)
+        self.assertIn('"$delivery_ttl_seconds" == "93600"', activation)
+
     def test_units_allow_only_isolated_oauth_homes_beside_operational_paths(self):
         root = MODULE_PATH.parents[1]
         controller = (root / "infra/production/fai-hermes-runner.service").read_text()

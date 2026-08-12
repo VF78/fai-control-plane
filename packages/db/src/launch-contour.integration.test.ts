@@ -2,11 +2,12 @@ import {execFile} from 'node:child_process';
 import {createHash, randomUUID} from 'node:crypto';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
-import {and, asc, eq} from 'drizzle-orm';
+import {and, asc, eq, inArray} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import type {DeliveryProtocolDefinition} from '@fai-control-plane/domain';
+import {createActorContextIssuer, type DeliveryProtocolDefinition} from '@fai-control-plane/domain';
+import {createCanonicalCommandService} from '../../application/src/index';
 import {
   actorExternalIdentities,
   actors,
@@ -16,6 +17,7 @@ import {
   conversationMessages,
   conversationParticipants,
   createDatabase,
+  createPostgresUnitOfWork,
   createPostgresConversationStore,
   createPostgresDeliveryJourneyStore,
   createPostgresGovernedQaStore,
@@ -263,6 +265,75 @@ describePostgres('test-operational launch contour', () => {
       .where(eq(actorExternalIdentities.provider, 'telegram'))).toHaveLength(3);
   });
 
+  it('persists only component-exact runtime observation TTLs through the canonical command', async () => {
+    const [workspace] = await db.select().from(workspaces)
+      .where(eq(workspaces.slug, 'fai-studio'));
+    if (workspace === undefined) throw new Error('runtime observation workspace fixture missing');
+    const [registration] = await db.select().from(runtimeRegistrations);
+    const [runtimeObserver] = await db.select({id: actors.id}).from(actors).where(and(
+      eq(actors.workspaceId, workspace.id),
+      eq(actors.externalSubject, 'system:runtime-observer:v1')
+    ));
+    if (registration === undefined || runtimeObserver === undefined) {
+      throw new Error('runtime observation fixture missing');
+    }
+    const issuer = createActorContextIssuer({users: [], agents: [], systems: [{
+      actorId: runtimeObserver.id,
+      capabilities: ['write:runtime_observation:development']
+    }]});
+    if (!issuer.ok) throw new Error('runtime observation issuer failed');
+    const actor = issuer.value.issueSystem(runtimeObserver.id);
+    if (!actor.ok) throw new Error('runtime observation actor failed');
+    const service = createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)});
+    const observe = (
+      observationId: string,
+      component: 'service' | 'scheduler' | 'delivery',
+      ttlSeconds: number
+    ) => ({
+      commandId: randomUUID(),
+      workspaceId: workspace.id,
+      correlationId: randomUUID(),
+      idempotencyKey: `launch-runtime-observation-${observationId}`,
+      issuedAt: new Date().toISOString(),
+      actor: actor.value,
+      type: 'runtime_availability.observe' as const,
+      payload: {
+        observationId,
+        registrationId: registration.id,
+        component,
+        state: 'available' as const,
+        observedAt: new Date().toISOString(),
+        ttlSeconds,
+        evidenceReference: `test://hermes/canonical/${component}/${observationId}`
+      }
+    });
+    const expectedTtls = {service: 300, scheduler: 900, delivery: 93_600} as const;
+    const acceptedIds: string[] = [];
+    for (const component of ['service', 'scheduler', 'delivery'] as const) {
+      const observationId = randomUUID();
+      acceptedIds.push(observationId);
+      await expect(service.execute(observe(observationId, component, expectedTtls[component])))
+        .resolves.toMatchObject({status: 'completed', receipt: {result: {ok: true}}});
+    }
+    const accepted = await db.select({
+      component: runtimeAvailabilityObservations.component,
+      ttlSeconds: runtimeAvailabilityObservations.ttlSeconds
+    }).from(runtimeAvailabilityObservations)
+      .where(inArray(runtimeAvailabilityObservations.id, acceptedIds));
+    expect(Object.fromEntries(accepted.map(({component, ttlSeconds}) => [component, ttlSeconds])))
+      .toEqual(expectedTtls);
+
+    const mismatchedId = randomUUID();
+    await expect(service.execute(observe(mismatchedId, 'delivery', 120)))
+      .resolves.toMatchObject({status: 'completed', receipt: {result: {
+        error: {code: 'NOT_FOUND'}
+      }}});
+    expect(await db.select().from(runtimeAvailabilityObservations)
+      .where(eq(runtimeAvailabilityObservations.id, mismatchedId))).toHaveLength(0);
+    await db.delete(runtimeAvailabilityObservations)
+      .where(inArray(runtimeAvailabilityObservations.id, acceptedIds));
+  });
+
   it('records fresh tracker/runtime facts and reaches the acceptance boundary for both projects', async () => {
     const [workspace] = await db.select().from(workspaces);
     if (workspace === undefined) throw new Error('workspace missing');
@@ -470,13 +541,14 @@ describePostgres('test-operational launch contour', () => {
 
     const [registration] = await db.select().from(runtimeRegistrations);
     if (registration === undefined) throw new Error('runtime registration missing');
+    const ttlByComponent = {service: 300, scheduler: 900, delivery: 93_600} as const;
     for (const component of ['service', 'scheduler', 'delivery'] as const) {
       await db.insert(runtimeAvailabilityObservations).values({
         runtimeRegistrationId: registration.id,
         component,
         state: 'available',
         observedAt,
-        ttlSeconds: 300,
+        ttlSeconds: ttlByComponent[component],
         evidenceReference: `test://hermes/${component}/available`
       });
     }
