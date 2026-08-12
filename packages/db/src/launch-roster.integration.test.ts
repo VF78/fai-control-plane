@@ -7,7 +7,8 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {dropDatabaseWhenDisconnected} from './integration-test-utils';
 import {
   reconcileLaunchHumanRoster,
-  reconcileLaunchProjectMemberships
+  reconcileLaunchProjectMemberships,
+  reconcileLaunchSystemRoster
 } from './launch-roster';
 import {
   actorExternalIdentities,
@@ -192,7 +193,7 @@ describePostgres('launch roster reconciliation', () => {
       .innerJoin(actors, eq(actors.id, projectMemberships.actorId))
       .orderBy(asc(projects.slug), asc(actors.displayName));
     expect(memberships.filter(({active}) => active)).toEqual([
-      {project: 'ascon', actor: 'Vladimir', actorType: 'human', roles: ['project_owner'], active: true},
+      {project: 'ascon', actor: 'Vladimir', actorType: 'human', roles: ['project_owner', 'contributor'], active: true},
       {project: 'msa', actor: 'Hermes', actorType: 'agent', roles: ['agent'], active: true},
       {project: 'msa', actor: 'Vitaliy', actorType: 'human', roles: ['contributor'], active: true},
       {project: 'msa', actor: 'Vladimir', actorType: 'human', roles: ['project_owner'], active: true}
@@ -211,5 +212,68 @@ describePostgres('launch roster reconciliation', () => {
     expect(finalMembershipIds).toEqual(initialMembershipIds);
     expect(finalIdentityIds).toEqual(initialIdentityIds);
     expect(codexActorId).not.toBe(hermesActorId);
+  });
+
+  it('idempotently creates and repairs exactly one launch runtime observer per workspace', async () => {
+    const otherWorkspaceId = randomUUID();
+    await db.insert(workspaces).values({
+      id: otherWorkspaceId,
+      name: 'Other workspace',
+      slug: `other-${randomUUID()}`
+    });
+
+    const first = await reconcileLaunchSystemRoster(db, workspaceId);
+    const other = await reconcileLaunchSystemRoster(db, otherWorkspaceId);
+    expect(first.runtimeObserverActorId).not.toBe(other.runtimeObserverActorId);
+
+    await db.update(actors).set({
+      type: 'agent',
+      role: 'developer',
+      displayName: 'Stale observer',
+      capabilities: {
+        'write:runtime_observation:development': false,
+        'write:control_plane:development': true
+      },
+      disabledAt: new Date('2026-08-12T00:00:00.000Z')
+    }).where(eq(actors.id, first.runtimeObserverActorId));
+
+    const repaired = await reconcileLaunchSystemRoster(db, workspaceId);
+    const replayed = await reconcileLaunchSystemRoster(db, workspaceId);
+    expect(repaired).toEqual(first);
+    expect(replayed).toEqual(first);
+
+    const observers = await db.select({
+      id: actors.id,
+      workspaceId: actors.workspaceId,
+      type: actors.type,
+      role: actors.role,
+      displayName: actors.displayName,
+      authMode: actors.authMode,
+      externalSubject: actors.externalSubject,
+      capabilities: actors.capabilities,
+      disabledAt: actors.disabledAt
+    }).from(actors).where(and(
+      eq(actors.authMode, 'system'),
+      eq(actors.externalSubject, 'system:runtime-observer:v1')
+    )).orderBy(asc(actors.workspaceId));
+
+    expect(observers).toHaveLength(2);
+    expect(observers.map(({id}) => id).sort())
+      .toEqual([first.runtimeObserverActorId, other.runtimeObserverActorId].sort());
+    expect(observers.map(({workspaceId: observedWorkspaceId}) => observedWorkspaceId).sort())
+      .toEqual([workspaceId, otherWorkspaceId].sort());
+    for (const observer of observers) {
+      expect(observer).toMatchObject({
+        type: 'system',
+        role: 'agent_operator',
+        displayName: 'Runtime Observer',
+        authMode: 'system',
+        externalSubject: 'system:runtime-observer:v1',
+        capabilities: {'write:runtime_observation:development': true},
+        disabledAt: null
+      });
+      expect(observer.capabilities)
+        .toEqual({'write:runtime_observation:development': true});
+    }
   });
 });

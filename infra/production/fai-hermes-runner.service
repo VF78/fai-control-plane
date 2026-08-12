@@ -33,8 +33,8 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ /usr/local/lib/hermes-agent /var/lib/fai-hermes-controller/hermes /var/lib/fai-hermes-controller/credentials
-ReadWritePaths=/var/lib/fai-hermes-controller/state
+ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ /usr/local/lib/hermes-agent /var/lib/fai-hermes-controller/hermes/config.yaml /var/lib/fai-hermes-controller/credentials
+ReadWritePaths=/var/lib/fai-hermes-controller/state /var/lib/fai-hermes-controller/hermes
 InaccessiblePaths=/var/lib/fai-codex-executor /etc/fai-codex-executor
 
 [Install]

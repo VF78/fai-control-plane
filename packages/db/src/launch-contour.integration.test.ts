@@ -116,7 +116,7 @@ describePostgres('test-operational launch contour', () => {
       .innerJoin(actors, eq(actors.id, projectMemberships.actorId))
       .orderBy(asc(projects.slug), asc(actors.displayName));
     expect(memberships.filter(({active}) => active)).toEqual([
-      {project: 'ascon', actor: 'Vladimir', roles: ['project_owner'], active: true},
+      {project: 'ascon', actor: 'Vladimir', roles: ['project_owner', 'contributor'], active: true},
       {project: 'msa', actor: 'Hermes', roles: ['agent'], active: true},
       {project: 'msa', actor: 'Vitaliy', roles: ['contributor'], active: true},
       {project: 'msa', actor: 'Vladimir', roles: ['project_owner'], active: true}
@@ -170,6 +170,25 @@ describePostgres('test-operational launch contour', () => {
     expect(await db.select().from(workspaceInstructionVersions)).toHaveLength(1);
     expect(await db.select().from(agentProfiles)
       .where(eq(agentProfiles.runtimeId, 'hermes'))).toHaveLength(1);
+    expect(await db.select({
+      type: actors.type,
+      role: actors.role,
+      authMode: actors.authMode,
+      externalSubject: actors.externalSubject,
+      capabilities: actors.capabilities,
+      disabledAt: actors.disabledAt
+    }).from(actors).where(and(
+      eq(actors.workspaceId, workspace.id),
+      eq(actors.authMode, 'system'),
+      eq(actors.externalSubject, 'system:runtime-observer:v1')
+    ))).toEqual([{
+      type: 'system',
+      role: 'agent_operator',
+      authMode: 'system',
+      externalSubject: 'system:runtime-observer:v1',
+      capabilities: {'write:runtime_observation:development': true},
+      disabledAt: null
+    }]);
     expect(await db.select().from(projectTrackerRepositoryScopes)
       .orderBy(asc(projectTrackerRepositoryScopes.repositoryName))).toMatchObject([
       {provider: 'github', repositoryOwner: 'VF78', repositoryName: 'ascon'},
