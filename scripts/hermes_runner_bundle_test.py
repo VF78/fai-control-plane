@@ -291,6 +291,8 @@ class BundleTest(unittest.TestCase):
         self.assertIn('systemctl enable fai-hermes-planner.service', activation)
         self.assertIn('systemctl restart fai-hermes-planner.service', activation)
         self.assertIn('FAI_HERMES_PLANNING_EXPECTED_CLIENT_UID', activation)
+        self.assertIn('planner_token_hash="$(credential_hash "$planner_token")"', activation)
+        self.assertIn('[[ "$planner_token_hash" != "$model_credential_hash" ]]', activation)
         self.assertNotIn("HERMES_SEMANTIC_PLANNING_URL", production_environment + compose)
 
     def test_planner_activation_is_atomic_and_never_mutates_unrelated_units(self):
@@ -327,6 +329,15 @@ class BundleTest(unittest.TestCase):
         self.assertIn('"$REPO/scripts/activate-hermes-planner.sh"', deployment)
         self.assertIn('restore_planner()', deployment)
         self.assertIn('restore_planner\n  if ((migration_ran == 1))', deployment)
+        self.assertIn('readonly PLANNER_ACTIVATION_LOCK=\'/var/lock/fai-hermes-planner-activation.lock\'', deployment)
+        self.assertIn('readonly planner_lock=/var/lock/fai-hermes-planner-activation.lock',
+                      MODULE_PATH.with_name("activate-hermes-planner.sh").read_text())
+        self.assertEqual(deployment.count('FCP_HERMES_PLANNER_LOCK_FD=8'), 2)
+        self.assertIn('unset FCP_HERMES_PLANNER_LOCK_FD',
+                      MODULE_PATH.with_name("activate-hermes-planner.sh").read_text())
+        self.assertIn('[[ "$planner_previous_commit" == "$previous_tag" ]]', deployment)
+        self.assertIn("'prior application readiness baseline' prior_app_ready", deployment)
+        self.assertIn("'restored prior application readiness' prior_app_ready", deployment)
         target_activation = deployment.index('--release-commit="$TARGET"')
         web_stop = deployment.index('compose stop web worker', target_activation)
         self.assertLess(target_activation, web_stop)

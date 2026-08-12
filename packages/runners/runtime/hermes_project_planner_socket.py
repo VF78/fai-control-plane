@@ -46,6 +46,7 @@ MAX_CONNECTIONS = 32
 MAX_GENERATE_CONNECTIONS = MAX_CONNECTIONS - 1
 IDEMPOTENCY_MAX_ENTRIES = 256
 IDEMPOTENCY_TTL_SECONDS = 300.0
+COALESCED_WAIT_SECONDS = 50.0
 TOKEN = re.compile(r"^[A-Za-z0-9._~+/=-]{32,256}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -93,11 +94,13 @@ class IdempotencyEntry:
 
 class IdempotencyRegistry:
     def __init__(self, maximum: int = IDEMPOTENCY_MAX_ENTRIES,
-                 ttl_seconds: float = IDEMPOTENCY_TTL_SECONDS) -> None:
-        if maximum < 1 or ttl_seconds <= 0:
+                 ttl_seconds: float = IDEMPOTENCY_TTL_SECONDS,
+                 coalesced_wait_seconds: float = COALESCED_WAIT_SECONDS) -> None:
+        if maximum < 1 or ttl_seconds <= 0 or coalesced_wait_seconds <= 0:
             raise ValueError("idempotency_bounds")
         self.maximum = maximum
         self.ttl_seconds = ttl_seconds
+        self.coalesced_wait_seconds = coalesced_wait_seconds
         self.entries: OrderedDict[str, IdempotencyEntry] = OrderedDict()
         self.lock = threading.Lock()
 
@@ -126,7 +129,8 @@ class IdempotencyRegistry:
                 entry = IdempotencyEntry(request_hash=request_hash)
                 self.entries[key] = entry
         if not owner:
-            entry.ready.wait()
+            if not entry.ready.wait(timeout=self.coalesced_wait_seconds):
+                fail("idempotency_wait_timeout")
             if entry.failed or entry.response is None:
                 fail("generation_failed")
             return entry.response
@@ -137,6 +141,8 @@ class IdempotencyRegistry:
                 entry.failed = True
                 entry.completed_at = time.monotonic()
                 entry.ready.set()
+                if self.entries.get(key) is entry:
+                    del self.entries[key]
             raise
         with self.lock:
             entry.response = response
@@ -220,7 +226,7 @@ def load_token() -> str:
     return token
 
 
-def load_model_credential(runtime: dict[str, Any]) -> None:
+def load_model_credential(runtime: dict[str, Any], planning_token: str) -> None:
     configured = Path(os.environ.get("FAI_HERMES_PLANNING_MODEL_CREDENTIAL_FILE", ""))
     metadata = MODEL_CREDENTIAL_PATH.lstat()
     if configured != MODEL_CREDENTIAL_PATH or MODEL_CREDENTIAL_PATH.is_symlink() or \
@@ -230,6 +236,10 @@ def load_model_credential(runtime: dict[str, Any]) -> None:
     credential = MODEL_CREDENTIAL_PATH.read_text(encoding="utf-8").removesuffix("\n")
     if not TOKEN.fullmatch(credential):
         fail("model_credential_value")
+    credential_hash = hashlib.sha256(credential.encode()).digest()
+    planning_token_hash = hashlib.sha256(planning_token.encode()).digest()
+    if hmac.compare_digest(credential_hash, planning_token_hash):
+        fail("model_credential_reuse")
     runtime["api_key"] = credential
 
 
@@ -418,8 +428,12 @@ def handle_connection(connection: socket.socket, expected_uid: int, token: str,
         try:
             request_hash = hashlib.sha256(canonical_json(request).encode()).hexdigest()
             def invoke() -> bytes:
-                with provider:
+                if not provider.acquire(blocking=False):
+                    fail("provider_busy")
+                try:
                     return generate(binding, runtime, request)
+                finally:
+                    provider.release()
             write_frame(connection, registry.execute(request["idempotencyKey"], request_hash, invoke))
         finally:
             if generate_slots is not None:
@@ -483,7 +497,7 @@ def main() -> int:
     validate_planner_config()
     binding, runtime = load_contract()
     token = load_token()
-    load_model_credential(runtime)
+    load_model_credential(runtime, token)
     release_commit = os.environ.get("FAI_HERMES_PLANNING_RELEASE_COMMIT", "")
     if not re.fullmatch(r"[0-9a-f]{40}", release_commit):
         fail("release_commit")

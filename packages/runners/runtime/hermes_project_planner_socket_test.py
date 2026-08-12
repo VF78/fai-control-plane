@@ -5,6 +5,7 @@ import os
 import socket
 import struct
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -70,6 +71,20 @@ class HermesProjectPlannerSocketTest(unittest.TestCase):
         self.assertIn('FAI_HERMES_PLANNING_MODEL_CREDENTIAL_FILE', source)
         self.assertIn('contains_secret(config_path.read_text', source)
         self.assertNotIn('/var/lib/fai-hermes-controller', source)
+
+    def test_model_credential_must_not_reuse_planning_bearer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path = Path(directory) / "model-credential"
+            credential_path.write_text("a" * 32 + "\n", encoding="utf-8")
+            credential_path.chmod(0o600)
+            environment = {"FAI_HERMES_PLANNING_MODEL_CREDENTIAL_FILE": str(credential_path)}
+            with patch.object(MODULE, "MODEL_CREDENTIAL_PATH", credential_path), patch.dict(os.environ, environment):
+                with self.assertRaisesRegex(RuntimeError, "model_credential_reuse"):
+                    MODULE.load_model_credential({}, "a" * 32)
+                credential_path.write_text("b" * 32 + "\n", encoding="utf-8")
+                runtime = {}
+                MODULE.load_model_credential(runtime, "a" * 32)
+                self.assertEqual(runtime["api_key"], "b" * 32)
     def test_kernel_peer_uid_when_supported(self):
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -133,6 +148,41 @@ class HermesProjectPlannerSocketTest(unittest.TestCase):
         self.assertLessEqual(len(registry.entries), 2)
         self.assertEqual(calls, ["one", "two", "three", "two"])
 
+    def test_identical_in_flight_wait_is_bounded(self):
+        registry = MODULE.IdempotencyRegistry(maximum=2, ttl_seconds=5, coalesced_wait_seconds=0.05)
+        started = threading.Event()
+        release = threading.Event()
+        owner_error = []
+
+        def blocked_response():
+            started.set()
+            self.assertTrue(release.wait(2))
+            return b"response"
+
+        def own_request():
+            try:
+                registry.execute("one", "a" * 64, blocked_response)
+            except Exception as exception:
+                owner_error.append(exception)
+
+        owner = threading.Thread(target=own_request)
+        owner.start()
+        self.assertTrue(started.wait(1))
+        wait_started = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, "idempotency_wait_timeout"):
+            registry.execute("one", "a" * 64, lambda: b"unexpected")
+        self.assertLess(time.monotonic() - wait_started, 0.5)
+        release.set()
+        owner.join(1)
+        self.assertFalse(owner.is_alive())
+        self.assertFalse(owner_error)
+
+    def test_failed_admission_does_not_poison_idempotent_retry(self):
+        registry = MODULE.IdempotencyRegistry(maximum=2, ttl_seconds=5)
+        with self.assertRaisesRegex(RuntimeError, "provider_busy"):
+            registry.execute("retry", "a" * 64, lambda: MODULE.fail("provider_busy"))
+        self.assertEqual(registry.execute("retry", "a" * 64, lambda: b"response"), b"response")
+
     def test_length_framing_and_peer_uid_are_enforced(self):
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -149,7 +199,7 @@ class HermesProjectPlannerSocketTest(unittest.TestCase):
     def test_concurrent_idempotency_coalesces_replays_denies_collision_and_keeps_health_responsive(self):
         registry = MODULE.IdempotencyRegistry(maximum=4, ttl_seconds=60)
         provider_slot = threading.Semaphore(1)
-        generate_slots = threading.BoundedSemaphore(3)
+        generate_slots = threading.BoundedSemaphore(16)
         started = threading.Event(); release = threading.Event()
         definition = {"title": "Plan", "outcomes": [], "milestones": [], "risks": [], "tasks": []}
         provider_calls = 0
@@ -182,6 +232,20 @@ class HermesProjectPlannerSocketTest(unittest.TestCase):
             first_client, first_thread, first_error = exchange(fixture())
             self.assertTrue(started.wait(1))
             second_client, second_thread, second_error = exchange(fixture())
+            busy_started = time.monotonic()
+            busy_exchanges = []
+            for index in range(8):
+                distinct = fixture()
+                distinct["idempotencyKey"] = f"project-plan:busy-{index}"
+                busy_exchanges.append(exchange(distinct))
+            for client, thread, errors in busy_exchanges:
+                thread.join(1)
+                self.assertFalse(thread.is_alive())
+                client.close()
+                self.assertEqual(len(errors), 1)
+                self.assertRegex(str(errors[0]), "provider_busy")
+            self.assertLess(time.monotonic() - busy_started, 1)
+            self.assertEqual(provider_calls, 1)
             health = {"schemaVersion": 1, "operation": "health",
                       "nonce": "10000000-0000-4000-8000-000000000009",
                       "authentication": {"scheme": "bearer", "token": "a" * 32}}

@@ -70,6 +70,7 @@ readonly COMPOSE_FILE="$REPO/infra/production/compose.yaml"
 readonly PROJECT='fai-control-plane-production'
 readonly BACKUP_DIR='/srv/fai-control-plane/backups'
 readonly ARTIFACT_VOLUME='fai-control-plane-production-artifacts'
+readonly PLANNER_ACTIVATION_LOCK='/var/lock/fai-hermes-planner-activation.lock'
 
 die() { printf 'deploy-prod (remote): %s\n' "$*" >&2; exit 1; }
 compose() { docker compose --project-name "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
@@ -87,6 +88,23 @@ planner_health() {
     --socket /run/fai-hermes-planner/planner.sock \
     --token-file /etc/fai-control-plane/secrets/hermes-semantic-planning-token \
     --release-commit "$release_commit"
+}
+
+retry() {
+  local attempts="$1" delay="$2" label="$3" attempt
+  shift 3
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if "$@"; then return 0; fi
+    if ((attempt < attempts)); then sleep "$delay"; fi
+  done
+  printf 'deploy-prod: %s did not pass within %s seconds\n' "$label" "$((attempts * delay))" >&2
+  return 1
+}
+
+prior_app_ready() {
+  local port
+  port="$(env_value WEB_BIND_PORT)"
+  curl --fail --silent --show-error --max-time 15 "http://127.0.0.1:${port}/api/ready" >/dev/null
 }
 
 required_path_keys=(
@@ -122,6 +140,9 @@ validate_environment() {
        ! -L "$planning_socket_dir" ]] || die 'Hermes semantic planning socket directory is unavailable'
     [[ -S "$planning_socket_dir/planner.sock" && ! -L "$planning_socket_dir/planner.sock" ]] ||
       die 'Hermes semantic planning live socket binding is unavailable'
+    [[ "$(systemctl is-enabled fai-hermes-planner.service 2>/dev/null || true)" == 'enabled' &&
+       "$(systemctl is-active fai-hermes-planner.service 2>/dev/null || true)" == 'active' ]] ||
+      die 'Hermes semantic planning service is not active and enabled'
     is_sha256 "$PLANNER_RELEASE_SHA256" ||
       die 'planner release SHA-256 must be exactly 64 lowercase hexadecimal characters'
     [[ "$PLANNER_RELEASE_BUNDLE" = /* && -f "$PLANNER_RELEASE_BUNDLE" &&
@@ -138,9 +159,13 @@ validate_environment() {
     active_planner_commit="$(sed -n 's/^Environment=FAI_HERMES_PLANNING_RELEASE_COMMIT=//p' \
       /etc/systemd/system/fai-hermes-planner.service)"
     is_hash "$active_planner_commit" || die 'active planner release binding is unavailable'
+    [[ "$active_planner_commit" == "$(env_value FCP_IMAGE_TAG)" ]] ||
+      die 'active planner release differs from the active application release'
     planner_health "$active_planner_commit" || die 'active planner authenticated health failed'
   fi
   compose config --quiet
+  retry 3 2 'prior application readiness baseline' prior_app_ready ||
+    die 'prior application /api/ready baseline is unhealthy'
 }
 
 preflight() {
@@ -164,6 +189,16 @@ fi
 
 exec 9>/var/lock/fai-control-plane-production-deploy.lock
 flock -n 9 || die 'another fai-control-plane production deployment is running'
+[[ ! -L "$PLANNER_ACTIVATION_LOCK" ]] || die 'planner activation lock binding mismatch'
+if [[ ! -e "$PLANNER_ACTIVATION_LOCK" ]]; then
+  (umask 077; set -o noclobber; : >"$PLANNER_ACTIVATION_LOCK") 2>/dev/null || true
+fi
+[[ -f "$PLANNER_ACTIVATION_LOCK" && ! -L "$PLANNER_ACTIVATION_LOCK" &&
+   "$(stat -c '%U:%G' "$PLANNER_ACTIVATION_LOCK")" == root:root ]] ||
+  die 'planner activation lock binding mismatch'
+chmod 0600 "$PLANNER_ACTIVATION_LOCK"
+exec 8>>"$PLANNER_ACTIVATION_LOCK"
+flock -n 8 || die 'another planner activation or production deployment is running'
 
 previous_commit=''
 checkout_commit=''
@@ -255,7 +290,7 @@ restore_planner() {
   ((planner_changed == 1)) || return 0
   ((planner_previous_enabled == 1)) || recovery_required \
     'planner release safety gate: prior enabled state is unavailable'
-  if ! "$REPO/scripts/activate-hermes-planner.sh" \
+  if ! FCP_HERMES_PLANNER_LOCK_FD=8 "$REPO/scripts/activate-hermes-planner.sh" \
     --release-commit="$planner_previous_commit" \
     --release-bundle="$planner_previous_bundle" \
     --release-sha256="$planner_previous_sha256" \
@@ -276,6 +311,8 @@ rollback() {
   if ! git reset --hard "$previous_commit" >/dev/null; then recovery_required 'could not restore the previous checkout'; fi
   if ! set_image_tag "$previous_tag"; then recovery_required 'could not restore the previous image tag'; fi
   if ! compose up -d --no-build --no-deps worker web; then recovery_required 'could not restart the previous control-plane services'; fi
+  retry 30 5 'restored prior application readiness' prior_app_ready ||
+    recovery_required 'restored prior application readiness failed'
 }
 
 on_error() {
@@ -288,6 +325,8 @@ on_error() {
     if ((writes_stopped == 1)) && ! compose up -d --no-build --no-deps worker web; then
       recovery_required 'could not restart the previous control-plane services'
     fi
+    retry 30 5 'restored prior application readiness' prior_app_ready ||
+      recovery_required 'restored prior application readiness failed'
   fi
   exit "$status"
 }
@@ -302,7 +341,6 @@ is_hash "$previous_tag" || die 'existing FCP_IMAGE_TAG is not an immutable commi
 [[ "$previous_tag" != "$TARGET" ]] || die 'requested commit is already active'
 git merge-base --is-ancestor "$previous_tag" "$checkout_commit" || \
   die 'production checkout has diverged from the active image tag'
-previous_commit="$previous_tag"
 validate_environment
 if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == 'true' ]]; then
   [[ "$(systemctl is-enabled fai-hermes-planner.service 2>/dev/null || true)" == 'enabled' &&
@@ -314,6 +352,8 @@ if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == 'true' ]]; then
     /etc/systemd/system/fai-hermes-planner.service)"
   is_hash "$planner_previous_commit" || \
     die 'planner release safety gate: prior planner commit is unavailable'
+  [[ "$planner_previous_commit" == "$previous_tag" ]] ||
+    die 'planner release safety gate: prior planner commit differs from the active application release'
   planner_previous_sha_file="/opt/fai-control-plane-runner/releases/$planner_previous_commit/RELEASE_ARTIFACT_SHA256"
   [[ -f "$planner_previous_sha_file" && ! -L "$planner_previous_sha_file" ]] ||
     die 'planner release safety gate: prior planner SHA-256 file is unavailable'
@@ -327,6 +367,7 @@ if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == 'true' ]]; then
   planner_health "$planner_previous_commit" || \
     die 'planner release safety gate: prior planner authenticated health failed'
 fi
+previous_commit="$previous_tag"
 install -d -m 0700 "$BACKUP_DIR"
 [[ -w "$BACKUP_DIR" ]] || die 'backup destination is unavailable'
 docker image inspect "fai-control-plane:$previous_tag" >/dev/null
@@ -340,7 +381,7 @@ git merge --ff-only "$TARGET" >/dev/null
 compose_target build web worker
 docker image inspect "fai-control-plane:$TARGET" >/dev/null
 if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == 'true' ]]; then
-  "$REPO/scripts/activate-hermes-planner.sh" \
+  FCP_HERMES_PLANNER_LOCK_FD=8 "$REPO/scripts/activate-hermes-planner.sh" \
     --release-commit="$TARGET" \
     --release-bundle="$PLANNER_RELEASE_BUNDLE" \
     --release-sha256="$PLANNER_RELEASE_SHA256" \
@@ -348,6 +389,8 @@ if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == 'true' ]]; then
   planner_changed=1
   if ! planner_health "$TARGET"; then
     restore_planner
+    retry 30 5 'restored prior application readiness' prior_app_ready ||
+      recovery_required 'restored prior application readiness failed after target planner rejection'
     recovery_required 'planner release safety gate: target planner authenticated health failed'
   fi
 fi
@@ -366,16 +409,6 @@ compose up -d --no-build --no-deps worker web
 db_name="$(env_value POSTGRES_DB)"
 db_user="$(env_value POSTGRES_USER)"
 web_port="$(env_value WEB_BIND_PORT)"
-retry() {
-  local attempts="$1" delay="$2" label="$3" attempt
-  shift 3
-  for ((attempt = 1; attempt <= attempts; attempt++)); do
-    if "$@"; then return 0; fi
-    if ((attempt < attempts)); then sleep "$delay"; fi
-  done
-  printf 'deploy-prod: %s did not pass within %s seconds\n' "$label" "$((attempts * delay))" >&2
-  return 1
-}
 database_ready() { compose exec -T postgres pg_isready -U "$db_user" -d "$db_name" >/dev/null; }
 worker_ready() { compose exec -T worker node -e "fetch('http://127.0.0.1:3001/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"; }
 local_health() { curl --fail --silent --show-error --max-time 15 "http://127.0.0.1:${web_port}/api/health" >/dev/null; }

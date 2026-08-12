@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-dry_run=false; confirmed=false; release_commit=; release_bundle=; release_sha256=
+dry_run=false; confirmed=false; release_commit=; release_bundle=; release_sha256=; inherited_lock_fd=
+[[ -z "${FCP_HERMES_PLANNER_LOCK_FD:-}" || "${FCP_HERMES_PLANNER_LOCK_FD}" == 8 ]] || {
+  echo "invalid inherited planner lock descriptor" >&2; exit 2;
+}
+[[ "${FCP_HERMES_PLANNER_LOCK_FD:-}" != 8 ]] || { inherited_lock_fd=8; unset FCP_HERMES_PLANNER_LOCK_FD; }
 for argument in "$@"; do
   case "$argument" in
     --dry-run) dry_run=true ;;
@@ -17,6 +21,28 @@ done
    "$release_bundle" = /* && -f "$release_bundle" && ! -L "$release_bundle" ]] || {
   echo "exact absolute release artifact, commit and SHA-256 are required" >&2; exit 2;
 }
+if [[ "$dry_run" == false ]]; then
+  [[ "$(id -u)" == 0 ]] || { echo "planner activation must run as root" >&2; exit 1; }
+  readonly planner_lock=/var/lock/fai-hermes-planner-activation.lock
+  if [[ -n "$inherited_lock_fd" ]]; then
+    inherited_lock_path="$(readlink "/proc/$$/fd/$inherited_lock_fd" 2>/dev/null || true)"
+    [[ "$inherited_lock_path" == "$planner_lock" || "$inherited_lock_path" == "$planner_lock (deleted)" ]] || {
+      echo "inherited planner activation lock binding mismatch" >&2; exit 1;
+    }
+    flock -n 8 || { echo "another planner activation or production deploy is running" >&2; exit 1; }
+  else
+    [[ ! -L "$planner_lock" ]] || { echo "planner activation lock binding mismatch" >&2; exit 1; }
+    if [[ ! -e "$planner_lock" ]]; then
+      (umask 077; set -o noclobber; : >"$planner_lock") 2>/dev/null || true
+    fi
+    [[ -f "$planner_lock" && ! -L "$planner_lock" && "$(stat -c '%U:%G' "$planner_lock")" == root:root ]] || {
+      echo "planner activation lock binding mismatch" >&2; exit 1;
+    }
+    chmod 0600 "$planner_lock"
+    exec 8>>"$planner_lock"
+    flock -n 8 || { echo "another planner activation or production deploy is running" >&2; exit 1; }
+  fi
+fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 installer="$repo_root/scripts/install-hermes-release.sh"
 [[ -f "$installer" && ! -L "$installer" ]] || { echo "release installer missing" >&2; exit 1; }
@@ -47,7 +73,6 @@ file_binding() {
 }
 
 if [[ "$dry_run" == false ]]; then
-  [[ "$(id -u)" == 0 ]] || { echo "planner activation must run as root" >&2; exit 1; }
   getent group "$planner_user" >/dev/null || groupadd --system "$planner_user"
   if ! getent passwd "$planner_user" >/dev/null; then
     useradd --system --gid "$planner_user" --home-dir "$planner_home" --shell /usr/sbin/nologin "$planner_user"
@@ -71,8 +96,17 @@ file_binding "$planner_env" "root:$planner_user" 640 && file_binding "$planner_c
    "$(sha256sum "$planner_token" | awk '{print $1}')" == "$(sha256sum "$web_token" | awk '{print $1}')" ]] || {
   echo "planner/web authentication binding mismatch" >&2; exit 1;
 }
-grep -Eq '^[A-Za-z0-9._~+/=-]{32,256}$' "$planner_token"
-grep -Eq '^[A-Za-z0-9._~+/=-]{32,256}$' "$model_credential"
+credential_hash() {
+  /usr/bin/python3 -c 'import hashlib,re,sys
+value=open(sys.argv[1], encoding="utf-8").read(258).removesuffix("\n")
+if re.fullmatch(r"[A-Za-z0-9._~+/=-]{32,256}", value) is None: raise SystemExit(1)
+print(hashlib.sha256(value.encode()).hexdigest())' "$1"
+}
+planner_token_hash="$(credential_hash "$planner_token")" || { echo "planning bearer value invalid" >&2; exit 1; }
+model_credential_hash="$(credential_hash "$model_credential")" || { echo "model credential value invalid" >&2; exit 1; }
+[[ "$planner_token_hash" != "$model_credential_hash" ]] || {
+  echo "planning bearer and model credential must be distinct" >&2; exit 1;
+}
 [[ "$(env_value "$planner_env" FAI_HERMES_PLANNING_TOKEN_FILE)" == "$planner_token" &&
    "$(env_value "$planner_env" FAI_HERMES_PLANNING_MODEL_CREDENTIAL_FILE)" == "$model_credential" &&
    "$(env_value "$planner_env" FAI_HERMES_PLANNING_SOCKET)" == /run/fai-hermes-planner/planner.sock &&
