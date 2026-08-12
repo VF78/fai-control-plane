@@ -702,5 +702,126 @@ describePostgres('project lifecycle golden path', () => {
     expect(await db.select().from(agentRuns).where(eq(agentRuns.workItemId, workItem.id))).toHaveLength(2);
     expect(await db.select().from(deliveryJourneyEvidence).where(eq(deliveryJourneyEvidence.workItemId, workItem.id)))
       .toHaveLength(5);
+
+    const asconProtocolId = randomUUID(); const asconPlanId = randomUUID();
+    const asconProtocol = {schemaVersion: 1 as const, stages: [
+      {key: 'development', name: 'Development', enabled: true, taskStatus: 'in_dev' as const,
+        responsibility: {kind: 'project_role' as const, role: 'project_owner' as const},
+        executionMode: 'manual' as const, entryCriteria: ['Approved plan is materialized'],
+        requiredEvidence: ['Codex implementation receipt'], allowedNextStageKey: 'qa'},
+      {key: 'qa', name: 'Human QA', enabled: true, taskStatus: 'qa' as const,
+        responsibility: {kind: 'project_role' as const, role: 'project_owner' as const},
+        executionMode: 'manual' as const, entryCriteria: ['Implementation receipt retained'],
+        requiredEvidence: ['Human QA result'], allowedNextStageKey: 'acceptance'},
+      {key: 'acceptance', name: 'Acceptance', enabled: true, taskStatus: 'acceptance' as const,
+        responsibility: {kind: 'project_role' as const, role: 'project_owner' as const},
+        executionMode: 'human_approval' as const, entryCriteria: ['Human QA passed'],
+        requiredEvidence: ['Product Owner acceptance'], allowedNextStageKey: 'accepted'},
+      {key: 'accepted', name: 'Accepted', enabled: true, taskStatus: 'done' as const,
+        responsibility: {kind: 'project_role' as const, role: 'project_owner' as const},
+        executionMode: 'human_approval' as const, entryCriteria: ['Product Owner accepted the result'],
+        requiredEvidence: ['Accepted delivery baseline'], allowedNextStageKey: null}
+    ]};
+    await db.insert(runbooks).values({id: asconProtocolId, projectId: ids.ascon, name: 'ASCON manual Codex',
+      version: 1, definition: asconProtocol, active: true, protocolState: 'published', revision: 1,
+      contentHash: hashDeliveryProtocolDefinition(asconProtocol)});
+    const asconSources = [
+      {kind: 'project_passport' as const, name: 'ASCON passport', content: 'Outcome: bounded ASCON change.'},
+      {kind: 'solution_architecture' as const, name: 'ASCON architecture', content: 'Architecture: existing service.'},
+      {kind: 'client_requirements' as const, name: 'ASCON requirements', content: 'Client requires human review.'}
+    ].map((source) => ({...source, id: randomUUID(), sha256: sourceArtifactDigest(source.content)}));
+    for (const source of asconSources) {
+      await expect(planService.execute(envelope(ids.workspace, ownerContext.value, 'project_plan.source.record', {
+        artifactId: source.id, projectId: ids.ascon, name: source.name, sourceKind: source.kind,
+        mediaType: 'text/markdown' as const, content: source.content, sizeBytes: Buffer.byteLength(source.content),
+        sha256: source.sha256, sourceFile: null,
+        provenance: {kind: 'manager_note' as const, label: 'Vladimir via Codex', capturedAt: nowIso}
+      }, `golden-ascon-source:${source.kind}`))).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    }
+    const asconOutcomes = ['change', 'architecture', 'requirements', 'qa', 'acceptance'].map((key, index) => ({key,
+      title: `ASCON ${key}`, weight: 20, evidence: {kind: 'citation' as const,
+        artifactId: asconSources[index % asconSources.length]!.id, locator: {kind: 'whole_artifact' as const}}}));
+    const asconDefinition: ProjectPlanDefinition = {title: 'ASCON human/Codex delivery', outcomes: asconOutcomes,
+      milestones: [{key: 'acceptance', title: 'Human acceptance',
+      checkpoint: 'Product Owner accepts retained evidence', targetAt: '2026-09-20',
+      evidence: {kind: 'citation', artifactId: asconSources[0]!.id, locator: {kind: 'whole_artifact'}}}],
+      risks: [{key: 'review_drift', statement: 'Human review evidence may drift',
+        mitigation: 'Retain exact Codex and human receipts', evidence: {kind: 'citation',
+          artifactId: asconSources[2]!.id, locator: {kind: 'whole_artifact'}}}],
+      tasks: [{key: 'deliver', title: 'Implement ASCON change through Codex',
+        responsibility: {kind: 'human', actorId: owner.id}, outcomeKeys: asconOutcomes.map(({key}) => key),
+        milestoneKey: 'acceptance',
+        dependsOn: [], acceptanceEvidence: [{description: 'Human QA evidence retained',
+          evidence: {kind: 'citation', artifactId: asconSources[2]!.id, locator: {kind: 'whole_artifact'}}}]}]};
+    await expect(planService.execute(envelope(ids.workspace, ownerContext.value, 'project_plan.draft.save', {
+      planId: asconPlanId, projectId: ids.ascon, expectedRevision: null, definition: asconDefinition
+    }, 'golden-ascon-plan-save'))).resolves.toMatchObject({receipt: {result: {ok: true,
+      value: {plan: {state: 'draft', revision: 1}}}}});
+    const asconSimulation = await planService.simulate({workspaceId: ids.workspace, projectId: ids.ascon,
+      actor: ownerContext.value, definition: asconDefinition});
+    expect(asconSimulation).toMatchObject({readyForApproval: true});
+    if (asconSimulation === null) throw new Error('ASCON simulation missing');
+    await expect(planService.execute(envelope(ids.workspace, ownerContext.value, 'project_plan.approve', {
+      planId: asconPlanId, expectedRevision: 1, expectedPlanHash: asconSimulation.planHash,
+      expectedSimulationHash: asconSimulation.simulationHash
+    }, 'golden-ascon-plan-approve'))).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const [asconVersion] = await db.select().from(projectPlanVersions).where(eq(projectPlanVersions.planId, asconPlanId));
+    if (asconVersion === undefined) throw new Error('ASCON approved plan missing');
+    await expect(planService.execute(envelope(ids.workspace, ownerContext.value, 'project_plan.materialize', {
+      projectId: ids.ascon, planId: asconPlanId, expectedPlanVersion: 1,
+      expectedPlanHash: asconVersion.contentHash,
+      expectedSourceManifestHash: hashProjectPlanSourceManifest(asconVersion.sourceManifest)
+    }, 'golden-ascon-plan-materialize'))).resolves.toMatchObject({receipt: {result: {ok: true}}});
+    const [asconItem] = await db.select().from(workItems).where(eq(workItems.projectId, ids.ascon));
+    if (asconItem === undefined) throw new Error('ASCON work item missing');
+    await expect(executionService.execute(envelope(ids.workspace, ownerContext.value, 'project_execution.start', {
+      projectId: ids.ascon, expectedVersion: 0
+    }, 'golden-ascon-start'))).resolves.toMatchObject({receipt: {result: {ok: true, value: {
+      status: 'blocked', version: 1, selection: {workItemId: asconItem.id,
+        responsibleActor: {id: owner.id, type: 'human', agentProfileId: null}}
+    }}}});
+    const advanceAscon = async (stage: string, requirement: string, workItemVersion: number,
+      journeyVersion: number, executionVersion: number | null) => {
+      const advanced = await journeyService.execute(envelope(ids.workspace, ownerContext.value, 'delivery_journey.advance', {
+        workItemId: asconItem.id, expectedWorkItemVersion: workItemVersion, expectedJourneyVersion: journeyVersion,
+        evidenceReferences: [{requirement, reference: `codex:ascon:${stage}:receipt`}]
+      }, `golden-ascon-${stage}`));
+      if (!('receipt' in advanced)) throw new Error(advanced.error.message);
+      if (!advanced.receipt.result.ok) throw new Error(advanced.receipt.result.error.message);
+      if (executionVersion !== null) await expect(executionService.execute(envelope(ids.workspace, ownerContext.value,
+        'project_execution.resume', {projectId: ids.ascon, expectedVersion: executionVersion},
+        `golden-ascon-resume-${stage}`))).resolves.toMatchObject({receipt: {result: {ok: true,
+          value: {status: 'blocked'}}}});
+    };
+    await advanceAscon('development', 'Codex implementation receipt', 1, 1, 2);
+    const asconQaPrepared = await qaService.execute(envelope(ids.workspace, ownerContext.value,
+      'qa_task_packet.prepare.v1', {workItemId: asconItem.id, expectedWorkItemVersion: 2,
+        expectedJourneyVersion: 2}, 'golden-ascon-qa-prepare'));
+    if (!('receipt' in asconQaPrepared) || !asconQaPrepared.receipt.result.ok) {
+      throw new Error('ASCON governed QA packet missing');
+    }
+    const asconQaPacketId = asconQaPrepared.receipt.result.value.taskPacketId;
+    await expect(qaService.execute(envelope(ids.workspace, ownerContext.value, 'qa_review.record.v1', {
+      workItemId: asconItem.id, expectedWorkItemVersion: 2, expectedJourneyVersion: 2,
+      taskPacketId: asconQaPacketId, evidence: {outcome: 'passed' as const,
+        checks: [{name: 'Codex focused checks', status: 'passed' as const, reference: 'codex:ascon:qa:check'}],
+        artifacts: [{kind: 'report' as const, reference: 'codex:ascon:qa:report'}], failures: [], risks: [],
+        evidenceReferences: [{requirement: 'Human QA result', reference: 'codex:ascon:qa:report'}]}
+    }, 'golden-ascon-qa-review'))).resolves.toMatchObject({receipt: {result: {ok: true, value: {
+      workItemStatus: 'acceptance', journeyStageKey: 'acceptance', executionStatus: 'paused'
+    }}}});
+    await expect(executionService.execute(envelope(ids.workspace, ownerContext.value, 'project_execution.resume', {
+      projectId: ids.ascon, expectedVersion: 4
+    }, 'golden-ascon-resume-acceptance'))).resolves.toMatchObject({receipt: {result: {ok: true,
+      value: {status: 'blocked', version: 5}}}});
+    await advanceAscon('acceptance', 'Product Owner acceptance', 3, 3, null);
+    await advanceAscon('accepted', 'Accepted delivery baseline', 4, 4, null);
+    expect((await db.select().from(workItems).where(eq(workItems.id, asconItem.id)))[0])
+      .toMatchObject({status: 'done', version: 4, responsibility: {kind: 'human', actorId: owner.id}});
+    expect((await db.select().from(projectExecutions).where(eq(projectExecutions.projectId, ids.ascon)))[0])
+      .toMatchObject({status: 'paused', version: 6, selectedWorkItemId: null});
+    expect(await db.select().from(taskPackets).where(eq(taskPackets.projectId, ids.ascon))).toHaveLength(1);
+    expect(await db.select().from(qaTaskPackets).where(eq(qaTaskPackets.taskPacketId, asconQaPacketId))).toHaveLength(1);
+    expect(await db.select().from(agentRuns).where(eq(agentRuns.workItemId, asconItem.id))).toHaveLength(0);
   });
 });
