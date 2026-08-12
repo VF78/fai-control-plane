@@ -1,6 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
-import type {OpaqueSecretRef} from '@fai-control-plane/domain';
+import type {HermesCodexWorkOrder, OpaqueSecretRef} from '@fai-control-plane/domain';
 import {
   codexRuntimeSettingsAdapter,
   createCodexAgentRuntime
@@ -41,6 +41,9 @@ type RunnerClaimEnvelope = Readonly<{
   runtimeProfile: RuntimeProfile;
   timeboxMinutes: number;
   prompt: string;
+  workOrder?: HermesCodexWorkOrder;
+  workOrderHash?: string;
+  runtimeProvenance?: Readonly<{orchestrator: 'hermes'; executor: 'codex-cli'}>;
   leaseToken: string;
   leaseExpiresAt: string;
 }>;
@@ -267,6 +270,9 @@ const parseClaim = (
   const prompt = candidate.prompt;
   const leaseToken = candidate.leaseToken;
   const leaseExpiresAt = candidate.leaseExpiresAt;
+  const workOrder = candidate.workOrder;
+  const workOrderHash = candidate.workOrderHash;
+  const runtimeProvenance = candidate.runtimeProvenance;
   if (
     typeof runId !== 'string' || !UUID_PATTERN.test(runId) ||
     typeof attempt !== 'number' || !Number.isSafeInteger(attempt) ||
@@ -289,6 +295,12 @@ const parseClaim = (
   ) {
     fail('invalid_claim');
   }
+  const composed = runtimeId === 'hermes';
+  if (composed !== (
+    isRecord(workOrder) && typeof workOrderHash === 'string' && SHA256_PATTERN.test(workOrderHash) &&
+    isRecord(runtimeProvenance) && runtimeProvenance.orchestrator === 'hermes' &&
+    runtimeProvenance.executor === 'codex-cli'
+  )) fail('invalid_composed_claim');
   return {
     runId: runId as string,
     attempt: attempt as number,
@@ -300,6 +312,11 @@ const parseClaim = (
     runtimeProfile: runtimeProfile as RuntimeProfile,
     timeboxMinutes: timeboxMinutes as number,
     prompt: prompt as string,
+    ...(composed ? {
+      workOrder: workOrder as unknown as HermesCodexWorkOrder,
+      workOrderHash: workOrderHash as string,
+      runtimeProvenance: {orchestrator: 'hermes', executor: 'codex-cli'} as const
+    } : {}),
     leaseToken: leaseToken as string,
     leaseExpiresAt: leaseExpiresAt as string
   };
@@ -351,6 +368,16 @@ const completionFor = async (
       state: 'unknown',
       reason: result.receipt.cost.reason
     },
+    ...(claim.runtimeId === 'hermes' ? {runtimeProvenance: {
+      orchestrator: result.receipt.executionMetadata.orchestrator,
+      executor: result.receipt.executionMetadata.executor,
+      workOrderHash: result.receipt.executionMetadata.workOrderHash,
+      directiveHash: result.receipt.executionMetadata.directiveHash,
+      strategy: result.receipt.executionMetadata.strategy,
+      hermesVersion: result.receipt.executionMetadata.hermesVersion,
+      hermesConfigHash: result.receipt.executionMetadata.hermesConfigHash,
+      directive: JSON.parse(String(result.receipt.executionMetadata.directiveJson))
+    }} : {}),
     ...(result.receipt.summaryArtifact === undefined
       ? {}
       : {summaryArtifact: {
@@ -442,6 +469,8 @@ export const runWorkstationRunnerOnce = async (
       prompt: claim.prompt,
       profile: claim.runtimeProfile,
       timeboxMinutes: claim.timeboxMinutes,
+      ...(claim.workOrder === undefined ? {} : {workOrder: claim.workOrder}),
+      ...(claim.workOrderHash === undefined ? {} : {workOrderHash: claim.workOrderHash}),
       signal: controller.signal
     });
   } finally {

@@ -1,0 +1,41 @@
+[Unit]
+Description=f(AI) Hermes orchestrator and Codex CLI host runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fai-hermes-controller
+Group=fai-hermes-controller
+SupplementaryGroups=fai-hermes-transport
+Environment=HOME=/var/lib/fai-hermes-controller
+Environment=NODE_OPTIONS=--jitless
+EnvironmentFile=/etc/fai-hermes-controller/controller.env
+ExecStart=/usr/bin/node /opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@/packages/runners/dist/hermes-runner-cli.js
+Restart=on-failure
+RestartSec=10s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ /usr/local/lib/hermes-agent /var/lib/fai-hermes-controller/hermes /var/lib/fai-hermes-controller/credentials
+ReadWritePaths=/var/lib/fai-hermes-controller/state
+InaccessiblePaths=/var/lib/fai-codex-executor /etc/fai-codex-executor
+
+[Install]
+WantedBy=multi-user.target

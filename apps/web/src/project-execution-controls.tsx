@@ -15,7 +15,7 @@ const runStatusLabel: Record<NonNullable<ProjectExecutionProjection['dispatch']>
 };
 
 export function ProjectExecutionControls({projectId, execution, csrfToken, canManage,
-  hasWriteCapability, runnerQueueAvailable, autonomousQaStage = false,
+  hasWriteCapability, runnerQueueAvailable, hermesOrchestratedStage, autonomousQaStage = false,
   autonomousQaTransportAvailable = false}: Readonly<{
   projectId: string;
   execution: ProjectExecutionProjection;
@@ -23,6 +23,7 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
   canManage: boolean;
   hasWriteCapability: boolean;
   runnerQueueAvailable: boolean;
+  hermesOrchestratedStage?: boolean;
   autonomousQaStage?: boolean;
   autonomousQaTransportAvailable?: boolean;
 }>) {
@@ -63,11 +64,21 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
     (!autonomousQaStage || autonomousQaTransportAvailable);
   const qaAcceptanceEligible = execution.status === 'running' && execution.selection !== null &&
     execution.dispatch?.qa?.outcome === 'passed' && execution.dispatch.qa.approvalStatus === 'pending';
+  const hermesStage = hermesOrchestratedStage ?? autonomousQaStage;
+  const transportObservationState = !autonomousQaTransportAvailable
+    ? 'Идентификация не настроена'
+    : execution.blockReason === 'runtime_availability_unavailable'
+      ? 'Наблюдения отсутствуют или устарели'
+      : 'Идентификация настроена';
   return <section className="fcp-section fcp-orchestrator" aria-label="Управление исполнением проекта">
     <div className="fcp-section-head"><div><h2>Исполнение проекта</h2><span>Канонический выбор следующей работы · без автоматического запуска runner</span></div><strong className={`fcp-orchestrator-status ${execution.status}`}>{statusLabel[execution.status]}</strong></div>
     <div className="fcp-orchestrator-summary">
       <div><span>Следующая работа</span><strong>{execution.selection?.title ?? 'Не выбрана'}</strong><small>{execution.selection === null ? (execution.blockReason ?? 'Запустите после материализации плана.') : `${execution.selection.stageName} · ${execution.selection.responsibleActor.displayName}`}</small></div>
       <div><span>Граница автономности</span><strong>{execution.selection?.boundary === 'autonomous_ready' ? 'Готово к Task Packet' : execution.selection?.boundary === 'autonomous_agent_required' ? 'Нужен активный ИИ-агент' : execution.selection?.executionMode === 'human_approval' ? 'Требуется подтверждение' : execution.selection?.executionMode === 'manual' ? 'Ручная передача' : 'Не определена'}</strong><small>Работа и AgentRun не считаются начатыми этой командой.</small></div>
+      {hermesStage ? <>
+        <div><span>Оркестратор / исполнитель</span><strong>Hermes 0.18.2 → Codex CLI</strong><small>Hermes выбирает стратегию и порядок канонических шагов; код выполняет один Codex AgentRun.</small></div>
+        <div><span>Transport / наблюдения</span><strong>{transportObservationState}</strong><small>Восстановите fai-hermes-runner и свежие service / scheduler / delivery observations; до этого Task Packet и AgentRun не создаются.</small></div>
+      </> : null}
       <div className="fcp-orchestrator-actions">
         {execution.status === 'stopped' ? <button className="fcp-primary-button" disabled={!actionable || busy} onClick={() => void run('start')}><CirclePlay aria-hidden="true" size={16}/>Запустить</button> : null}
         {execution.status === 'running' || execution.status === 'blocked' ? <button className="fcp-secondary" disabled={!actionable || busy} onClick={() => void run('pause')}><CirclePause aria-hidden="true" size={16}/>Пауза</button> : null}
@@ -81,7 +92,7 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
         {dispatchFactual && hasWriteCapability && !runnerQueueAvailable
           ? <small>Подготовка запуска недоступна: очередь runner или локальный transport не включены.</small> : null}
         {dispatchFactual && hasWriteCapability && autonomousQaStage && !autonomousQaTransportAvailable
-          ? <small>Автономный QA недоступен: точный Hermes transport/identity не настроен. Локальный Codex runner не считается Hermes; Task Packet и AgentRun не создаются.</small> : null}
+          ? <small>Автономный QA недоступен: Codex CLI — исполнитель, но не заменяет Hermes-оркестратор; Task Packet и AgentRun не создаются.</small> : null}
         {execution.dispatch?.agentRunStatus === 'failed' && autonomousQaStage && !autonomousQaTransportAvailable
           ? <small>Повтор автономного QA недоступен: текущий точный Hermes transport/identity не подтверждён. Новый AgentRun и dispatch не создаются.</small> : null}
         {retryEligible ? <small>Правило допуска повтора: не более 3 попыток; новая попытка не ставится в очередь после 120 минут с первой попытки, при 100 ₽ уже наблюдённой стоимости прошлых попыток или неизвестной стоимости. Это пороги допуска, а не бюджет следующего запуска; его отдельный неизменяемый timebox остаётся в Task Packet. Переход через подтверждение, production или release запрещён.</small> : null}

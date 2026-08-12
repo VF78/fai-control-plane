@@ -187,6 +187,34 @@ const validAuthorization = (input: {
   input.runtimeIds.length >= 1 &&
   input.runtimeIds.every((runtimeId) => runtimeIdPattern.test(runtimeId));
 
+const validHermesWorkOrder = (queued: Readonly<{
+  runtimeId: string;
+  packetId: string;
+  packetHash: string;
+  baseCommit: string;
+  dispatchWorkOrder: unknown;
+  dispatchWorkOrderHash: string | null;
+  orchestratorRuntimeId: string | null;
+  executorRuntimeId: string | null;
+}>): boolean => {
+  if (queued.runtimeId !== 'hermes') return true;
+  if (!isRecord(queued.dispatchWorkOrder) ||
+    queued.dispatchWorkOrderHash === null ||
+    queued.orchestratorRuntimeId !== 'hermes' ||
+    queued.executorRuntimeId !== 'codex-cli') return false;
+  try {
+    const order = queued.dispatchWorkOrder;
+    return order.schemaVersion === 1 &&
+      isRecord(order.taskPacket) && order.taskPacket.id === queued.packetId &&
+      order.taskPacket.sha256 === queued.packetHash &&
+      isRecord(order.repository) && order.repository.baseCommit === queued.baseCommit &&
+      createHash('sha256').update(canonicalJson(order as CanonicalJson)).digest('hex') ===
+        queued.dispatchWorkOrderHash;
+  } catch {
+    return false;
+  }
+};
+
 const repositoryAuthorizationFor = (
   repositories: readonly {owner: string; name: string}[]
 ) => or(
@@ -274,6 +302,10 @@ export const createPostgresRunnerClaimStore = (
           qaTaskPacketId: schema.qaTaskPackets.taskPacketId,
           dispatchRuntimeRegistrationId: schema.projectExecutionDispatches.runtimeRegistrationId,
           dispatchRuntimeRegistrationVersion: schema.projectExecutionDispatches.runtimeRegistrationVersion,
+          dispatchWorkOrder: schema.projectExecutionDispatches.workOrder,
+          dispatchWorkOrderHash: schema.projectExecutionDispatches.workOrderHash,
+          orchestratorRuntimeId: schema.projectExecutionDispatches.orchestratorRuntimeId,
+          executorRuntimeId: schema.projectExecutionDispatches.executorRuntimeId,
           registrationActorId: schema.runtimeRegistrations.actorId,
           registrationProfileId: schema.runtimeRegistrations.agentProfileId,
           registrationRuntimeKey: schema.runtimeRegistrations.runtimeKey,
@@ -343,22 +375,26 @@ export const createPostgresRunnerClaimStore = (
 
       let candidate: (typeof candidates)[number] | undefined;
       for (const queued of candidates) {
+        if (!validHermesWorkOrder(queued)) continue;
         const current = await resolveCurrentExecutionResponsibility(tx, {workspaceId: input.workspaceId,
           projectId: queued.projectId, workItemId: queued.workItemId});
-        let governedQaClaimable = true;
-        if (queued.qaTaskPacketId !== null) {
+        let governedQaClaimable = queued.qaTaskPacketId === null || queued.runtimeId === 'hermes';
+        if (queued.runtimeId === 'hermes') {
           const policy = isRecord(queued.dataPolicy) && isRecord(queued.dataPolicy.governedQa)
             ? queued.dataPolicy.governedQa : null;
-          governedQaClaimable = queued.runtimeId === 'hermes' && policy !== null &&
-            policy.mode === 'autonomous' && policy.runtimeId === queued.runtimeId &&
-            policy.runtimeRegistrationId === queued.dispatchRuntimeRegistrationId &&
-            policy.runtimeRegistrationVersion === queued.dispatchRuntimeRegistrationVersion &&
-            policy.runtimeRegistrationKey === queued.registrationRuntimeKey &&
-            policy.claimTransportKind === 'hermes_authenticated_claim_v1' &&
-            policy.claimTransportRunnerId === input.runnerId &&
+          governedQaClaimable =
             queued.registrationEnabled && queued.registrationActorId === queued.actorId &&
             queued.registrationProfileId === queued.agentProfileId &&
             queued.registrationVersion === queued.dispatchRuntimeRegistrationVersion;
+          if (governedQaClaimable && queued.qaTaskPacketId !== null) {
+            governedQaClaimable = policy !== null && policy.mode === 'autonomous' &&
+              policy.runtimeId === queued.runtimeId &&
+              policy.runtimeRegistrationId === queued.dispatchRuntimeRegistrationId &&
+              policy.runtimeRegistrationVersion === queued.dispatchRuntimeRegistrationVersion &&
+              policy.runtimeRegistrationKey === queued.registrationRuntimeKey &&
+              policy.claimTransportKind === 'hermes_authenticated_claim_v1' &&
+              policy.claimTransportRunnerId === input.runnerId;
+          }
           if (governedQaClaimable) {
             const observations = await tx.select({
               component: schema.runtimeAvailabilityObservations.component,
@@ -420,6 +456,11 @@ export const createPostgresRunnerClaimStore = (
         runtimeId: candidate.runtimeId,
         runtimeProfile: candidate.runtimeProfile,
         timeboxMinutes: candidate.timeboxMinutes,
+        ...(candidate.runtimeId === 'hermes' ? {
+          workOrder: candidate.dispatchWorkOrder as import('@fai-control-plane/domain').HermesCodexWorkOrder,
+          workOrderHash: candidate.dispatchWorkOrderHash!,
+          runtimeProvenance: {orchestrator: 'hermes' as const, executor: 'codex-cli' as const}
+        } : {}),
         promptFields: {
           goal: candidate.goal,
           acceptanceCriteria: candidate.acceptanceCriteria,
@@ -621,13 +662,19 @@ export const createPostgresRunnerClaimStore = (
           leaseTokenHash: schema.agentRuns.leaseTokenHash,
           leaseExpiresAt: schema.agentRuns.leaseExpiresAt,
           attempt: schema.agentRuns.attempt,
-          version: schema.agentRuns.version
+          version: schema.agentRuns.version,
+          dispatchWorkOrder: schema.projectExecutionDispatches.workOrder,
+          dispatchWorkOrderHash: schema.projectExecutionDispatches.workOrderHash,
+          dispatchOrchestratorRuntimeId: schema.projectExecutionDispatches.orchestratorRuntimeId,
+          dispatchExecutorRuntimeId: schema.projectExecutionDispatches.executorRuntimeId
         })
         .from(schema.agentRuns)
         .innerJoin(schema.taskPackets, eq(schema.taskPackets.id, schema.agentRuns.taskPacketId))
         .innerJoin(schema.projects, eq(schema.projects.id, schema.taskPackets.projectId))
         .innerJoin(schema.agentProfiles, eq(schema.agentProfiles.id, schema.agentRuns.agentProfileId))
         .innerJoin(schema.actors, eq(schema.actors.id, schema.agentProfiles.actorId))
+        .leftJoin(schema.projectExecutionDispatches, eq(
+          schema.projectExecutionDispatches.agentRunId, schema.agentRuns.id))
         .innerJoin(
           schema.projectTrackerRepositoryScopes,
           eq(schema.projectTrackerRepositoryScopes.id, schema.agentRuns.repositoryScopeId)
@@ -643,6 +690,43 @@ export const createPostgresRunnerClaimStore = (
         .limit(1)
         .for('update', {of: schema.agentRuns});
       if (candidate === undefined) return {status: 'denied'};
+      const provenance = isRecord(input.metadata) && isRecord(input.metadata.runtimeProvenance)
+        ? input.metadata.runtimeProvenance : null;
+      const directive = provenance !== null && isRecord(provenance.directive) ? provenance.directive : null;
+      const order = isRecord(candidate.dispatchWorkOrder) ? candidate.dispatchWorkOrder : null;
+      const orchestration = order !== null && isRecord(order.orchestration) ? order.orchestration : null;
+      const packet = order !== null && isRecord(order.taskPacket) ? order.taskPacket : null;
+      const runtime = order !== null && isRecord(order.runtime) ? order.runtime : null;
+      const stringList = (value: unknown): readonly string[] | null => Array.isArray(value) &&
+        value.every((item) => typeof item === 'string') ? value as string[] : null;
+      const stepIds = orchestration === null ? null : stringList(orchestration.stepIds);
+      const riskIds = orchestration === null ? null : stringList(orchestration.riskControlIds);
+      const checks = orchestration !== null && Array.isArray(orchestration.checkCandidates) &&
+        orchestration.checkCandidates.every(isRecord)
+        ? orchestration.checkCandidates.map((item) => item.id).filter((id): id is string => typeof id === 'string') : null;
+      const samePermutation = (value: unknown, expected: readonly string[] | null): boolean => {
+        const actual = stringList(value);
+        return actual !== null && expected !== null && actual.length === expected.length &&
+          new Set(actual).size === actual.length && actual.every((id) => expected.includes(id));
+      };
+      const validHermesProvenance = provenance !== null &&
+        Object.keys(provenance).length === 8 && directive !== null && Object.keys(directive).length === 10 &&
+        provenance.orchestrator === 'hermes' && provenance.executor === 'codex-cli' &&
+        provenance.workOrderHash === candidate.dispatchWorkOrderHash &&
+        sha256Pattern.test(String(provenance.directiveHash)) && order !== null &&
+        createHash('sha256').update(canonicalJson(order as CanonicalJson)).digest('hex') === candidate.dispatchWorkOrderHash &&
+        createHash('sha256').update(canonicalJson(directive as CanonicalJson)).digest('hex') === provenance.directiveHash &&
+        directive.schemaVersion === 1 && directive.orchestrator === 'hermes' && directive.executor === 'codex-cli' &&
+        directive.taskPacketId === packet?.id && directive.taskPacketHash === packet?.sha256 &&
+        directive.workOrderHash === candidate.dispatchWorkOrderHash && directive.strategy === provenance.strategy &&
+        samePermutation(directive.orderedStepIds, stepIds) && samePermutation(directive.selectedCheckIds, checks) &&
+        samePermutation(directive.selectedRiskControlIds, riskIds) &&
+        ['evidence_first', 'risk_first', 'minimal_change'].includes(String(provenance.strategy)) &&
+        provenance.hermesVersion === runtime?.hermesVersion &&
+        provenance.hermesConfigHash === runtime?.hermesConfigSha256 &&
+        candidate.dispatchOrchestratorRuntimeId === 'hermes' &&
+        candidate.dispatchExecutorRuntimeId === 'codex-cli';
+      if ((candidate.profileRuntimeId === 'hermes') !== validHermesProvenance) return {status: 'denied'};
       if (candidate.status === 'done' || candidate.status === 'failed') {
         const [receipt] = await tx.select().from(schema.agentRunReceipts).where(eq(
           schema.agentRunReceipts.agentRunId, input.runId

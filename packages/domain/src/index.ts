@@ -136,6 +136,86 @@ export type RunnerClaimAuthorization = Readonly<{
   repositories: readonly RunnerRepositoryAuthorization[];
   runtimeIds: readonly string[];
 }>;
+export type HermesDirective = Readonly<{
+  schemaVersion: 1;
+  orchestrator: 'hermes';
+  executor: 'codex-cli';
+  taskPacketId: string;
+  taskPacketHash: string;
+  workOrderHash: string;
+  strategy: 'evidence_first' | 'risk_first' | 'minimal_change';
+  orderedStepIds: readonly string[];
+  selectedCheckIds: readonly string[];
+  selectedRiskControlIds: readonly string[];
+}>;
+export type HermesCodexWorkOrder = Readonly<{
+  schemaVersion: 1;
+  runtime: Readonly<{hermesVersion: '0.18.2'; hermesConfigSha256: string}>;
+  project: Readonly<{id: string}>;
+  dossierManifest: readonly Readonly<{
+    artifactId: string;
+    version: number;
+    sha256: string;
+    sourceKind: string;
+    mediaType: string;
+  }>[];
+  plan: Readonly<{
+    versionId: string;
+    version: number;
+    sha256: string;
+    sourceManifestSha256: string;
+    materializationId: string;
+  }>;
+  protocol: Readonly<{
+    id: string;
+    version: number;
+    sha256: string;
+    stageKey: string;
+    requiredEvidence: readonly string[];
+  }>;
+  execution: Readonly<{
+    version: number;
+    selectionSha256: string;
+    journeyVersion: number;
+    workItemId: string;
+    workItemVersion: number;
+    responsibility: CanonicalJson;
+    responsibilitySha256: string;
+  }>;
+  actor: Readonly<{
+    id: string;
+    membershipId: string;
+    membershipVersion: number;
+    membershipRoles: readonly string[];
+    profileId: string;
+    profileVersion: number;
+    profileConfigSha256: string;
+    registrationId: string;
+    registrationVersion: number;
+  }>;
+  repository: Readonly<{
+    owner: string;
+    name: string;
+    baseCommit: string;
+  }>;
+  orchestration: Readonly<{
+    strategyOptions: readonly ['evidence_first', 'risk_first', 'minimal_change'];
+    stepIds: readonly string[];
+    checkCandidates: readonly Readonly<{id: string; requirementIndex: number}>[];
+    riskControlIds: readonly string[];
+  }>;
+  taskPacket: Readonly<{
+    id: string;
+    sha256: string;
+    goal: string;
+    acceptanceCriteria: readonly string[];
+    timeboxMinutes: number;
+    allowedActions: readonly string[];
+    forbiddenActions: readonly string[];
+    dataPolicySha256: string;
+    expectedOutput: CanonicalJson;
+  }>;
+}>;
 export type RunnerClaimRecord = Readonly<{
   runId: string;
   attempt: number;
@@ -146,6 +226,12 @@ export type RunnerClaimRecord = Readonly<{
   runtimeId: string;
   runtimeProfile: string;
   timeboxMinutes: number;
+  workOrder?: HermesCodexWorkOrder;
+  workOrderHash?: string;
+  runtimeProvenance?: Readonly<{
+    orchestrator: 'hermes';
+    executor: 'codex-cli';
+  }>;
   promptFields: Readonly<{
     goal: string;
     acceptanceCriteria: readonly string[];

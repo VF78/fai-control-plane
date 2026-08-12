@@ -2538,6 +2538,10 @@ export const projectExecutionDispatches = pgTable(
     agentRunId: uuid('agent_run_id').notNull(),
     runtimeRegistrationId: uuid('runtime_registration_id').notNull(),
     runtimeRegistrationVersion: integer('runtime_registration_version').notNull(),
+    workOrder: jsonb('work_order').$type<import('@fai-control-plane/domain').HermesCodexWorkOrder>(),
+    workOrderHash: text('work_order_hash'),
+    orchestratorRuntimeId: text('orchestrator_runtime_id'),
+    executorRuntimeId: text('executor_runtime_id'),
     requestedByActorId: uuid('requested_by_actor_id').notNull(),
     createdAt: createdAt()
   },
@@ -2568,6 +2572,14 @@ export const projectExecutionDispatches = pgTable(
       sql`${table.executionVersion} > 0`),
     check('project_execution_dispatches_runtime_registration_version_positive',
       sql`${table.runtimeRegistrationVersion} > 0`),
+    check('project_execution_dispatches_composed_runtime_consistent', sql`
+      num_nonnulls(${table.workOrder}, ${table.workOrderHash}, ${table.orchestratorRuntimeId}, ${table.executorRuntimeId}) = 0
+      or (num_nonnulls(${table.workOrder}, ${table.workOrderHash}, ${table.orchestratorRuntimeId}, ${table.executorRuntimeId}) = 4
+        and jsonb_typeof(${table.workOrder}) = 'object'
+        and ${table.workOrderHash} ~ '^[0-9a-f]{64}$'
+        and ${table.orchestratorRuntimeId} = 'hermes'
+        and ${table.executorRuntimeId} = 'codex-cli')
+    `),
     check('project_execution_dispatches_selection_hash_sha256',
       sql`${table.selectionHash} ~ '^[0-9a-f]{64}$'`)
   ]

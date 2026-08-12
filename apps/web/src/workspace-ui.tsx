@@ -409,12 +409,15 @@ function Overview({route, project, runs, portfolio, csrfToken, canManage, hasWri
   const autonomousQaStage = execution.selection !== null && project.protocol?.definition.stages.some((stage) =>
     stage.key === execution.selection!.stageKey && stage.enabled && stage.taskStatus === 'qa' &&
     stage.executionMode === 'autonomous') === true;
+  const hermesOrchestratedStage = execution.selection?.responsibleActor.agentProfileId !== null &&
+    execution.selection?.responsibleActor.agentProfileId !== undefined && project.agentProfiles.some((profile) =>
+      profile.id === execution.selection!.responsibleActor.agentProfileId && profile.runtimeId === 'hermes');
   const risks = portfolio?.attention.filter((item) => item.projectId === project.project.id && item.riskSignalId !== null).slice(0, 3) ?? [];
   return <>
     <ProjectHeader route={route} project={project}/>
     <ContextTabs label="Разделы обзора" items={[{label: 'Сводка', href: projectUrl(project.project.slug, 'overview', route.scope), active: true}, {label: 'Скоп', href: '#scope', active: false}, {label: 'Риски', href: '#risks', active: false}]}/>
     <ManagementRoute project={project} runs={runs} route={route}/>
-    <ProjectExecutionControls projectId={project.project.id} execution={execution} csrfToken={csrfToken} canManage={canManage} hasWriteCapability={hasWriteCapability} runnerQueueAvailable={project.runnerQueueEnabled} autonomousQaStage={autonomousQaStage} autonomousQaTransportAvailable={project.autonomousQaTransportAvailable === true}/>
+    <ProjectExecutionControls projectId={project.project.id} execution={execution} csrfToken={csrfToken} canManage={canManage} hasWriteCapability={hasWriteCapability} runnerQueueAvailable={project.runnerQueueEnabled} hermesOrchestratedStage={hermesOrchestratedStage} autonomousQaStage={autonomousQaStage} autonomousQaTransportAvailable={project.autonomousQaTransportAvailable === true}/>
     <ScopeBaseline project={project} csrfToken={csrfToken} canApproveOutcome={canApproveOutcome}/>
     <ProjectAcceptanceControls projectId={project.project.id} execution={execution} csrfToken={csrfToken}
       canProductOwner={canApproveOutcome} canClientRepresentative={canClientSignoff}/>

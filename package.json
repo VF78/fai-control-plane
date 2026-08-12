@@ -17,6 +17,7 @@
     "db:migrate": "pnpm --filter @fai-control-plane/db db:migrate",
     "github:bootstrap": "tsx apps/web/src/github-bootstrap.ts",
     "runner:once": "tsx packages/runners/src/workstation-runner-cli.ts",
+    "runner:hermes": "tsx packages/runners/src/hermes-runner-cli.ts",
     "db:check": "pnpm --filter @fai-control-plane/db db:check"
   },
   "devDependencies": {

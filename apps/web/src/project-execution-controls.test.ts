@@ -132,7 +132,8 @@ it('offers one bounded retry only for the current failed autonomous dispatch', (
 it('hides autonomous QA retry when exact Hermes transport is unavailable at the 390px structure', () => {
   const markup = renderToStaticMarkup(createElement(ProjectExecutionControls, {
     projectId: 'project-1', csrfToken: 'csrf', canManage: true, hasWriteCapability: true,
-    runnerQueueAvailable: true, autonomousQaStage: true, autonomousQaTransportAvailable: false,
+    runnerQueueAvailable: true, hermesOrchestratedStage: true, autonomousQaStage: true,
+    autonomousQaTransportAvailable: false,
     execution: {...base, status: 'running', blockReason: null, decisions: [],
       selection: {planVersionId: 'plan-1', workItemId: 'work-1', title: 'QA retry', workItemVersion: 1,
         protocolId: 'protocol-1', protocolVersion: 1, journeyVersion: 1, stageKey: 'qa',
@@ -144,7 +145,23 @@ it('hides autonomous QA retry when exact Hermes transport is unavailable at the 
         completedAt: base.startedAt, nextAction: 'Inspect receipt.'}}
   }));
   expect(markup).not.toContain('Повторить в пределах политики');
+  expect(markup).toContain('Hermes 0.18.2 → Codex CLI');
+  expect(markup).toContain('Hermes выбирает стратегию и порядок канонических шагов; код выполняет один Codex AgentRun.');
+  expect(markup).toContain('Идентификация не настроена');
+  expect(markup).toContain('Восстановите fai-hermes-runner и свежие service / scheduler / delivery observations; до этого Task Packet и AgentRun не создаются.');
   expect(markup).toContain('Новый AgentRun и dispatch не создаются');
+});
+
+it('shows stale observations separately from a configured Hermes transport', () => {
+  const markup = renderToStaticMarkup(createElement(ProjectExecutionControls, {
+    projectId: 'project-1', csrfToken: 'csrf', canManage: true, hasWriteCapability: true,
+    runnerQueueAvailable: true, hermesOrchestratedStage: true, autonomousQaTransportAvailable: true,
+    execution: {...base, status: 'blocked', blockReason: 'runtime_availability_unavailable',
+      selection: null, dispatch: null, decisions: []}
+  }));
+  expect(markup).toContain('Transport / наблюдения');
+  expect(markup).toContain('Наблюдения отсутствуют или устарели');
+  expect(markup).not.toContain('Идентификация не настроена');
 });
 
 it('renders no generic CSRF acceptance action for a governed QA run at the 390px structure', () => {

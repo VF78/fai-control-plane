@@ -319,6 +319,9 @@ export type RunnerClaimEnvelope = Readonly<{
   runtimeProfile: string;
   timeboxMinutes: number;
   prompt: string;
+  workOrder?: import('@fai-control-plane/domain').HermesCodexWorkOrder;
+  workOrderHash?: string;
+  runtimeProvenance?: Readonly<{orchestrator: 'hermes'; executor: 'codex-cli'}>;
   leaseToken: string;
   leaseExpiresAt: string;
 }>;
@@ -366,6 +369,16 @@ export type RunnerCompletionPayload = Readonly<{
   usage: Readonly<{
     state: 'unknown';
     reason: 'runtime_usage_not_available';
+  }>;
+  runtimeProvenance?: Readonly<{
+    orchestrator: 'hermes';
+    executor: 'codex-cli';
+    workOrderHash: string;
+    directiveHash: string;
+    strategy: 'evidence_first' | 'risk_first' | 'minimal_change';
+    hermesVersion: '0.18.2';
+    hermesConfigHash: string;
+    directive: import('@fai-control-plane/domain').HermesDirective;
   }>;
   summaryArtifact?: Readonly<{
     name: string;
@@ -481,7 +494,7 @@ export const parseRunnerCompletionPayload = (
   const keys = [
     'runId', 'attempt', 'terminal', 'receiptSha256', 'receiptSizeBytes',
     'finalStatus', 'runtimeId', 'runtimeProfile', 'durationMs', 'cost', 'usage',
-    'changedFiles', 'checks', 'qaResult', 'riskCount', 'nextAction',
+    'changedFiles', 'checks', 'qaResult', 'riskCount', 'nextAction', 'runtimeProvenance',
     'summaryArtifact', 'artifactStore', 'receiptArtifact', 'pathManifest', 'branch', 'worktreeRef', 'artifactRef'
   ];
   if (!isRecord(value) || Object.keys(value).some((key) => !keys.includes(key))) return null;
@@ -533,6 +546,34 @@ export const parseRunnerCompletionPayload = (
       : null
   );
   if (changedFiles === null || checks === null) return null;
+  let runtimeProvenance: RunnerCompletionPayload['runtimeProvenance'];
+  if ('runtimeProvenance' in value && value.runtimeProvenance !== undefined) {
+    const candidate = value.runtimeProvenance;
+    const directive = isRecord(candidate) ? candidate.directive : null;
+    const directiveIds = (value: unknown): value is readonly string[] => Array.isArray(value) &&
+      value.length > 0 && value.length <= 100 && new Set(value).size === value.length &&
+      value.every((item) => typeof item === 'string' && runnerRuntimeIdPattern.test(item));
+    if (!isRecord(candidate) || !exactKeys(candidate, ['orchestrator', 'executor', 'workOrderHash',
+      'directiveHash', 'strategy', 'hermesVersion', 'hermesConfigHash', 'directive']) ||
+      candidate.orchestrator !== 'hermes' || candidate.executor !== 'codex-cli' ||
+      !runnerPacketHashPattern.test(candidate.workOrderHash as string) ||
+      !runnerPacketHashPattern.test(candidate.directiveHash as string) ||
+      !['evidence_first', 'risk_first', 'minimal_change'].includes(candidate.strategy as string) ||
+      candidate.hermesVersion !== '0.18.2' ||
+      !runnerPacketHashPattern.test(candidate.hermesConfigHash as string) || !isRecord(directive) ||
+      !exactKeys(directive, ['schemaVersion', 'orchestrator', 'executor', 'taskPacketId',
+        'taskPacketHash', 'workOrderHash', 'strategy', 'orderedStepIds', 'selectedCheckIds',
+        'selectedRiskControlIds']) || directive.schemaVersion !== 1 || directive.orchestrator !== 'hermes' ||
+      directive.executor !== 'codex-cli' || !runnerRunIdPattern.test(directive.taskPacketId as string) ||
+      !runnerPacketHashPattern.test(directive.taskPacketHash as string) ||
+      directive.workOrderHash !== candidate.workOrderHash || directive.strategy !== candidate.strategy ||
+      !directiveIds(directive.orderedStepIds) || !directiveIds(directive.selectedCheckIds) ||
+      !directiveIds(directive.selectedRiskControlIds) ||
+      createHash('sha256').update(canonicalJson(directive as unknown as CanonicalJson)).digest('hex') !==
+        candidate.directiveHash) return null;
+    runtimeProvenance = candidate as RunnerCompletionPayload['runtimeProvenance'];
+  }
+  if ((value.runtimeId === 'hermes') !== (runtimeProvenance !== undefined)) return null;
   const qaResult = 'qaResult' in value && value.qaResult !== undefined
     ? validateQaMachineReviewEvidence(value.qaResult)
     : null;
@@ -619,6 +660,7 @@ export const parseRunnerCompletionPayload = (
     durationMs,
     cost: value.cost,
     usage: value.usage,
+    ...(runtimeProvenance === undefined ? {} : {runtimeProvenance}),
     artifactStore: {
       provider: artifactStore.provider,
       reference: artifactStore.reference,
@@ -692,6 +734,20 @@ export const createRunnerClaimService = (
           leaseTokenHash
         },
         (record): RunnerClaimEnvelope => {
+          const hermesBindingValid = record.runtimeId !== 'hermes' || (
+            record.workOrder !== undefined &&
+            record.workOrderHash !== undefined &&
+            runnerPacketHashPattern.test(record.workOrderHash) &&
+            record.runtimeProvenance?.orchestrator === 'hermes' &&
+            record.runtimeProvenance.executor === 'codex-cli' &&
+            record.workOrder.taskPacket.id === record.packetId &&
+            record.workOrder.taskPacket.sha256 === record.packetHash &&
+            record.workOrder.repository.owner === record.repository.owner &&
+            record.workOrder.repository.name === record.repository.name &&
+            record.workOrder.repository.baseCommit === record.baseCommit &&
+            createHash('sha256').update(canonicalJson(record.workOrder as unknown as CanonicalJson)).digest('hex') ===
+              record.workOrderHash
+          );
           if (
             !runnerPacketHashPattern.test(record.packetHash) ||
             !runnerBaseCommitPattern.test(record.baseCommit) ||
@@ -699,7 +755,7 @@ export const createRunnerClaimService = (
             !runnerRuntimeIdPattern.test(record.runtimeId) ||
             !authorization.runtimeIds.includes(record.runtimeId) ||
             record.runtimeProfile.length < 1 ||
-            record.runtimeProfile.length > 128
+            record.runtimeProfile.length > 128 || !hermesBindingValid
           ) {
             throw new Error('Runner claim record is invalid.');
           }
@@ -714,6 +770,9 @@ export const createRunnerClaimService = (
             runtimeProfile: record.runtimeProfile,
             timeboxMinutes: record.timeboxMinutes,
             prompt: runnerPrompt(record),
+            ...(record.workOrder === undefined ? {} : {workOrder: record.workOrder}),
+            ...(record.workOrderHash === undefined ? {} : {workOrderHash: record.workOrderHash}),
+            ...(record.runtimeProvenance === undefined ? {} : {runtimeProvenance: record.runtimeProvenance}),
             leaseToken,
             leaseExpiresAt: leaseExpiresAt.toISOString()
           };
