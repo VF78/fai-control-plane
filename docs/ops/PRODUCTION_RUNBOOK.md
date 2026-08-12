@@ -1,5 +1,14 @@
 # f(AI) Control Plane production runbook
 
+> **Transitional operations only.** This runbook describes safe operation and
+> rollback of the currently deployed legacy application while issues #159 and
+> #162 simplify it. It is not a product-scope document. In particular, the
+> existing semantic-planner/controller/executor procedures below do not
+> authorize extending or reactivating a Control-Plane-owned Hermes/Codex
+> runtime. The target boundary is issue #158 and ADR 0006. Every production
+> release or runtime activation still requires Vladimir's approval of the exact
+> commit and action.
+
 The only supported deployment path is
 [`scripts/deploy-prod.sh`](../../scripts/deploy-prod.sh). It is limited to the
 `fai-control-plane-production` Compose project on `root@46.225.163.123`, using

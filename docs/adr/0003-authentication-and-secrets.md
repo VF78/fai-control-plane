@@ -1,10 +1,16 @@
 # ADR 0003: Authentication and Secret Handling
 
-- Status: Accepted
+- Status: Accepted security guidance; runner-specific scope superseded by ADR 0006
 - Date: 2026-07-25
 - Issue: #2
 
 ## Context
+
+> Current-scope notice: authentication, authorization and secret-handling
+> requirements remain mandatory. References below to runners or privileged
+> workflow actions describe security constraints for legacy/external surfaces;
+> they do not authorize a Control-Plane-owned runner, deployment engine or IAM
+> product under ADR 0006.
 
 The web application handles privileged workflow actions and may act through
 GitHub or runner credentials. Browser code, telemetry, database dumps, job

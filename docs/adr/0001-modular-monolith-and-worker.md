@@ -1,10 +1,16 @@
 # ADR 0001: Modular Monolith with a Worker
 
-- Status: Accepted
+- Status: Accepted in part; workflow/runner scope superseded by ADR 0006 on 2026-08-12
 - Date: 2026-07-25
 - Issue: #2
 
 ## Context
+
+> Current-scope notice: the web/worker modular-monolith choice remains an
+> implementation constraint while simplification is in progress. ADR 0006
+> supersedes the durable-workflow, runner-orchestration and artifact-processing
+> product scope below. Those legacy modules may be removed; this ADR does not
+> authorize replacing them with another internal execution platform.
 
 The control plane needs a browser-facing application, durable workflows,
 provider integrations, background synchronization, and isolated execution. The

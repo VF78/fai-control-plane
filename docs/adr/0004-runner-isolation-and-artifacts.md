@@ -1,10 +1,15 @@
 # ADR 0004: Runner Isolation and Artifacts
 
-- Status: Accepted
+- Status: Superseded for Control-Plane execution by ADR 0006 on 2026-08-12
 - Date: 2026-07-25
 - Issue: #2
 
 ## Context
+
+> Historical decision notice: ADR 0006 removes the Control-Plane-owned runner
+> and artifact lifecycle from the target product. Hermes owns execution and any
+> internal Codex CLI use. The isolation principles below remain useful security
+> guidance for external executors but do not authorize a local runner platform.
 
 Runner workloads process repository content and may execute untrusted commands.
 Running them inside the web or worker process would expose control-plane
