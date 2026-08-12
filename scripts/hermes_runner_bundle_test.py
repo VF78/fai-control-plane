@@ -184,6 +184,10 @@ class BundleTest(unittest.TestCase):
             bundle.build_provenance([])["installPolicy"],
             "offline-frozen-lockfile-frozen-store-ignore-scripts",
         )
+        self.assertIn("--config tsup.config.ts", bundle.RUNNERS_BUILD)
+        self.assertIn("packages/runners/tsup.config.ts", bundle.STATIC)
+        config = (MODULE_PATH.parents[1] / "packages/runners/tsup.config.ts").read_text()
+        self.assertIn("noExternal: ['@fai-control-plane/domain']", config)
 
     def test_activation_pins_release_outside_production_checkout(self):
         activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()

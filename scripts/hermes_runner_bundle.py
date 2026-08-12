@@ -6,7 +6,7 @@ PREFIX = "fai-hermes-runner/"
 STATIC = ("scripts/hermes_runner_bundle.py",
           "infra/production/fai-hermes-runner.service", "infra/production/fai-codex-executor.service",
           "infra/production/fai-hermes-executor.tmpfiles", "packages/runners/runtime/hermes_no_tools_orchestrator.py",
-          "packages/runners/runtime/codex_executor_socket.py")
+          "packages/runners/runtime/codex_executor_socket.py", "packages/runners/tsup.config.ts")
 
 CONTROLLER = "fai-hermes-controller"
 EXECUTOR = "fai-codex-executor"
@@ -14,7 +14,7 @@ TRANSPORT_GROUP = "fai-hermes-transport"
 PNPM = "/usr/local/bin/pnpm"
 PNPM_VERSION = "11.17.0"
 PNPM_STORE = "/opt/fai-control-plane-runner/build/pnpm-store"
-RUNNERS_BUILD = "tsup src/index.ts src/hermes-runner-cli.ts src/hermes-executor-cli.ts --format esm --dts"
+RUNNERS_BUILD = "tsup src/index.ts src/hermes-runner-cli.ts src/hermes-executor-cli.ts --format esm --dts --config tsup.config.ts"
 PNPM_INSTALL = ("install", "--offline", "--frozen-lockfile", "--frozen-store", "--ignore-scripts",
                 "--store-dir", PNPM_STORE)
 DIST_FIXED = frozenset(("index.js", "index.d.ts", "hermes-runner-cli.js", "hermes-runner-cli.d.ts",
