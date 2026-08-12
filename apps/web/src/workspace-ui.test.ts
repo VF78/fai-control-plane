@@ -9,7 +9,7 @@ import {
   type AccessData
 } from './operator-data';
 import {workspaceRoute} from './operator-workspace-route';
-import type {ProjectData} from './operator-data';
+import type {ProjectData, RunsData} from './operator-data';
 import {WorkspaceShell as ProviderWorkspaceShell, type WorkspaceData} from './workspace-ui';
 import {ProjectPlanControls} from './project-plan-controls';
 import {RiskDispositionControls} from './risk-disposition-controls';
@@ -133,6 +133,21 @@ const projectWorkspace = (project: ProjectData): WorkspaceData => ({
   runs: null,
   health: null,
   projectIndex: [project]
+});
+
+const legacyRun = (
+  input: Partial<RunsData['runs'][number]> = {}
+): RunsData['runs'][number] => ({
+  id: 'run-1', project: 'MSA', projectSlug: 'msa', workItemId: 'local-task',
+  workItem: 'Legacy local run', agent: 'Hermes', status: 'queued', runtimeProfile: 'read_safe',
+  attempt: 1, packetGoal: 'Legacy goal', timeboxMinutes: 30, startedAt: null,
+  completedAt: null, heartbeatAt: null, failureCode: null, version: 2, workItemVersion: 3,
+  canAcceptReceipt: false, approverActorId: 'owner-1', receipt: null,
+  ledger: {records: [], latestCost: {state: 'unknown', reason: 'not_recorded'},
+    latestValueEvidence: null,
+    roi: {state: 'not_configured', reason: 'cost_not_calculated'}},
+  artifacts: [],
+  ...input
 });
 
 it('renders the canonical risk decision controls in Russian', () => {
@@ -457,8 +472,9 @@ it('keeps project overview on provider facts instead of a local progress surroga
     ...providerProject([providerTask('1', 'Provider task')]),
     scopeBaseline: {id: 'baseline-1', version: 1, approvedAt: new Date(), updatedAt: new Date(),
       checkpoint: null, observations: [], outcomes: [{key: 'accepted', title: 'Legacy outcome',
-        weight: 100, state: 'accepted' as const, acceptedBy: 'Vladimir', acceptedAt: new Date(),
-        evidenceReference: '#91'}]}
+        id: 'outcome-1', weight: 100, state: 'accepted' as const, acceptedBy: 'Vladimir',
+        acceptedAt: new Date(), evidenceReference: '#91', acceptanceReady: true,
+        acceptanceBlockReason: null}]}
   };
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: workspaceRoute(['projects', 'msa', 'overview'], {})!,
@@ -537,7 +553,8 @@ it('keeps autonomous QA truthful and actionable only after a structured pass at 
 });
 
 it('keeps the selected workspace area when changing between authorized projects', () => {
-  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') => ({project: {id: slug, workspaceId: 'workspace-1', name, slug, description: null, defaultBranch: 'main', version: 1, updatedAt: new Date()}, runnerQueueEnabled: false, deployments: [], agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, execution: {projectId: slug, status: 'stopped' as const, version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}, workItems: []});
+  const project = (name: 'MSA' | 'ASCON', slug: 'msa' | 'ascon') =>
+    providerProject([], {name, slug});
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'global_tasks', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
     data: {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [project('MSA', 'msa'), project('ASCON', 'ascon')]}
@@ -1086,9 +1103,8 @@ it('keeps provider task detail independent from local runs and approvals', () =>
     name: 'ASCON', slug: 'ascon'
   });
   const data = {...projectWorkspace(project), runs: {state: 'ready' as const, data: {
-    runs: [{id: 'run-1', workItemId: 'local-task', workItem: 'Legacy run', agent: 'Runner',
-      status: 'done', runtimeProfile: 'read_safe', startedAt: null, completedAt: null,
-      receipt: null, artifacts: [], canAcceptReceipt: false}], approvals: [], packets: []}}};
+    runs: [legacyRun({project: 'ASCON', projectSlug: 'ascon', workItem: 'Legacy run',
+      agent: 'Runner', status: 'done'})], approvals: [], packets: []}}};
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {...workspaceRoute(['projects', 'ascon', 'tasks', 'PVTI_ASCON_1'], {
       environment: 'staging', from: '2026-07-01', to: '2026-07-31'
@@ -1120,11 +1136,7 @@ it('does not read or render the retired PostgreSQL lifecycle on a provider task 
 it('keeps provider tasks separate from the legacy run route', () => {
   const task = providerTask('PVTI_MSA_1', 'Provider task');
   const project = providerProject([task]);
-  const queuedRun = {id: 'run-1', project: 'MSA', projectSlug: 'msa', workItemId: 'local-task',
-    workItem: 'Legacy local run', agent: 'Hermes', status: 'queued', runtimeProfile: 'read_safe',
-    attempt: 1, packetGoal: 'Legacy goal', timeboxMinutes: 30, startedAt: null, completedAt: null,
-    heartbeatAt: null, failureCode: null, version: 2, workItemVersion: 3,
-    canAcceptReceipt: false, approverActorId: null, receipt: null, artifacts: []};
+  const queuedRun = legacyRun();
   const data = {...projectWorkspace(project), runs: {state: 'ready' as const,
     data: {runs: [queuedRun], approvals: [], packets: []}}};
   const taskMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
