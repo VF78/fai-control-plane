@@ -1813,6 +1813,40 @@ export const buildChecks = pgTable(
   ]
 );
 
+/** Host-owned privileged deployment executor identity; credentials never enter PostgreSQL. */
+export const deploymentExecutorRegistrations = pgTable(
+  'deployment_executor_registrations',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    systemActorId: uuid('system_actor_id').notNull(),
+    environment: text('environment').notNull(),
+    executorKey: text('executor_key').notNull(),
+    enabled: boolean('enabled').default(false).notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    foreignKey({columns: [table.workspaceId, table.projectId],
+      foreignColumns: [projects.workspaceId, projects.id],
+      name: 'deployment_executor_registrations_workspace_project_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.systemActorId],
+      foreignColumns: [actors.workspaceId, actors.id],
+      name: 'deployment_executor_registrations_workspace_actor_fk'}).onDelete('restrict'),
+    uniqueIndex('deployment_executor_registrations_identity_project_environment_unique')
+      .on(table.id, table.workspaceId, table.projectId, table.environment),
+    uniqueIndex('deployment_executor_registrations_project_environment_unique')
+      .on(table.projectId, table.environment),
+    check('deployment_executor_registrations_environment_valid',
+      sql`${table.environment} in ('development', 'staging', 'production')`),
+    check('deployment_executor_registrations_executor_key_bounded',
+      sql`${table.executorKey} ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'`),
+    check('deployment_executor_registrations_version_positive', sql`${table.version} > 0`)
+  ]
+);
+
 export const deployments = pgTable(
   'deployments',
   {
@@ -1831,6 +1865,10 @@ export const deployments = pgTable(
     externalRef: text('external_ref'),
     planVersionId: uuid('plan_version_id'),
     materializationId: uuid('materialization_id'),
+    releasePackage: jsonb('release_package').$type<import('@fai-control-plane/domain').DeploymentReleasePackage>(),
+    releasePackageHash: text('release_package_hash'),
+    deploymentExecutorRegistrationId: uuid('deployment_executor_registration_id'),
+    deploymentExecutorRegistrationVersion: integer('deployment_executor_registration_version'),
     requestedByActorId: uuid('requested_by_actor_id').references(
       () => actors.id, {onDelete: 'restrict'}
     ),
@@ -1885,18 +1923,47 @@ export const deployments = pgTable(
       foreignColumns: [actors.workspaceId, actors.id], name: 'deployments_workspace_approved_actor_fk'}).onDelete('restrict'),
     foreignKey({columns: [table.workspaceId, table.observedByActorId],
       foreignColumns: [actors.workspaceId, actors.id], name: 'deployments_workspace_observed_actor_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.deploymentExecutorRegistrationId, table.workspaceId, table.projectId,
+      table.environment],
+      foreignColumns: [deploymentExecutorRegistrations.id, deploymentExecutorRegistrations.workspaceId,
+        deploymentExecutorRegistrations.projectId, deploymentExecutorRegistrations.environment],
+      name: 'deployments_executor_registration_fk'}).onDelete('restrict'),
+    uniqueIndex('deployments_identity_workspace_project_environment_unique')
+      .on(table.id, table.workspaceId, table.projectId, table.environment),
     index('deployments_project_environment_idx').on(
       table.projectId,
       table.environment
     ),
     check('deployments_version_positive', sql`${table.version} > 0`),
     check('deployments_canonical_lifecycle_shape', sql`${table.lifecycleVersion} is null or (
-      ${table.lifecycleVersion} = 1 and ${table.environment} in ('development', 'staging', 'production') and
+      ${table.lifecycleVersion} in (1, 2) and ${table.environment} in ('development', 'staging', 'production') and
       ${table.referenceKind} in ('artifact', 'commit', 'reference') and
       length(${table.revision}) between 1 and 512 and ${table.planVersionId} is not null and
       ${table.materializationId} is not null and ${table.requestedByActorId} is not null and
       ${table.requestedAt} is not null and ${table.externalRef} is null and
-      ${table.status} in ('requested', 'approved', 'observed')
+      ${table.status} in ('requested', 'approved', 'observed') and
+      ((${table.lifecycleVersion} = 1 and num_nonnulls(${table.releasePackage}, ${table.releasePackageHash},
+          ${table.deploymentExecutorRegistrationId}, ${table.deploymentExecutorRegistrationVersion}) = 0) or
+       (${table.lifecycleVersion} = 2 and ${table.referenceKind} = 'commit' and
+          ${table.releasePackage} is not null and ${table.releasePackageHash} is not null and
+          ${table.deploymentExecutorRegistrationId} is not null and
+          ${table.deploymentExecutorRegistrationVersion} is not null and
+          jsonb_typeof(${table.releasePackage}) = 'object' and ${table.releasePackage} = jsonb_build_object(
+            'schemaVersion', ${table.releasePackage}->'schemaVersion',
+            'sourceCommit', ${table.releasePackage}->'sourceCommit',
+            'artifactReference', ${table.releasePackage}->'artifactReference',
+            'artifactSha256', ${table.releasePackage}->'artifactSha256') and
+          ${table.releasePackage}->'schemaVersion' = '1'::jsonb and
+          jsonb_typeof(${table.releasePackage}->'sourceCommit') = 'string' and
+          jsonb_typeof(${table.releasePackage}->'artifactReference') = 'string' and
+          jsonb_typeof(${table.releasePackage}->'artifactSha256') = 'string' and
+          ${table.releasePackage}->>'sourceCommit' ~ '^[0-9a-f]{40}$' and
+          ${table.revision} = 'git-commit:' || (${table.releasePackage}->>'sourceCommit') and
+          ${table.releasePackage}->>'artifactSha256' ~ '^[0-9a-f]{64}$' and
+          length(${table.releasePackage}->>'artifactReference') between 1 and 512 and
+          ${table.releasePackage}->>'artifactReference' !~ '[[:cntrl:]]' and
+          ${table.releasePackageHash} ~ '^[0-9a-f]{64}$' and
+          ${table.deploymentExecutorRegistrationVersion} > 0))
     )`),
     check('deployments_canonical_approval_shape', sql`${table.lifecycleVersion} is null or (
       (${table.status} = 'requested' and ${table.environment} = 'production' and
@@ -1913,6 +1980,91 @@ export const deployments = pgTable(
         jsonb_array_length(${table.smokeChecks}) > 0 and jsonb_typeof(${table.rollbackEvidence}) = 'object' and
         ${table.startedAt} is not null and ${table.completedAt} >= ${table.startedAt})
     )`)
+  ]
+);
+
+/** Separate privileged execution lease; it is deliberately not an AgentRun. */
+export const deploymentExecutorJobs = pgTable(
+  'deployment_executor_jobs',
+  {
+    id: id(),
+    workspaceId: uuid('workspace_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    environment: text('environment').notNull(),
+    deploymentId: uuid('deployment_id').notNull(),
+    deploymentVersion: integer('deployment_version').notNull(),
+    registrationId: uuid('registration_id').notNull(),
+    registrationVersion: integer('registration_version').notNull(),
+    systemActorId: uuid('system_actor_id').notNull(),
+    releasePackageHash: text('release_package_hash').notNull(),
+    status: text('status').default('queued').notNull(),
+    executorId: text('executor_id'),
+    leaseTokenHash: text('lease_token_hash'),
+    leaseExpiresAt: timestamp('lease_expires_at', {withTimezone: true}),
+    heartbeatAt: timestamp('heartbeat_at', {withTimezone: true}),
+    startedAt: timestamp('started_at', {withTimezone: true}),
+    completedAt: timestamp('completed_at', {withTimezone: true}),
+    completionReplayHash: text('completion_replay_hash'),
+    resultHash: text('result_hash'),
+    observationReference: text('observation_reference'),
+    attempt: integer('attempt').default(0).notNull(),
+    version: integer('version').default(1).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    foreignKey({columns: [table.workspaceId, table.projectId],
+      foreignColumns: [projects.workspaceId, projects.id],
+      name: 'deployment_executor_jobs_workspace_project_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.deploymentId, table.workspaceId, table.projectId, table.environment],
+      foreignColumns: [deployments.id, deployments.workspaceId, deployments.projectId, deployments.environment],
+      name: 'deployment_executor_jobs_deployment_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.registrationId, table.workspaceId, table.projectId, table.environment],
+      foreignColumns: [deploymentExecutorRegistrations.id, deploymentExecutorRegistrations.workspaceId,
+        deploymentExecutorRegistrations.projectId, deploymentExecutorRegistrations.environment],
+      name: 'deployment_executor_jobs_registration_fk'}).onDelete('restrict'),
+    foreignKey({columns: [table.workspaceId, table.systemActorId],
+      foreignColumns: [actors.workspaceId, actors.id],
+      name: 'deployment_executor_jobs_workspace_actor_fk'}).onDelete('restrict'),
+    uniqueIndex('deployment_executor_jobs_deployment_unique').on(table.deploymentId),
+    uniqueIndex('deployment_executor_jobs_one_running_per_target')
+      .on(table.workspaceId, table.projectId, table.environment)
+      .where(sql`${table.status} = 'running'`),
+    index('deployment_executor_jobs_claim_order_idx').on(table.status, table.createdAt),
+    check('deployment_executor_jobs_environment_valid',
+      sql`${table.environment} in ('development', 'staging', 'production')`),
+    check('deployment_executor_jobs_status_valid',
+      sql`${table.status} in ('queued', 'running', 'succeeded', 'failed', 'rolled_back')`),
+    check('deployment_executor_jobs_versions_positive',
+      sql`${table.deploymentVersion} > 0 and ${table.registrationVersion} > 0 and ${table.version} > 0`),
+    check('deployment_executor_jobs_observation_reference_bounded',
+      sql`${table.observationReference} is null or length(${table.observationReference}) between 1 and 512`),
+    check('deployment_executor_jobs_attempt_nonnegative', sql`${table.attempt} >= 0`),
+    check('deployment_executor_jobs_release_package_hash_sha256',
+      sql`${table.releasePackageHash} ~ '^[0-9a-f]{64}$'`),
+    check('deployment_executor_jobs_lease_hash_sha256',
+      sql`${table.leaseTokenHash} is null or ${table.leaseTokenHash} ~ '^[0-9a-f]{64}$'`),
+    check('deployment_executor_jobs_executor_id_bounded',
+      sql`${table.executorId} is null or ${table.executorId} ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'`),
+    check('deployment_executor_jobs_lease_fields_together',
+      sql`num_nonnulls(${table.executorId}, ${table.leaseTokenHash}, ${table.leaseExpiresAt}) in (0, 3)`),
+    check('deployment_executor_jobs_terminal_shape', sql`
+      (${table.status} = 'queued' and ${table.attempt} = 0 and
+        num_nonnulls(${table.executorId}, ${table.leaseTokenHash}, ${table.leaseExpiresAt}, ${table.heartbeatAt},
+          ${table.startedAt}, ${table.completedAt}, ${table.completionReplayHash}, ${table.resultHash},
+          ${table.observationReference}) = 0) or
+      (${table.status} = 'running' and ${table.attempt} > 0 and ${table.startedAt} is not null and
+        ${table.completedAt} is null and ${table.completionReplayHash} is null and ${table.resultHash} is null and
+        ${table.observationReference} is null and num_nonnulls(${table.executorId}, ${table.leaseTokenHash},
+          ${table.leaseExpiresAt}, ${table.heartbeatAt}) = 4) or
+      (${table.status} in ('succeeded', 'failed', 'rolled_back') and ${table.attempt} > 0 and
+        ${table.startedAt} is not null and ${table.completedAt} >= ${table.startedAt} and
+        ${table.executorId} is null and ${table.leaseTokenHash} is null and ${table.leaseExpiresAt} is null and
+        num_nonnulls(${table.heartbeatAt}, ${table.completedAt}, ${table.completionReplayHash},
+          ${table.resultHash}, ${table.observationReference}) = 5 and
+        ${table.completionReplayHash} ~ '^[0-9a-f]{64}$' and ${table.resultHash} ~ '^[0-9a-f]{64}$' and
+        length(${table.observationReference}) between 1 and 512)
+    `)
   ]
 );
 

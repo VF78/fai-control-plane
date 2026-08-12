@@ -400,6 +400,20 @@
       "when": 1786476742960,
       "tag": "0056_hermes_codex_transport",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1786512352427,
+      "tag": "0057_deployment_executor",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1786515656818,
+      "tag": "0058_foundation",
+      "breakpoints": true
     }
   ]
 }

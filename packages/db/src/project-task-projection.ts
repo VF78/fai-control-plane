@@ -4,7 +4,8 @@ import type {
   ProjectTaskProjectionReader,
   ProjectionAvailability
 } from '@fai-control-plane/domain';
-import {validateDeploymentObservation} from '@fai-control-plane/domain';
+import {hashDeploymentReleasePackage, validateDeploymentObservation,
+  validateDeploymentReleasePackage} from '@fai-control-plane/domain';
 import {and, eq, inArray, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {providerEvidenceFromPersistedFact} from './tracker-evidence-projection';
@@ -13,6 +14,7 @@ import * as schema from './schema';
 type Database = NodePgDatabase<typeof schema>;
 type Actor = typeof schema.actors.$inferSelect;
 type Deployment = typeof schema.deployments.$inferSelect;
+type DeploymentExecutorJob = typeof schema.deploymentExecutorJobs.$inferSelect;
 
 const unknown = <T>(): ProjectionAvailability<T> => ({availability: 'unknown'});
 const notConfigured = <T>(): ProjectionAvailability<T> => ({availability: 'not_configured'});
@@ -52,12 +54,17 @@ const actorProjection = (actor: Actor | undefined) => actor === undefined
 
 const deploymentProjection = (
   deployment: Deployment,
-  actors: ReadonlyMap<string, Actor>
+  actors: ReadonlyMap<string, Actor>,
+  executorJob: DeploymentExecutorJob | undefined
 ): CanonicalDeploymentProjection => {
-  const canonical = deployment.lifecycleVersion === 1 && deployment.referenceKind !== null &&
+  const canonical = [1, 2].includes(deployment.lifecycleVersion ?? 0) && deployment.referenceKind !== null &&
     deployment.planVersionId !== null && deployment.materializationId !== null &&
     deployment.requestedByActorId !== null && deployment.requestedAt !== null &&
     ['development', 'staging', 'production'].includes(deployment.environment);
+  const releasePackage = validateDeploymentReleasePackage(deployment.releasePackage);
+  const canonicalReleasePackage = deployment.lifecycleVersion === 2 && releasePackage.ok &&
+    deployment.releasePackageHash !== null &&
+    hashDeploymentReleasePackage(releasePackage.value) === deployment.releasePackageHash;
   const observation = deployment.observedResult === null || deployment.smokeChecks === null ||
     deployment.rollbackEvidence === null || deployment.startedAt === null || deployment.completedAt === null
     ? null : validateDeploymentObservation({
@@ -87,6 +94,19 @@ const deploymentProjection = (
       materializationId: deployment.materializationId!,
       workItemId: deployment.workItemId
     }),
+    releasePackage: !canonicalReleasePackage || !releasePackage.ok ? unknown() : known({
+      value: releasePackage.value,
+      sha256: deployment.releasePackageHash!
+    }),
+    executorJob: executorJob === undefined ? unknown() : known({
+      id: executorJob.id,
+      status: executorJob.status as 'queued' | 'running' | 'succeeded' | 'failed' | 'rolled_back',
+      attempt: executorJob.attempt,
+      executorId: executorJob.executorId,
+      heartbeatAt: executorJob.heartbeatAt?.toISOString() ?? null,
+      startedAt: executorJob.startedAt?.toISOString() ?? null,
+      completedAt: executorJob.completedAt?.toISOString() ?? null
+    }),
     requested: !canonical ? unknown() : known({
       by: actorProjection(actors.get(deployment.requestedByActorId!)),
       at: deployment.requestedAt!.toISOString()
@@ -99,7 +119,8 @@ const deploymentProjection = (
     externalEvidence: observation?.ok === true ? known(observation.value) : unknown(),
     nextAction: !canonical ? 'migrate_legacy_record'
       : deployment.status === 'requested' ? 'approve_production'
-        : deployment.status === 'approved' ? 'record_observation' : 'review_observation'
+        : deployment.status === 'approved' && deployment.lifecycleVersion === 2 ? 'await_executor'
+          : deployment.status === 'approved' ? 'record_observation' : 'review_observation'
   };
 };
 
@@ -127,7 +148,8 @@ export const createPostgresProjectTaskProjectionReader = (
       isNull(schema.workItems.deletedAt)
     ));
     const taskIds = taskRows.map(({id}) => id);
-    const [actorRows, milestoneRows, journeyRows, bindingRows, prRows, checkRows, deploymentRows] = await Promise.all([
+    const [actorRows, milestoneRows, journeyRows, bindingRows, prRows, checkRows, deploymentRows,
+      deploymentExecutorJobRows] = await Promise.all([
       db.select().from(schema.actors).where(eq(schema.actors.workspaceId, input.workspaceId)),
       db.select().from(schema.milestones).where(eq(schema.milestones.projectId, project.id)),
       taskIds.length === 0
@@ -151,7 +173,8 @@ export const createPostgresProjectTaskProjectionReader = (
             .from(schema.buildChecks)
             .innerJoin(schema.prLinks, eq(schema.prLinks.id, schema.buildChecks.prLinkId))
             .where(inArray(schema.prLinks.workItemId, taskIds)),
-      db.select().from(schema.deployments).where(eq(schema.deployments.projectId, project.id))
+      db.select().from(schema.deployments).where(eq(schema.deployments.projectId, project.id)),
+      db.select().from(schema.deploymentExecutorJobs).where(eq(schema.deploymentExecutorJobs.projectId, project.id))
     ]);
 
     const actors = new Map(actorRows.map((actor) => [actor.id, actor]));
@@ -176,6 +199,7 @@ export const createPostgresProjectTaskProjectionReader = (
       pullRequestsByTask.set(pullRequest.workItemId, pullRequests);
     }
     const deploymentsByTask = new Map<string, Deployment[]>();
+    const deploymentExecutorJobs = new Map(deploymentExecutorJobRows.map((job) => [job.deploymentId, job]));
     for (const deployment of deploymentRows) {
       if (deployment.workItemId === null || !taskIds.includes(deployment.workItemId)) continue;
       const deployments = deploymentsByTask.get(deployment.workItemId) ?? [];
@@ -189,7 +213,8 @@ export const createPostgresProjectTaskProjectionReader = (
         status: notConfigured(),
         blocked: notConfigured(),
         deployments: deploymentRows.slice().sort((left, right) => byText(left, right, (item) => item.id))
-          .map((deployment) => deploymentProjection(deployment, actors))
+          .map((deployment) => deploymentProjection(deployment, actors,
+            deploymentExecutorJobs.get(deployment.id)))
       },
       tasks: taskRows.slice().sort((left, right) => byText(left, right, (item) => item.id)).map((task) => {
         const milestone = task.milestoneId === null ? undefined : milestones.get(task.milestoneId);
@@ -253,7 +278,8 @@ export const createPostgresProjectTaskProjectionReader = (
             })),
           deployments: (deploymentsByTask.get(task.id) ?? []).slice()
             .sort((left, right) => byText(left, right, (item) => item.id))
-            .map((deployment) => deploymentProjection(deployment, actors))
+            .map((deployment) => deploymentProjection(deployment, actors,
+              deploymentExecutorJobs.get(deployment.id)))
         };
       })
     };

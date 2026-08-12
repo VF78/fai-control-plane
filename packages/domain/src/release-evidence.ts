@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {
   containsHighConfidenceSecretContent,
   type CommandResult
@@ -27,6 +28,12 @@ export type DeploymentRollbackEvidence = Readonly<{
   outcome: DeploymentRollbackOutcome;
   reference: string | null;
 }>;
+export type DeploymentReleasePackage = Readonly<{
+  schemaVersion: 1;
+  sourceCommit: string;
+  artifactReference: string;
+  artifactSha256: string;
+}>;
 export type DeploymentObservation = Readonly<{
   outcome: DeploymentObservationOutcome;
   reference: string;
@@ -52,6 +59,30 @@ const invalid = <T>(message: string): CommandResult<T> => ({
   ok: false,
   error: {code: 'INVALID_COMMAND', message}
 });
+
+export const validateDeploymentReleasePackage = (
+  value: unknown
+): CommandResult<DeploymentReleasePackage> => {
+  if (!record(value) || !exact(value, [
+    'schemaVersion', 'sourceCommit', 'artifactReference', 'artifactSha256'
+  ]) || value.schemaVersion !== 1 || typeof value.sourceCommit !== 'string' ||
+    !/^[0-9a-f]{40}$/.test(value.sourceCommit) ||
+    !reference(value.artifactReference, 512) || typeof value.artifactSha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(value.artifactSha256)) {
+    return invalid('Deployment release package is not an immutable canonical binding.');
+  }
+  return {ok: true, value: Object.freeze({
+    schemaVersion: 1,
+    sourceCommit: value.sourceCommit,
+    artifactReference: value.artifactReference,
+    artifactSha256: value.artifactSha256
+  })};
+};
+
+export const hashDeploymentReleasePackage = (value: DeploymentReleasePackage): string =>
+  createHash('sha256').update(JSON.stringify({schemaVersion: value.schemaVersion,
+    sourceCommit: value.sourceCommit, artifactReference: value.artifactReference,
+    artifactSha256: value.artifactSha256})).digest('hex');
 
 /** Reference-only desired release fact; it cannot carry source, credentials, or provider fields. */
 export const validateDeploymentReference = (

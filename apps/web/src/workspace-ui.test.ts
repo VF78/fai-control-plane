@@ -413,6 +413,7 @@ it('renders a compact eight-step management route at the 390px breakpoint struct
     project: {state: 'ready', data: {project: {id: 'ascon-id', workspaceId: 'workspace-1', name: 'ASCON', slug: 'ascon', description: null, defaultBranch: 'main', updatedAt: new Date()},
       runnerQueueEnabled: false, deployments: [{id: 'deployment-failed', version: 1, revision: 'commit:failed',
         desired: {availability: 'unknown'}, requested: {availability: 'unknown'}, approval: {availability: 'unknown'},
+        releasePackage: {availability: 'unknown'}, executorJob: {availability: 'unknown'},
         externalEvidence: {availability: 'known', value: {outcome: 'failed', completedAt: new Date().toISOString(),
           smokeChecks: [], rollback: {outcome: 'failed', reference: 'rollback:failed'}}}, nextAction: 'review_observation'}],
       agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null, plannerEligibility: {eligible: false, remediation: 'Hermes не назначен.'}}, workItems: [],

@@ -1,10 +1,31 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 export * from './access-observation.ts';
 export {
+  createDeploymentExecutorService,
+  parseDeploymentExecutorCompletionPayload,
+  parseDeploymentExecutorHeartbeatPayload,
+  type DeploymentExecutorAuthorization,
+  type DeploymentExecutorClaimEnvelope,
+  type DeploymentExecutorClaimLeaseInput,
+  type DeploymentExecutorClaimRecord,
+  type DeploymentExecutorCompletionInput,
+  type DeploymentExecutorCompletionPayload,
+  type DeploymentExecutorCompletionResponse,
+  type DeploymentExecutorCompletionResult,
+  type DeploymentExecutorHeartbeatInput,
+  type DeploymentExecutorHeartbeatPayload,
+  type DeploymentExecutorHeartbeatResponse,
+  type DeploymentExecutorHeartbeatResult,
+  type DeploymentExecutorService,
+  type DeploymentExecutorStore
+} from './deployment-executor.ts';
+export {
   DEPLOYMENT_OBSERVE_RESULT_COMMAND,
   DEPLOYMENT_PRODUCTION_APPROVE_COMMAND,
   DEPLOYMENT_REQUEST_COMMAND,
   createDeploymentEvidenceService,
+  hashDeploymentEvidenceCommand,
+  validateDeploymentEvidenceCommand,
   type ApproveProductionDeploymentCommand,
   type DeploymentEvidenceCommand,
   type DeploymentEvidenceExecution,
