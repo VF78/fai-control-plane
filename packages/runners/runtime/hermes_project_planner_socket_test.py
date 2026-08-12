@@ -85,6 +85,22 @@ class HermesProjectPlannerSocketTest(unittest.TestCase):
                 runtime = {}
                 MODULE.load_model_credential(runtime, "a" * 32)
                 self.assertEqual(runtime["api_key"], "b" * 32)
+
+    def test_model_credential_accepts_bounded_oauth_tokens_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path = Path(directory) / "model-credential"
+            environment = {"FAI_HERMES_PLANNING_MODEL_CREDENTIAL_FILE": str(credential_path)}
+            with patch.object(MODULE, "MODEL_CREDENTIAL_PATH", credential_path), patch.dict(os.environ, environment):
+                oauth_credential = "a" * 1686
+                credential_path.write_text(oauth_credential + "\n", encoding="utf-8")
+                credential_path.chmod(0o600)
+                runtime = {}
+                MODULE.load_model_credential(runtime, "b" * 32)
+                self.assertEqual(runtime["api_key"], oauth_credential)
+                credential_path.write_text("a" * 4097 + "\n", encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "model_credential_value"):
+                    MODULE.load_model_credential({}, "b" * 32)
+
     def test_kernel_peer_uid_when_supported(self):
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
