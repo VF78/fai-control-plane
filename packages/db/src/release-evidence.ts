@@ -72,11 +72,13 @@ const deploymentExecutorRegistration = async (tx: Transaction, input: Readonly<{
 };
 const queueDeploymentExecutorJob = async (tx: Transaction, input: Readonly<{
   workspaceId: string; projectId: string; deploymentId: string; deploymentVersion: number;
+  environment: DeploymentEnvironment;
   registration: NonNullable<Awaited<ReturnType<typeof deploymentExecutorRegistration>>>;
   releasePackageHash: string; now: Date;
 }>) => {
   await tx.insert(schema.deploymentExecutorJobs).values({
     id: randomUUID(), workspaceId: input.workspaceId, projectId: input.projectId,
+    environment: input.environment,
     deploymentId: input.deploymentId, deploymentVersion: input.deploymentVersion,
     registrationId: input.registration.id, registrationVersion: input.registration.version,
     systemActorId: input.registration.systemActorId, releasePackageHash: input.releasePackageHash,
@@ -274,7 +276,7 @@ export const createPostgresDeploymentEvidenceStore = (
           lifecycleVersion: 2, version: 1});
         if (!production) await queueDeploymentExecutorJob(tx, {workspaceId: command.workspaceId,
           projectId: project.id, deploymentId: command.payload.deploymentId, deploymentVersion: 1,
-          registration, releasePackageHash, now});
+          environment: command.payload.environment, registration, releasePackageHash, now});
         resultVersion = 1;
         result = {ok: true, value: {deploymentId: command.payload.deploymentId, projectId: project.id,
           environment: command.payload.environment, state: production ? 'requested' : 'approved', version: 1,
@@ -321,7 +323,7 @@ export const createPostgresDeploymentEvidenceStore = (
         if (deployment.lifecycleVersion === 2 && registration !== null && deployment.releasePackageHash !== null) {
           await queueDeploymentExecutorJob(tx, {workspaceId: command.workspaceId, projectId: deployment.projectId,
             deploymentId: deployment.id, deploymentVersion: updated.version, registration,
-            releasePackageHash: deployment.releasePackageHash, now});
+            environment: 'production', releasePackageHash: deployment.releasePackageHash, now});
         }
         resultVersion = updated.version;
         result = {ok: true, value: {deploymentId: deployment.id, projectId: deployment.projectId,

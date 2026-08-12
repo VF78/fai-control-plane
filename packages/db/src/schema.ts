@@ -1835,8 +1835,8 @@ export const deploymentExecutorRegistrations = pgTable(
     foreignKey({columns: [table.workspaceId, table.systemActorId],
       foreignColumns: [actors.workspaceId, actors.id],
       name: 'deployment_executor_registrations_workspace_actor_fk'}).onDelete('restrict'),
-    uniqueIndex('deployment_executor_registrations_identity_project_unique')
-      .on(table.id, table.workspaceId, table.projectId),
+    uniqueIndex('deployment_executor_registrations_identity_project_environment_unique')
+      .on(table.id, table.workspaceId, table.projectId, table.environment),
     uniqueIndex('deployment_executor_registrations_project_environment_unique')
       .on(table.projectId, table.environment),
     check('deployment_executor_registrations_environment_valid',
@@ -1923,10 +1923,13 @@ export const deployments = pgTable(
       foreignColumns: [actors.workspaceId, actors.id], name: 'deployments_workspace_approved_actor_fk'}).onDelete('restrict'),
     foreignKey({columns: [table.workspaceId, table.observedByActorId],
       foreignColumns: [actors.workspaceId, actors.id], name: 'deployments_workspace_observed_actor_fk'}).onDelete('restrict'),
-    foreignKey({columns: [table.deploymentExecutorRegistrationId, table.workspaceId, table.projectId],
+    foreignKey({columns: [table.deploymentExecutorRegistrationId, table.workspaceId, table.projectId,
+      table.environment],
       foreignColumns: [deploymentExecutorRegistrations.id, deploymentExecutorRegistrations.workspaceId,
-        deploymentExecutorRegistrations.projectId], name: 'deployments_executor_registration_fk'}).onDelete('restrict'),
-    uniqueIndex('deployments_identity_workspace_project_unique').on(table.id, table.workspaceId, table.projectId),
+        deploymentExecutorRegistrations.projectId, deploymentExecutorRegistrations.environment],
+      name: 'deployments_executor_registration_fk'}).onDelete('restrict'),
+    uniqueIndex('deployments_identity_workspace_project_environment_unique')
+      .on(table.id, table.workspaceId, table.projectId, table.environment),
     index('deployments_project_environment_idx').on(
       table.projectId,
       table.environment
@@ -1987,6 +1990,7 @@ export const deploymentExecutorJobs = pgTable(
     id: id(),
     workspaceId: uuid('workspace_id').notNull(),
     projectId: uuid('project_id').notNull(),
+    environment: text('environment').notNull(),
     deploymentId: uuid('deployment_id').notNull(),
     deploymentVersion: integer('deployment_version').notNull(),
     registrationId: uuid('registration_id').notNull(),
@@ -2012,17 +2016,23 @@ export const deploymentExecutorJobs = pgTable(
     foreignKey({columns: [table.workspaceId, table.projectId],
       foreignColumns: [projects.workspaceId, projects.id],
       name: 'deployment_executor_jobs_workspace_project_fk'}).onDelete('restrict'),
-    foreignKey({columns: [table.deploymentId, table.workspaceId, table.projectId],
-      foreignColumns: [deployments.id, deployments.workspaceId, deployments.projectId],
+    foreignKey({columns: [table.deploymentId, table.workspaceId, table.projectId, table.environment],
+      foreignColumns: [deployments.id, deployments.workspaceId, deployments.projectId, deployments.environment],
       name: 'deployment_executor_jobs_deployment_fk'}).onDelete('restrict'),
-    foreignKey({columns: [table.registrationId, table.workspaceId, table.projectId],
+    foreignKey({columns: [table.registrationId, table.workspaceId, table.projectId, table.environment],
       foreignColumns: [deploymentExecutorRegistrations.id, deploymentExecutorRegistrations.workspaceId,
-        deploymentExecutorRegistrations.projectId], name: 'deployment_executor_jobs_registration_fk'}).onDelete('restrict'),
+        deploymentExecutorRegistrations.projectId, deploymentExecutorRegistrations.environment],
+      name: 'deployment_executor_jobs_registration_fk'}).onDelete('restrict'),
     foreignKey({columns: [table.workspaceId, table.systemActorId],
       foreignColumns: [actors.workspaceId, actors.id],
       name: 'deployment_executor_jobs_workspace_actor_fk'}).onDelete('restrict'),
     uniqueIndex('deployment_executor_jobs_deployment_unique').on(table.deploymentId),
+    uniqueIndex('deployment_executor_jobs_one_running_per_target')
+      .on(table.workspaceId, table.projectId, table.environment)
+      .where(sql`${table.status} = 'running'`),
     index('deployment_executor_jobs_claim_order_idx').on(table.status, table.createdAt),
+    check('deployment_executor_jobs_environment_valid',
+      sql`${table.environment} in ('development', 'staging', 'production')`),
     check('deployment_executor_jobs_status_valid',
       sql`${table.status} in ('queued', 'running', 'succeeded', 'failed', 'rolled_back')`),
     check('deployment_executor_jobs_versions_positive',

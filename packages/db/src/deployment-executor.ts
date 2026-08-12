@@ -20,6 +20,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_AUTHORIZATIONS = 32;
 const MAX_LEASE_MS = 10 * 60 * 1_000;
+const TARGET_LEASE_CONSTRAINT = 'deployment_executor_jobs_one_running_per_target';
 const deploymentCapability = (environment: string) => `deploy:runner:${environment}`;
 const exact = (value: object, keys: readonly string[]) =>
   Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -34,6 +35,15 @@ const validAuthorization = (input: Readonly<{
   input.environments.every((value) => ['development', 'staging', 'production'].includes(value));
 const outcomeStatus = (outcome: string): 'succeeded' | 'failed' | 'rolled_back' | null =>
   outcome === 'succeeded' || outcome === 'failed' || outcome === 'rolled_back' ? outcome : null;
+const isTargetLeaseConflict = (error: unknown): boolean => {
+  let current = error;
+  for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth += 1) {
+    const record = current as Readonly<{code?: unknown; constraint?: unknown; cause?: unknown}>;
+    if (record.code === '23505' && record.constraint === TARGET_LEASE_CONSTRAINT) return true;
+    current = record.cause;
+  }
+  return false;
+};
 const canonicalObservationCommand = (input: Parameters<DeploymentExecutorStore['complete']>[0]): boolean => {
   const command = input.observationCommand;
   const observed = validateDeploymentObservation(command.payload.observation);
@@ -76,7 +86,8 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
     const leaseMs = input.leaseExpiresAt.getTime() - claimedAtMs;
     if (!validAuthorization(input) || !SHA256.test(input.leaseTokenHash) ||
       !Number.isFinite(claimedAtMs) || leaseMs < 1 || leaseMs > MAX_LEASE_MS) return null;
-    return db.transaction(async (tx) => {
+    try {
+      return await db.transaction(async (tx) => {
       const candidates = await tx.select({
         job: schema.deploymentExecutorJobs,
         deployment: schema.deployments,
@@ -89,11 +100,13 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
         .innerJoin(schema.deployments, and(
           eq(schema.deployments.id, schema.deploymentExecutorJobs.deploymentId),
           eq(schema.deployments.workspaceId, schema.deploymentExecutorJobs.workspaceId),
-          eq(schema.deployments.projectId, schema.deploymentExecutorJobs.projectId)
+          eq(schema.deployments.projectId, schema.deploymentExecutorJobs.projectId),
+          eq(schema.deployments.environment, schema.deploymentExecutorJobs.environment)
         )).innerJoin(schema.deploymentExecutorRegistrations, and(
           eq(schema.deploymentExecutorRegistrations.id, schema.deploymentExecutorJobs.registrationId),
           eq(schema.deploymentExecutorRegistrations.workspaceId, schema.deploymentExecutorJobs.workspaceId),
-          eq(schema.deploymentExecutorRegistrations.projectId, schema.deploymentExecutorJobs.projectId)
+          eq(schema.deploymentExecutorRegistrations.projectId, schema.deploymentExecutorJobs.projectId),
+          eq(schema.deploymentExecutorRegistrations.environment, schema.deploymentExecutorJobs.environment)
         )).innerJoin(schema.actors, and(
           eq(schema.actors.id, schema.deploymentExecutorJobs.systemActorId),
           eq(schema.actors.workspaceId, schema.deploymentExecutorJobs.workspaceId)
@@ -107,7 +120,9 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
             lte(schema.deploymentExecutorJobs.leaseExpiresAt, input.claimedAt)
           )),
           inArray(schema.deploymentExecutorJobs.projectId, [...input.projectIds]),
+          inArray(schema.deploymentExecutorJobs.environment, [...input.environments]),
           inArray(schema.deployments.environment, [...input.environments]),
+          eq(schema.deploymentExecutorJobs.environment, schema.deployments.environment),
           eq(schema.deployments.lifecycleVersion, 2),
           eq(schema.deployments.status, 'approved'),
           eq(schema.deployments.version, schema.deploymentExecutorJobs.deploymentVersion),
@@ -129,7 +144,8 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
           eq(schema.actors.authMode, 'system'),
           isNull(schema.actors.disabledAt),
           sql`${schema.actors.capabilities}->>('deploy:runner:' || ${schema.deployments.environment}) = 'true'`
-        )).orderBy(asc(schema.deploymentExecutorJobs.createdAt), asc(schema.deploymentExecutorJobs.id))
+        )).orderBy(sql`case when ${schema.deploymentExecutorJobs.status} = 'running' then 0 else 1 end`,
+          asc(schema.deploymentExecutorJobs.createdAt), asc(schema.deploymentExecutorJobs.id))
         .limit(8).for('update', {skipLocked: true});
       const candidate = candidates.find(({job, deployment, registration, actorType, actorAuthMode, actorDisabledAt,
         actorCapabilities}) => {
@@ -145,6 +161,7 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
           deployment.deploymentExecutorRegistrationVersion === job.registrationVersion &&
           registration.id === job.registrationId && registration.version === job.registrationVersion &&
           registration.workspaceId === input.workspaceId && registration.projectId === job.projectId &&
+          job.environment === deployment.environment &&
           registration.systemActorId === input.systemActorId && registration.environment === deployment.environment &&
           registration.executorKey === input.executorId && registration.enabled &&
           actorType === 'system' && actorAuthMode === 'system' && actorDisabledAt === null &&
@@ -187,8 +204,12 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
         actorId: input.systemActorId, commandId: `deployment-executor.claim:${candidate.job.id}:attempt:${leased.attempt}`,
         action: 'deployment_executor.claim', targetId: candidate.job.id, expectedVersion: candidate.job.version,
         resultVersion: leased.version, at: input.claimedAt});
-      return prepared;
-    });
+        return prepared;
+      });
+    } catch (error) {
+      if (isTargetLeaseConflict(error)) return null;
+      throw error;
+    }
   },
   async heartbeat(input) {
     const atMs = input.at.getTime();
@@ -208,7 +229,8 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
         .innerJoin(schema.deploymentExecutorRegistrations, and(
           eq(schema.deploymentExecutorRegistrations.id, schema.deploymentExecutorJobs.registrationId),
           eq(schema.deploymentExecutorRegistrations.workspaceId, schema.deploymentExecutorJobs.workspaceId),
-          eq(schema.deploymentExecutorRegistrations.projectId, schema.deploymentExecutorJobs.projectId)
+          eq(schema.deploymentExecutorRegistrations.projectId, schema.deploymentExecutorJobs.projectId),
+          eq(schema.deploymentExecutorRegistrations.environment, schema.deploymentExecutorJobs.environment)
         )).innerJoin(schema.actors, and(
           eq(schema.actors.id, schema.deploymentExecutorJobs.systemActorId),
           eq(schema.actors.workspaceId, schema.deploymentExecutorJobs.workspaceId)
@@ -217,7 +239,8 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
         eq(schema.deploymentExecutorJobs.id, input.jobId), eq(schema.deploymentExecutorJobs.workspaceId, input.workspaceId),
         eq(schema.deploymentExecutorJobs.registrationId, input.registrationId),
         eq(schema.deploymentExecutorJobs.systemActorId, input.systemActorId),
-        inArray(schema.deploymentExecutorJobs.projectId, [...input.projectIds])
+        inArray(schema.deploymentExecutorJobs.projectId, [...input.projectIds]),
+        inArray(schema.deploymentExecutorJobs.environment, [...input.environments])
       )).limit(1).for('update');
       if (binding === undefined) return {status: 'denied'};
       const candidate = binding.job;
@@ -269,11 +292,13 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
         .innerJoin(schema.deployments, and(
           eq(schema.deployments.id, schema.deploymentExecutorJobs.deploymentId),
           eq(schema.deployments.workspaceId, schema.deploymentExecutorJobs.workspaceId),
-          eq(schema.deployments.projectId, schema.deploymentExecutorJobs.projectId)
+          eq(schema.deployments.projectId, schema.deploymentExecutorJobs.projectId),
+          eq(schema.deployments.environment, schema.deploymentExecutorJobs.environment)
         )).innerJoin(schema.deploymentExecutorRegistrations, and(
           eq(schema.deploymentExecutorRegistrations.id, schema.deploymentExecutorJobs.registrationId),
           eq(schema.deploymentExecutorRegistrations.workspaceId, schema.deploymentExecutorJobs.workspaceId),
-          eq(schema.deploymentExecutorRegistrations.projectId, schema.deploymentExecutorJobs.projectId)
+          eq(schema.deploymentExecutorRegistrations.projectId, schema.deploymentExecutorJobs.projectId),
+          eq(schema.deploymentExecutorRegistrations.environment, schema.deploymentExecutorJobs.environment)
         )).innerJoin(schema.actors, and(
           eq(schema.actors.id, schema.deploymentExecutorJobs.systemActorId),
           eq(schema.actors.workspaceId, schema.deploymentExecutorJobs.workspaceId)
@@ -283,6 +308,7 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
           eq(schema.deploymentExecutorJobs.registrationId, input.registrationId),
           eq(schema.deploymentExecutorJobs.systemActorId, input.systemActorId),
           inArray(schema.deploymentExecutorJobs.projectId, [...input.projectIds]),
+          inArray(schema.deploymentExecutorJobs.environment, [...input.environments]),
           inArray(schema.deployments.environment, [...input.environments])
         )).limit(1).for('update');
       if (binding === undefined) return {status: 'denied'};
@@ -294,6 +320,7 @@ export const createPostgresDeploymentExecutorStore = (db: Database): DeploymentE
       const executorAuthorityCurrent = registration.version === job.registrationVersion && registration.enabled &&
         registration.systemActorId === input.systemActorId && registration.executorKey === input.executorId &&
         registration.projectId === deployment.projectId && registration.environment === deployment.environment &&
+        job.environment === deployment.environment &&
         binding.systemActorType === 'system' &&
         binding.systemActorAuthMode === 'system' && binding.systemActorDisabledAt === null &&
         binding.systemActorCapabilities[deploymentCapability(deployment.environment)] === true;

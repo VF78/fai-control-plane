@@ -1,6 +1,6 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {eq} from 'drizzle-orm';
+import {and, eq, sql} from 'drizzle-orm';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {Pool} from 'pg';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
@@ -41,7 +41,7 @@ describePostgres('deployment evidence persistence', () => {
     const ids = {workspace: randomUUID(), otherWorkspace: randomUUID(), project: randomUUID(), owner: randomUUID(),
       contributor: randomUUID(), observer: randomUUID(), plan: randomUUID(), planVersion: randomUUID(),
       baseline: randomUUID(), materialization: randomUUID(), workItem: randomUUID(), production: randomUUID(),
-      staging: randomUUID(), restored: randomUUID(), protocol: randomUUID(),
+      staging: randomUUID(), stagingConcurrent: randomUUID(), restored: randomUUID(), protocol: randomUUID(),
       productionRegistration: randomUUID(), stagingRegistration: randomUUID(), developmentRegistration: randomUUID()};
     await db.insert(workspaces).values([
       {id: ids.workspace, name: 'Release', slug: `release-${randomUUID()}`},
@@ -244,25 +244,56 @@ describePostgres('deployment evidence persistence', () => {
       environment: 'staging'};
     await expect(execute(command('deployment.request.v1', stagingPayload, 'staging-request')))
       .resolves.toMatchObject({receipt: {result: {ok: true, value: {state: 'approved', version: 1}}}});
+    await expect(execute(command('deployment.request.v1', {...stagingPayload,
+      deploymentId: ids.stagingConcurrent}, 'staging-concurrent-request')))
+      .resolves.toMatchObject({receipt: {result: {ok: true, value: {state: 'approved', version: 1}}}});
     const [staging] = await db.select().from(deployments).where(eq(deployments.id, ids.staging));
     expect(staging?.requestedByActorId).toBe(ids.owner); expect(staging?.approvedByActorId).toBe(ids.owner);
     let stagingNow = new Date('2026-08-11T12:00:00.000Z');
-    const stagingExecutor = createDeploymentExecutorService({store: createPostgresDeploymentExecutorStore(db),
-      now: () => stagingNow, tokenGenerator: () => 's'.repeat(43)});
+    let stagingTokenA = 0; let stagingTokenB = 0;
+    const stagingExecutorA = createDeploymentExecutorService({store: createPostgresDeploymentExecutorStore(db),
+      now: () => stagingNow, tokenGenerator: () => (stagingTokenA++ === 0 ? 's' : 'u').repeat(43)});
+    const stagingExecutorB = createDeploymentExecutorService({store: createPostgresDeploymentExecutorStore(db),
+      now: () => stagingNow, tokenGenerator: () => (stagingTokenB++ === 0 ? 't' : 'v').repeat(43)});
     const stagingAuthorization = {...authorization, executorId: 'executor-staging',
       registrationId: ids.stagingRegistration, environments: ['staging' as const]};
-    const stagingClaim = await stagingExecutor.claim(stagingAuthorization);
-    expect(stagingClaim).toMatchObject({deploymentId: ids.staging, environment: 'staging', deploymentVersion: 1});
+    const competingClaims = await Promise.all([
+      stagingExecutorA.claim(stagingAuthorization), stagingExecutorB.claim(stagingAuthorization)
+    ]);
+    expect(competingClaims.filter((candidate) => candidate !== null)).toHaveLength(1);
+    const stagingClaim = competingClaims.find((candidate) => candidate !== null) ?? null;
+    expect(stagingClaim).toMatchObject({environment: 'staging', deploymentVersion: 1});
     if (stagingClaim === null) throw new Error('staging claim');
+    const [activeTarget] = await db.select({count: sql<number>`count(*)::int`}).from(deploymentExecutorJobs)
+      .where(and(eq(deploymentExecutorJobs.workspaceId, ids.workspace),
+        eq(deploymentExecutorJobs.projectId, ids.project), eq(deploymentExecutorJobs.environment, 'staging'),
+        eq(deploymentExecutorJobs.status, 'running')));
+    expect(activeTarget?.count).toBe(1);
     stagingNow = new Date('2026-08-11T12:01:00.000Z');
-    await expect(stagingExecutor.complete({authorization: stagingAuthorization, leaseToken: stagingClaim.leaseToken,
-      payload: {jobId: stagingClaim.jobId, deploymentId: ids.staging, deploymentVersion: 1, attempt: 1,
+    await expect(stagingExecutorA.complete({authorization: stagingAuthorization, leaseToken: stagingClaim.leaseToken,
+      payload: {jobId: stagingClaim.jobId, deploymentId: stagingClaim.deploymentId, deploymentVersion: 1, attempt: 1,
         result: {outcome: 'succeeded', startedAt: '2026-08-11T12:00:00.000Z',
           completedAt: '2026-08-11T12:00:50.000Z',
           smokeChecks: [{name: 'health', status: 'passed', reference: 'evidence:staging:health'}],
           rollback: {outcome: 'not_required', reference: null}}}})).resolves.toMatchObject({outcome: 'succeeded'});
-    const [completedStaging] = await db.select().from(deployments).where(eq(deployments.id, ids.staging));
-    expect(completedStaging).toMatchObject({status: 'observed', version: 2,
+    stagingNow = new Date('2026-08-11T12:02:00.000Z');
+    const remainingClaim = await stagingExecutorA.claim(stagingAuthorization);
+    expect(remainingClaim).toMatchObject({environment: 'staging', deploymentVersion: 1});
+    if (remainingClaim === null) throw new Error('remaining staging claim');
+    expect(remainingClaim.deploymentId).not.toBe(stagingClaim.deploymentId);
+    stagingNow = new Date('2026-08-11T12:03:00.000Z');
+    await expect(stagingExecutorA.complete({authorization: stagingAuthorization,
+      leaseToken: remainingClaim.leaseToken, payload: {jobId: remainingClaim.jobId,
+        deploymentId: remainingClaim.deploymentId, deploymentVersion: 1, attempt: 1,
+        result: {outcome: 'succeeded', startedAt: '2026-08-11T12:02:00.000Z',
+          completedAt: '2026-08-11T12:02:50.000Z',
+          smokeChecks: [{name: 'health', status: 'passed', reference: 'evidence:staging:second-health'}],
+          rollback: {outcome: 'not_required', reference: null}}}})).resolves.toMatchObject({outcome: 'succeeded'});
+    const completedStaging = await db.select().from(deployments).where(and(
+      eq(deployments.projectId, ids.project), eq(deployments.environment, 'staging')));
+    expect(completedStaging).toHaveLength(2);
+    expect(new Set(completedStaging.map(({id}) => id))).toEqual(new Set([ids.staging, ids.stagingConcurrent]));
+    for (const completed of completedStaging) expect(completed).toMatchObject({status: 'observed', version: 2,
       observedResult: {outcome: 'succeeded'}, rollbackEvidence: {outcome: 'not_required', reference: null}});
     expect((await db.select().from(auditEvents)).length).toBeGreaterThanOrEqual(14);
     expect((await db.select().from(commandReceipts)).length).toBeGreaterThanOrEqual(13);

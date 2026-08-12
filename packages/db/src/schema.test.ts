@@ -194,7 +194,7 @@ describe('canonical schema foundation', () => {
     ]));
     const jobColumns = Object.values(getTableColumns(schema.deploymentExecutorJobs)).map(({name}) => name);
     expect(jobColumns).toEqual(expect.arrayContaining([
-      'deployment_id', 'registration_id', 'lease_token_hash', 'completion_replay_hash',
+      'deployment_id', 'environment', 'registration_id', 'lease_token_hash', 'completion_replay_hash',
       'result_hash', 'observation_reference'
     ]));
     expect(jobColumns).not.toEqual(expect.arrayContaining(['task_packet_id', 'agent_profile_id', 'credential']));
