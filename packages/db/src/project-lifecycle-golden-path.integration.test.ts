@@ -633,8 +633,9 @@ describePostgres('project lifecycle golden path', () => {
     }));
     const prepare = await projectAcceptance.execute(envelope(ids.workspace, ownerContext.value,
       'project_uat.prepare.v1', {projectId: ids.msa, protocolId: ids.uatProtocol, expectedExecutionVersion: 5,
-        requiredSmokeChecks: ['health'], requiredDeploymentEnvironment: 'production' as const},
-      `project-uat-prepare:v1:${ids.msa}:5:${owner.id}`));
+        requiredSmokeChecks: ['health'], requiredDeploymentEnvironment: 'production' as const,
+        deploymentId: ids.deployment},
+      `project-uat-prepare:v1:${ids.msa}:5:${ids.uatProtocol}:${owner.id}`));
     expect(prepare).toMatchObject({receipt: {result: {ok: true, value: {version: 1,
       release: {state: 'deployment_observed', deploymentId: ids.deployment},
       blockers: expect.arrayContaining(['uat_passed_required', 'product_owner_signoff_required',

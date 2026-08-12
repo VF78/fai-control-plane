@@ -420,7 +420,8 @@ function Overview({route, project, runs, portfolio, csrfToken, canManage, hasWri
     <ProjectExecutionControls projectId={project.project.id} execution={execution} csrfToken={csrfToken} canManage={canManage} hasWriteCapability={hasWriteCapability} runnerQueueAvailable={project.runnerQueueEnabled} hermesOrchestratedStage={hermesOrchestratedStage} autonomousQaStage={autonomousQaStage} autonomousQaTransportAvailable={project.autonomousQaTransportAvailable === true}/>
     <ScopeBaseline project={project} csrfToken={csrfToken} canApproveOutcome={canApproveOutcome}/>
     <ProjectAcceptanceControls projectId={project.project.id} execution={execution} csrfToken={csrfToken}
-      canProductOwner={canApproveOutcome} canClientRepresentative={canClientSignoff}/>
+      deployments={project.deployments ?? []} canProductOwner={canApproveOutcome}
+      canClientRepresentative={canClientSignoff}/>
     <ReleaseEvidenceControls projectId={project.project.id} projectVersion={project.project.version}
       materialization={project.plan?.materialization ?? null} workItems={project.workItems}
       deployments={project.deployments ?? []} csrfToken={csrfToken} canManage={canManage && hasWriteCapability}/>

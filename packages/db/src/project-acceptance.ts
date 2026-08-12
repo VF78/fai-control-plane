@@ -1,6 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {
-  canonicalJson, validateDeliveryProtocolDefinition, validateDeploymentObservation, validateProjectUatCheckResults,
+  canonicalJson, hashDeploymentReleasePackage, validateDeliveryProtocolDefinition, validateDeploymentObservation,
+  validateDeploymentReleasePackage, validateProjectUatCheckResults,
   type CommandError, type ProjectAcceptanceProjection, type ProjectUatChecklistItem
 } from '@fai-control-plane/domain';
 import type {ProjectAcceptanceCommand, ProjectAcceptanceStore} from '@fai-control-plane/application';
@@ -42,34 +43,65 @@ const roleFor = async (tx: Queryable, workspaceId: string, projectId: string, ac
 
 type ProtocolRow = typeof schema.projectUatProtocols.$inferSelect;
 const releaseFact = async (tx: Queryable, protocol: ProtocolRow): Promise<ProjectAcceptanceProjection['release']> => {
-  const deployments = await tx.select({id: schema.deployments.id, observedResult: schema.deployments.observedResult,
-    smokeChecks: schema.deployments.smokeChecks, rollbackEvidence: schema.deployments.rollbackEvidence,
-    startedAt: schema.deployments.startedAt, completedAt: schema.deployments.completedAt,
-    observedAt: schema.deployments.observedAt})
-    .from(schema.deployments).where(and(eq(schema.deployments.workspaceId, protocol.workspaceId),
-      eq(schema.deployments.projectId, protocol.projectId), eq(schema.deployments.planVersionId, protocol.planVersionId),
-      eq(schema.deployments.materializationId, protocol.materializationId),
-      inArray(schema.deployments.lifecycleVersion, [1, 2]),
-      eq(schema.deployments.environment, protocol.requiredDeploymentEnvironment),
-      eq(schema.deployments.status, 'observed'))).orderBy(desc(schema.deployments.observedAt), desc(schema.deployments.id));
-  const successful = deployments.find((deployment) => {
-    if (deployment.observedResult === null || deployment.smokeChecks === null ||
-      deployment.rollbackEvidence === null || deployment.startedAt === null || deployment.completedAt === null) return false;
-    const observation = validateDeploymentObservation({outcome: deployment.observedResult.outcome,
-      reference: deployment.observedResult.reference, startedAt: deployment.startedAt.toISOString(),
-      completedAt: deployment.completedAt.toISOString(), smokeChecks: deployment.smokeChecks,
-      rollback: deployment.rollbackEvidence});
-    return observation.ok && observation.value.outcome === 'succeeded' &&
-      protocol.requiredSmokeChecks.every((required) => observation.value.smokeChecks.some((check) =>
-        check.name === required && check.status === 'passed'));
-  });
-  if (successful !== undefined) return {state: 'deployment_observed', deploymentId: successful.id, waiver: null};
-  const [waiver] = await tx.select().from(schema.projectReleaseWaivers)
-    .where(eq(schema.projectReleaseWaivers.protocolId, protocol.id)).limit(1);
-  return waiver === undefined ? {state: 'pending', deploymentId: null, waiver: null} : {
-    state: 'not_required', deploymentId: null,
-    waiver: {actorId: waiver.waivedByActorId, reason: waiver.reason, waivedAt: waiver.createdAt.toISOString()}
-  };
+  if (protocol.deploymentId === null) {
+    const [waiver] = await tx.select().from(schema.projectReleaseWaivers)
+      .where(eq(schema.projectReleaseWaivers.protocolId, protocol.id)).limit(1);
+    return waiver === undefined
+      ? {state: 'pending', deploymentId: null, blocker: 'uat_release_binding_required', waiver: null}
+      : {state: 'not_required', deploymentId: null, blocker: null,
+        waiver: {actorId: waiver.waivedByActorId, reason: waiver.reason, waivedAt: waiver.createdAt.toISOString()}};
+  }
+  const [latest] = await tx.select({id: schema.deployments.id}).from(schema.deployments).where(and(
+    eq(schema.deployments.workspaceId, protocol.workspaceId), eq(schema.deployments.projectId, protocol.projectId),
+    eq(schema.deployments.environment, protocol.requiredDeploymentEnvironment),
+    inArray(schema.deployments.lifecycleVersion, [1, 2])
+  )).orderBy(desc(schema.deployments.createdAt), desc(schema.deployments.id)).limit(1);
+  if (latest?.id !== protocol.deploymentId) return {state: 'pending', deploymentId: protocol.deploymentId,
+    blocker: 'bound_deployment_not_latest', waiver: null};
+  const [deployment] = await tx.select().from(schema.deployments).where(and(
+    eq(schema.deployments.id, protocol.deploymentId), eq(schema.deployments.workspaceId, protocol.workspaceId),
+    eq(schema.deployments.projectId, protocol.projectId),
+    eq(schema.deployments.environment, protocol.requiredDeploymentEnvironment))).limit(1);
+  if (deployment === undefined || deployment.status !== 'observed' || deployment.observedResult === null ||
+    deployment.smokeChecks === null || deployment.rollbackEvidence === null || deployment.startedAt === null ||
+    deployment.completedAt === null || deployment.observedAt === null) return {state: 'pending',
+      deploymentId: protocol.deploymentId, blocker: 'bound_deployment_not_observed', waiver: null};
+  const observation = validateDeploymentObservation({outcome: deployment.observedResult.outcome,
+    reference: deployment.observedResult.reference, startedAt: deployment.startedAt.toISOString(),
+    completedAt: deployment.completedAt.toISOString(), smokeChecks: deployment.smokeChecks,
+    rollback: deployment.rollbackEvidence});
+  const exactScope = deployment.planVersionId === protocol.planVersionId &&
+    deployment.materializationId === protocol.materializationId &&
+    deployment.lifecycleVersion === protocol.deploymentLifecycleVersion;
+  const successful = observation.ok && observation.value.outcome === 'succeeded' && exactScope &&
+    protocol.requiredSmokeChecks.every((required) => observation.value.smokeChecks.some((check) =>
+      check.name === required && check.status === 'passed'));
+  if (!successful) return {state: 'pending', deploymentId: protocol.deploymentId,
+    blocker: 'bound_deployment_evidence_invalid', waiver: null};
+  if (deployment.lifecycleVersion === 2) {
+    const releasePackage = validateDeploymentReleasePackage(deployment.releasePackage);
+    const [job] = await tx.select().from(schema.deploymentExecutorJobs)
+      .where(eq(schema.deploymentExecutorJobs.deploymentId, deployment.id)).limit(1);
+    const executorBound = releasePackage.ok && protocol.deploymentReleasePackageHash !== null &&
+      hashDeploymentReleasePackage(releasePackage.value) === deployment.releasePackageHash &&
+      deployment.releasePackageHash === protocol.deploymentReleasePackageHash && job !== undefined &&
+      job.workspaceId === protocol.workspaceId && job.projectId === protocol.projectId &&
+      job.environment === protocol.requiredDeploymentEnvironment && job.status === 'succeeded' && job.attempt > 0 &&
+      job.completedAt !== null && job.completedAt.getTime() === deployment.completedAt.getTime() &&
+      job.observationReference === deployment.observedResult.reference &&
+      job.resultHash !== null && deployment.observedResult.reference ===
+        `deployment-job:${job.id}:attempt:${job.attempt}:result:${job.resultHash}` &&
+      job.releasePackageHash === protocol.deploymentReleasePackageHash &&
+      job.registrationId === deployment.deploymentExecutorRegistrationId &&
+      job.registrationVersion === deployment.deploymentExecutorRegistrationVersion &&
+      deployment.version === job.deploymentVersion + 1;
+    if (!executorBound) return {state: 'pending', deploymentId: protocol.deploymentId,
+      blocker: 'bound_deployment_evidence_invalid', waiver: null};
+  } else if (deployment.lifecycleVersion !== 1 || protocol.deploymentReleasePackageHash !== null) {
+    return {state: 'pending', deploymentId: protocol.deploymentId,
+      blocker: 'bound_deployment_evidence_invalid', waiver: null};
+  }
+  return {state: 'deployment_observed', deploymentId: deployment.id, blocker: null, waiver: null};
 };
 
 export const loadProjectAcceptanceProjection = async (
@@ -77,7 +109,7 @@ export const loadProjectAcceptanceProjection = async (
 ): Promise<ProjectAcceptanceProjection | null> => {
   const [protocol] = await tx.select().from(schema.projectUatProtocols).where(and(
     eq(schema.projectUatProtocols.workspaceId, workspaceId), eq(schema.projectUatProtocols.projectId, projectId)
-  )).limit(1);
+  )).orderBy(desc(schema.projectUatProtocols.createdAt), desc(schema.projectUatProtocols.id)).limit(1);
   if (protocol === undefined) return null;
   const [session] = await tx.select().from(schema.projectAcceptanceSessions)
     .where(and(eq(schema.projectAcceptanceSessions.protocolId, protocol.id),
@@ -99,7 +131,7 @@ export const loadProjectAcceptanceProjection = async (
     ...(latest?.outcome === 'passed' ? [] : ['uat_passed_required']),
     ...(productOwner === undefined ? ['product_owner_signoff_required'] : []),
     ...(client === undefined ? ['client_representative_signoff_required'] : []),
-    ...(release.state === 'pending' ? ['release_evidence_or_waiver_required'] : [])
+    ...(release.state === 'pending' ? [release.blocker ?? 'release_evidence_or_waiver_required'] : [])
   ];
   return {
     protocol: {id: protocol.id, planVersionId: protocol.planVersionId,
@@ -107,6 +139,9 @@ export const loadProjectAcceptanceProjection = async (
       contentHash: protocol.contentHash, checklist: protocol.checklist,
       requiredSmokeChecks: protocol.requiredSmokeChecks,
       requiredDeploymentEnvironment: protocol.requiredDeploymentEnvironment,
+      deploymentId: protocol.deploymentId,
+      deploymentLifecycleVersion: protocol.deploymentLifecycleVersion as 1 | 2 | null,
+      deploymentReleasePackageHash: protocol.deploymentReleasePackageHash,
       preparedByActorId: protocol.preparedByActorId,
       preparedAt: protocol.createdAt.toISOString()}, version: session.version,
     latestResult: latest === undefined ? null : {id: latest.id, outcome: latest.outcome, checks: latest.checks,
@@ -269,27 +304,52 @@ export const createPostgresProjectAcceptanceStore = (
           result = fail('VERSION_CONFLICT', 'Project execution version conflicts.'); return complete(project.id); }
         if (!['blocked', 'paused'].includes(execution.status)) { result = fail('INVALID_TRANSITION',
           'UAT can be prepared only at a paused or blocked completion boundary.'); return complete(project.id); }
-        const [existingProtocol] = await tx.select({id: schema.projectUatProtocols.id})
-          .from(schema.projectUatProtocols).where(eq(schema.projectUatProtocols.projectId, project.id)).limit(1).for('update');
-        if (existingProtocol !== undefined) { result = fail('INVALID_TRANSITION',
-          'An immutable UAT protocol is already bound to this project.'); return complete(project.id); }
+        const [existingProtocol] = await tx.select().from(schema.projectUatProtocols)
+          .where(eq(schema.projectUatProtocols.projectId, project.id))
+          .orderBy(desc(schema.projectUatProtocols.createdAt), desc(schema.projectUatProtocols.id)).limit(1).for('update');
         const [materialization] = await tx.select().from(schema.projectPlanMaterializations).where(and(
           eq(schema.projectPlanMaterializations.workspaceId, command.workspaceId),
           eq(schema.projectPlanMaterializations.projectId, project.id)))
           .orderBy(desc(schema.projectPlanMaterializations.createdAt), desc(schema.projectPlanMaterializations.id)).limit(1);
         if (materialization === undefined) { result = fail('NOT_FOUND', 'Approved plan materialization was not found.');
           return complete(project.id); }
+        const [selectedDeployment] = command.payload.deploymentId === null ? [] : await tx.select()
+          .from(schema.deployments).where(and(eq(schema.deployments.id, command.payload.deploymentId),
+            eq(schema.deployments.workspaceId, command.workspaceId), eq(schema.deployments.projectId, project.id),
+            eq(schema.deployments.environment, command.payload.requiredDeploymentEnvironment))).limit(1);
+        if (command.payload.deploymentId !== null && selectedDeployment === undefined) { result = fail('NOT_FOUND',
+          'Selected deployment was not found in the exact project environment.'); return complete(project.id); }
         const candidate = {id: command.payload.protocolId, workspaceId: command.workspaceId, projectId: project.id,
           planVersionId: materialization.planVersionId, materializationId: materialization.id,
-          baselineId: materialization.baselineId} as ProtocolRow;
+          baselineId: materialization.baselineId, requiredSmokeChecks: command.payload.requiredSmokeChecks,
+          requiredDeploymentEnvironment: command.payload.requiredDeploymentEnvironment,
+          deploymentId: selectedDeployment?.id ?? null,
+          deploymentLifecycleVersion: selectedDeployment?.lifecycleVersion ?? null,
+          deploymentReleasePackageHash: selectedDeployment?.releasePackageHash ?? null} as ProtocolRow;
         const scope = await completionScope(tx, candidate);
         if (!scope.valid) { result = fail('INVALID_TRANSITION', `UAT prerequisites are incomplete: ${scope.blockers.join(', ')}.`);
           return complete(project.id); }
+        if (selectedDeployment !== undefined) {
+          const release = await releaseFact(tx, candidate);
+          if (release.state !== 'deployment_observed') { result = fail('INVALID_TRANSITION',
+            `Selected deployment is not the latest exact successful release target: ${release.blocker ?? 'invalid_release'}.`);
+            return complete(project.id); }
+        }
+        if (existingProtocol !== undefined) {
+          const existingRelease = await releaseFact(tx, existingProtocol);
+          if (selectedDeployment === undefined || !['bound_deployment_not_latest', 'uat_release_binding_required']
+            .includes(existingRelease.blocker ?? '')) { result = fail('INVALID_TRANSITION',
+              'The current immutable UAT protocol is still active for this project.'); return complete(project.id); }
+        }
+        const protocolCreatedAt = existingProtocol !== undefined && now.getTime() <= existingProtocol.createdAt.getTime()
+          ? new Date(existingProtocol.createdAt.getTime() + 1) : now;
         const contentHash = createHash('sha256').update(canonicalJson({projectId: project.id,
           planVersionId: materialization.planVersionId, materializationId: materialization.id,
           baselineId: materialization.baselineId, checklist: scope.checklist,
           requiredSmokeChecks: command.payload.requiredSmokeChecks,
-          requiredDeploymentEnvironment: command.payload.requiredDeploymentEnvironment} as never)).digest('hex');
+          requiredDeploymentEnvironment: command.payload.requiredDeploymentEnvironment,
+          deploymentId: candidate.deploymentId, deploymentLifecycleVersion: candidate.deploymentLifecycleVersion,
+          deploymentReleasePackageHash: candidate.deploymentReleasePackageHash} as never)).digest('hex');
         successReceipt = (await tx.insert(schema.commandReceipts).values({workspaceId: command.workspaceId,
           idempotencyKey: command.idempotencyKey, requestHash: input.requestHash, commandId: command.commandId,
           correlationId: command.correlationId, commandType: command.type}).returning())[0];
@@ -298,12 +358,22 @@ export const createPostgresProjectAcceptanceStore = (
           materializationId: materialization.id, baselineId: materialization.baselineId,
           checklist: scope.checklist, requiredSmokeChecks: [...command.payload.requiredSmokeChecks],
           requiredDeploymentEnvironment: command.payload.requiredDeploymentEnvironment,
-          contentHash, preparedByActorId: command.actor.actorId, commandId: command.commandId, createdAt: now});
+          deploymentId: candidate.deploymentId, deploymentLifecycleVersion: candidate.deploymentLifecycleVersion,
+          deploymentReleasePackageHash: candidate.deploymentReleasePackageHash,
+          contentHash, preparedByActorId: command.actor.actorId, commandId: command.commandId,
+          createdAt: protocolCreatedAt});
         await tx.insert(schema.projectAcceptanceSessions).values({protocolId: command.payload.protocolId,
           projectId: project.id, version: 1, updatedAt: now}); resultVersion = 1;
       } else {
         const protocol = await protocolFor(tx, command.workspaceId, project.id, command.payload.protocolId);
         if (protocol === undefined) { result = fail('NOT_FOUND', 'Bound UAT protocol was not found.'); return complete(project.id); }
+        const [currentProtocol] = await tx.select({id: schema.projectUatProtocols.id})
+          .from(schema.projectUatProtocols).where(and(eq(schema.projectUatProtocols.workspaceId, command.workspaceId),
+            eq(schema.projectUatProtocols.projectId, project.id)))
+          .orderBy(desc(schema.projectUatProtocols.createdAt), desc(schema.projectUatProtocols.id)).limit(1);
+        if (currentProtocol?.id !== protocol.id) { result = fail('INVALID_TRANSITION',
+          'Only the latest immutable UAT protocol can receive results, signoffs, waivers, or completion.');
+          return complete(project.id); }
         const [session] = await tx.select().from(schema.projectAcceptanceSessions).where(and(
           eq(schema.projectAcceptanceSessions.protocolId, protocol.id),
           eq(schema.projectAcceptanceSessions.projectId, project.id))).limit(1).for('update');
@@ -350,6 +420,8 @@ export const createPostgresProjectAcceptanceStore = (
             kind: command.payload.kind, actorId: command.actor.actorId,
             evidenceReference: command.payload.evidenceReference, commandId: command.commandId, createdAt: now});
         } else if (command.type === PROJECT_RELEASE_NOT_REQUIRED_COMMAND) {
+          if (protocol.deploymentId !== null) { result = fail('INVALID_TRANSITION',
+            'A deployment-bound UAT protocol cannot be replaced by a release waiver.'); return complete(project.id); }
           const [existingWaiver] = await tx.select({id: schema.projectReleaseWaivers.id})
             .from(schema.projectReleaseWaivers).where(eq(schema.projectReleaseWaivers.protocolId, protocol.id)).limit(1);
           if (existingWaiver !== undefined) { result = fail('INVALID_TRANSITION',
@@ -371,7 +443,8 @@ export const createPostgresProjectAcceptanceStore = (
             'Project completion requires a paused or blocked execution boundary.');
             return complete(project.id); }
           const projection = await loadProjectAcceptanceProjection(tx, command.workspaceId, project.id);
-          if (projection === null || !projection.completionReady) { result = fail('INVALID_TRANSITION',
+          if (projection === null || projection.protocol.id !== protocol.id || !projection.completionReady) {
+            result = fail('INVALID_TRANSITION',
             `Project completion prerequisites are incomplete: ${projection?.blockers.join(', ') ?? 'uat_protocol_required'}.`);
             return complete(project.id); }
           successReceipt = (await tx.insert(schema.commandReceipts).values({workspaceId: command.workspaceId,

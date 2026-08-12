@@ -42,8 +42,9 @@ export async function projectAcceptanceCommand(request: Request,
     !UUID.test(body.protocolId)) return invalid('invalid_request');
   const action = body.action;
   const shape = action === 'prepare' ? exact(body, ['_csrf', 'action', 'projectId', 'protocolId',
-    'expectedExecutionVersion', 'requiredSmokeChecks', 'requiredDeploymentEnvironment']) &&
+    'expectedExecutionVersion', 'requiredSmokeChecks', 'requiredDeploymentEnvironment', 'deploymentId']) &&
       Number.isSafeInteger(body.expectedExecutionVersion) && Array.isArray(body.requiredSmokeChecks) &&
+      (body.deploymentId === null || typeof body.deploymentId === 'string' && UUID.test(body.deploymentId)) &&
       ['staging', 'production'].includes(body.requiredDeploymentEnvironment as string)
     : action === 'record_result' ? exact(body, ['_csrf', 'action', 'projectId', 'protocolId', 'resultId',
       'expectedVersion', 'outcome', 'checks']) && typeof body.resultId === 'string' && UUID.test(body.resultId) &&
@@ -68,10 +69,10 @@ export async function projectAcceptanceCommand(request: Request,
       correlationId: overrides.nextId(), issuedAt: overrides.now().toISOString(), actor: actor.value};
     const actorId = actor.value.actorId; let command;
     if (action === 'prepare') command = {...base, type: PROJECT_UAT_PREPARE_COMMAND,
-      idempotencyKey: `project-uat-prepare:v1:${body.projectId}:${body.expectedExecutionVersion}:${actorId}`,
+      idempotencyKey: `project-uat-prepare:v1:${body.projectId}:${body.expectedExecutionVersion}:${body.protocolId}:${actorId}`,
       payload: {projectId: body.projectId, protocolId: body.protocolId,
         expectedExecutionVersion: body.expectedExecutionVersion, requiredSmokeChecks: body.requiredSmokeChecks,
-        requiredDeploymentEnvironment: body.requiredDeploymentEnvironment}};
+        requiredDeploymentEnvironment: body.requiredDeploymentEnvironment, deploymentId: body.deploymentId}};
     else if (action === 'record_result') command = {...base, type: PROJECT_UAT_RECORD_RESULT_COMMAND,
       idempotencyKey: `project-uat-result:v1:${body.protocolId}:${body.expectedVersion}:${actorId}`,
       payload: {projectId: body.projectId, protocolId: body.protocolId, resultId: body.resultId,

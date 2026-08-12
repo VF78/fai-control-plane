@@ -1,6 +1,6 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {canonicalJson, defaultDeliveryProtocolDefinition, MVP_AGENT_RUN_RETRY_POLICY,
+import {canonicalJson, defaultDeliveryProtocolDefinition, hashDeploymentReleasePackage, MVP_AGENT_RUN_RETRY_POLICY,
   type HermesCodexWorkOrder} from '@fai-control-plane/domain';
 import {
   hashAgentProfileConfiguration,
@@ -21,7 +21,7 @@ import {
   createPostgresProjectExecutionDispatcher, createPostgresProjectExecutionStore,
   createPostgresAgentRunAcceptanceStore, createPostgresProjectAcceptanceStore,
   createPostgresProjectOutcomeAcceptanceStore, createPostgresRunnerClaimStore,
-  deliveryJourneyEvidence, deliveryJourneys, deployments,
+  deliveryJourneyEvidence, deliveryJourneys, deploymentExecutorJobs, deploymentExecutorRegistrations, deployments,
   outboxEvents, projectAcceptanceSessions, projectExecutionDispatches, projectExecutions,
   loadProjectExecutionProjection,
   projectMemberships, projectPlanDrafts, projectPlanMaterializations, projectPlanVersions,
@@ -717,10 +717,11 @@ describePostgres('governed project orchestration persistence', () => {
     const acceptance = createPostgresProjectAcceptanceStore(db, {now: () => new Date('2026-08-09T13:00:00.000Z')});
     const protocolId = randomUUID();
     const prepare = {commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
-      idempotencyKey: `project-uat-prepare:v1:${fixture.ids.project}:4:${fixture.ids.owner}`,
+      idempotencyKey: `project-uat-prepare:v1:${fixture.ids.project}:4:${protocolId}:${fixture.ids.owner}`,
       actor: {actorId: fixture.ids.owner}, type: 'project_uat.prepare.v1' as const,
       payload: {projectId: fixture.ids.project, protocolId, expectedExecutionVersion: 4,
-        requiredSmokeChecks: ['health'], requiredDeploymentEnvironment: 'production' as const}};
+        requiredSmokeChecks: ['health'], requiredDeploymentEnvironment: 'production' as const,
+        deploymentId: null}};
     const foreignWorkspace = randomUUID();
     await db.insert(workspaces).values({id: foreignWorkspace, name: 'Foreign', slug: `foreign-${randomUUID()}`});
     await expect(acceptance.execute({command: {...prepare, workspaceId: foreignWorkspace} as never,
@@ -740,8 +741,8 @@ describePostgres('governed project orchestration persistence', () => {
     await db.insert(projectMemberships).values({id: randomUUID(), projectId: fixture.ids.project,
       actorId: secondOwner, roles: ['project_owner']});
     const duplicatePrepare = {...prepare, commandId: randomUUID(), actor: {actorId: secondOwner},
-      idempotencyKey: `project-uat-prepare:v1:${fixture.ids.project}:4:${secondOwner}`, payload: {...prepare.payload,
-        protocolId: randomUUID()}};
+      payload: {...prepare.payload, protocolId: randomUUID()}};
+    duplicatePrepare.idempotencyKey = `project-uat-prepare:v1:${fixture.ids.project}:4:${duplicatePrepare.payload.protocolId}:${secondOwner}`;
     await expect(acceptance.execute({command: duplicatePrepare as never, requestHash: '7'.repeat(64), authorized: true}))
       .resolves.toMatchObject({receipt: {result: {ok: false, error: {code: 'INVALID_TRANSITION'}}}});
     const checks = protocol.checklist.map((item) => ({key: item.key, outcome: 'passed' as const,
@@ -802,7 +803,7 @@ describePostgres('governed project orchestration persistence', () => {
       lifecycleVersion: 1});
     await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project))
       .resolves.toMatchObject({acceptance: {release: {state: 'pending'}, completionReady: false,
-        blockers: expect.arrayContaining(['release_evidence_or_waiver_required'])}});
+        blockers: expect.arrayContaining(['uat_release_binding_required'])}});
     const waiver = {commandId: randomUUID(), workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
       idempotencyKey: `project-release-not-required:v1:${protocolId}:4:${fixture.ids.owner}`,
       actor: {actorId: fixture.ids.owner}, type: 'project_release.not_required.v1' as const,
@@ -842,6 +843,141 @@ describePostgres('governed project orchestration persistence', () => {
       projectReleaseWaivers.protocolId, protocolId)), 'project_release_waivers');
     await expectImmutableRejection(db.delete(projectReleaseWaivers).where(eq(
       projectReleaseWaivers.protocolId, protocolId)), 'project_release_waivers');
+  });
+
+  it('freezes UAT to the latest exact deployment/package and requires a new immutable protocol after any later attempt', async () => {
+    const fixture = await seedOutcomeAcceptance();
+    await fixture.store.execute({command: fixture.command(fixture.first) as never,
+      requestHash: 'a'.repeat(64), authorized: true});
+    await fixture.store.execute({command: fixture.command(fixture.second) as never,
+      requestHash: 'b'.repeat(64), authorized: true});
+    const systemActor = randomUUID(); const registration = randomUUID();
+    await db.insert(actors).values({id: systemActor, workspaceId: fixture.ids.workspace, type: 'system',
+      role: 'agent_operator', displayName: 'Trusted deployment executor', authMode: 'system',
+      capabilities: {'deploy:runner:production': true}});
+    await db.insert(deploymentExecutorRegistrations).values({id: registration, workspaceId: fixture.ids.workspace,
+      projectId: fixture.ids.project, environment: 'production', executorKey: 'production-fixture',
+      systemActorId: systemActor, enabled: true, version: 1});
+    const acceptance = createPostgresProjectAcceptanceStore(db, {now: () => new Date('2026-08-09T14:00:00.000Z')});
+    const addSuccessfulDeployment = async (input: Readonly<{id: string; createdAt: string; artifact: string;
+      sourceCommit: string; artifactHash: string; jobHash?: string}>) => {
+      const releasePackage = {schemaVersion: 1 as const, sourceCommit: input.sourceCommit,
+        artifactReference: input.artifact, artifactSha256: input.artifactHash};
+      const packageHash = hashDeploymentReleasePackage(releasePackage);
+      const jobId = randomUUID(); const resultHash = '2'.repeat(64);
+      const observationReference = `deployment-job:${jobId}:attempt:1:result:${resultHash}`;
+      const startedAt = new Date(input.createdAt); const completedAt = new Date(startedAt.getTime() + 30_000);
+      await db.insert(deployments).values({id: input.id, workspaceId: fixture.ids.workspace,
+        projectId: fixture.ids.project, workItemId: fixture.ids.task, environment: 'production',
+        revision: `git-commit:${releasePackage.sourceCommit}`, referenceKind: 'commit', status: 'observed',
+        planVersionId: fixture.ids.planVersion, materializationId: (await db.select({id: projectPlanMaterializations.id})
+          .from(projectPlanMaterializations).where(eq(projectPlanMaterializations.projectId, fixture.ids.project)))[0]!.id,
+        releasePackage, releasePackageHash: packageHash, deploymentExecutorRegistrationId: registration,
+        deploymentExecutorRegistrationVersion: 1, requestedByActorId: fixture.ids.owner, requestedAt: startedAt,
+        approvedByActorId: fixture.ids.owner, approvedAt: startedAt, observedByActorId: systemActor,
+        observedAt: completedAt, observedResult: {outcome: 'succeeded', reference: observationReference},
+        smokeChecks: [{name: 'health', status: 'passed', reference: `smoke:${input.id}:health`}],
+        rollbackEvidence: {outcome: 'not_required', reference: null}, startedAt, completedAt,
+        lifecycleVersion: 2, version: 3, createdAt: startedAt, updatedAt: completedAt});
+      await db.insert(deploymentExecutorJobs).values({id: jobId, workspaceId: fixture.ids.workspace,
+        projectId: fixture.ids.project, environment: 'production', deploymentId: input.id, deploymentVersion: 2,
+        registrationId: registration, registrationVersion: 1, systemActorId: systemActor,
+        releasePackageHash: input.jobHash ?? packageHash, status: 'succeeded', attempt: 1,
+        heartbeatAt: completedAt, startedAt, completedAt, completionReplayHash: '1'.repeat(64),
+        resultHash, observationReference, version: 3,
+        createdAt: startedAt, updatedAt: completedAt});
+      return {releasePackage, packageHash};
+    };
+    const protocolA = randomUUID(); const deploymentA = randomUUID();
+    const packageA = await addSuccessfulDeployment({id: deploymentA, createdAt: '2026-08-09T12:30:00.000Z',
+      artifact: 'artifact:release-package:a', sourceCommit: 'a'.repeat(40), artifactHash: '3'.repeat(64)});
+    const prepare = (protocolId: string, deploymentId: string | null, commandId = randomUUID()) => ({
+      commandId, workspaceId: fixture.ids.workspace, correlationId: randomUUID(),
+      idempotencyKey: `project-uat-prepare:v1:${fixture.ids.project}:4:${protocolId}:${fixture.ids.owner}`,
+      actor: {actorId: fixture.ids.owner}, type: 'project_uat.prepare.v1' as const,
+      payload: {projectId: fixture.ids.project, protocolId, expectedExecutionVersion: 4,
+        requiredSmokeChecks: ['health'], requiredDeploymentEnvironment: 'production' as const, deploymentId}
+    });
+    await expect(acceptance.execute({command: prepare(protocolA, deploymentA) as never,
+      requestHash: 'c'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true,
+        value: {protocol: {deploymentId: deploymentA, deploymentLifecycleVersion: 2,
+          deploymentReleasePackageHash: packageA.packageHash}, release: {state: 'deployment_observed'}}}}});
+
+    const deploymentFailed = randomUUID(); const failedAt = new Date('2026-08-09T12:40:00.000Z');
+    const [materialization] = await db.select().from(projectPlanMaterializations)
+      .where(eq(projectPlanMaterializations.projectId, fixture.ids.project));
+    await db.insert(deployments).values({id: deploymentFailed, workspaceId: fixture.ids.workspace,
+      projectId: fixture.ids.project, workItemId: fixture.ids.task, environment: 'production',
+      revision: 'git-commit:failed', referenceKind: 'commit', status: 'observed',
+      planVersionId: fixture.ids.planVersion, materializationId: materialization!.id,
+      requestedByActorId: fixture.ids.owner, requestedAt: failedAt, approvedByActorId: fixture.ids.owner,
+      approvedAt: failedAt, observedByActorId: fixture.ids.owner, observedAt: failedAt,
+      observedResult: {outcome: 'failed', reference: 'deployment:failed'},
+      smokeChecks: [{name: 'health', status: 'failed', reference: 'smoke:failed'}],
+      rollbackEvidence: {outcome: 'completed', reference: 'rollback:failed'}, startedAt: failedAt,
+      completedAt: failedAt, lifecycleVersion: 1, version: 3, createdAt: failedAt, updatedAt: failedAt});
+    await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project)).resolves.toMatchObject({
+      acceptance: {protocol: {id: protocolA, deploymentId: deploymentA}, completionReady: false,
+        release: {state: 'pending', blocker: 'bound_deployment_not_latest'}}});
+    await expect(acceptance.execute({command: prepare(randomUUID(), deploymentFailed) as never,
+      requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+        error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('bound_deployment_evidence_invalid')}}}});
+
+    const protocolB = randomUUID(); const deploymentB = randomUUID();
+    const packageB = await addSuccessfulDeployment({id: deploymentB, createdAt: '2026-08-09T12:50:00.000Z',
+      artifact: 'artifact:release-package:b', sourceCommit: 'b'.repeat(40), artifactHash: '4'.repeat(64),
+      jobHash: '5'.repeat(64)});
+    await expect(acceptance.execute({command: prepare(protocolB, deploymentB) as never,
+      requestHash: 'e'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+        error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('bound_deployment_evidence_invalid')}}}});
+    await db.update(deploymentExecutorJobs).set({releasePackageHash: packageB.packageHash})
+      .where(eq(deploymentExecutorJobs.deploymentId, deploymentB));
+    await expect(acceptance.execute({command: prepare(protocolB, deploymentB) as never,
+      requestHash: 'f'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: true,
+        value: {protocol: {id: protocolB, deploymentId: deploymentB,
+          deploymentReleasePackageHash: packageB.packageHash}, release: {state: 'deployment_observed'}}}}});
+    const protocols = await db.select().from(projectUatProtocols)
+      .where(eq(projectUatProtocols.projectId, fixture.ids.project));
+    expect(protocols).toHaveLength(2);
+    expect(new Set(protocols.map(({contentHash}) => contentHash)).size).toBe(2);
+    await db.update(deploymentExecutorJobs).set({observationReference: 'executor:tampered:1'})
+      .where(eq(deploymentExecutorJobs.deploymentId, deploymentB));
+    await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project)).resolves.toMatchObject({
+      acceptance: {protocol: {id: protocolB}, release: {state: 'pending',
+        blocker: 'bound_deployment_evidence_invalid'}}});
+    const [deploymentBJob] = await db.select().from(deploymentExecutorJobs)
+      .where(eq(deploymentExecutorJobs.deploymentId, deploymentB));
+    await db.update(deploymentExecutorJobs).set({observationReference:
+      `deployment-job:${deploymentBJob!.id}:attempt:1:result:${deploymentBJob!.resultHash!}`})
+      .where(eq(deploymentExecutorJobs.deploymentId, deploymentB));
+    const pending = randomUUID(); const pendingAt = new Date('2026-08-09T13:00:00.000Z');
+    await db.insert(deployments).values({id: pending, workspaceId: fixture.ids.workspace,
+      projectId: fixture.ids.project, workItemId: fixture.ids.task, environment: 'production',
+      revision: `git-commit:${'c'.repeat(40)}`, referenceKind: 'commit', status: 'requested',
+      planVersionId: fixture.ids.planVersion, materializationId: materialization!.id,
+      releasePackage: {schemaVersion: 1, sourceCommit: 'c'.repeat(40),
+        artifactReference: 'artifact:release-package:pending', artifactSha256: '6'.repeat(64)},
+      releasePackageHash: hashDeploymentReleasePackage({schemaVersion: 1, sourceCommit: 'c'.repeat(40),
+        artifactReference: 'artifact:release-package:pending', artifactSha256: '6'.repeat(64)}),
+      deploymentExecutorRegistrationId: registration, deploymentExecutorRegistrationVersion: 1,
+      requestedByActorId: fixture.ids.owner, requestedAt: pendingAt, lifecycleVersion: 2,
+      version: 1, createdAt: pendingAt, updatedAt: pendingAt});
+    await expect(loadProjectExecutionProjection(db, fixture.ids.workspace, fixture.ids.project)).resolves.toMatchObject({
+      acceptance: {protocol: {id: protocolB}, release: {state: 'pending', blocker: 'bound_deployment_not_latest'}}});
+    await expect(acceptance.execute({command: prepare(randomUUID(), pending) as never,
+      requestHash: '1'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+        error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('bound_deployment_not_observed')}}}});
+    const rolledBackAt = new Date(pendingAt.getTime() + 30_000);
+    await db.update(deployments).set({status: 'observed', approvedByActorId: fixture.ids.owner,
+      approvedAt: pendingAt, observedByActorId: systemActor, observedAt: rolledBackAt,
+      observedResult: {outcome: 'rolled_back', reference: 'deployment:rolled-back'},
+      smokeChecks: [{name: 'health', status: 'passed', reference: 'smoke:rolled-back'}],
+      rollbackEvidence: {outcome: 'completed', reference: 'rollback:completed'},
+      startedAt: pendingAt, completedAt: rolledBackAt, version: 3, updatedAt: rolledBackAt})
+      .where(eq(deployments.id, pending));
+    await expect(acceptance.execute({command: prepare(randomUUID(), pending) as never,
+      requestHash: '2'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {ok: false,
+        error: {code: 'INVALID_TRANSITION', message: expect.stringContaining('bound_deployment_evidence_invalid')}}}});
   });
 
   it('completes and audits policy denial, Product Owner denial, and a stale selection', async () => {

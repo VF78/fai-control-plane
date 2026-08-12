@@ -18,9 +18,10 @@ it('accepts only exact trusted-human acceptance commands and passes policy denia
     createdAt: input.command.issuedAt}}));
   const service = createProjectAcceptanceService({execute} as ProjectAcceptanceStore); const issued = actor();
   const payload = {projectId: randomUUID(), protocolId: randomUUID(), expectedExecutionVersion: 4,
-    requiredSmokeChecks: ['health'], requiredDeploymentEnvironment: 'production' as const};
+    requiredSmokeChecks: ['health'], requiredDeploymentEnvironment: 'production' as const,
+    deploymentId: randomUUID()};
   const command = {commandId: randomUUID(), workspaceId: randomUUID(), correlationId: randomUUID(),
-    idempotencyKey: `project-uat-prepare:v1:${payload.projectId}:4:${issued.actorId}`,
+    idempotencyKey: `project-uat-prepare:v1:${payload.projectId}:4:${payload.protocolId}:${issued.actorId}`,
     issuedAt: '2026-08-11T10:00:00.000Z', actor: issued, type: PROJECT_UAT_PREPARE_COMMAND, payload};
   await expect(service.execute(command)).resolves.toMatchObject({status: 'completed'});
   await expect(service.execute({...command, payload: {...payload, requiredDeploymentEnvironment: 'development'}} as never))
@@ -28,7 +29,7 @@ it('accepts only exact trusted-human acceptance commands and passes policy denia
   await expect(service.execute({...command, idempotencyKey: 'wrong'})).resolves.toMatchObject({status: 'rejected',
     error: {code: 'INVALID_COMMAND'}});
   const denied = actor([]); const deniedCommand = {...command, actor: denied,
-    idempotencyKey: `project-uat-prepare:v1:${payload.projectId}:4:${denied.actorId}`};
+    idempotencyKey: `project-uat-prepare:v1:${payload.projectId}:4:${payload.protocolId}:${denied.actorId}`};
   await expect(service.execute(deniedCommand)).resolves.toMatchObject({status: 'completed'});
   expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({authorized: false,
     requestHash: expect.stringMatching(/^[0-9a-f]{64}$/)}));
