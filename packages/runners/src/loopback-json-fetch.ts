@@ -1,4 +1,9 @@
-import {request as httpRequest} from 'node:http';
+// Node 22's ESM facade enumerates lazy node:http WebSocket exports and initializes
+// undici. Accessing the fixed built-in module loads only the HTTP request API,
+// which remains compatible with the runner's required --jitless boundary.
+const nodeHttp = process.getBuiltinModule('node:http') as typeof import('node:http') | undefined;
+if (nodeHttp === undefined) throw new Error('loopback_json_fetch_http_unavailable');
+const httpRequest = nodeHttp.request;
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]']);
 const ALLOWED_HEADERS = new Set(['authorization', 'content-type', 'x-fai-runner-lease-token']);
