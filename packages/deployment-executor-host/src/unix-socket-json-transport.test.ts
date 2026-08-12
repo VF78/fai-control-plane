@@ -14,7 +14,7 @@ afterEach(async () => {
 
 const fixture = async () => {
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'fai-deployment-socket-')));
-  await chmod(directory, 0o755);
+  await chmod(directory, 0o770);
   const directoryStat = await lstat(directory);
   const socketPath = path.join(directory, 'control.sock');
   const server = createServer((request, response) => {
@@ -50,18 +50,32 @@ describe('deployment executor Unix-socket transport', () => {
 
   it('rejects a local squatter socket, unsafe permissions, and unrelated headers', async () => {
     const value = await fixture();
+    expect(() => createUnixSocketJsonTransport({socketPath: value.socketPath,
+      expectedSocketUid: value.socketStat.uid, expectedSocketGid: value.socketStat.gid} as never))
+      .toThrow('directory_uid');
     const wrongOwner = createUnixSocketJsonTransport({socketPath: value.socketPath,
       expectedSocketUid: value.socketStat.uid + 1, expectedSocketGid: value.socketStat.gid,
       trustedDirectoryUid: value.directoryStat.uid, trustedDirectoryGid: value.directoryStat.gid});
     await expect(wrongOwner.preflight()).rejects.toThrow('socket_binding');
     await chmod(value.directory, 0o777);
     await expect(value.transport.preflight()).rejects.toThrow('socket_directory_binding');
-    await chmod(value.directory, 0o755);
+    await chmod(value.directory, 0o770);
     await chmod(value.socketPath, 0o666);
     await expect(value.transport.preflight()).rejects.toThrow('socket_binding');
     await chmod(value.socketPath, 0o660);
     await expect(value.transport.post('/api/deployment-executor/claim', {
       authorization: 'Bearer ' + 't'.repeat(32), 'x-untrusted': 'value'
     })).rejects.toThrow('headers');
+  });
+
+  it('revalidates the directory and socket bindings before every request', async () => {
+    const value = await fixture();
+    const request = () => value.transport.post('/api/deployment-executor/heartbeat', {
+      authorization: 'Bearer ' + 't'.repeat(32), 'content-type': 'application/json',
+      'x-fai-deployment-lease-token': 'l'.repeat(32)
+    }, '{}');
+    await expect(request()).resolves.toMatchObject({status: 200});
+    await chmod(value.directory, 0o771);
+    await expect(request()).rejects.toThrow('socket_directory_binding');
   });
 });

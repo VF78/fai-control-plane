@@ -404,6 +404,16 @@ const required = (environment: DeploymentExecutorEnvironment, name: string): str
   return typeof value === 'string' && value.length > 0 ? value : fail(`missing_${name.toLowerCase()}`);
 };
 
+const requiredPositiveDecimalIdentity = (
+  environment: DeploymentExecutorEnvironment,
+  name: string
+): number => {
+  const value = required(environment, name);
+  if (!/^[1-9][0-9]*$/.test(value)) fail(`invalid_${name.toLowerCase()}`);
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : fail(`invalid_${name.toLowerCase()}`);
+};
+
 export const deploymentExecutorFromEnvironment = async (
   environment: DeploymentExecutorEnvironment = process.env,
   adapter: DeploymentAdapter = createUnavailableDeploymentAdapter()
@@ -450,11 +460,14 @@ export const deploymentExecutorFromEnvironment = async (
     sourceRoot: absolute(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_ARTIFACT_ROOT'), 'artifact_root'),
     stagingRoot: absolute(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_STAGING_ROOT'), 'artifact_staging_root')
   });
-  const socketUid = Number(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_SOCKET_UID'));
-  const socketGid = Number(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_SOCKET_GID'));
+  const socketUid = requiredPositiveDecimalIdentity(environment, 'FAI_DEPLOYMENT_EXECUTOR_SOCKET_UID');
+  const socketGid = requiredPositiveDecimalIdentity(environment, 'FAI_DEPLOYMENT_EXECUTOR_SOCKET_GID');
+  const transportGid = requiredPositiveDecimalIdentity(environment, 'FAI_DEPLOYMENT_EXECUTOR_TRANSPORT_GID');
+  if (socketGid !== transportGid) fail('socket_transport_gid_mismatch');
   const transport = createUnixSocketJsonTransport({socketPath: absolute(
     required(environment, 'FAI_DEPLOYMENT_EXECUTOR_SOCKET_PATH'), 'socket_path'),
-  expectedSocketUid: socketUid, expectedSocketGid: socketGid});
+  expectedSocketUid: socketUid, expectedSocketGid: socketGid,
+  trustedDirectoryUid: 0, trustedDirectoryGid: transportGid});
   if (dryRun) {
     await artifacts.preflight();
     await adapter.preflight({projectId, environment: deploymentEnvironment});

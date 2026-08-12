@@ -18,7 +18,7 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MS = 15_000;
 const SOCKET_MODE = 0o660;
-const DIRECTORY_MODE = 0o755;
+const DIRECTORY_MODE = 0o770;
 const fail = (code: string): never => { throw new Error(`deployment_executor_transport_${code}`); };
 
 export type DeploymentExecutorEndpoint =
@@ -36,8 +36,8 @@ export type UnixSocketTransportOptions = Readonly<{
   socketPath: string;
   expectedSocketUid: number;
   expectedSocketGid: number;
-  trustedDirectoryUid?: number;
-  trustedDirectoryGid?: number;
+  trustedDirectoryUid: number;
+  trustedDirectoryGid: number;
 }>;
 
 const absoluteSocketPath = (value: string): string => {
@@ -70,8 +70,8 @@ export const createUnixSocketJsonTransport = (
   const directory = path.dirname(socketPath);
   const expectedSocketUid = identity(options.expectedSocketUid, 'socket_uid');
   const expectedSocketGid = identity(options.expectedSocketGid, 'socket_gid');
-  const trustedDirectoryUid = identity(options.trustedDirectoryUid ?? 0, 'directory_uid');
-  const trustedDirectoryGid = identity(options.trustedDirectoryGid ?? 0, 'directory_gid');
+  const trustedDirectoryUid = identity(options.trustedDirectoryUid, 'directory_uid');
+  const trustedDirectoryGid = identity(options.trustedDirectoryGid, 'directory_gid');
 
   const preflight = async () => {
     const [directoryStat, canonicalDirectory] = await Promise.all([lstat(directory), realpath(directory)]);

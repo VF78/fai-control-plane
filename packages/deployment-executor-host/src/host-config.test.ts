@@ -15,6 +15,11 @@ describe('deployment executor host examples', () => {
     expect(environment).toContain('FAI_DEPLOYMENT_EXECUTOR_CONFIRM_ACTIVATION=REPLACE_WITH_EXPLICIT_CONFIRMATION\n');
     expect(environment).toContain('/var/lib/fai-deployment-executor/credentials/claim-token');
     expect(environment).toContain('FAI_DEPLOYMENT_EXECUTOR_SOCKET_PATH=/run/fai-deployment-api/control.sock');
+    expect(environment).toContain('root:fai-deployment-transport 0770 directory');
+    expect(environment).toContain('API-UID:fai-deployment-transport 0660 AF_UNIX server socket');
+    expect(environment).toContain('FAI_DEPLOYMENT_EXECUTOR_SOCKET_UID=REPLACE_WITH_DEPLOYMENT_API_UID');
+    expect(environment).toContain('FAI_DEPLOYMENT_EXECUTOR_SOCKET_GID=REPLACE_WITH_FAI_DEPLOYMENT_TRANSPORT_GID');
+    expect(environment).toContain('FAI_DEPLOYMENT_EXECUTOR_TRANSPORT_GID=REPLACE_WITH_FAI_DEPLOYMENT_TRANSPORT_GID');
     expect(environment).not.toContain('FAI_DEPLOYMENT_EXECUTOR_BASE_URL');
     expect(environment).not.toMatch(/https?:\/\//);
     expect(environment).toContain('must support Linux O_TMPFILE');
@@ -25,6 +30,7 @@ describe('deployment executor host examples', () => {
   it('uses a distinct unprivileged identity and denies other runtime credentials', async () => {
     const service = await read('infra/production/fai-deployment-executor.service');
     for (const directive of ['User=fai-deployment-executor', 'Group=fai-deployment-executor',
+      'SupplementaryGroups=fai-deployment-transport',
       'NoNewPrivileges=true', 'ProtectSystem=strict', 'ProtectHome=true', 'PrivateDevices=true',
       'CapabilityBoundingSet=', 'UMask=0077', 'RestrictAddressFamilies=AF_UNIX',
       'ReadOnlyPaths=/run/fai-deployment-api',

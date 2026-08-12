@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=fai-deployment-executor
 Group=fai-deployment-executor
+SupplementaryGroups=fai-deployment-transport
 Environment=HOME=/var/lib/fai-deployment-executor
 Environment=NODE_OPTIONS=--jitless
 EnvironmentFile=/etc/fai-deployment-executor/executor.env

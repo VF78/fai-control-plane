@@ -351,25 +351,40 @@ describe('deployment executor host client', () => {
       FAI_DEPLOYMENT_EXECUTOR_ADAPTER: 'unavailable'})).rejects.toThrow('adapter_unavailable');
   });
 
-  it('keeps dry run confirmation-free but fails closed until its root-owned socket is present', async () => {
+  it('keeps dry run confirmation-free but requires exact positive transport identities', async () => {
     const roots = await artifactRoot();
     const tokenFile = path.join(roots.sourceRoot, 'claim-token');
     await writeFile(tokenFile, token, {mode: 0o600});
     const adapter: DeploymentAdapter = {adapterId: 'fake', preflight: vi.fn(async () => undefined),
       execute: vi.fn()};
-    await expect(deploymentExecutorFromEnvironment({
+    const environment = {
       FAI_DEPLOYMENT_EXECUTOR_ENABLED: 'true', FAI_DEPLOYMENT_EXECUTOR_DRY_RUN: 'true',
       FAI_DEPLOYMENT_EXECUTOR_ADAPTER: 'fake', FAI_DEPLOYMENT_EXECUTOR_TOKEN_FILE: tokenFile,
       FAI_DEPLOYMENT_EXECUTOR_ARTIFACT_ROOT: roots.sourceRoot,
       FAI_DEPLOYMENT_EXECUTOR_STAGING_ROOT: roots.stagingRoot,
       FAI_DEPLOYMENT_EXECUTOR_SOCKET_PATH: path.join(roots.sourceRoot, 'missing.sock'),
-      FAI_DEPLOYMENT_EXECUTOR_SOCKET_UID: '0', FAI_DEPLOYMENT_EXECUTOR_SOCKET_GID: '0',
+      FAI_DEPLOYMENT_EXECUTOR_SOCKET_UID: '1234', FAI_DEPLOYMENT_EXECUTOR_SOCKET_GID: '2345',
+      FAI_DEPLOYMENT_EXECUTOR_TRANSPORT_GID: '2345',
       FAI_DEPLOYMENT_EXECUTOR_WORKSPACE_ID: workspaceId,
       FAI_DEPLOYMENT_EXECUTOR_ID: 'executor.production',
       FAI_DEPLOYMENT_EXECUTOR_REGISTRATION_ID: registrationId,
       FAI_DEPLOYMENT_EXECUTOR_PROJECT_ID: projectId,
       FAI_DEPLOYMENT_EXECUTOR_ENVIRONMENT: 'production'
-    }, adapter)).rejects.toThrow(process.platform === 'linux'
+    };
+    for (const [field, value, code] of [
+      ['FAI_DEPLOYMENT_EXECUTOR_SOCKET_UID', '0', 'invalid_fai_deployment_executor_socket_uid'],
+      ['FAI_DEPLOYMENT_EXECUTOR_SOCKET_GID', '23.45', 'invalid_fai_deployment_executor_socket_gid'],
+      ['FAI_DEPLOYMENT_EXECUTOR_TRANSPORT_GID', undefined,
+        'missing_fai_deployment_executor_transport_gid'],
+      ['FAI_DEPLOYMENT_EXECUTOR_TRANSPORT_GID', '0', 'invalid_fai_deployment_executor_transport_gid']
+    ] as const) {
+      await expect(deploymentExecutorFromEnvironment({...environment, [field]: value}, adapter))
+        .rejects.toThrow(code);
+    }
+    await expect(deploymentExecutorFromEnvironment({...environment,
+      FAI_DEPLOYMENT_EXECUTOR_TRANSPORT_GID: '2346'}, adapter))
+      .rejects.toThrow('socket_transport_gid_mismatch');
+    await expect(deploymentExecutorFromEnvironment(environment, adapter)).rejects.toThrow(process.platform === 'linux'
       ? 'socket_directory_binding' : 'artifact_anonymous_staging_unavailable');
     if (process.platform === 'linux') {
       expect(adapter.preflight).toHaveBeenCalledWith({projectId, environment: 'production'});

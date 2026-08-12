@@ -59,7 +59,7 @@ if (process.argv[2] === '--child') {
     const socketPath = path.join(directory, 'control.sock');
     let server;
     try {
-      await fs.chmod(directory, 0o755);
+      await fs.chmod(directory, 0o770);
       server = http.createServer((request, response) => {
         const chunks = [];
         request.on('data', (chunk) => chunks.push(chunk));
