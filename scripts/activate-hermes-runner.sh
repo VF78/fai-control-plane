@@ -31,6 +31,17 @@ bundle_verifier="$repo_root/scripts/hermes_runner_bundle.py"
 
 hermes_runtime=/opt/fai-control-plane-runner/hermes-runtime/0.18.2
 hermes_python=$hermes_runtime/venv/bin/python
+for runtime_path_and_mode in \
+  /opt/fai-control-plane-runner:755 \
+  /opt/fai-control-plane-runner/hermes-runtime:755 \
+  "$hermes_runtime":555; do
+  runtime_path="${runtime_path_and_mode%:*}"
+  runtime_mode="${runtime_path_and_mode##*:}"
+  [[ -d "$runtime_path" && ! -L "$runtime_path" && "$(readlink -f "$runtime_path")" == "$runtime_path" &&
+     "$(stat -c '%U:%G:%a' "$runtime_path")" == "root:root:$runtime_mode" ]] || {
+    echo "Hermes runtime parent binding mismatch" >&2; exit 1;
+  }
+done
 for command in /usr/bin/node /usr/bin/codex /usr/bin/git /usr/bin/systemctl /usr/bin/systemd-tmpfiles \
   /usr/bin/python3 "$hermes_python"; do
   [[ -x "$command" ]] || { echo "missing prerequisite: $command" >&2; exit 1; }
@@ -89,9 +100,11 @@ env_value() {
 }
 controller_config_hash="$(env_value "$controller_env" FAI_HERMES_RUNNER_CONFIG_SHA256)"
 executor_config_hash="$(env_value "$executor_env" FAI_EXECUTOR_EXPECTED_HERMES_CONFIG_SHA256)"
-[[ "$controller_config_hash" == "$executor_config_hash" &&
+controller_python="$(env_value "$controller_env" FAI_HERMES_RUNNER_PYTHON)"
+[[ "$controller_python" == "$hermes_python" &&
+   "$controller_config_hash" == "$executor_config_hash" &&
    "$controller_config_hash" == "$(sha256sum "$hermes_config" | awk '{print $1}')" ]] || {
-  echo "Hermes config binding mismatch" >&2; exit 1;
+  echo "Hermes runtime or config binding mismatch" >&2; exit 1;
 }
 release_root="/opt/fai-control-plane-runner/releases/$release_commit"
 [[ "$release_root" == /opt/fai-control-plane-runner/releases/* && "$release_root" != /opt/fai-control-plane/* ]] || {

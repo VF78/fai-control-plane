@@ -220,6 +220,15 @@ class BundleTest(unittest.TestCase):
         self.assertNotIn("/usr/local/lib/hermes-agent", controller + executor)
         activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
         self.assertIn("hermes_runtime=/opt/fai-control-plane-runner/hermes-runtime/0.18.2", activation)
+        self.assertIn(
+            'controller_python="$(env_value "$controller_env" FAI_HERMES_RUNNER_PYTHON)"',
+            activation,
+        )
+        self.assertIn('[[ "$controller_python" == "$hermes_python" &&', activation)
+        self.assertIn('/opt/fai-control-plane-runner:755', activation)
+        self.assertIn('/opt/fai-control-plane-runner/hermes-runtime:755', activation)
+        self.assertIn('"$hermes_runtime":555', activation)
+        self.assertIn('"$(readlink -f "$runtime_path")" == "$runtime_path"', activation)
         self.assertIn("assert_unit_path_set fai-hermes-runner.service ReadWritePaths", activation)
         self.assertIn("assert_unit_path_set fai-codex-executor.service ReadWritePaths", activation)
 
