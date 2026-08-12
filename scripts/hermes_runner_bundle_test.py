@@ -225,6 +225,7 @@ class BundleTest(unittest.TestCase):
         root = MODULE_PATH.parents[1]
         controller = (root / "infra/production/fai-hermes-runner.service").read_text()
         executor = (root / "infra/production/fai-codex-executor.service").read_text()
+        planner = (root / "infra/production/fai-hermes-planner.service").read_text()
         self.assertIn(
             "ReadWritePaths=/var/lib/fai-hermes-controller/state "
             "/var/lib/fai-hermes-controller/hermes\n",
@@ -247,8 +248,13 @@ class BundleTest(unittest.TestCase):
         self.assertIn(f"ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ {runtime} ", controller)
         self.assertIn(f"ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ {runtime} ", executor)
         self.assertIn(f"ExecStart={runtime}/venv/bin/python ", executor)
-        self.assertNotIn("/root/", controller + executor)
-        self.assertNotIn("/usr/local/lib/hermes-agent", controller + executor)
+        self.assertIn("ReadWritePaths=/run/fai-hermes-planner /var/lib/fai-hermes-controller/hermes\n", planner)
+        self.assertIn("Environment=HOME=/var/lib/fai-hermes-controller/hermes\n", planner)
+        self.assertIn("Environment=HERMES_HOME=/var/lib/fai-hermes-controller/hermes\n", planner)
+        self.assertIn("InaccessiblePaths=/var/lib/fai-codex-executor /etc/fai-codex-executor /etc/fai-control-plane\n", planner)
+        self.assertIn("MemoryDenyWriteExecute=true\n", planner)
+        self.assertNotIn("/root/", controller + executor + planner)
+        self.assertNotIn("/usr/local/lib/hermes-agent", controller + executor + planner)
         activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
         self.assertIn("hermes_runtime=/opt/fai-control-plane-runner/hermes-runtime/0.18.2", activation)
         self.assertIn(
@@ -267,6 +273,22 @@ class BundleTest(unittest.TestCase):
         )
         self.assertIn("assert_unit_path_set fai-hermes-runner.service ReadWritePaths", activation)
         self.assertIn("assert_unit_path_set fai-codex-executor.service ReadWritePaths", activation)
+        self.assertIn("assert_unit_path_set fai-hermes-planner.service ReadWritePaths", activation)
+
+    def test_planning_bridge_is_explicitly_disabled_and_exactly_bound(self):
+        root = MODULE_PATH.parents[1]
+        runner_environment = (root / "infra/production/fai-hermes-runner.env.example").read_text()
+        production_environment = (root / "infra/production/production.env.example").read_text()
+        compose = (root / "infra/production/compose.yaml").read_text()
+        activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
+        self.assertIn("FAI_HERMES_PLANNING_ENABLED=false\n", runner_environment)
+        self.assertIn("HERMES_SEMANTIC_PLANNING_ENABLED=false\n", production_environment)
+        self.assertIn("/run/fai-hermes-planner/planner.sock", runner_environment + production_environment + compose)
+        self.assertIn("HERMES_SEMANTIC_PLANNING_TOKEN_HOST_FILE", production_environment + compose)
+        self.assertIn('systemctl disable --now fai-hermes-planner.service', activation)
+        self.assertIn('systemctl enable --now fai-hermes-planner.service', activation)
+        self.assertIn('FAI_HERMES_PLANNING_EXPECTED_CLIENT_UID', activation)
+        self.assertNotIn("HERMES_SEMANTIC_PLANNING_URL", production_environment + compose)
 
 
 if __name__ == "__main__":

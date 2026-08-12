@@ -91,7 +91,13 @@ def assert_no_agent_bootstrap() -> None:
         fail("agent_bootstrap_loaded")
 
 
-def run_planner(binding: dict[str, Any], runtime: dict[str, Any], bounded_input: str) -> str:
+def run_planner(binding: dict[str, Any], runtime: dict[str, Any], bounded_input: str, *,
+                system_prompt: str = SYSTEM_PROMPT, max_tokens: int = 2_048,
+                max_output_chars: int = MAX_OUTPUT_CHARS) -> str:
+    if not isinstance(system_prompt, str) or not system_prompt or not isinstance(max_tokens, int) or \
+       max_tokens < 1 or max_tokens > 16_384 or not isinstance(max_output_chars, int) or \
+       max_output_chars < 1 or max_output_chars > 300 * 1024:
+        fail("planner_bounds")
     assert_no_agent_bootstrap()
     from agent.auxiliary_client import call_llm
     assert_no_agent_bootstrap()
@@ -101,9 +107,9 @@ def run_planner(binding: dict[str, Any], runtime: dict[str, Any], bounded_input:
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
         api_mode=runtime.get("api_mode"),
-        messages=[{"role": "system", "content": SYSTEM_PROMPT},
+        messages=[{"role": "system", "content": system_prompt},
                   {"role": "user", "content": bounded_input}],
-        max_tokens=2_048,
+        max_tokens=max_tokens,
         tools=[],
         timeout=45.0,
         extra_body={},
@@ -113,7 +119,7 @@ def run_planner(binding: dict[str, Any], runtime: dict[str, Any], bounded_input:
         output = response.choices[0].message.content
     except (AttributeError, IndexError, TypeError):
         fail("model_output")
-    if not isinstance(output, str) or not output.strip() or len(output) > MAX_OUTPUT_CHARS:
+    if not isinstance(output, str) or not output.strip() or len(output) > max_output_chars:
         fail("model_output")
     return output.strip()
 

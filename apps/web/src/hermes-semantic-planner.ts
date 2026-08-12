@@ -1,68 +1,111 @@
-import {readFile} from 'node:fs/promises';
-import {isIP} from 'node:net';
-import {isAbsolute} from 'node:path';
+import net from 'node:net';
+import {lstat, readFile, realpath} from 'node:fs/promises';
+import path from 'node:path';
 import {validateSemanticProjectPlanDefinition, type ProjectPlanSemanticPlanner, type SemanticProjectPlanRequest} from '@fai-control-plane/application';
-import type {CommandResult, ProjectPlanDefinition} from '@fai-control-plane/domain';
+import {canonicalJson, containsHighConfidenceSecretContent, type CommandResult, type ProjectPlanDefinition} from '@fai-control-plane/domain';
 
-// The selected extracted corpus is capped at 512 KiB; leave bounded room for
-// the manifest and JSON framing without silently truncating any source.
-const REQUEST_LIMIT_BYTES = 640 * 1024;
+const REQUEST_LIMIT_BYTES = 768 * 1024;
 const RESPONSE_LIMIT_BYTES = 300 * 1024;
-const TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 60_000;
+const SOCKET_PATH = '/run/fai-hermes-planner/planner.sock';
+const TOKEN_FILE = '/run/secrets/hermes-semantic-planning-token';
+const TOKEN = /^[A-Za-z0-9._~+/=-]{32,256}$/;
 const noPlan = (message: string): CommandResult<ProjectPlanDefinition> => ({ok: false, error: {code: 'INVALID_TRANSITION', message}});
-const privateLiteralHost = (hostname: string) => {
-  const normalized = hostname.toLowerCase();
-  if (normalized === '::1' || normalized === '[::1]') return true;
-  if (isIP(normalized) !== 4) return false;
-  const octets = normalized.split('.').map(Number);
-  return octets[0] === 10 || octets[0] === 127 || octets[0] === 192 && octets[1] === 168 || octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31;
+
+export type HermesSemanticPlanningConfiguration = Readonly<{configured: boolean; remediation: string}>;
+export const hermesSemanticPlanningConfiguration = (
+  environment: Readonly<Record<string, string | undefined>> = process.env
+): HermesSemanticPlanningConfiguration => {
+  if (environment.HERMES_SEMANTIC_PLANNING_ENABLED !== 'true') return {configured: false, remediation: 'Hermes planning transport выключен администратором.'};
+  if (environment.HERMES_SEMANTIC_PLANNING_SOCKET !== SOCKET_PATH ||
+    environment.HERMES_SEMANTIC_PLANNING_TOKEN_FILE !== TOKEN_FILE) {
+    return {configured: false, remediation: 'Hermes planning transport не привязан к каноническому UDS и token file.'};
+  }
+  return {configured: true, remediation: 'Hermes planning transport настроен; доступность проверяется при сборке черновика.'};
 };
-const endpoint = (value: string | undefined): URL | null => {
-  if (value === undefined || value.length < 1 || value.length > 512) return null;
-  try {
-    const parsed = new URL(value);
-    if (parsed.username !== '' || parsed.password !== '' || parsed.search !== '' || parsed.hash !== '' || !privateLiteralHost(parsed.hostname)) return null;
-    const hostname = parsed.hostname.toLowerCase();
-    const loopback = hostname.startsWith('127.') || hostname === '::1' || hostname === '[::1]';
-    return (parsed.protocol === 'https:' || loopback && parsed.protocol === 'http:') ? parsed : null;
-  } catch { return null; }
+
+const exchangeFramed = async (socketPath: string, body: string): Promise<string> => {
+  if (socketPath !== SOCKET_PATH || path.normalize(socketPath) !== socketPath || path.resolve(socketPath) !== socketPath) {
+    throw new Error('hermes_semantic_planning_socket');
+  }
+  const [stat, canonical] = await Promise.all([lstat(socketPath), realpath(socketPath)]);
+  if (!stat.isSocket() || stat.isSymbolicLink() || canonical !== socketPath) throw new Error('hermes_semantic_planning_socket');
+  const payload = Buffer.from(body, 'utf8');
+  if (payload.byteLength < 1 || payload.byteLength > REQUEST_LIMIT_BYTES) throw new Error('hermes_semantic_planning_request_size');
+  return new Promise<string>((resolve, reject) => {
+    let settled = false; let expected: number | undefined; let received = Buffer.alloc(0);
+    const socket = net.createConnection({path: socketPath});
+    const finish = (error?: Error, value?: string) => {
+      if (settled) return; settled = true; clearTimeout(timer); socket.destroy();
+      if (error !== undefined) reject(error); else resolve(value!);
+    };
+    const timer = setTimeout(() => finish(new Error('hermes_semantic_planning_timeout')), TIMEOUT_MS);
+    timer.unref();
+    socket.once('connect', () => {
+      const header = Buffer.alloc(4); header.writeUInt32BE(payload.byteLength); socket.write(Buffer.concat([header, payload]));
+    });
+    socket.on('data', (chunk: Buffer) => {
+      if (received.byteLength + chunk.byteLength > RESPONSE_LIMIT_BYTES + 4) {
+        finish(new Error('hermes_semantic_planning_response_size')); return;
+      }
+      received = Buffer.concat([received, chunk]);
+      if (expected === undefined && received.byteLength >= 4) {
+        expected = received.readUInt32BE(0);
+        if (expected < 1 || expected > RESPONSE_LIMIT_BYTES) {
+          finish(new Error('hermes_semantic_planning_response_size')); return;
+        }
+      }
+      if (expected !== undefined && received.byteLength === expected + 4) finish(undefined, received.subarray(4).toString('utf8'));
+      else if (expected !== undefined && received.byteLength > expected + 4) finish(new Error('hermes_semantic_planning_response_frame'));
+    });
+    socket.once('error', (error) => finish(error));
+    socket.once('close', () => { if (!settled) finish(new Error('hermes_semantic_planning_response_truncated')); });
+  });
 };
-const boundedJson = async (response: Response): Promise<unknown | null> => {
-  const length = response.headers.get('content-length');
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > RESPONSE_LIMIT_BYTES)) { await response.body?.cancel(); return null; }
-  if (response.body === null) return null;
-  const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let total = 0;
-  try {
-    for (;;) { const chunk = await reader.read(); if (chunk.done) break; total += chunk.value.byteLength; if (total > RESPONSE_LIMIT_BYTES) { await reader.cancel(); return null; } chunks.push(chunk.value); }
-  } catch { return null; } finally { reader.releaseLock(); }
-  const bytes = new Uint8Array(total); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  try { return JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)) as unknown; } catch { return null; }
-};
+
 const exactDefinition = (value: unknown): unknown | null => typeof value === 'object' && value !== null && !Array.isArray(value) &&
   Object.keys(value).length === 1 && Object.hasOwn(value, 'definition') ? (value as {definition: unknown}).definition : null;
-export type HermesSemanticPlannerDependencies = Readonly<{environment: Readonly<Record<string, string | undefined>>; readToken(path: string): Promise<string>; fetch(input: string, init: RequestInit): Promise<Response>}>;
-const dependencies: HermesSemanticPlannerDependencies = {environment: process.env, readToken: (path) => readFile(path, 'utf8'), fetch: (input, init) => globalThis.fetch(input, init)};
+export type HermesSemanticPlannerDependencies = Readonly<{
+  environment: Readonly<Record<string, string | undefined>>;
+  readToken(path: string): Promise<string>;
+  exchange(socketPath: string, body: string): Promise<string>;
+}>;
+const dependencies: HermesSemanticPlannerDependencies = {
+  environment: process.env,
+  readToken: (target) => readFile(target, 'utf8'),
+  exchange: exchangeFramed
+};
 
 export const createHermesSemanticPlanner = (overrides: Partial<HermesSemanticPlannerDependencies> = {}): ProjectPlanSemanticPlanner => {
   const deps = {...dependencies, ...overrides};
   return {async generate(input: SemanticProjectPlanRequest) {
-    if (deps.environment.HERMES_SEMANTIC_PLANNING_ENABLED !== 'true') return noPlan('Hermes semantic planning is disabled. Ask an administrator to configure and explicitly enable the private Hermes planner.');
-    const url = endpoint(deps.environment.HERMES_SEMANTIC_PLANNING_URL); const tokenFile = deps.environment.HERMES_SEMANTIC_PLANNING_TOKEN_FILE;
-    if (url === null || tokenFile === undefined || !isAbsolute(tokenFile)) return noPlan('Hermes semantic planning is unavailable: private endpoint or bearer token file is not configured.');
+    const configuration = hermesSemanticPlanningConfiguration(deps.environment);
+    if (!configuration.configured) return noPlan(configuration.remediation);
     let token: string;
-    try { token = (await deps.readToken(tokenFile)).trim(); } catch { return noPlan('Hermes semantic planning is unavailable: bearer token file cannot be read.'); }
-    if (token.length < 1 || token.length > 2048 || /[\u0000-\u001f\u007f\s]/u.test(token)) return noPlan('Hermes semantic planning is unavailable: bearer token file is invalid.');
-    const body = JSON.stringify({schema: 'project_plan_definition_v1', idempotencyKey: input.idempotencyKey, sourceManifest: input.sourceManifest,
-      sources: input.artifacts.map(({id, sourceKind, mediaType, sha256, content}) => ({id, sourceKind, mediaType, sha256, content}))});
-    if (Buffer.byteLength(body, 'utf8') > REQUEST_LIMIT_BYTES) return noPlan('Hermes semantic planning request exceeds the bounded source-only corpus.');
-    let response: Response;
-    try { response = await deps.fetch(url.toString(), {method: 'POST', redirect: 'error', headers: {'content-type': 'application/json', accept: 'application/json', authorization: `Bearer ${token}`, 'idempotency-key': input.idempotencyKey}, body, signal: AbortSignal.timeout(TIMEOUT_MS)}); }
+    try { token = (await deps.readToken(TOKEN_FILE)).replace(/\r?\n$/, ''); }
+    catch { return noPlan('Hermes semantic planning is unavailable: token file cannot be read.'); }
+    if (!TOKEN.test(token)) return noPlan('Hermes semantic planning is unavailable: token file is invalid.');
+    const planningRequest = {schemaVersion: 1, operation: 'project_plan.draft.generate',
+      idempotencyKey: input.idempotencyKey, sourceManifest: input.sourceManifest,
+      planningContextHash: input.planningContextHash, planningContext: input.planningContext,
+      sources: input.artifacts.map(({id, sourceKind, mediaType, sha256, content}) => ({id, sourceKind, mediaType, sha256, content}))};
+    const boundedContext = canonicalJson(planningRequest as never);
+    if (Buffer.byteLength(boundedContext, 'utf8') > REQUEST_LIMIT_BYTES - 512 || containsHighConfidenceSecretContent(boundedContext)) {
+      return noPlan('Hermes semantic planning request contains forbidden or oversized content.');
+    }
+    const body = canonicalJson({...planningRequest, authentication: {scheme: 'bearer', token}} as never);
+    if (Buffer.byteLength(body, 'utf8') > REQUEST_LIMIT_BYTES) return noPlan('Hermes semantic planning request exceeds the bounded project corpus.');
+    let raw: string;
+    try { raw = await deps.exchange(SOCKET_PATH, body); }
     catch { return noPlan('Hermes semantic planning is unavailable. No draft was created.'); }
-    if (!response.ok) return noPlan('Hermes semantic planning is unavailable. No draft was created.');
-    if (response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') { await response.body?.cancel(); return noPlan('Hermes returned an invalid plan response media type. No draft was created.'); }
-    const definition = exactDefinition(await boundedJson(response));
+    if (Buffer.byteLength(raw, 'utf8') > RESPONSE_LIMIT_BYTES) return noPlan('Hermes returned an oversized plan response. No draft was created.');
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { return noPlan('Hermes returned an invalid bounded plan response. No draft was created.'); }
+    const definition = exactDefinition(parsed);
     if (definition === null) return noPlan('Hermes returned an invalid bounded plan response. No draft was created.');
-    return validateSemanticProjectPlanDefinition(definition, input.artifacts);
+    return validateSemanticProjectPlanDefinition(definition, input.artifacts, input.planningContext);
   }};
 };
-export const hermesSemanticPlannerLimits = Object.freeze({requestBytes: REQUEST_LIMIT_BYTES, responseBytes: RESPONSE_LIMIT_BYTES, timeoutMs: TIMEOUT_MS});
+
+export const hermesSemanticPlannerLimits = Object.freeze({requestBytes: REQUEST_LIMIT_BYTES,
+  responseBytes: RESPONSE_LIMIT_BYTES, timeoutMs: TIMEOUT_MS, socketPath: SOCKET_PATH, tokenFile: TOKEN_FILE});

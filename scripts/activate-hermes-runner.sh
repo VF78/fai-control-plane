@@ -86,8 +86,11 @@ fi
 
 controller_env=/etc/fai-hermes-controller/controller.env
 executor_env=/etc/fai-codex-executor/executor.env
+production_env=/etc/fai-control-plane/production.env
 claim_token=$controller_home/credentials/claim-token
 observation_token=$controller_home/credentials/observation-token
+planning_token=$controller_home/credentials/planning-token
+web_planning_token=/etc/fai-control-plane/secrets/hermes-semantic-planning-token
 hermes_config=$controller_home/hermes/config.yaml
 /usr/bin/python3 "$bundle_verifier" host-check || { echo "host identity or permission validation failed" >&2; exit 1; }
 
@@ -106,13 +109,45 @@ delivery_ttl_seconds="$(env_value "$controller_env" FAI_HERMES_RUNNER_DELIVERY_T
   echo "runtime observation TTL binding mismatch" >&2; exit 1;
 }
 controller_config_hash="$(env_value "$controller_env" FAI_HERMES_RUNNER_CONFIG_SHA256)"
+planning_config_hash="$(env_value "$controller_env" FCP_HERMES_CONFIG_SHA256)"
 executor_config_hash="$(env_value "$executor_env" FAI_EXECUTOR_EXPECTED_HERMES_CONFIG_SHA256)"
 controller_python="$(env_value "$controller_env" FAI_HERMES_RUNNER_PYTHON)"
 [[ "$controller_python" == "$hermes_python" &&
-   "$controller_config_hash" == "$executor_config_hash" &&
+   "$controller_config_hash" == "$executor_config_hash" && "$controller_config_hash" == "$planning_config_hash" &&
    "$controller_config_hash" == "$(sha256sum "$hermes_config" | awk '{print $1}')" ]] || {
   echo "Hermes runtime or config binding mismatch" >&2; exit 1;
 }
+planning_enabled="$(env_value "$controller_env" FAI_HERMES_PLANNING_ENABLED)"
+[[ "$planning_enabled" == "true" || "$planning_enabled" == "false" ]] || {
+  echo "Hermes planning enabled binding is invalid" >&2; exit 1;
+}
+[[ "$(env_value "$controller_env" FAI_HERMES_PLANNING_SOCKET)" == "/run/fai-hermes-planner/planner.sock" &&
+   "$(env_value "$controller_env" FAI_HERMES_PLANNING_TOKEN_FILE)" == "$planning_token" &&
+   "$(env_value "$controller_env" FAI_HERMES_PLANNING_EXPECTED_CLIENT_UID)" == "1000" ]] || {
+  echo "Hermes planning transport binding mismatch" >&2; exit 1;
+}
+production_planning_enabled="$(env_value "$production_env" HERMES_SEMANTIC_PLANNING_ENABLED)"
+[[ "$production_planning_enabled" == "$planning_enabled" ]] || {
+  echo "Hermes planning controller/web enabled state mismatch" >&2; exit 1;
+}
+if [[ "$planning_enabled" == "true" ]]; then
+  [[ "$(env_value "$production_env" HERMES_SEMANTIC_PLANNING_SOCKET)" == "/run/fai-hermes-planner/planner.sock" &&
+     "$(env_value "$production_env" HERMES_SEMANTIC_PLANNING_TOKEN_FILE)" == "/run/secrets/hermes-semantic-planning-token" &&
+     "$(env_value "$production_env" HERMES_SEMANTIC_PLANNING_TOKEN_HOST_FILE)" == "$web_planning_token" &&
+     "$(env_value "$production_env" HERMES_SEMANTIC_PLANNING_SOCKET_HOST_DIR)" == "/run/fai-hermes-planner" ]] || {
+    echo "Hermes planning controller/web transport mismatch" >&2; exit 1;
+  }
+  [[ -f "$planning_token" && ! -L "$planning_token" && -r "$planning_token" &&
+     "$(stat -c '%U:%G:%a' "$planning_token")" == "$controller_user:$controller_user:600" &&
+     -f "$web_planning_token" && ! -L "$web_planning_token" && -r "$web_planning_token" &&
+     "$(sha256sum "$planning_token" | awk '{print $1}')" == "$(sha256sum "$web_planning_token" | awk '{print $1}')" &&
+     "$(wc -l <"$planning_token")" -le 1 ]] || {
+    echo "Hermes planning authentication binding mismatch" >&2; exit 1;
+  }
+  grep -Eq '^[A-Za-z0-9._~+/=-]{32,256}$' "$planning_token" || {
+    echo "Hermes planning authentication value is invalid" >&2; exit 1;
+  }
+fi
 release_root="/opt/fai-control-plane-runner/releases/$release_commit"
 [[ "$release_root" == /opt/fai-control-plane-runner/releases/* && "$release_root" != /opt/fai-control-plane/* ]] || {
   echo "release root must be outside the production checkout" >&2; exit 1;
@@ -175,22 +210,30 @@ executor_bundle_hash="$(env_value "$executor_env" FAI_EXECUTOR_BUNDLE_SHA256)"
 
 controller_unit="$release_root/infra/production/fai-hermes-runner.service"
 executor_unit="$release_root/infra/production/fai-codex-executor.service"
+planner_unit="$release_root/infra/production/fai-hermes-planner.service"
 tmpfiles_source="$release_root/infra/production/fai-hermes-executor.tmpfiles"
-for file in "$controller_unit" "$executor_unit" "$tmpfiles_source"; do
+planner_tmpfiles_source="$release_root/infra/production/fai-hermes-planner.tmpfiles"
+for file in "$controller_unit" "$executor_unit" "$planner_unit" "$tmpfiles_source" "$planner_tmpfiles_source"; do
   [[ -f "$file" && ! -L "$file" ]] || { echo "release unit file missing" >&2; exit 1; }
 done
-controller_rendered="$(mktemp)"; executor_rendered="$(mktemp)"
-trap 'rm -f -- "${controller_rendered:-}" "${executor_rendered:-}"' EXIT
+controller_rendered="$(mktemp)"; executor_rendered="$(mktemp)"; planner_rendered="$(mktemp)"
+trap 'rm -f -- "${controller_rendered:-}" "${executor_rendered:-}" "${planner_rendered:-}"' EXIT
 sed "s/@RELEASE_COMMIT@/$release_commit/g" "$controller_unit" >"$controller_rendered"
 sed "s/@RELEASE_COMMIT@/$release_commit/g" "$executor_unit" >"$executor_rendered"
+sed "s/@RELEASE_COMMIT@/$release_commit/g" "$planner_unit" >"$planner_rendered"
 install -m 0644 -o root -g root "$controller_rendered" /etc/systemd/system/fai-hermes-runner.service
 install -m 0644 -o root -g root "$executor_rendered" /etc/systemd/system/fai-codex-executor.service
+install -m 0644 -o root -g root "$planner_rendered" /etc/systemd/system/fai-hermes-planner.service
 install -m 0644 -o root -g root "$tmpfiles_source" /etc/tmpfiles.d/fai-hermes-executor.conf
-systemd-tmpfiles --create /etc/tmpfiles.d/fai-hermes-executor.conf
+install -m 0644 -o root -g root "$planner_tmpfiles_source" /etc/tmpfiles.d/fai-hermes-planner.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/fai-hermes-executor.conf /etc/tmpfiles.d/fai-hermes-planner.conf
 [[ "$(stat -c '%U:%G:%a' /run/fai-hermes-executor)" == "fai-codex-executor:fai-hermes-transport:2770" ]] || {
   echo "executor socket directory ownership/mode mismatch" >&2; exit 1;
 }
-systemd-analyze verify /etc/systemd/system/fai-hermes-runner.service /etc/systemd/system/fai-codex-executor.service
+[[ "$(stat -c '%U:%G:%a' /run/fai-hermes-planner)" == "fai-hermes-controller:fai-hermes-controller:2775" ]] || {
+  echo "planning socket directory ownership/mode mismatch" >&2; exit 1;
+}
+systemd-analyze verify /etc/systemd/system/fai-hermes-runner.service /etc/systemd/system/fai-codex-executor.service /etc/systemd/system/fai-hermes-planner.service
 systemctl daemon-reload
 
 assert_unit_property() {
@@ -206,6 +249,9 @@ assert_unit_property fai-codex-executor.service User "$executor_user"
 assert_unit_property fai-codex-executor.service Group "$executor_user"
 assert_unit_property fai-codex-executor.service NoNewPrivileges yes
 assert_unit_property fai-codex-executor.service SupplementaryGroups "$transport_group"
+assert_unit_property fai-hermes-planner.service User "$controller_user"
+assert_unit_property fai-hermes-planner.service Group "$controller_user"
+assert_unit_property fai-hermes-planner.service NoNewPrivileges yes
 assert_unit_path_set() {
   local unit="$1" property="$2" expected="$3" actual path actual_count=0 expected_count=0
   actual="$(systemctl show "$unit" --property="$property" --value)"
@@ -224,10 +270,14 @@ assert_unit_path_set fai-hermes-runner.service ReadWritePaths \
   "/var/lib/fai-hermes-controller/state /var/lib/fai-hermes-controller/hermes"
 assert_unit_path_set fai-codex-executor.service ReadWritePaths \
   "/var/lib/fai-codex-executor/repository /var/lib/fai-codex-executor/worktrees /var/lib/fai-codex-executor/artifacts /run/fai-hermes-executor /var/lib/fai-codex-executor/codex-home"
+assert_unit_path_set fai-hermes-planner.service ReadWritePaths \
+  "/run/fai-hermes-planner /var/lib/fai-hermes-controller/hermes"
 assert_unit_path_set fai-hermes-runner.service ReadOnlyPaths \
   "$release_root $hermes_runtime /var/lib/fai-hermes-controller/hermes/config.yaml /var/lib/fai-hermes-controller/credentials"
 assert_unit_path_set fai-codex-executor.service ReadOnlyPaths \
   "$release_root $hermes_runtime /usr/bin/codex /usr/bin/git"
+assert_unit_path_set fai-hermes-planner.service ReadOnlyPaths \
+  "$release_root $hermes_runtime /var/lib/fai-hermes-controller/hermes/config.yaml /var/lib/fai-hermes-controller/credentials"
 executor_inaccessible="$(systemctl show fai-codex-executor.service --property=InaccessiblePaths --value)"
 for path in /etc/fai-control-plane /etc/fai-hermes-controller /var/lib/fai-hermes-controller; do
   [[ " $executor_inaccessible " == *" $path "* ]] || { echo "effective executor isolation mismatch" >&2; exit 1; }
@@ -236,7 +286,16 @@ controller_inaccessible="$(systemctl show fai-hermes-runner.service --property=I
 for path in /var/lib/fai-codex-executor /etc/fai-codex-executor; do
   [[ " $controller_inaccessible " == *" $path "* ]] || { echo "effective controller isolation mismatch" >&2; exit 1; }
 done
+planner_inaccessible="$(systemctl show fai-hermes-planner.service --property=InaccessiblePaths --value)"
+for path in /var/lib/fai-codex-executor /etc/fai-codex-executor /etc/fai-control-plane; do
+  [[ " $planner_inaccessible " == *" $path "* ]] || { echo "effective planner isolation mismatch" >&2; exit 1; }
+done
 
 systemctl enable --now fai-codex-executor.service
 systemctl start fai-hermes-runner.service
 systemctl enable fai-hermes-runner.service
+if [[ "$planning_enabled" == "true" ]]; then
+  systemctl enable --now fai-hermes-planner.service
+else
+  systemctl disable --now fai-hermes-planner.service
+fi

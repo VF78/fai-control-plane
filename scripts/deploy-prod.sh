@@ -89,6 +89,18 @@ validate_environment() {
     path="$(env_value "$key")"
     [[ "$path" == /* && -r "$path" ]] || die "required host file is unavailable: $key"
   done
+  local planning_enabled planning_token planning_socket_dir
+  planning_enabled="$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)"
+  [[ -z "$planning_enabled" || "$planning_enabled" == 'false' || "$planning_enabled" == 'true' ]] || die 'HERMES_SEMANTIC_PLANNING_ENABLED is invalid'
+  if [[ "$planning_enabled" == 'true' ]]; then
+    planning_token="$(env_value HERMES_SEMANTIC_PLANNING_TOKEN_HOST_FILE)"
+    planning_socket_dir="$(env_value HERMES_SEMANTIC_PLANNING_SOCKET_HOST_DIR)"
+    [[ "$planning_token" == '/etc/fai-control-plane/secrets/hermes-semantic-planning-token' &&
+       -f "$planning_token" && ! -L "$planning_token" && -r "$planning_token" ]] ||
+      die 'Hermes semantic planning token binding is unavailable'
+    [[ "$planning_socket_dir" == '/run/fai-hermes-planner' && -d "$planning_socket_dir" &&
+       ! -L "$planning_socket_dir" ]] || die 'Hermes semantic planning socket directory is unavailable'
+  fi
   compose config --quiet
 }
 

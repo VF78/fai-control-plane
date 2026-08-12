@@ -1,0 +1,47 @@
+[Unit]
+Description=f(AI) authenticated Hermes semantic project planner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fai-hermes-controller
+Group=fai-hermes-controller
+Environment=HOME=/var/lib/fai-hermes-controller/hermes
+Environment=HERMES_HOME=/var/lib/fai-hermes-controller/hermes
+Environment=HERMES_IGNORE_RULES=1
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=NO_COLOR=1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=FCP_HERMES_EXPECTED_VERSION=0.18.2
+EnvironmentFile=/etc/fai-hermes-controller/controller.env
+ExecStartPre=/opt/fai-control-plane-runner/hermes-runtime/0.18.2/venv/bin/python /opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@/packages/runners/runtime/hermes_project_planner_socket.py --preflight
+ExecStart=/opt/fai-control-plane-runner/hermes-runtime/0.18.2/venv/bin/python /opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@/packages/runners/runtime/hermes_project_planner_socket.py
+Restart=on-failure
+RestartSec=10s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadOnlyPaths=/opt/fai-control-plane-runner/releases/@RELEASE_COMMIT@ /opt/fai-control-plane-runner/hermes-runtime/0.18.2 /var/lib/fai-hermes-controller/hermes/config.yaml /var/lib/fai-hermes-controller/credentials
+ReadWritePaths=/run/fai-hermes-planner /var/lib/fai-hermes-controller/hermes
+InaccessiblePaths=/var/lib/fai-codex-executor /etc/fai-codex-executor /etc/fai-control-plane
+
+[Install]
+WantedBy=multi-user.target

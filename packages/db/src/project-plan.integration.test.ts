@@ -37,6 +37,10 @@ describePostgres('project plan persistence', () => {
     await db.insert(agentProfiles).values({id: hermesProfileId, workspaceId, actorId: hermesActorId, runtimeId: 'hermes', runtimeProfile: 'semantic_planning', configHash: 'a'.repeat(64)});
     await db.insert(projectSetups).values({id: randomUUID(), projectId, state: 'pending', configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none', clientChat: 'none', executionMode: 'managed_agent', agentProfileId: hermesProfileId}});
     await db.insert(runtimeRegistrations).values({id: randomUUID(), projectId, actorId: hermesActorId, agentProfileId: hermesProfileId, provider: 'provider_neutral', runtimeKey: 'hermes'});
+    const planningProtocolId = randomUUID(); const planningProtocol = defaultDeliveryProtocolDefinition();
+    await db.insert(runbooks).values({id: planningProtocolId, projectId, name: 'Delivery', version: 1,
+      definition: planningProtocol, active: true, protocolState: 'published', revision: 1,
+      contentHash: hashDeliveryProtocolDefinition(planningProtocol)});
     const store = createPostgresProjectPlanStore(db);
     const envelope = (type: string, payload: unknown, key: string) => ({commandId: randomUUID(), workspaceId, correlationId: randomUUID(), idempotencyKey: key, issuedAt: '2026-08-09T10:00:00.000Z', actor: {actorId: ownerId}, type, payload});
     const record = async (artifactId: string, content: string, key: string, sourceKind: string) => store.execute({command: envelope('project_plan.source.record', {
@@ -60,9 +64,18 @@ describePostgres('project plan persistence', () => {
     await expect(record(architectureArtifactId, architectureContent, 'gen-source-architecture', 'solution_architecture')).resolves.toMatchObject({receipt: {result: {ok: true}}});
     const requiredManifest = [...firstManifest, {artifactId: requirementsArtifactId, version: 1, sha256: sourceArtifactDigest(requirementsContent)}, {artifactId: architectureArtifactId, version: 1, sha256: sourceArtifactDigest(architectureContent)}];
     const generate = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: null, sourceManifest: requiredManifest}, 'generate-1');
-    await expect(store.prepareSemanticGeneration({command: generate as never, requestHash: 'a'.repeat(64), authorized: true})).resolves.toMatchObject({ok: true, value: {kind: 'ready'}});
-    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 1}}}}});
-    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({status: 'replayed'});
+    const firstPreparation = await store.prepareSemanticGeneration({command: generate as never, requestHash: 'a'.repeat(64), authorized: true});
+    expect(firstPreparation).toMatchObject({ok: true, value: {kind: 'ready', request: {planningContext: {
+      deliveryProtocol: {id: planningProtocolId}, responsibilityCandidates: expect.arrayContaining([
+        expect.objectContaining({kind: 'project_role', role: 'project_owner'}),
+        expect.objectContaining({kind: 'agent_profile', agentProfileId: hermesProfileId})
+      ])}, planningContextHash: expect.stringMatching(/^[0-9a-f]{64}$/)}}});
+    if (!firstPreparation.ok || firstPreparation.value.kind !== 'ready') throw new Error('semantic preparation');
+    const firstContextHash = firstPreparation.value.request.planningContextHash;
+    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true,
+      semanticGeneration: semanticGeneration(firstArtifactId), semanticPlanningContextHash: firstContextHash})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 1}, semanticPlanningContextHash: firstContextHash}}}});
+    await expect(store.execute({command: generate as never, requestHash: 'a'.repeat(64), authorized: true,
+      semanticGeneration: semanticGeneration(firstArtifactId), semanticPlanningContextHash: firstContextHash})).resolves.toMatchObject({status: 'replayed'});
     expect(await db.select().from(projectPlanVersions).where(eq(projectPlanVersions.projectId, projectId))).toHaveLength(0);
     expect(await db.select().from(projectPlanMaterializations)).toHaveLength(0);
     expect(await db.select().from(workItems)).toHaveLength(0);
@@ -74,14 +87,27 @@ describePostgres('project plan persistence', () => {
     await expect(store.execute({command: envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: staleManifest}, 'generate-stale') as never,
       requestHash: 'b'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
     const fullManifest = [...requiredManifest, {artifactId: secondArtifactId, version: 1, sha256: sourceArtifactDigest(secondContent)}];
-    await expect(store.execute({command: envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: fullManifest}, 'generate-2') as never,
-      requestHash: 'c'.repeat(64), authorized: true, semanticGeneration: semanticGeneration(firstArtifactId)})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 2}}}}});
+    const contextDrift = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: fullManifest}, 'generate-context-drift');
+    const driftPreparation = await store.prepareSemanticGeneration({command: contextDrift as never, requestHash: 'f'.repeat(64), authorized: true});
+    if (!driftPreparation.ok || driftPreparation.value.kind !== 'ready') throw new Error('drift preparation');
+    const changedProtocol = {...planningProtocol, stages: planningProtocol.stages.map((stage, index) => index === 0
+      ? {...stage, entryCriteria: [...stage.entryCriteria, 'Current plan context confirmed']} : stage)};
+    await db.update(runbooks).set({definition: changedProtocol, revision: 2,
+      contentHash: hashDeliveryProtocolDefinition(changedProtocol)}).where(eq(runbooks.id, planningProtocolId));
+    await expect(store.execute({command: contextDrift as never, requestHash: 'f'.repeat(64), authorized: true,
+      semanticGeneration: semanticGeneration(firstArtifactId), semanticPlanningContextHash: driftPreparation.value.request.planningContextHash}))
+      .resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT', message: expect.stringContaining('responsibility candidates changed')}}}});
+    const generateSecond = envelope('project_plan.draft.generate', {planId, projectId, expectedRevision: 1, sourceManifest: fullManifest}, 'generate-2');
+    const secondPreparation = await store.prepareSemanticGeneration({command: generateSecond as never, requestHash: 'c'.repeat(64), authorized: true});
+    if (!secondPreparation.ok || secondPreparation.value.kind !== 'ready') throw new Error('second preparation');
+    await expect(store.execute({command: generateSecond as never, requestHash: 'c'.repeat(64), authorized: true,
+      semanticGeneration: semanticGeneration(firstArtifactId), semanticPlanningContextHash: secondPreparation.value.request.planningContextHash})).resolves.toMatchObject({receipt: {result: {ok: true, value: {plan: {state: 'draft', revision: 2}}}}});
     const competing = envelope('project_plan.draft.generate', {planId: competingPlanId, projectId, expectedRevision: null, sourceManifest: fullManifest}, 'generate-competing');
     await expect(store.prepareSemanticGeneration({command: competing as never, requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({ok: false, error: {code: 'VERSION_CONFLICT'}});
     await expect(store.execute({command: competing as never, requestHash: 'd'.repeat(64), authorized: true})).resolves.toMatchObject({receipt: {result: {error: {code: 'VERSION_CONFLICT'}}}});
     expect(await db.select().from(projectPlanDrafts)).toHaveLength(1);
-    expect(await db.select().from(auditEvents)).toHaveLength(9);
-    expect(await db.select().from(commandReceipts)).toHaveLength(9);
+    expect(await db.select().from(auditEvents)).toHaveLength(10);
+    expect(await db.select().from(commandReceipts)).toHaveLength(10);
     const approvalSimulation = await store.simulate({workspaceId, projectId, actorId: ownerId, definition: semanticGeneration(firstArtifactId).value});
     await expect(store.execute({command: envelope('project_plan.approve', {planId, expectedRevision: 2, expectedPlanHash: approvalSimulation!.planHash,
       expectedSimulationHash: approvalSimulation!.simulationHash}, 'approve-missing-cited-dossier') as never, requestHash: 'e'.repeat(64), authorized: true}))

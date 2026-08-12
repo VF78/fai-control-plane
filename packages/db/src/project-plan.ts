@@ -1,6 +1,10 @@
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {
   deterministicProjectPlanUuid,
+  canonicalJson,
+  containsHighConfidenceSecretContent,
+  hashDeliveryProtocolDefinition,
+  humanProjectMembershipRoles,
   hashProjectPlanSourceManifest,
   hashProjectPlanDefinition,
   projectSetupBindingModes,
@@ -25,7 +29,7 @@ import {
   type ProjectPlanTaskResponsibility,
   type SourceArtifact
 } from '@fai-control-plane/domain';
-import type {GenerateProjectPlanDraftCommand, ProjectPlanMutationCommand, ProjectPlanSemanticPreparationResult, ProjectPlanWorkspace} from '@fai-control-plane/application';
+import type {GenerateProjectPlanDraftCommand, ProjectPlanMutationCommand, ProjectPlanSemanticPreparationResult, ProjectPlanWorkspace, SemanticProjectPlanningContext} from '@fai-control-plane/application';
 import {and, count, desc, eq, inArray, isNull, max} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
@@ -35,7 +39,7 @@ import {resolveWorkItemResponsibility} from './work-item-responsibility';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
-type StoreInput = Readonly<{command: ProjectPlanMutationCommand; requestHash: string; authorized: boolean; policyError?: CommandError; semanticGeneration?: import('@fai-control-plane/domain').CommandResult<ProjectPlanDefinition>}>;
+type StoreInput = Readonly<{command: ProjectPlanMutationCommand; requestHash: string; authorized: boolean; policyError?: CommandError; semanticGeneration?: import('@fai-control-plane/domain').CommandResult<ProjectPlanDefinition>; semanticPlanningContextHash?: string}>;
 const fail = (code: CommandError['code'], message: string) => ({ok: false as const, error: {code, message}});
 
 const authority = async (tx: Transaction, workspaceId: string, projectId: string, actorId: string) => {
@@ -162,6 +166,80 @@ const hermesPlannerEligible = async (tx: Transaction, workspaceId: string, proje
     : {ok: true, value: true};
 };
 
+const SEMANTIC_CONTEXT_LIMIT_BYTES = 128 * 1024;
+const semanticPlanningContextHash = (context: SemanticProjectPlanningContext): string =>
+  createHash('sha256').update(canonicalJson(context as never)).digest('hex');
+const semanticPlanningContext = async (
+  tx: Transaction, workspaceId: string, projectId: string, lock = false
+): Promise<ReturnType<typeof fail> | {ok: true; value: Readonly<{context: SemanticProjectPlanningContext; hash: string}>}> => {
+  const protocolQuery = tx.select({id: schema.runbooks.id, revision: schema.runbooks.revision,
+    contentHash: schema.runbooks.contentHash, definition: schema.runbooks.definition})
+    .from(schema.runbooks).where(and(eq(schema.runbooks.projectId, projectId), eq(schema.runbooks.active, true),
+      eq(schema.runbooks.protocolState, 'published'))).orderBy(schema.runbooks.id).limit(2);
+  const protocols = await (lock ? protocolQuery.for('share') : protocolQuery);
+  if (protocols.length !== 1) return fail('INVALID_TRANSITION', 'Hermes planning requires exactly one active published delivery protocol.');
+  const protocol = protocols[0]!;
+  const definition = validateDeliveryProtocolDefinition(protocol.definition);
+  if (!definition.ok || protocol.revision === null || protocol.contentHash !== hashDeliveryProtocolDefinition(definition.value)) {
+    return fail('INVALID_TRANSITION', 'The active delivery protocol is invalid or changed. Publish a valid protocol before planning.');
+  }
+  const humanQuery = tx.select({actorId: schema.actors.id, displayName: schema.actors.displayName,
+    roles: schema.projectMemberships.roles}).from(schema.projectMemberships)
+    .innerJoin(schema.actors, and(eq(schema.actors.id, schema.projectMemberships.actorId),
+      eq(schema.actors.workspaceId, workspaceId)))
+    .where(and(eq(schema.projectMemberships.projectId, projectId), eq(schema.projectMemberships.active, true),
+      eq(schema.actors.type, 'human'), isNull(schema.actors.disabledAt))).orderBy(schema.actors.id).limit(101);
+  const humans = await (lock ? humanQuery.for('share') : humanQuery);
+  const profileQuery = tx.select({agentProfileId: schema.agentProfiles.id, displayName: schema.actors.displayName})
+    .from(schema.agentProfiles)
+    .innerJoin(schema.actors, and(eq(schema.actors.id, schema.agentProfiles.actorId),
+      eq(schema.actors.workspaceId, workspaceId), eq(schema.actors.type, 'agent'), isNull(schema.actors.disabledAt)))
+    .innerJoin(schema.projectMemberships, and(eq(schema.projectMemberships.projectId, projectId),
+      eq(schema.projectMemberships.actorId, schema.agentProfiles.actorId), eq(schema.projectMemberships.active, true),
+      projectMembershipHasRoleSql(schema.projectMemberships.roles, 'agent')))
+    .innerJoin(schema.runtimeRegistrations, and(eq(schema.runtimeRegistrations.projectId, projectId),
+      eq(schema.runtimeRegistrations.actorId, schema.agentProfiles.actorId),
+      eq(schema.runtimeRegistrations.agentProfileId, schema.agentProfiles.id), eq(schema.runtimeRegistrations.enabled, true)))
+    .where(and(eq(schema.agentProfiles.workspaceId, workspaceId), eq(schema.agentProfiles.enabled, true)))
+    .orderBy(schema.agentProfiles.id).limit(501);
+  const profiles = await (lock ? profileQuery.for('share') : profileQuery);
+  const canonicalProfiles = [...new Map(profiles.map((profile) => [profile.agentProfileId, profile])).values()];
+  if (humans.length > 100 || profiles.length > 500 || canonicalProfiles.length > 100 || humans.some(({displayName}) => displayName.length < 1 || displayName.length > 160) ||
+    canonicalProfiles.some(({displayName}) => displayName.length < 1 || displayName.length > 160)) {
+    return fail('INVALID_TRANSITION', 'Canonical planning responsibility candidates are invalid or exceed the bounded context.');
+  }
+  const assignableHumanRoles = humanProjectMembershipRoles.filter((role) => role !== 'client_viewer');
+  const responsibilityHumans = humans.flatMap(({actorId, displayName, roles}) => {
+    const assignableRoles = roles.filter((role): role is Exclude<typeof role, 'agent' | 'client_viewer'> =>
+      role !== 'agent' && role !== 'client_viewer');
+    return assignableRoles.length === 0 ? [] : [{actorId, displayName, roles: assignableRoles}];
+  });
+  const roleSet = new Set(responsibilityHumans.flatMap(({roles}) => roles));
+  const responsibilityCandidates = [
+    ...responsibilityHumans.map(({actorId, displayName, roles}) => ({kind: 'human' as const, actorId, displayName, roles})),
+    ...assignableHumanRoles.filter((role) => roleSet.has(role)).map((role) => ({kind: 'project_role' as const, role})),
+    ...canonicalProfiles.map(({agentProfileId, displayName}) => ({kind: 'agent_profile' as const, agentProfileId, displayName}))
+  ];
+  if (responsibilityCandidates.length === 0) return fail('INVALID_TRANSITION', 'Hermes planning requires at least one canonical responsibility candidate.');
+  const context: SemanticProjectPlanningContext = {schemaVersion: 1, projectId,
+    deliveryProtocol: {id: protocol.id, revision: protocol.revision, contentHash: protocol.contentHash, definition: definition.value},
+    responsibilityCandidates};
+  const serialized = canonicalJson(context as never);
+  if (Buffer.byteLength(serialized, 'utf8') > SEMANTIC_CONTEXT_LIMIT_BYTES || containsHighConfidenceSecretContent(serialized)) {
+    return fail('SECRET_VALUE_FORBIDDEN', 'Canonical planning context contains forbidden or oversized content.');
+  }
+  return {ok: true, value: {context, hash: semanticPlanningContextHash(context)}};
+};
+
+const semanticResponsibilitiesResolve = (definition: ProjectPlanDefinition, context: SemanticProjectPlanningContext): boolean => {
+  const humans = new Set(context.responsibilityCandidates.flatMap((candidate) => candidate.kind === 'human' ? [candidate.actorId] : []));
+  const roles = new Set(context.responsibilityCandidates.flatMap((candidate) => candidate.kind === 'project_role' ? [candidate.role] : []));
+  const profiles = new Set(context.responsibilityCandidates.flatMap((candidate) => candidate.kind === 'agent_profile' ? [candidate.agentProfileId] : []));
+  return definition.tasks.every((task) => task.responsibility !== undefined && (task.responsibility.kind === 'human'
+    ? humans.has(task.responsibility.actorId) : task.responsibility.kind === 'project_role'
+      ? roles.has(task.responsibility.role) : profiles.has(task.responsibility.agentProfileId)));
+};
+
 const prepareSemanticGeneration = async (tx: Transaction, input: Readonly<{command: GenerateProjectPlanDraftCommand; requestHash: string}>): Promise<ProjectPlanSemanticPreparationResult> => {
   const {command} = input;
   if (!validSourceManifest(command.payload.sourceManifest) || command.payload.sourceManifest.length < 1 ||
@@ -214,7 +292,11 @@ const prepareSemanticGeneration = async (tx: Transaction, input: Readonly<{comma
   if (artifacts.length !== artifactRows.length || artifacts.reduce((total, artifact) => total + artifact.sizeBytes, 0) > projectPlanGenerationLimits.totalBytes) return fail('INVALID_COMMAND', 'Selected sources are invalid or exceed the planning limit.');
   const dossier = projectDossierReadiness(artifacts);
   if (!dossier.ready) return fail('INVALID_TRANSITION', `Draft generation requires: ${dossier.required.flatMap(({remediation}) => remediation === null ? [] : [remediation]).join(' ')}`);
-  return {ok: true, value: {kind: 'ready', request: {idempotencyKey: command.idempotencyKey, sourceManifest: requestedManifest, artifacts}}};
+  const planningContext = await semanticPlanningContext(tx, command.workspaceId, command.payload.projectId);
+  if (!planningContext.ok) return planningContext;
+  return {ok: true, value: {kind: 'ready', request: {idempotencyKey: command.idempotencyKey,
+    sourceManifest: requestedManifest, artifacts, planningContext: planningContext.value.context,
+    planningContextHash: planningContext.value.hash}}};
 };
 
 const simulateIn = async (tx: Transaction, input: {workspaceId: string; projectId: string; actorId: string; definition: ProjectPlanDefinition}) => {
@@ -306,7 +388,7 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
       let projectId: string | null = command.type === 'project_plan.approve' ? null : command.payload.projectId;
       let expectedVersion: number | undefined;
       let resultVersion: number | undefined;
-      let result: {ok: true; value: {artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation; materialization?: ProjectPlanMaterialization}} | ReturnType<typeof fail>;
+      let result: {ok: true; value: {artifact?: SourceArtifact; plan?: ProjectPlan; simulation?: ProjectPlanSimulation; materialization?: ProjectPlanMaterialization; semanticPlanningContextHash?: string}} | ReturnType<typeof fail>;
       const complete = async () => {
         const now = new Date();
         if (command.type === 'project_plan.draft.generate' && projectId !== null && input.semanticGeneration !== undefined && (result.ok || !input.semanticGeneration.ok)) {
@@ -692,10 +774,20 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
           }
           const plannerEligibility = await hermesPlannerEligible(tx, command.workspaceId, command.payload.projectId);
           if (!plannerEligibility.ok) { result = plannerEligibility; return complete(); }
+          const planningContext = await semanticPlanningContext(tx, command.workspaceId, command.payload.projectId, true);
+          if (!planningContext.ok) { result = planningContext; return complete(); }
+          if (input.semanticPlanningContextHash === undefined ||
+            input.semanticPlanningContextHash !== planningContext.value.hash) {
+            result = fail('VERSION_CONFLICT', 'Delivery protocol or responsibility candidates changed during semantic planning. Retry with the current project context.');
+            return complete();
+          }
           if (input.semanticGeneration === undefined) {
             result = fail('INVALID_TRANSITION', 'Hermes semantic planning is unavailable. No deterministic draft is created.'); return complete();
           }
           if (!input.semanticGeneration.ok) { result = input.semanticGeneration; return complete(); }
+          if (!semanticResponsibilitiesResolve(input.semanticGeneration.value, planningContext.value.context)) {
+            result = fail('INVALID_COMMAND', 'Semantic plan responsibilities do not resolve inside the exact canonical planning context.'); return complete();
+          }
           generatedDefinition = input.semanticGeneration.value;
         }
         const definition = validateAssignedProjectPlanDefinition(command.type === 'project_plan.draft.save' ? command.payload.definition : generatedDefinition);
@@ -723,7 +815,8 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         }
         const [stored] = await tx.select().from(schema.projectPlanDrafts).where(eq(schema.projectPlanDrafts.id, command.payload.planId));
         const plan = stored === undefined ? null : draftFrom(stored);
-        result = plan === null ? fail('NOT_FOUND', 'Project plan was not found after persistence.') : {ok: true, value: {plan}};
+        result = plan === null ? fail('NOT_FOUND', 'Project plan was not found after persistence.') : {ok: true, value: {plan,
+          ...(command.type === 'project_plan.draft.generate' ? {semanticPlanningContextHash: input.semanticPlanningContextHash} : {})}};
         return complete();
       }
 
