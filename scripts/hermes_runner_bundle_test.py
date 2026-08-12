@@ -291,7 +291,8 @@ class BundleTest(unittest.TestCase):
         self.assertIn('systemctl enable fai-hermes-planner.service', activation)
         self.assertIn('systemctl restart fai-hermes-planner.service', activation)
         self.assertIn('FAI_HERMES_PLANNING_EXPECTED_CLIENT_UID', activation)
-        self.assertIn('planner_token_hash="$(credential_hash "$planner_token")"', activation)
+        self.assertIn('planner_token_hash="$(credential_hash "$planner_token" 256)"', activation)
+        self.assertIn('model_credential_hash="$(credential_hash "$model_credential" 4096)"', activation)
         self.assertIn('[[ "$planner_token_hash" != "$model_credential_hash" ]]', activation)
         self.assertNotIn("HERMES_SEMANTIC_PLANNING_URL", production_environment + compose)
 

@@ -98,12 +98,13 @@ file_binding "$planner_env" "root:$planner_user" 640 && file_binding "$planner_c
 }
 credential_hash() {
   /usr/bin/python3 -c 'import hashlib,re,sys
-value=open(sys.argv[1], encoding="utf-8").read(258).removesuffix("\n")
-if re.fullmatch(r"[A-Za-z0-9._~+/=-]{32,256}", value) is None: raise SystemExit(1)
-print(hashlib.sha256(value.encode()).hexdigest())' "$1"
+maximum=int(sys.argv[2])
+value=open(sys.argv[1], encoding="utf-8").read(maximum + 2).removesuffix("\n")
+if not 32 <= len(value) <= maximum or re.fullmatch(r"[A-Za-z0-9._~+/=-]+", value) is None: raise SystemExit(1)
+print(hashlib.sha256(value.encode()).hexdigest())' "$1" "$2"
 }
-planner_token_hash="$(credential_hash "$planner_token")" || { echo "planning bearer value invalid" >&2; exit 1; }
-model_credential_hash="$(credential_hash "$model_credential")" || { echo "model credential value invalid" >&2; exit 1; }
+planner_token_hash="$(credential_hash "$planner_token" 256)" || { echo "planning bearer value invalid" >&2; exit 1; }
+model_credential_hash="$(credential_hash "$model_credential" 4096)" || { echo "model credential value invalid" >&2; exit 1; }
 [[ "$planner_token_hash" != "$model_credential_hash" ]] || {
   echo "planning bearer and model credential must be distinct" >&2; exit 1;
 }

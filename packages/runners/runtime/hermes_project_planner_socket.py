@@ -48,6 +48,7 @@ IDEMPOTENCY_MAX_ENTRIES = 256
 IDEMPOTENCY_TTL_SECONDS = 300.0
 COALESCED_WAIT_SECONDS = 50.0
 TOKEN = re.compile(r"^[A-Za-z0-9._~+/=-]{32,256}$")
+MODEL_CREDENTIAL = re.compile(r"^[A-Za-z0-9._~+/=-]{32,4096}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 FORBIDDEN_CONTEXT_KEY = re.compile(
@@ -233,8 +234,9 @@ def load_model_credential(runtime: dict[str, Any], planning_token: str) -> None:
        not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or \
        stat.S_IMODE(metadata.st_mode) != 0o600:
         fail("model_credential_path")
-    credential = MODEL_CREDENTIAL_PATH.read_text(encoding="utf-8").removesuffix("\n")
-    if not TOKEN.fullmatch(credential):
+    with MODEL_CREDENTIAL_PATH.open(encoding="utf-8") as credential_file:
+        credential = credential_file.read(4098).removesuffix("\n")
+    if not MODEL_CREDENTIAL.fullmatch(credential):
         fail("model_credential_value")
     credential_hash = hashlib.sha256(credential.encode()).digest()
     planning_token_hash = hashlib.sha256(planning_token.encode()).digest()
