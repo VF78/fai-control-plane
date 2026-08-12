@@ -98,6 +98,13 @@ env_value() {
   }
   printf '%s' "$value"
 }
+service_ttl_seconds="$(env_value "$controller_env" FAI_HERMES_RUNNER_SERVICE_TTL_SECONDS)"
+scheduler_ttl_seconds="$(env_value "$controller_env" FAI_HERMES_RUNNER_SCHEDULER_TTL_SECONDS)"
+delivery_ttl_seconds="$(env_value "$controller_env" FAI_HERMES_RUNNER_DELIVERY_TTL_SECONDS)"
+[[ "$service_ttl_seconds" == "300" && "$scheduler_ttl_seconds" == "900" &&
+   "$delivery_ttl_seconds" == "93600" ]] || {
+  echo "runtime observation TTL binding mismatch" >&2; exit 1;
+}
 controller_config_hash="$(env_value "$controller_env" FAI_HERMES_RUNNER_CONFIG_SHA256)"
 executor_config_hash="$(env_value "$executor_env" FAI_EXECUTOR_EXPECTED_HERMES_CONFIG_SHA256)"
 controller_python="$(env_value "$controller_env" FAI_HERMES_RUNNER_PYTHON)"

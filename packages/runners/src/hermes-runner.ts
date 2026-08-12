@@ -13,6 +13,10 @@ const SHA256 = /^[0-9a-f]{64}$/;
 
 export type HermesRunnerEnvironment = Readonly<Record<string, string | undefined>>;
 type ObservationComponent = 'service' | 'scheduler' | 'delivery';
+type ObservationTtls = Readonly<Record<ObservationComponent, number>>;
+
+const MIN_OBSERVATION_TTL_SECONDS = 30;
+const MAX_OBSERVATION_TTL_SECONDS = 604_800;
 
 const fail = (code: string): never => { throw new Error(`hermes_runner_${code}`); };
 const required = (environment: HermesRunnerEnvironment, name: string): string => {
@@ -37,6 +41,25 @@ const tokenFrom = async (value: string): Promise<string> => {
   const token = (await readFile(absolute(value, 'token_file'), 'utf8')).replace(/\r?\n$/, '');
   return TOKEN.test(token) ? token : fail('invalid_token');
 };
+
+const observationTtl = (
+  environment: HermesRunnerEnvironment,
+  component: ObservationComponent,
+  variable: string
+): number => {
+  const value = Number(required(environment, variable));
+  if (!Number.isSafeInteger(value) || value < MIN_OBSERVATION_TTL_SECONDS ||
+    value > MAX_OBSERVATION_TTL_SECONDS) fail(`invalid_${component}_ttl`);
+  return value;
+};
+
+export const hermesRunnerObservationTtlsFromEnvironment = (
+  environment: HermesRunnerEnvironment
+): ObservationTtls => ({
+  service: observationTtl(environment, 'service', 'FAI_HERMES_RUNNER_SERVICE_TTL_SECONDS'),
+  scheduler: observationTtl(environment, 'scheduler', 'FAI_HERMES_RUNNER_SCHEDULER_TTL_SECONDS'),
+  delivery: observationTtl(environment, 'delivery', 'FAI_HERMES_RUNNER_DELIVERY_TTL_SECONDS')
+});
 
 const publishObservation = async (input: Readonly<{
   fetcher: typeof fetch;
@@ -72,8 +95,7 @@ export const runHermesRunnerOnceFromEnvironment = async (
   const [owner, name] = repositoryValue.split('/') as [string, string];
   const claimToken = await tokenFrom(required(environment, 'FAI_HERMES_RUNNER_CLAIM_TOKEN_FILE'));
   const observationToken = await tokenFrom(required(environment, 'FAI_HERMES_RUNNER_OBSERVATION_TOKEN_FILE'));
-  const ttlSeconds = Number(required(environment, 'FAI_HERMES_RUNNER_OBSERVATION_TTL_SECONDS'));
-  if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 30 || ttlSeconds > 3600) fail('invalid_ttl');
+  const observationTtls = hermesRunnerObservationTtlsFromEnvironment(environment);
   const configSha256 = required(environment, 'FAI_HERMES_RUNNER_CONFIG_SHA256');
   if (!SHA256.test(configSha256)) fail('invalid_config_hash');
   const planner = createHermesDirectivePlanner({
@@ -87,7 +109,7 @@ export const runHermesRunnerOnceFromEnvironment = async (
     socketPath: absolute(required(environment, 'FAI_HERMES_EXECUTOR_SOCKET'), 'executor_socket')});
   const observation = (component: ObservationComponent, state: 'available' | 'unavailable') =>
     publishObservation({fetcher, baseUrl, token: observationToken, registrationId, runnerId,
-      ttlSeconds, component, state});
+      ttlSeconds: observationTtls[component], component, state});
   try {
     await planner.preflight(); await executor.preflight();
     await observation('service', 'available'); await observation('scheduler', 'available');
