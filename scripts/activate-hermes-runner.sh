@@ -124,7 +124,7 @@ executor_bundle="$(env_value "$executor_env" FAI_EXECUTOR_BUNDLE)"
 }
 repository="$(env_value "$executor_env" FAI_EXECUTOR_REPOSITORY)"
 repository_root="$(env_value "$executor_env" FAI_EXECUTOR_REPOSITORY_ROOT)"
-repository_remote="$(/usr/bin/git -C "$repository_root" config --get remote.origin.url)"
+repository_remote="$(runuser -u "$executor_user" -- /usr/bin/git -C "$repository_root" config --get remote.origin.url)"
 [[ "$repository" == "$(env_value "$controller_env" FAI_HERMES_RUNNER_REPOSITORY)" &&
    "$repository" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ && "$repository_root" == "$executor_home/repository" &&
    ( "$repository_remote" == "https://github.com/$repository.git" ||

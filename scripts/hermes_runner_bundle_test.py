@@ -229,6 +229,11 @@ class BundleTest(unittest.TestCase):
         self.assertIn('/opt/fai-control-plane-runner/hermes-runtime:755', activation)
         self.assertIn('"$hermes_runtime":555', activation)
         self.assertIn('"$(readlink -f "$runtime_path")" == "$runtime_path"', activation)
+        self.assertIn(
+            'repository_remote="$(runuser -u "$executor_user" -- /usr/bin/git -C '
+            '"$repository_root" config --get remote.origin.url)"',
+            activation,
+        )
         self.assertIn("assert_unit_path_set fai-hermes-runner.service ReadWritePaths", activation)
         self.assertIn("assert_unit_path_set fai-codex-executor.service ReadWritePaths", activation)
 
