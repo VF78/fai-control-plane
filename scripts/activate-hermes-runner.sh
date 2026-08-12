@@ -168,6 +168,28 @@ assert_unit_property fai-codex-executor.service User "$executor_user"
 assert_unit_property fai-codex-executor.service Group "$executor_user"
 assert_unit_property fai-codex-executor.service NoNewPrivileges yes
 assert_unit_property fai-codex-executor.service SupplementaryGroups "$transport_group"
+assert_unit_path_set() {
+  local unit="$1" property="$2" expected="$3" actual path actual_count=0 expected_count=0
+  actual="$(systemctl show "$unit" --property="$property" --value)"
+  for path in $expected; do expected_count=$((expected_count + 1)); done
+  for path in $actual; do
+    [[ " $expected " == *" $path "* ]] || {
+      echo "effective systemd $property includes an unexpected path: $unit" >&2; exit 1;
+    }
+    actual_count=$((actual_count + 1))
+  done
+  [[ "$actual_count" == "$expected_count" ]] || {
+    echo "effective systemd $property path set mismatch: $unit" >&2; exit 1;
+  }
+}
+assert_unit_path_set fai-hermes-runner.service ReadWritePaths \
+  "/var/lib/fai-hermes-controller/state /var/lib/fai-hermes-controller/hermes"
+assert_unit_path_set fai-codex-executor.service ReadWritePaths \
+  "/var/lib/fai-codex-executor/repository /var/lib/fai-codex-executor/worktrees /var/lib/fai-codex-executor/artifacts /run/fai-hermes-executor /var/lib/fai-codex-executor/codex-home"
+assert_unit_path_set fai-hermes-runner.service ReadOnlyPaths \
+  "$release_root /usr/local/lib/hermes-agent /var/lib/fai-hermes-controller/hermes/config.yaml /var/lib/fai-hermes-controller/credentials"
+assert_unit_path_set fai-codex-executor.service ReadOnlyPaths \
+  "$release_root /usr/local/lib/hermes-agent /usr/bin/codex /usr/bin/git"
 executor_inaccessible="$(systemctl show fai-codex-executor.service --property=InaccessiblePaths --value)"
 for path in /etc/fai-control-plane /etc/fai-hermes-controller /var/lib/fai-hermes-controller; do
   [[ " $executor_inaccessible " == *" $path "* ]] || { echo "effective executor isolation mismatch" >&2; exit 1; }

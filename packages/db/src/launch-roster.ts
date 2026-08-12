@@ -19,6 +19,21 @@ export type LaunchHumanRoster = Readonly<{
 
 export type LaunchProjectSlug = 'msa' | 'ascon';
 
+export type LaunchSystemRoster = Readonly<{
+  runtimeObserverActorId: string;
+}>;
+
+const runtimeObserverSeed = (workspaceId: string) => ({
+  workspaceId,
+  type: 'system' as const,
+  role: 'agent_operator' as const,
+  displayName: 'Runtime Observer',
+  authMode: 'system' as const,
+  externalSubject: 'system:runtime-observer:v1',
+  capabilities: {'write:runtime_observation:development': true},
+  disabledAt: null
+});
+
 const parseOperatorGitHubUserIds = (value: string): readonly string[] => {
   const ids = value.split(',');
   if (ids.length !== 2) {
@@ -114,6 +129,27 @@ export const reconcileLaunchHumanRoster = async (
   return {bootstrapActorId, members};
 };
 
+export const reconcileLaunchSystemRoster = async (
+  db: Database,
+  workspaceId: string
+): Promise<LaunchSystemRoster> => {
+  const seed = runtimeObserverSeed(workspaceId);
+  const [runtimeObserver] = await db.insert(actors).values(seed).onConflictDoUpdate({
+    target: [actors.workspaceId, actors.authMode, actors.externalSubject],
+    set: {
+      type: seed.type,
+      role: seed.role,
+      displayName: seed.displayName,
+      capabilities: seed.capabilities,
+      disabledAt: seed.disabledAt
+    }
+  }).returning({id: actors.id});
+  if (runtimeObserver === undefined) {
+    throw new Error('launch runtime observer seed failed');
+  }
+  return {runtimeObserverActorId: runtimeObserver.id};
+};
+
 export const reconcileLaunchProjectMemberships = async (
   db: Database,
   projectId: string,
@@ -129,21 +165,22 @@ export const reconcileLaunchProjectMemberships = async (
     ...humanMembers,
     {actorId: hermesActorId, roles: ['agent'] as const}
   ];
-  const members = projectSlug === 'msa' ? fixedMembers : [projectOwner];
-  const desiredActorIds = new Set(members.map(({actorId}) => actorId));
   for (const member of fixedMembers) {
-    const active = desiredActorIds.has(member.actorId);
+    const active = projectSlug === 'msa' || member.actorId === projectOwner.actorId;
+    const roles = projectSlug === 'ascon' && member.actorId === projectOwner.actorId
+      ? ['project_owner', 'contributor'] as const
+      : member.roles;
     await db.insert(projectMemberships).values({
       projectId,
       actorId: member.actorId,
-      roles: [...member.roles],
+      roles: [...roles],
       active
     }).onConflictDoUpdate({
       target: [
         projectMemberships.projectId,
         projectMemberships.actorId
       ],
-      set: {roles: [...member.roles], active}
+      set: {roles: [...roles], active}
     });
   }
 };

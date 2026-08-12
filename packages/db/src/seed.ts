@@ -26,7 +26,8 @@ import {
 } from './index';
 import {
   reconcileLaunchHumanRoster,
-  reconcileLaunchProjectMemberships
+  reconcileLaunchProjectMemberships,
+  reconcileLaunchSystemRoster
 } from './launch-roster';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -117,6 +118,7 @@ try {
     bootstrapExternalSubject,
     operatorGitHubUserIds
   );
+  await reconcileLaunchSystemRoster(db, persistedWorkspace.id);
   const bootstrapActor = {id: launchHumanRoster.bootstrapActorId};
   const hermesActorSeed = {
     workspaceId: persistedWorkspace.id,

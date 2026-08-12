@@ -174,6 +174,32 @@ class BundleTest(unittest.TestCase):
         self.assertIn('release_root="/opt/fai-control-plane-runner/releases/$release_commit"', activation)
         self.assertNotIn('release_root="/opt/fai-control-plane/releases/', activation)
 
+    def test_units_allow_only_isolated_oauth_homes_beside_operational_paths(self):
+        root = MODULE_PATH.parents[1]
+        controller = (root / "infra/production/fai-hermes-runner.service").read_text()
+        executor = (root / "infra/production/fai-codex-executor.service").read_text()
+        self.assertIn(
+            "ReadWritePaths=/var/lib/fai-hermes-controller/state "
+            "/var/lib/fai-hermes-controller/hermes\n",
+            controller,
+        )
+        controller_writes = next(line for line in controller.splitlines()
+                                 if line.startswith("ReadWritePaths="))
+        controller_reads = next(line for line in controller.splitlines()
+                                if line.startswith("ReadOnlyPaths="))
+        self.assertNotIn("hermes/config.yaml", controller_writes)
+        self.assertIn("/var/lib/fai-hermes-controller/hermes/config.yaml", controller_reads)
+        self.assertIn(
+            "ReadWritePaths=/var/lib/fai-codex-executor/repository "
+            "/var/lib/fai-codex-executor/worktrees /var/lib/fai-codex-executor/artifacts "
+            "/run/fai-hermes-executor /var/lib/fai-codex-executor/codex-home\n",
+            executor,
+        )
+        self.assertIn("UMask=0077\n", executor)
+        activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
+        self.assertIn("assert_unit_path_set fai-hermes-runner.service ReadWritePaths", activation)
+        self.assertIn("assert_unit_path_set fai-codex-executor.service ReadWritePaths", activation)
+
 
 if __name__ == "__main__":
     unittest.main()
