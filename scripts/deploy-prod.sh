@@ -11,7 +11,8 @@ readonly BACKUP_DIR='/srv/fai-control-plane/backups'
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-prod.sh --commit <40-lowercase-hex> --confirm-production [--dry-run]
+Usage: scripts/deploy-prod.sh --commit <40-lowercase-hex> --confirm-production
+       [--planner-release-bundle <absolute-remote-path> --planner-release-sha256 <64-hex>] [--dry-run]
 
 Deploys only fai-control-plane-production on root@46.225.163.123. The commit
 must exactly equal freshly fetched origin/main. --dry-run performs remote
@@ -22,11 +23,15 @@ EOF
 die() { printf 'deploy-prod: %s\n' "$*" >&2; exit 1; }
 
 commit=''
+planner_release_bundle=''
+planner_release_sha256=''
 confirmed=0
 dry_run=0
 while (($#)); do
   case "$1" in
     --commit) (($# >= 2)) || die '--commit requires a value'; commit="$2"; shift 2 ;;
+    --planner-release-bundle) (($# >= 2)) || die '--planner-release-bundle requires a value'; planner_release_bundle="$2"; shift 2 ;;
+    --planner-release-sha256) (($# >= 2)) || die '--planner-release-sha256 requires a value'; planner_release_sha256="$2"; shift 2 ;;
     --confirm-production) confirmed=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -43,7 +48,8 @@ git -C "$git_root" fetch --quiet origin main
 [[ "$(git -C "$git_root" rev-parse origin/main)" == "$commit" ]] || die '--commit must equal freshly fetched origin/main'
 git -C "$git_root" rev-parse --verify --quiet "${commit}^{commit}" >/dev/null || die 'requested commit is unavailable locally'
 
-ssh -o BatchMode=yes -o ConnectTimeout=15 "$DEPLOY_HOST" bash -s -- "$commit" "$dry_run" <<'REMOTE'
+ssh -o BatchMode=yes -o ConnectTimeout=15 "$DEPLOY_HOST" bash -s -- \
+  "$commit" "$dry_run" "$planner_release_bundle" "$planner_release_sha256" <<'REMOTE'
 {
   remote_script="$(mktemp)" || exit 1
   trap 'rm -f "$remote_script"' EXIT
@@ -56,6 +62,8 @@ set -Eeuo pipefail
 
 TARGET="$1"
 DRY_RUN="$2"
+PLANNER_RELEASE_BUNDLE="$3"
+PLANNER_RELEASE_SHA256="$4"
 readonly REPO='/opt/fai-control-plane'
 readonly ENV_FILE='/etc/fai-control-plane/production.env'
 readonly COMPOSE_FILE="$REPO/infra/production/compose.yaml"
@@ -68,6 +76,18 @@ compose() { docker compose --project-name "$PROJECT" --env-file "$ENV_FILE" -f "
 compose_target() { FCP_IMAGE_TAG="$TARGET" docker compose --project-name "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 env_value() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | tr -d '\r'; }
 is_hash() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+is_sha256() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
+
+planner_health() {
+  local release_commit="$1" client_user
+  client_user="$(getent passwd 1000 | cut -d: -f1)"
+  [[ -n "$client_user" ]] || return 1
+  runuser -u "$client_user" -- /usr/bin/python3 \
+    "/opt/fai-control-plane-runner/releases/$release_commit/scripts/hermes_planner_health.py" \
+    --socket /run/fai-hermes-planner/planner.sock \
+    --token-file /etc/fai-control-plane/secrets/hermes-semantic-planning-token \
+    --release-commit "$release_commit"
+}
 
 required_path_keys=(
   POSTGRES_PASSWORD_HOST_FILE DATABASE_URL_HOST_FILE GITHUB_PROJECTS_OAUTH_TOKEN_HOST_FILE
@@ -100,9 +120,25 @@ validate_environment() {
       die 'Hermes semantic planning token binding is unavailable'
     [[ "$planning_socket_dir" == '/run/fai-hermes-planner' && -d "$planning_socket_dir" &&
        ! -L "$planning_socket_dir" ]] || die 'Hermes semantic planning socket directory is unavailable'
-    [[ -S "$planning_socket_dir/planner.sock" && ! -L "$planning_socket_dir/planner.sock" &&
-       -x "/opt/fai-control-plane-runner/releases/$TARGET/scripts/hermes_planner_health.py" ]] ||
-      die 'Hermes semantic planning live health binding is unavailable for the target commit'
+    [[ -S "$planning_socket_dir/planner.sock" && ! -L "$planning_socket_dir/planner.sock" ]] ||
+      die 'Hermes semantic planning live socket binding is unavailable'
+    is_sha256 "$PLANNER_RELEASE_SHA256" ||
+      die 'planner release SHA-256 must be exactly 64 lowercase hexadecimal characters'
+    [[ "$PLANNER_RELEASE_BUNDLE" = /* && -f "$PLANNER_RELEASE_BUNDLE" &&
+       ! -L "$PLANNER_RELEASE_BUNDLE" && -r "$PLANNER_RELEASE_BUNDLE" &&
+       "$PLANNER_RELEASE_BUNDLE" != /opt/fai-control-plane-runner/releases/* &&
+       "$PLANNER_RELEASE_BUNDLE" != /opt/fai-control-plane/* &&
+       "$PLANNER_RELEASE_BUNDLE" != "$REPO"/* ]] ||
+      die 'exact remote planner release bundle and SHA-256 are required outside mutable release/checkouts'
+    [[ "$(sha256sum "$PLANNER_RELEASE_BUNDLE" | awk '{print $1}')" == "$PLANNER_RELEASE_SHA256" ]] ||
+      die 'planner release bundle SHA-256 mismatch'
+    /usr/bin/python3 "$REPO/scripts/hermes_runner_bundle.py" verify \
+      "$PLANNER_RELEASE_BUNDLE" "$TARGET" "$PLANNER_RELEASE_SHA256" ||
+      die 'planner release bundle provenance validation failed'
+    active_planner_commit="$(sed -n 's/^Environment=FAI_HERMES_PLANNING_RELEASE_COMMIT=//p' \
+      /etc/systemd/system/fai-hermes-planner.service)"
+    is_hash "$active_planner_commit" || die 'active planner release binding is unavailable'
+    planner_health "$active_planner_commit" || die 'active planner authenticated health failed'
   fi
   compose config --quiet
 }
@@ -139,6 +175,11 @@ backup_ready=0
 db_backup=''
 artifact_backup=''
 checksum_file=''
+planner_changed=0
+planner_previous_commit=''
+planner_previous_sha256=''
+planner_previous_bundle=''
+planner_previous_enabled=0
 
 set_image_tag() {
   local tag="$1" temporary
@@ -210,8 +251,25 @@ recovery_required() {
   exit 2
 }
 
+restore_planner() {
+  ((planner_changed == 1)) || return 0
+  ((planner_previous_enabled == 1)) || recovery_required \
+    'planner release safety gate: prior enabled state is unavailable'
+  if ! "$REPO/scripts/activate-hermes-planner.sh" \
+    --release-commit="$planner_previous_commit" \
+    --release-bundle="$planner_previous_bundle" \
+    --release-sha256="$planner_previous_sha256" \
+    --confirm-activate-fai-hermes-planner; then
+    recovery_required 'planner release safety gate: failed to restore prior planner release'
+  fi
+  planner_health "$planner_previous_commit" || \
+    recovery_required 'planner release safety gate: restored planner health failed'
+  planner_changed=0
+}
+
 rollback() {
   printf 'deploy-prod: activation failed; restoring %s\n' "$previous_tag" >&2
+  restore_planner
   if ((migration_ran == 1)); then restore_backups
   elif ! compose stop web worker; then recovery_required 'could not stop control-plane writers for image rollback'
   fi
@@ -225,6 +283,7 @@ on_error() {
   trap - ERR
   if ((activation_started == 1)); then rollback
   elif [[ -n "$previous_commit" ]]; then
+    restore_planner
     if ! git reset --hard "$previous_commit" >/dev/null; then recovery_required 'could not restore the previous checkout'; fi
     if ((writes_stopped == 1)) && ! compose up -d --no-build --no-deps worker web; then
       recovery_required 'could not restart the previous control-plane services'
@@ -245,6 +304,29 @@ git merge-base --is-ancestor "$previous_tag" "$checkout_commit" || \
   die 'production checkout has diverged from the active image tag'
 previous_commit="$previous_tag"
 validate_environment
+if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == 'true' ]]; then
+  [[ "$(systemctl is-enabled fai-hermes-planner.service 2>/dev/null || true)" == 'enabled' &&
+     "$(systemctl is-active fai-hermes-planner.service 2>/dev/null || true)" == 'active' ]] ||
+    die 'planner release safety gate: prior planner is not active and enabled'
+  planner_previous_enabled=1
+  planner_previous_commit="$(sed -n \
+    's/^Environment=FAI_HERMES_PLANNING_RELEASE_COMMIT=//p' \
+    /etc/systemd/system/fai-hermes-planner.service)"
+  is_hash "$planner_previous_commit" || \
+    die 'planner release safety gate: prior planner commit is unavailable'
+  planner_previous_sha_file="/opt/fai-control-plane-runner/releases/$planner_previous_commit/RELEASE_ARTIFACT_SHA256"
+  [[ -f "$planner_previous_sha_file" && ! -L "$planner_previous_sha_file" ]] ||
+    die 'planner release safety gate: prior planner SHA-256 file is unavailable'
+  planner_previous_sha256="$(tr -d '\r\n' < "$planner_previous_sha_file")"
+  is_sha256 "$planner_previous_sha256" || \
+    die 'planner release safety gate: prior planner SHA-256 is unavailable'
+  planner_previous_bundle="/opt/fai-control-plane-runner/release-artifacts/${planner_previous_commit}-${planner_previous_sha256}.tar.gz"
+  [[ -f "$planner_previous_bundle" && ! -L "$planner_previous_bundle" &&
+     "$(sha256sum "$planner_previous_bundle" | awk '{print $1}')" == "$planner_previous_sha256" ]] ||
+    die 'planner release safety gate: prior bundle is unavailable; install it through the standalone installer before deployment'
+  planner_health "$planner_previous_commit" || \
+    die 'planner release safety gate: prior planner authenticated health failed'
+fi
 install -d -m 0700 "$BACKUP_DIR"
 [[ -w "$BACKUP_DIR" ]] || die 'backup destination is unavailable'
 docker image inspect "fai-control-plane:$previous_tag" >/dev/null
@@ -257,6 +339,18 @@ git merge --ff-only "$TARGET" >/dev/null
 
 compose_target build web worker
 docker image inspect "fai-control-plane:$TARGET" >/dev/null
+if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == 'true' ]]; then
+  "$REPO/scripts/activate-hermes-planner.sh" \
+    --release-commit="$TARGET" \
+    --release-bundle="$PLANNER_RELEASE_BUNDLE" \
+    --release-sha256="$PLANNER_RELEASE_SHA256" \
+    --confirm-activate-fai-hermes-planner
+  planner_changed=1
+  if ! planner_health "$TARGET"; then
+    restore_planner
+    recovery_required 'planner release safety gate: target planner authenticated health failed'
+  fi
+fi
 compose stop web worker
 writes_stopped=1
 create_backups

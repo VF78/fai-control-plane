@@ -308,6 +308,31 @@ class BundleTest(unittest.TestCase):
         self.assertIn('"$(readlink -f "/proc/$pid/exe")" == "$hermes_python"', activation)
         self.assertIn('--release-commit "$release_commit"', activation)
 
+    def test_planner_installs_exact_bundle_without_service_mutation(self):
+        installer = MODULE_PATH.with_name("install-hermes-release.sh").read_text()
+        activation = MODULE_PATH.with_name("activate-hermes-planner.sh").read_text()
+        self.assertIn('"$installer" "${installer_arguments[@]}"', activation)
+        self.assertIn('artifact_parent=/opt/fai-control-plane-runner/release-artifacts', installer)
+        self.assertIn('mv -T -- "$release_staged" "$release_root"', installer)
+        self.assertIn('mv -T -- "$artifact_staged" "$artifact"', installer)
+        self.assertIn('verify-install', installer)
+        self.assertNotIn("systemctl", installer)
+        self.assertNotIn("fai-hermes-runner.service", installer)
+        self.assertNotIn("fai-codex-executor.service", installer)
+
+    def test_web_deploy_activates_and_restores_only_enabled_planner_release(self):
+        deployment = MODULE_PATH.with_name("deploy-prod.sh").read_text()
+        self.assertIn('if [[ "$(env_value HERMES_SEMANTIC_PLANNING_ENABLED)" == \'true\' ]]; then', deployment)
+        self.assertIn('planner_previous_bundle="/opt/fai-control-plane-runner/release-artifacts/', deployment)
+        self.assertIn('"$REPO/scripts/activate-hermes-planner.sh"', deployment)
+        self.assertIn('restore_planner()', deployment)
+        self.assertIn('restore_planner\n  if ((migration_ran == 1))', deployment)
+        target_activation = deployment.index('--release-commit="$TARGET"')
+        web_stop = deployment.index('compose stop web worker', target_activation)
+        self.assertLess(target_activation, web_stop)
+        self.assertNotIn("activate-hermes-runner.sh", deployment)
+        self.assertNotIn("fai-codex-executor.service", deployment)
+
 
 if __name__ == "__main__":
     unittest.main()

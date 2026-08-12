@@ -30,6 +30,16 @@ scripts/deploy-prod.sh --commit <40-lowercase-hex> --confirm-production --dry-ru
 scripts/deploy-prod.sh --commit <40-lowercase-hex> --confirm-production
 ```
 
+When semantic planning is enabled, both commands also require the exact
+planner artifact already present on the production host outside mutable
+checkouts and release trees:
+
+```bash
+scripts/deploy-prod.sh --commit <40-lowercase-hex> --confirm-production \
+  --planner-release-bundle /absolute/host/path/release.tar.gz \
+  --planner-release-sha256 <64-lowercase-hex>
+```
+
 The dry run is remote read-only. It checks the production checkout, rendered
 Compose configuration, required host-file paths, backup destination, and the
 remote `origin/main` reference, so it also works for a newly merged target that
@@ -44,15 +54,24 @@ PostgreSQL custom dump plus an artifact archive and SHA-256 manifest, updates
 only `FCP_IMAGE_TAG`, and runs Drizzle only if `packages/db/drizzle` changed
 between the previous and requested commits.
 
-Activation starts only `worker` and `web`. It retries PostgreSQL, worker
+If semantic planning is enabled, the script first captures the exact active
+planner commit, bundle SHA-256, stored bundle, and enabled state. It validates
+and atomically installs the approved target bundle, activates only the planner,
+and requires authenticated target health before stopping `web` or `worker`.
+Disabled planning is left untouched; the controller and executor are never
+modified or restarted by this path.
+
+Application activation starts only `worker` and `web`. It retries PostgreSQL, worker
 readiness, local web health/readiness, and public health, readiness, and the
 dashboard for up to 150 seconds each, matching the Compose health start window.
 The script does not install or modify ingress.
 
 ## Failure and rollback
 
-An activation or health failure automatically returns `FCP_IMAGE_TAG` and the
-two application services to the immediately previous immutable image. When a
+After planner activation, any application deploy or smoke failure first
+restores the exact prior planner bundle and authenticated health, then returns
+`FCP_IMAGE_TAG` and the two application services to the immediately previous
+immutable image. When a
 migration ran, it first validates the backup manifest again, restores the
 PostgreSQL dump and artifact archive, then resets the checkout and starts the
 previous application image without rerunning migrations. A validation, restore,

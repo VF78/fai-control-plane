@@ -18,8 +18,11 @@ import socket
 import stat
 import struct
 import sys
+import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from hermes_no_tools_orchestrator import (
     EXPECTED_VERSION,
@@ -39,6 +42,10 @@ MAX_REQUEST_BYTES = 768 * 1024
 MAX_RESPONSE_BYTES = 300 * 1024
 MAX_SOURCE_BYTES = 512 * 1024
 MAX_CONTEXT_BYTES = 128 * 1024
+MAX_CONNECTIONS = 32
+MAX_GENERATE_CONNECTIONS = MAX_CONNECTIONS - 1
+IDEMPOTENCY_MAX_ENTRIES = 256
+IDEMPOTENCY_TTL_SECONDS = 300.0
 TOKEN = re.compile(r"^[A-Za-z0-9._~+/=-]{32,256}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -73,6 +80,69 @@ SYSTEM_PROMPT = (
     "URLs, or free-form execution instructions. Do not approve, materialize, execute, publish, deploy, or "
     "change the supplied protocol. Stable keys must match ^[a-z][a-z0-9_-]{0,47}$."
 )
+
+
+class IdempotencyEntry:
+    def __init__(self, request_hash: str) -> None:
+        self.request_hash = request_hash
+        self.ready = threading.Event()
+        self.response: bytes | None = None
+        self.failed = False
+        self.completed_at: float | None = None
+
+
+class IdempotencyRegistry:
+    def __init__(self, maximum: int = IDEMPOTENCY_MAX_ENTRIES,
+                 ttl_seconds: float = IDEMPOTENCY_TTL_SECONDS) -> None:
+        if maximum < 1 or ttl_seconds <= 0:
+            raise ValueError("idempotency_bounds")
+        self.maximum = maximum
+        self.ttl_seconds = ttl_seconds
+        self.entries: OrderedDict[str, IdempotencyEntry] = OrderedDict()
+        self.lock = threading.Lock()
+
+    def _prune(self, now: float) -> None:
+        expired = [key for key, entry in self.entries.items()
+                   if entry.completed_at is not None and now - entry.completed_at >= self.ttl_seconds]
+        for key in expired:
+            del self.entries[key]
+
+    def execute(self, key: str, request_hash: str, operation: Callable[[], bytes]) -> bytes:
+        with self.lock:
+            self._prune(time.monotonic())
+            entry = self.entries.get(key)
+            owner = entry is None
+            if entry is not None:
+                if not hmac.compare_digest(entry.request_hash, request_hash):
+                    fail("idempotency_collision")
+                self.entries.move_to_end(key)
+            else:
+                while len(self.entries) >= self.maximum:
+                    completed_key = next((candidate for candidate, value in self.entries.items()
+                                          if value.completed_at is not None), None)
+                    if completed_key is None:
+                        fail("idempotency_capacity")
+                    del self.entries[completed_key]
+                entry = IdempotencyEntry(request_hash=request_hash)
+                self.entries[key] = entry
+        if not owner:
+            entry.ready.wait()
+            if entry.failed or entry.response is None:
+                fail("generation_failed")
+            return entry.response
+        try:
+            response = operation()
+        except Exception:
+            with self.lock:
+                entry.failed = True
+                entry.completed_at = time.monotonic()
+                entry.ready.set()
+            raise
+        with self.lock:
+            entry.response = response
+            entry.completed_at = time.monotonic()
+            entry.ready.set()
+        return response
 
 
 def exact(value: Any, keys: set[str]) -> bool:
@@ -326,7 +396,10 @@ def peer_uid(connection: socket.socket) -> int:
 
 
 def handle_connection(connection: socket.socket, expected_uid: int, token: str,
-                      binding: dict[str, Any], runtime: dict[str, Any]) -> None:
+                      binding: dict[str, Any], runtime: dict[str, Any],
+                      idempotency: IdempotencyRegistry | None = None,
+                      provider_slot: threading.Semaphore | None = None,
+                      generate_slots: threading.BoundedSemaphore | None = None) -> None:
     if peer_uid(connection) != expected_uid:
         fail("peer_uid")
     connection.settimeout(65.0)
@@ -337,7 +410,20 @@ def handle_connection(connection: socket.socket, expected_uid: int, token: str,
                                    "configSha256": binding["configSha256"]}).encode()
         write_frame(connection, response)
     else:
-        write_frame(connection, generate(binding, runtime, request))
+        registry = idempotency or IdempotencyRegistry()
+        provider = provider_slot or threading.Semaphore(1)
+        admitted = generate_slots is None or generate_slots.acquire(blocking=False)
+        if not admitted:
+            fail("generation_capacity")
+        try:
+            request_hash = hashlib.sha256(canonical_json(request).encode()).hexdigest()
+            def invoke() -> bytes:
+                with provider:
+                    return generate(binding, runtime, request)
+            write_frame(connection, registry.execute(request["idempotencyKey"], request_hash, invoke))
+        finally:
+            if generate_slots is not None:
+                generate_slots.release()
 
 
 def serve(binding: dict[str, Any], runtime: dict[str, Any], token: str, expected_uid: int) -> None:
@@ -352,17 +438,31 @@ def serve(binding: dict[str, Any], runtime: dict[str, Any], token: str, expected
             fail("stale_socket")
         SOCKET_PATH.unlink()
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection_slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+    generate_slots = threading.BoundedSemaphore(MAX_GENERATE_CONNECTIONS)
+    provider_slot = threading.Semaphore(1)
+    idempotency = IdempotencyRegistry()
+
+    def serve_connection(connection: socket.socket) -> None:
+        try:
+            with connection:
+                handle_connection(connection, expected_uid, token, binding, runtime,
+                                  idempotency, provider_slot, generate_slots)
+        except Exception:
+            pass
+        finally:
+            connection_slots.release()
+
     try:
         listener.bind(str(SOCKET_PATH))
         os.chmod(SOCKET_PATH, 0o666)
         listener.listen(8)
         while True:
             connection, _ = listener.accept()
-            with connection:
-                try:
-                    handle_connection(connection, expected_uid, token, binding, runtime)
-                except Exception:
-                    continue
+            if not connection_slots.acquire(blocking=False):
+                connection.close()
+                continue
+            threading.Thread(target=serve_connection, args=(connection,), daemon=True).start()
     finally:
         listener.close()
         try:

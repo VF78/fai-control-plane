@@ -5,6 +5,8 @@ import os
 import socket
 import struct
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -77,6 +79,13 @@ class HermesProjectPlannerSocketTest(unittest.TestCase):
                 self.skipTest("SO_PEERCRED is Linux-specific")
         finally:
             left.close(); right.close()
+        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            with patch.object(MODULE, "peer_uid", return_value=os.getuid()), \
+                 self.assertRaisesRegex(RuntimeError, "peer_uid"):
+                MODULE.handle_connection(left, os.getuid() + 1, "a" * 32, {}, {})
+        finally:
+            left.close(); right.close()
 
     def test_authenticated_request_strips_token_and_calls_zero_tools_planner_contract(self):
         request = MODULE.parse_request(MODULE.canonical_json(fixture()).encode(), "a" * 32)
@@ -114,6 +123,16 @@ class HermesProjectPlannerSocketTest(unittest.TestCase):
         parsed = MODULE.parse_request(MODULE.canonical_json(request).encode(), "a" * 32)
         self.assertEqual(parsed, {"schemaVersion": 1, "operation": "health", "nonce": request["nonce"]})
 
+    def test_idempotency_registry_is_count_and_ttl_bounded(self):
+        registry = MODULE.IdempotencyRegistry(maximum=2, ttl_seconds=5)
+        calls = []
+        with patch.object(MODULE.time, "monotonic", side_effect=[0, 0, 1, 1, 2, 2, 8, 8]):
+            for key in ("one", "two", "three", "two"):
+                registry.execute(key, hashlib.sha256(key.encode()).hexdigest(),
+                                 lambda key=key: calls.append(key) or key.encode())
+        self.assertLessEqual(len(registry.entries), 2)
+        self.assertEqual(calls, ["one", "two", "three", "two"])
+
     def test_length_framing_and_peer_uid_are_enforced(self):
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -126,13 +145,79 @@ class HermesProjectPlannerSocketTest(unittest.TestCase):
             self.assertEqual(MODULE.read_exact(right, size), b'{"definition":{}}')
         finally:
             left.close(); right.close()
-        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            with patch.object(MODULE, "peer_uid", return_value=os.getuid()), \
-                 self.assertRaisesRegex(RuntimeError, "peer_uid"):
-                MODULE.handle_connection(left, os.getuid() + 1, "a" * 32, {}, {})
-        finally:
-            left.close(); right.close()
+
+    def test_concurrent_idempotency_coalesces_replays_denies_collision_and_keeps_health_responsive(self):
+        registry = MODULE.IdempotencyRegistry(maximum=4, ttl_seconds=60)
+        provider_slot = threading.Semaphore(1)
+        generate_slots = threading.BoundedSemaphore(3)
+        started = threading.Event(); release = threading.Event()
+        definition = {"title": "Plan", "outcomes": [], "milestones": [], "risks": [], "tasks": []}
+        provider_calls = 0
+
+        def blocked_planner(*_args, **_kwargs):
+            nonlocal provider_calls
+            provider_calls += 1
+            started.set()
+            self.assertTrue(release.wait(2))
+            return MODULE.canonical_json(definition)
+
+        def exchange(request):
+            server, client = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            body = MODULE.canonical_json(request).encode()
+            client.sendall(struct.pack("!I", len(body)) + body)
+            error = []
+            def handle():
+                try:
+                    with patch.object(MODULE, "peer_uid", return_value=os.getuid()):
+                        MODULE.handle_connection(server, os.getuid(), "a" * 32, {"configSha256": "c" * 64}, {},
+                                                 registry, provider_slot, generate_slots)
+                except Exception as exception:
+                    error.append(exception)
+                finally:
+                    server.close()
+            thread = threading.Thread(target=handle); thread.start()
+            return client, thread, error
+
+        with patch.object(MODULE, "run_planner", side_effect=blocked_planner):
+            first_client, first_thread, first_error = exchange(fixture())
+            self.assertTrue(started.wait(1))
+            second_client, second_thread, second_error = exchange(fixture())
+            health = {"schemaVersion": 1, "operation": "health",
+                      "nonce": "10000000-0000-4000-8000-000000000009",
+                      "authentication": {"scheme": "bearer", "token": "a" * 32}}
+            with patch.dict(os.environ, {"FAI_HERMES_PLANNING_RELEASE_COMMIT": "d" * 40}):
+                health_started = time.monotonic()
+                health_client, health_thread, health_error = exchange(health)
+                health_size = struct.unpack("!I", MODULE.read_exact(health_client, 4))[0]
+                health_response = json.loads(MODULE.read_exact(health_client, health_size))
+                self.assertLess(time.monotonic() - health_started, 2)
+                self.assertEqual(health_response["status"], "ready")
+                health_thread.join(1); health_client.close()
+                self.assertFalse(health_error)
+            release.set()
+            responses = []
+            for client, thread, errors in ((first_client, first_thread, first_error),
+                                           (second_client, second_thread, second_error)):
+                size = struct.unpack("!I", MODULE.read_exact(client, 4))[0]
+                responses.append(MODULE.read_exact(client, size))
+                thread.join(1); client.close(); self.assertFalse(errors)
+            self.assertEqual(responses[0], responses[1])
+            self.assertEqual(provider_calls, 1)
+            replay_client, replay_thread, replay_error = exchange(fixture())
+            replay_size = struct.unpack("!I", MODULE.read_exact(replay_client, 4))[0]
+            self.assertEqual(MODULE.read_exact(replay_client, replay_size), responses[0])
+            replay_thread.join(1); replay_client.close(); self.assertFalse(replay_error)
+            self.assertEqual(provider_calls, 1)
+
+            collision = fixture(); collision["sources"][0]["content"] = "Different confirmed passport"
+            collision["sources"][0]["sha256"] = hashlib.sha256(collision["sources"][0]["content"].encode()).hexdigest()
+            collision["sourceManifest"][0]["sha256"] = collision["sources"][0]["sha256"]
+            collision["sourceManifestHash"] = hashlib.sha256(
+                MODULE.canonical_json(collision["sourceManifest"]).encode()).hexdigest()
+            collision_client, collision_thread, collision_error = exchange(collision)
+            collision_thread.join(1); collision_client.close()
+            self.assertRegex(str(collision_error[0]), "idempotency_collision")
+            self.assertEqual(provider_calls, 1)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from pathlib import Path
 
 PREFIX = "fai-hermes-runner/"
 STATIC = ("scripts/hermes_runner_bundle.py",
+          "scripts/install-hermes-release.sh",
           "infra/production/fai-hermes-runner.service", "infra/production/fai-codex-executor.service",
           "infra/production/fai-hermes-planner.service", "infra/production/fai-hermes-planner.tmpfiles",
           "infra/production/fai-hermes-executor.tmpfiles", "packages/runners/runtime/hermes_no_tools_orchestrator.py",

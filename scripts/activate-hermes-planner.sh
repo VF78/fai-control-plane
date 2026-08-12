@@ -18,11 +18,11 @@ done
   echo "exact absolute release artifact, commit and SHA-256 are required" >&2; exit 2;
 }
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-[[ "$(git -C "$repo_root" rev-parse HEAD)" == "$release_commit" && -z "$(git -C "$repo_root" status --porcelain)" ]] || {
-  echo "planner activation requires the exact clean release commit" >&2; exit 1;
-}
-verifier="$repo_root/scripts/hermes_runner_bundle.py"
-/usr/bin/python3 "$verifier" verify "$release_bundle" "$release_commit" "$release_sha256" "$repo_root"
+installer="$repo_root/scripts/install-hermes-release.sh"
+[[ -f "$installer" && ! -L "$installer" ]] || { echo "release installer missing" >&2; exit 1; }
+installer_arguments=(--release-commit="$release_commit" --release-bundle="$release_bundle" --release-sha256="$release_sha256")
+[[ "$dry_run" == false ]] || installer_arguments+=(--dry-run)
+"$installer" "${installer_arguments[@]}"
 
 planner_user=fai-hermes-planner
 planner_home=/var/lib/fai-hermes-planner
