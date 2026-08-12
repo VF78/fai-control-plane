@@ -6,22 +6,26 @@ every chat.
 
 ## Product outcome
 
-Build a simple provider-neutral control plane for industrial software delivery:
-a lightweight operational layer over GitHub, GitHub Projects, Telegram,
-Codex/Hermes, and later replaceable providers. PostgreSQL is canonical.
+Build a lightweight supervisory layer over GitHub Project and Hermes. It joins
+the tools; it does not reproduce them.
 
-The operator workspace has five areas:
+The current product contract is issue #158 and ADR 0006:
 
-1. Portfolio — factual metrics, deadlines, risks, and Attention Queue.
-2. Delivery — Overview, Protocol, Tasks, and Runs; task detail owns control.
-3. Conversations — internal and client channels.
-4. People & Access — humans, agents, roles, identities, and effective access.
-5. Agents & Systems — fleet, instructions, integrations, recovery, and audit.
+| Fact or action | Sole authority |
+| --- | --- |
+| Code, PRs, checks, release references | GitHub repository |
+| Tasks, assignees, dates, dependencies, status | GitHub Project |
+| Planning, development, QA and DevOps execution | Hermes |
+| Project source documents/configuration and explicit human approvals | Control Plane/PostgreSQL |
+| Trigger correlation, provider cursor/freshness and audit | Control Plane/PostgreSQL, bounded to the external item/session |
 
-The required evidence journey is:
+The Control Plane reads the same GitHub Project item, requests the next bounded
+role task from Hermes, and displays confirmed external facts. Hermes may use
+Codex CLI internally through Hermes' supported tools/skills; that composition
+is not a Control Plane concern.
 
-`Portfolio signal -> project/task -> delivery stage -> responsible human/agent
--> policy/approval -> action/run -> receipt/evidence/next action`.
+The first real acceptance contour is ASCON. Telegram/MSA conversations are
+deferred and are not a launch dependency.
 
 ## Product and architecture invariants
 
@@ -30,14 +34,19 @@ The required evidence journey is:
   dashboard clutter, nested cards, or workflow canvas.
 - One project/environment/time scope. Desktop/tablet use master-detail; mobile
   uses a full detail route.
-- Render only confirmed PostgreSQL facts. Missing facts are `Unknown` or
-  `Not configured`; never fabricate metrics, conversations, roles, health, or
-  activity.
+- Render facts from their named authority. For mirrored provider facts show the
+  source link, freshness and error/stale state; never substitute local state.
 - Preserve provider-neutral domain, view-model, navigation, and design-token
   boundaries. Web is primary; keep later native Android/iOS portability cheap
   without introducing React Native or a second client now.
-- Canonical commands enforce policy, optimistic versions, and audit. Agents do
-  not mutate tables or bypass approvals.
+- Human approvals remain explicit and audited. Hermes updates the same GitHub
+  work item through its supported GitHub capability and never bypasses a human
+  approval boundary.
+- Do not create or extend a second task/status/DAG, TaskPacket/AgentRun
+  lifecycle, custom Hermes/Codex runtime, QA state machine, deployment
+  executor/lease/daemon, Hermes Kanban, chat store or automated SSH/IAM system.
+- Existing implementations of those surfaces are legacy to inventory/delete in
+  #159/#162. Never infer target architecture from merged legacy code.
 - No production, DNS, VPS, `f-ai.studio`, Hermes, MSA contour, or secret change
   without Vladimir's explicit authorization.
 - Russia network accessibility remains outside the current scope.
@@ -46,14 +55,16 @@ The required evidence journey is:
 
 Use concise `gh` queries to resolve:
 
-1. `origin/main` and the current production baseline recorded in issue #1;
+1. `origin/main` and the current production baseline recorded in the Project;
 2. open PRs;
 3. the sole Project item with `Status = In progress`;
-4. that issue's unchecked acceptance and latest compact evidence comment;
-5. the next dependency-ordered Backlog/Ready item.
+4. issue #158, the approved #159 deletion map, and the selected sub-issue;
+5. that issue's unchecked acceptance and next dependency-ordered item.
 
 If local state conflicts with GitHub, stop and reconcile Project truth before
-implementation. Do not infer completion from an unmerged commit.
+implementation. Do not infer completion from an unmerged commit. Do not start
+product implementation until the exact #159 inventory and target diagram are
+approved by Vladimir.
 
 ## Release boundary
 

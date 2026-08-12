@@ -1,14 +1,20 @@
 # f(AI) Control Plane
 
-Production-oriented TypeScript control plane for coordinating software-delivery
-work, protocols, people, conversations, agents, approvals and execution
-evidence over replaceable provider integrations.
+Lightweight supervisory layer that joins GitHub Project and Hermes for
+software delivery without duplicating either product.
 
-PostgreSQL is canonical. GitHub + GitHub Projects, Telegram and Codex/Hermes are
-the first connected surfaces, not domain dependencies. The authoritative
-product scope and current delivery plan are maintained in
-[issue #1](https://github.com/VF78/fai-control-plane/issues/1) and its linked
-Project items.
+The [GitHub repository](https://github.com/VF78/fai-control-plane) owns code,
+PRs, checks and releases. GitHub Project owns tasks, assignees, dates,
+dependencies and status. Hermes performs project-management, development, QA
+and DevOps work through its supported profiles/tools/skills. PostgreSQL is
+canonical only for Control-Plane-owned project documents/configuration,
+explicit approvals, bindings and minimal correlation/audit facts.
+
+The authoritative current scope is [issue
+#158](https://github.com/VF78/fai-control-plane/issues/158), its linked Project
+items and [ADR 0006](docs/adr/0006-thin-control-plane-authority.md). Existing
+task/run/QA/deployment/IAM surfaces are legacy pending inventory and deletion;
+their presence in the repository is not authorization to extend them.
 
 The internal alpha is deployed separately at `app.f-ai.studio`. Repository
 documentation does not authorize production changes. Read the
@@ -16,7 +22,15 @@ documentation does not authorize production changes. Read the
 [`scripts/deploy-prod.sh`](scripts/deploy-prod.sh) is the sole supported
 production deployment path.
 
-## Architecture
+## Current implementation during simplification
+
+The repository still contains the earlier modular control-plane
+implementation. Issue #159 inventories it and issue #162 removes the parts that
+duplicate GitHub Project or Hermes. Until that work is approved and completed,
+the operational details below describe legacy compatibility, not the target
+product boundary.
+
+## Legacy architecture reference
 
 The system is a modular monolith with two process entry points:
 
@@ -24,9 +38,9 @@ The system is a modular monolith with two process entry points:
 - `worker`: background jobs, tracker synchronization, and run orchestration on
   port `3001`
 
-Both processes use the same domain and infrastructure packages. PostgreSQL is
-the canonical durable store. `pg-boss` keeps jobs transactional with application
-state, and Drizzle owns schema migrations.
+Both processes use the same domain and infrastructure packages. Drizzle owns
+schema migrations. PostgreSQL remains the durable store for facts that belong
+to the Control Plane, but not for project tasks/status or Hermes execution.
 
 ```text
 .
@@ -56,15 +70,13 @@ Browser -> Next.js BFF -> domain -> PostgreSQL
                                                +-> isolated runner -> artifacts
 ```
 
-GitHub supplies separate task-tracker and repository-observation adapters; it
-is not a second control-plane database. Webhooks and polling results enter a
-durable inbox and mapped observations transition canonical PostgreSQL state. A
-separately gated Status writer projects approved canonical transitions back to
-GitHub Projects with optimistic versions, read-after-write confirmation and
-echo suppression. All other fields remain read-only until their authority and
-adapter capability are explicitly defined. The field-level authority matrix in
-[ADR 0002](docs/adr/0002-postgresql-authority-and-tracker-sync.md) prevents
-ambiguous last-writer-wins behavior.
+GitHub Project is the sole task/status authority. Webhooks and repair polling
+may retain only bounded cursor, idempotency, freshness and audit facts; the UI
+must link back to the same GitHub item. Outbound transitions update that item
+with read-after-write confirmation. [ADR
+0006](docs/adr/0006-thin-control-plane-authority.md) supersedes the task and
+workflow authority portions of [ADR
+0002](docs/adr/0002-postgresql-authority-and-tracker-sync.md).
 
 ## Local Bootstrap
 

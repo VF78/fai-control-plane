@@ -1,10 +1,16 @@
 # ADR 0002: PostgreSQL Authority and Gated Tracker Reconciliation
 
-- Status: Accepted, amended 2026-07-28
+- Status: Superseded in part by ADR 0006 on 2026-08-12
 - Date: 2026-07-25
 - Issue: #2
 
 ## Context
+
+> Historical decision notice: ADR 0006 supersedes every statement below that
+> makes PostgreSQL canonical for project tasks, workflow status, run/QA state
+> or execution. This ADR remains applicable to Control-Plane-owned documents,
+> approvals, provider observation/correlation and audit facts until the #159
+> inventory maps each legacy object.
 
 The control plane must coordinate workflow state reliably while users continue
 to work in GitHub. Treating GitHub as a database would make control-plane
