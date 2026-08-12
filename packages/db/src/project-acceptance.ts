@@ -4,7 +4,7 @@ import {
   type CommandError, type ProjectAcceptanceProjection, type ProjectUatChecklistItem
 } from '@fai-control-plane/domain';
 import type {ProjectAcceptanceCommand, ProjectAcceptanceStore} from '@fai-control-plane/application';
-import {and, asc, desc, eq, isNull} from 'drizzle-orm';
+import {and, asc, desc, eq, inArray, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
@@ -48,7 +48,8 @@ const releaseFact = async (tx: Queryable, protocol: ProtocolRow): Promise<Projec
     observedAt: schema.deployments.observedAt})
     .from(schema.deployments).where(and(eq(schema.deployments.workspaceId, protocol.workspaceId),
       eq(schema.deployments.projectId, protocol.projectId), eq(schema.deployments.planVersionId, protocol.planVersionId),
-      eq(schema.deployments.materializationId, protocol.materializationId), eq(schema.deployments.lifecycleVersion, 1),
+      eq(schema.deployments.materializationId, protocol.materializationId),
+      inArray(schema.deployments.lifecycleVersion, [1, 2]),
       eq(schema.deployments.environment, protocol.requiredDeploymentEnvironment),
       eq(schema.deployments.status, 'observed'))).orderBy(desc(schema.deployments.observedAt), desc(schema.deployments.id));
   const successful = deployments.find((deployment) => {

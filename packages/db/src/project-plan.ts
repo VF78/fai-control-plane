@@ -605,7 +605,12 @@ export const createPostgresProjectPlanStore = (db: Database) => ({
         const firstStage = protocolDefinition?.ok === true && protocolReadiness?.valid === true
           ? protocolDefinition.value.stages.find((stage) => stage.enabled) ?? null
           : null;
-        const journeyReady = firstStage !== null && (firstStage.taskStatus === 'backlog' || firstStage.taskStatus === 'ready');
+        // A published protocol is the authority for the root task's initial
+        // lifecycle state. In particular, an executable protocol may start
+        // directly at `in_dev`; refusing to materialize its journey leaves an
+        // approved plan with a detached work item that execution cannot claim.
+        const journeyReady = firstStage !== null &&
+          ['backlog', 'ready', 'in_dev'].includes(firstStage.taskStatus);
         const workItemIds = new Map(tasks.map((task) => [
           task.key,
           deterministicProjectPlanUuid(versionRow.id, 'work_item', task.key)
