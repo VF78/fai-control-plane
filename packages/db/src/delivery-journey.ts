@@ -15,6 +15,7 @@ import {and, asc, eq, isNull} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 import {projectMembershipHasRoleSql} from './project-membership-roles';
+import {resolveCurrentExecutionResponsibility} from './work-item-responsibility';
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -50,6 +51,18 @@ const attemptAuditCommandId = (command: Command, requestHash: string, reason: st
 const known = <T>(value: T) => ({availability: 'known' as const, value});
 const unknown = () => ({availability: 'unknown' as const});
 const notConfigured = () => ({availability: 'not_configured' as const});
+const clearedExecutionSelection = {
+  selectedWorkItemId: null,
+  selectedPlanVersionId: null,
+  selectedWorkItemVersion: null,
+  selectedProtocolId: null,
+  selectedProtocolVersion: null,
+  selectedJourneyVersion: null,
+  selectedStageKey: null,
+  selectedResponsibleActorId: null,
+  selectedAgentProfileId: null,
+  selectedResponsibilityHash: null
+} as const;
 
 const protocolFrom = (row: typeof schema.runbooks.$inferSelect): DeliveryProtocol | null => {
   if (row.protocolState === null || row.revision === null || row.contentHash === null) return null;
@@ -338,6 +351,7 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
       }
       let journey = (await tx.select().from(schema.deliveryJourneys)
         .where(eq(schema.deliveryJourneys.workItemId, item.id)).limit(1).for('update'))[0];
+      let selectedExecution: typeof schema.projectExecutions.$inferSelect | undefined;
       let protocol: DeliveryProtocol | null = null;
       let stage: DeliveryProtocolStage | null = null;
       if (command.type === 'delivery_journey.start') {
@@ -455,6 +469,85 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
           return complete();
         }
         acceptedEvidence = evidence.value;
+
+        const [executionSnapshot] = await tx.select().from(schema.projectExecutions)
+          .where(and(
+            eq(schema.projectExecutions.projectId, item.projectId),
+            eq(schema.projectExecutions.selectedWorkItemId, item.id)
+          )).limit(1);
+        if (executionSnapshot !== undefined) {
+          const selection = await resolveCurrentExecutionResponsibility(tx, {
+            workspaceId: command.workspaceId,
+            projectId: item.projectId,
+            workItemId: item.id
+          });
+          const [execution] = await tx.select().from(schema.projectExecutions)
+            .where(and(
+              eq(schema.projectExecutions.projectId, item.projectId),
+              eq(schema.projectExecutions.selectedWorkItemId, item.id),
+              eq(schema.projectExecutions.version, executionSnapshot.version)
+            )).limit(1).for('update', {skipLocked: true});
+          if (execution === undefined) {
+            result = errorResult(
+              'VERSION_CONFLICT',
+              'Project execution is being reconciled by another command.'
+            );
+            return complete();
+          }
+          const exactSelection = selection !== null &&
+            execution.selectedPlanVersionId === selection.planVersionId &&
+            execution.selectedWorkItemVersion === selection.workItemVersion &&
+            execution.selectedProtocolId === selection.protocolId &&
+            execution.selectedProtocolVersion === selection.protocolVersion &&
+            execution.selectedJourneyVersion === selection.journeyVersion &&
+            execution.selectedStageKey === selection.stageKey &&
+            execution.selectedResponsibleActorId === selection.actor.id &&
+            execution.selectedAgentProfileId === selection.actor.agentProfileId &&
+            execution.selectedResponsibilityHash === selection.factHash;
+          if (!exactSelection) {
+            result = errorResult(
+              'VERSION_CONFLICT',
+              'Project execution selection no longer matches the delivery journey.'
+            );
+            return complete();
+          }
+          if (execution.status !== 'running' && execution.status !== 'blocked' &&
+            execution.status !== 'paused') {
+            result = errorResult(
+              'INVALID_TRANSITION',
+              'Selected project execution cannot be reconciled from its current state.'
+            );
+            return complete();
+          }
+          const dispatchedSelections = await tx.select({
+            dataPolicy: schema.taskPackets.dataPolicy
+          }).from(schema.projectExecutionDispatches)
+            .innerJoin(schema.taskPackets, eq(
+              schema.taskPackets.id, schema.projectExecutionDispatches.taskPacketId
+            )).where(and(
+              eq(schema.projectExecutionDispatches.workspaceId, command.workspaceId),
+              eq(schema.projectExecutionDispatches.projectId, item.projectId),
+              eq(schema.taskPackets.workItemId, item.id),
+              eq(schema.taskPackets.workItemVersion, selection.workItemVersion)
+            ));
+          const exactDispatchExists = dispatchedSelections.some(({dataPolicy}) =>
+            dataPolicy.source === 'canonical_db_only' &&
+            dataPolicy.planVersionId === selection.planVersionId &&
+            dataPolicy.workItemVersion === selection.workItemVersion &&
+            dataPolicy.protocolId === selection.protocolId &&
+            dataPolicy.protocolVersion === selection.protocolVersion &&
+            dataPolicy.journeyVersion === selection.journeyVersion &&
+            dataPolicy.stageKey === selection.stageKey
+          );
+          if (exactDispatchExists) {
+            result = errorResult(
+              'INVALID_TRANSITION',
+              'A dispatched selection must advance through its dedicated acceptance command.'
+            );
+            return complete();
+          }
+          selectedExecution = execution;
+        }
       }
       const targetStatus = terminalEvidenceOnly ? item.status : next!.taskStatus;
       let updated: WorkItem = {
@@ -494,6 +587,7 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
           result: concurrent.result as never, createdAt: concurrent.createdAt.toISOString()
         }};
       }
+      const now = new Date();
       if (acceptedEvidence.length > 0) {
         await tx.insert(schema.deliveryJourneyEvidence).values(acceptedEvidence.map((entry) => ({
           workItemId: item.id, stageKey: stage!.key, requirement: entry.requirement,
@@ -502,7 +596,7 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
       }
       if (item.status !== targetStatus) {
         await tx.update(schema.workItems).set({
-          status: updated.status, version: updated.version, updatedAt: new Date()
+          status: updated.status, version: updated.version, updatedAt: now
         }).where(and(eq(schema.workItems.id, item.id), eq(schema.workItems.version, item.version)));
         await tx.insert(schema.statusTransitions).values({
           workItemId: item.id, fromStatus: item.status, toStatus: updated.status,
@@ -519,16 +613,32 @@ export const createPostgresDeliveryJourneyStore = (db: Database) => ({
       } else {
         [journey] = await tx.update(schema.deliveryJourneys).set({
           stageKey: terminalEvidenceOnly ? stage.key : next!.key, version: command.payload.expectedJourneyVersion + 1,
-          updatedAt: new Date()
+          updatedAt: now
         }).where(and(
           eq(schema.deliveryJourneys.workItemId, item.id),
           eq(schema.deliveryJourneys.version, command.payload.expectedJourneyVersion)
         )).returning();
       }
       if (journey === undefined) throw new Error('delivery_journey_cas_failed');
+      if (selectedExecution !== undefined) {
+        const [reconciled] = await tx.update(schema.projectExecutions).set({
+          status: 'paused',
+          blockReason: null,
+          ...clearedExecutionSelection,
+          pausedAt: selectedExecution.status === 'paused' ? selectedExecution.pausedAt : now,
+          completedAt: null,
+          version: selectedExecution.version + 1,
+          updatedAt: now
+        }).where(and(
+          eq(schema.projectExecutions.projectId, item.projectId),
+          eq(schema.projectExecutions.version, selectedExecution.version),
+          eq(schema.projectExecutions.selectedWorkItemId, item.id)
+        )).returning({version: schema.projectExecutions.version});
+        if (reconciled === undefined) throw new Error('delivery_journey_execution_cas_failed');
+      }
       resultVersion = journey!.version;
       const projection = await readProjection(
-        tx, command.workspaceId, item.id, command.actor.actorId, new Date()
+        tx, command.workspaceId, item.id, command.actor.actorId, now
       );
       if (projection === null) throw new Error('delivery_journey_projection_missing');
       result = {ok: true as const, value: projection};

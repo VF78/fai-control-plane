@@ -70,10 +70,13 @@ export function ProjectExecutionControls({projectId, execution, csrfToken, canMa
     : execution.blockReason === 'runtime_availability_unavailable'
       ? 'Наблюдения отсутствуют или устарели'
       : 'Идентификация настроена';
+  const noSelectionNextAction = execution.status === 'paused'
+    ? 'Переход сохранён. Продолжите, чтобы выбрать следующий канонический этап.'
+    : execution.blockReason ?? 'Запустите после материализации плана.';
   return <section className="fcp-section fcp-orchestrator" aria-label="Управление исполнением проекта">
     <div className="fcp-section-head"><div><h2>Исполнение проекта</h2><span>Канонический выбор следующей работы · без автоматического запуска runner</span></div><strong className={`fcp-orchestrator-status ${execution.status}`}>{statusLabel[execution.status]}</strong></div>
     <div className="fcp-orchestrator-summary">
-      <div><span>Следующая работа</span><strong>{execution.selection?.title ?? 'Не выбрана'}</strong><small>{execution.selection === null ? (execution.blockReason ?? 'Запустите после материализации плана.') : `${execution.selection.stageName} · ${execution.selection.responsibleActor.displayName}`}</small></div>
+      <div><span>Следующая работа</span><strong>{execution.selection?.title ?? 'Не выбрана'}</strong><small>{execution.selection === null ? noSelectionNextAction : `${execution.selection.stageName} · ${execution.selection.responsibleActor.displayName}`}</small></div>
       <div><span>Граница автономности</span><strong>{execution.selection?.boundary === 'autonomous_ready' ? 'Готово к Task Packet' : execution.selection?.boundary === 'autonomous_agent_required' ? 'Нужен активный ИИ-агент' : execution.selection?.executionMode === 'human_approval' ? 'Требуется подтверждение' : execution.selection?.executionMode === 'manual' ? 'Ручная передача' : 'Не определена'}</strong><small>Работа и AgentRun не считаются начатыми этой командой.</small></div>
       {hermesStage ? <>
         <div><span>Оркестратор / исполнитель</span><strong>Hermes 0.18.2 → Codex CLI</strong><small>Hermes выбирает стратегию и порядок канонических шагов; код выполняет один Codex AgentRun.</small></div>

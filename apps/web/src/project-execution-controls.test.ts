@@ -49,6 +49,20 @@ it('renders immutable packet, claim, and concrete next-action facts without a su
   expect(markup).not.toContain('success');
 });
 
+it('shows the one truthful continuation after a selected journey was atomically reconciled', () => {
+  const markup = renderToStaticMarkup(createElement(ProjectExecutionControls, {
+    projectId: 'project-1', csrfToken: 'csrf', canManage: true,
+    hasWriteCapability: true, runnerQueueAvailable: true, execution: {
+      ...base, status: 'paused', pausedAt: base.updatedAt, blockReason: null,
+      selection: null, dispatch: null, decisions: []
+    }
+  }));
+  expect(markup).toContain('Переход сохранён. Продолжите, чтобы выбрать следующий канонический этап.');
+  expect(markup).toContain('Продолжить');
+  expect(markup).not.toContain('Запустите после материализации плана.');
+  expect(markup).not.toContain('Пауза');
+});
+
 it('shows the preparation command only for the current running autonomous-ready factual selection', () => {
   const eligible = renderToStaticMarkup(createElement(ProjectExecutionControls, {
     projectId: 'project-1', csrfToken: 'csrf', canManage: true,
