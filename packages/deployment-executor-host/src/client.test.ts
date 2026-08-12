@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {mkdtemp, realpath, symlink, writeFile} from 'node:fs/promises';
+import {chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {describe, expect, it, vi} from 'vitest';
@@ -11,6 +11,7 @@ import {
   runDeploymentExecutorOnce,
   type DeploymentAdapter
 } from './client';
+import type {DeploymentExecutorTransport} from './unix-socket-json-transport';
 
 const jobId = '00000000-0000-4000-8000-000000000001';
 const deploymentId = '00000000-0000-4000-8000-000000000002';
@@ -29,9 +30,11 @@ const releasePackage: DeploymentReleasePackage = {
 };
 
 const artifactRoot = async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'fai-deployment-artifact-'));
-  await writeFile(path.join(root, 'release.tar.gz'), body);
-  return realpath(root);
+  const parent = await mkdtemp(path.join(tmpdir(), 'fai-deployment-artifact-'));
+  const sourceRoot = path.join(parent, 'source'); const stagingRoot = path.join(parent, 'staging');
+  await Promise.all([mkdir(sourceRoot, {mode: 0o700}), mkdir(stagingRoot, {mode: 0o700})]);
+  await writeFile(path.join(sourceRoot, 'release.tar.gz'), body, {mode: 0o600});
+  return {sourceRoot: await realpath(sourceRoot), stagingRoot: await realpath(stagingRoot)};
 };
 
 const claim = (overrides: Record<string, unknown> = {}) => ({
@@ -43,10 +46,18 @@ const claim = (overrides: Record<string, unknown> = {}) => ({
   leaseExpiresAt: '2026-08-12T10:02:00.000Z', ...overrides
 });
 
+const transport = (fetcher: typeof fetch): DeploymentExecutorTransport => ({
+  async preflight() {},
+  async post(endpoint, headers, requestBody) {
+    return fetcher(new URL(endpoint, 'http://unix.invalid'), {method: 'POST', headers,
+      ...(requestBody === undefined ? {} : {body: requestBody})});
+  }
+});
+
 const options = async (fetcher: typeof fetch, adapter: DeploymentAdapter) => ({
-  baseUrl: 'http://127.0.0.1:13000', bearerToken: token, workspaceId, executorId: 'executor.production',
+  bearerToken: token, workspaceId, executorId: 'executor.production',
   registrationId, projectId, environment: 'production' as const,
-  artifacts: createLocalDeploymentArtifactResolver(await artifactRoot()), adapter, fetch: fetcher,
+  artifacts: createLocalDeploymentArtifactResolver(await artifactRoot()), adapter, transport: transport(fetcher),
   now: vi.fn()
     .mockReturnValueOnce(new Date('2026-08-12T10:00:00.000Z'))
     .mockReturnValueOnce(new Date('2026-08-12T10:00:01.000Z'))
@@ -64,19 +75,24 @@ describe('deployment executor host client', () => {
       }
       return Response.json({outcome: 'succeeded', completedAt: '2026-08-12T10:00:02.000Z'});
     }) as unknown as typeof fetch;
+    let stagedPath = '';
     const adapter: DeploymentAdapter = {adapterId: 'fake', preflight: vi.fn(async () => undefined),
-      execute: vi.fn(async () => ({
+      execute: vi.fn(async ({artifact}) => {
+      stagedPath = artifact.path;
+      expect(await readFile(artifact.path)).toEqual(body);
+      return {
       outcome: 'succeeded', smokeChecks: [{name: 'health', status: 'passed', reference: 'fake:health'}],
       rollback: {outcome: 'not_required', reference: null}
-    } as const))};
+    } as const;})};
     await expect(runDeploymentExecutorOnce(await options(fetcher, adapter))).resolves.toEqual({
       status: 'completed', outcome: 'succeeded'
     });
     expect(adapter.execute).toHaveBeenCalledWith(expect.objectContaining({projectId,
       environment: 'production', sourceCommit: 'a'.repeat(40), artifact: expect.objectContaining({
         reference: releasePackage.artifactReference, sha256: releasePackage.artifactSha256,
-        path: expect.stringMatching(/release\.tar\.gz$/)
+        path: expect.stringMatching(/\.package$/)
       })}));
+    await expect(lstat(stagedPath)).rejects.toThrow();
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
       '/api/deployment-executor/claim', '/api/deployment-executor/heartbeat',
       '/api/deployment-executor/complete'
@@ -115,6 +131,7 @@ describe('deployment executor host client', () => {
 
   it('submits a structured failure when a bound adapter cannot execute', async () => {
     const requests: Request[] = [];
+    let stagedPath = '';
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init); requests.push(request);
       if (request.url.endsWith('/claim')) return Response.json(claim());
@@ -122,12 +139,14 @@ describe('deployment executor host client', () => {
       return Response.json({outcome: 'failed', completedAt: '2026-08-12T10:00:02.000Z'});
     }) as unknown as typeof fetch;
     const adapter: DeploymentAdapter = {adapterId: 'fake', preflight: vi.fn(async () => undefined),
-      async execute() { throw new Error('deployment_executor_client_adapter_failed'); }};
+      async execute({artifact}) { stagedPath = artifact.path;
+        throw new Error('deployment_executor_client_adapter_failed'); }};
     await expect(runDeploymentExecutorOnce(await options(fetcher, adapter)))
       .resolves.toEqual({status: 'completed', outcome: 'failed'});
     expect(await requests[2]!.json()).toMatchObject({result: {outcome: 'failed',
       smokeChecks: [{status: 'failed', reference: 'deployment-executor:adapter_failed'}],
       rollback: {outcome: 'not_required', reference: null}}});
+    await expect(lstat(stagedPath)).rejects.toThrow();
   });
 
   it('submits exact approved rollback facts from the typed adapter', async () => {
@@ -203,15 +222,57 @@ describe('deployment executor host client', () => {
   }, 3_000);
 
   it('fails closed on artifact hash drift, arbitrary references, and symlinks', async () => {
-    const root = await artifactRoot();
-    const resolver = createLocalDeploymentArtifactResolver(root);
-    await expect(resolver.resolve({...releasePackage, artifactSha256: '0'.repeat(64)}))
+    const roots = await artifactRoot();
+    const resolver = createLocalDeploymentArtifactResolver(roots);
+    await expect(resolver.resolve({...releasePackage, artifactSha256: '0'.repeat(64)}, {jobId, attempt: 1}))
       .rejects.toThrow('artifact_hash_mismatch');
-    await expect(resolver.resolve({...releasePackage, artifactReference: 'https://provider.test/release'}))
+    await expect(resolver.resolve({...releasePackage, artifactReference: 'https://provider.test/release'},
+      {jobId, attempt: 1}))
       .rejects.toThrow('artifact_reference');
-    await symlink(path.join(root, 'release.tar.gz'), path.join(root, 'linked.tar.gz'));
-    await expect(resolver.resolve({...releasePackage, artifactReference: 'artifact:release-package:linked.tar.gz'}))
+    await symlink(path.join(roots.sourceRoot, 'release.tar.gz'), path.join(roots.sourceRoot, 'linked.tar.gz'));
+    await expect(resolver.resolve({...releasePackage,
+      artifactReference: 'artifact:release-package:linked.tar.gz'}, {jobId, attempt: 1}))
       .rejects.toThrow();
+  });
+
+  it('stages exact verified bytes and is unaffected when the source is replaced', async () => {
+    const roots = await artifactRoot();
+    const resolver = createLocalDeploymentArtifactResolver(roots);
+    const staged = await resolver.resolve(releasePackage, {jobId, attempt: 1});
+    const sourcePath = path.join(roots.sourceRoot, 'release.tar.gz');
+    await rename(sourcePath, `${sourcePath}.replaced`);
+    await writeFile(sourcePath, 'attacker replacement', {mode: 0o600});
+    expect(staged.artifact.path.startsWith(`${roots.stagingRoot}${path.sep}`)).toBe(true);
+    await expect(readFile(staged.artifact.path)).resolves.toEqual(body);
+    await staged.cleanup();
+    await expect(lstat(staged.artifact.path)).rejects.toThrow();
+  });
+
+  it('rejects unsafe artifact directory ownership and modes', async () => {
+    const roots = await artifactRoot();
+    await chmod(roots.sourceRoot, 0o770);
+    await expect(createLocalDeploymentArtifactResolver(roots).preflight())
+      .rejects.toThrow('artifact_root_binding');
+    await chmod(roots.sourceRoot, 0o700);
+    await chmod(roots.stagingRoot, 0o750);
+    await expect(createLocalDeploymentArtifactResolver(roots).preflight())
+      .rejects.toThrow('artifact_staging_root_binding');
+    await chmod(roots.stagingRoot, 0o700);
+    const currentUid = process.getuid?.();
+    const currentGid = process.getgid?.();
+    if (currentUid === undefined || currentGid === undefined) throw new Error('test_identity_unavailable');
+    await expect(createLocalDeploymentArtifactResolver({...roots, expectedUid: currentUid + 1,
+      expectedGid: currentGid}).preflight()).rejects.toThrow('artifact_root_binding');
+  });
+
+  it('fails closed without deleting a pre-existing per-job stage', async () => {
+    const roots = await artifactRoot();
+    const stagedPath = path.join(roots.stagingRoot,
+      `${jobId}.1.${releasePackage.artifactSha256}.package`);
+    await writeFile(stagedPath, 'existing stage', {mode: 0o600});
+    await expect(createLocalDeploymentArtifactResolver(roots).resolve(releasePackage, {jobId, attempt: 1}))
+      .rejects.toMatchObject({code: 'EEXIST'});
+    await expect(readFile(stagedPath, 'utf8')).resolves.toBe('existing stage');
   });
 
   it('is disabled by default and requires confirmation before reading a token', async () => {
@@ -226,23 +287,25 @@ describe('deployment executor host client', () => {
       FAI_DEPLOYMENT_EXECUTOR_ADAPTER: 'unavailable'})).rejects.toThrow('adapter_unavailable');
   });
 
-  it('performs a confirmation-free dry run without claiming or executing', async () => {
-    const root = await artifactRoot();
-    const tokenFile = path.join(root, 'claim-token');
+  it('keeps dry run confirmation-free but fails closed until its root-owned socket is present', async () => {
+    const roots = await artifactRoot();
+    const tokenFile = path.join(roots.sourceRoot, 'claim-token');
     await writeFile(tokenFile, token, {mode: 0o600});
     const adapter: DeploymentAdapter = {adapterId: 'fake', preflight: vi.fn(async () => undefined),
       execute: vi.fn()};
     await expect(deploymentExecutorFromEnvironment({
       FAI_DEPLOYMENT_EXECUTOR_ENABLED: 'true', FAI_DEPLOYMENT_EXECUTOR_DRY_RUN: 'true',
       FAI_DEPLOYMENT_EXECUTOR_ADAPTER: 'fake', FAI_DEPLOYMENT_EXECUTOR_TOKEN_FILE: tokenFile,
-      FAI_DEPLOYMENT_EXECUTOR_ARTIFACT_ROOT: root,
-      FAI_DEPLOYMENT_EXECUTOR_BASE_URL: 'http://127.0.0.1:13000',
+      FAI_DEPLOYMENT_EXECUTOR_ARTIFACT_ROOT: roots.sourceRoot,
+      FAI_DEPLOYMENT_EXECUTOR_STAGING_ROOT: roots.stagingRoot,
+      FAI_DEPLOYMENT_EXECUTOR_SOCKET_PATH: path.join(roots.sourceRoot, 'missing.sock'),
+      FAI_DEPLOYMENT_EXECUTOR_SOCKET_UID: '0', FAI_DEPLOYMENT_EXECUTOR_SOCKET_GID: '0',
       FAI_DEPLOYMENT_EXECUTOR_WORKSPACE_ID: workspaceId,
       FAI_DEPLOYMENT_EXECUTOR_ID: 'executor.production',
       FAI_DEPLOYMENT_EXECUTOR_REGISTRATION_ID: registrationId,
       FAI_DEPLOYMENT_EXECUTOR_PROJECT_ID: projectId,
       FAI_DEPLOYMENT_EXECUTOR_ENVIRONMENT: 'production'
-    }, adapter)).resolves.toEqual({status: 'dry_run_ready'});
+    }, adapter)).rejects.toThrow('socket_directory_binding');
     expect(adapter.preflight).toHaveBeenCalledWith({projectId, environment: 'production'});
     expect(adapter.execute).not.toHaveBeenCalled();
   });

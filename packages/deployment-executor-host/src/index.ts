@@ -12,5 +12,12 @@ export {
   type DeploymentExecutorClientOptions,
   type DeploymentExecutorEnvironment,
   type DeploymentExecutorOnceResult,
+  type LocalDeploymentArtifactResolverOptions,
   type ResolvedDeploymentArtifact
 } from './client';
+export {
+  createUnixSocketJsonTransport,
+  type DeploymentExecutorEndpoint,
+  type DeploymentExecutorTransport,
+  type UnixSocketTransportOptions
+} from './unix-socket-json-transport';

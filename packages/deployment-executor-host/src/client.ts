@@ -1,6 +1,6 @@
 import {createHash, timingSafeEqual} from 'node:crypto';
-import {constants, createReadStream} from 'node:fs';
-import {lstat, open, realpath, readFile} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {lstat, open, realpath, readFile, unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {
   deploymentEnvironments,
@@ -11,7 +11,8 @@ import {
   type DeploymentObservation,
   type DeploymentReleasePackage
 } from '@fai-control-plane/domain';
-import {createLoopbackJsonFetch, isNumericLoopbackHostname} from './loopback-json-fetch';
+import {createUnixSocketJsonTransport, type DeploymentExecutorEndpoint,
+  type DeploymentExecutorTransport} from './unix-socket-json-transport';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -23,7 +24,6 @@ const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 
-type FetchLike = typeof fetch;
 type DeploymentClaim = Readonly<{
   schemaVersion: 1;
   workspaceId: string;
@@ -52,7 +52,11 @@ export type ResolvedDeploymentArtifact = Readonly<{
 
 export interface DeploymentArtifactResolver {
   preflight(): Promise<void>;
-  resolve(releasePackage: DeploymentReleasePackage, signal?: AbortSignal): Promise<ResolvedDeploymentArtifact>;
+  resolve(releasePackage: DeploymentReleasePackage, job: Readonly<{jobId: string; attempt: number}>,
+    signal?: AbortSignal): Promise<Readonly<{
+      artifact: ResolvedDeploymentArtifact;
+      cleanup(): Promise<void>;
+    }>>;
 }
 
 export type DeploymentAdapterTarget = Readonly<{
@@ -81,7 +85,6 @@ export interface DeploymentAdapter {
 }
 
 export type DeploymentExecutorClientOptions = Readonly<{
-  baseUrl: string;
   bearerToken: string;
   workspaceId: string;
   executorId: string;
@@ -90,7 +93,7 @@ export type DeploymentExecutorClientOptions = Readonly<{
   environment: DeploymentEnvironment;
   artifacts: DeploymentArtifactResolver;
   adapter: DeploymentAdapter;
-  fetch?: FetchLike;
+  transport: DeploymentExecutorTransport;
   heartbeatIntervalMs?: number;
   now?: () => Date;
 }>;
@@ -118,15 +121,6 @@ const absolute = (value: string, field: string): string => {
     value === path.parse(value).root || value.includes('\0')) fail(`invalid_${field}`);
   return value;
 };
-const loopbackBaseUrl = (value: string): string => {
-  let parsed: URL;
-  try { parsed = new URL(value); } catch { return fail('invalid_base_url'); }
-  if (parsed.protocol !== 'http:' || !isNumericLoopbackHostname(parsed.hostname) ||
-    parsed.username !== '' || parsed.password !== '' || parsed.pathname !== '/' ||
-    parsed.search !== '' || parsed.hash !== '') fail('base_url_not_loopback');
-  return parsed.origin;
-};
-
 const parseClaim = (value: unknown, options: DeploymentExecutorClientOptions, now: Date): DeploymentClaim => {
   if (!isRecord(value) || !exact(value, ['schemaVersion', 'workspaceId', 'executorId', 'registrationId',
     'jobId', 'deploymentId', 'deploymentVersion',
@@ -159,11 +153,9 @@ const headers = (token: string, leaseToken?: string): Record<string, string> => 
   ...(leaseToken === undefined ? {} : {'x-fai-deployment-lease-token': leaseToken})
 });
 
-const post = (fetcher: FetchLike, baseUrl: string, endpoint: string, token: string,
-  body?: unknown, leaseToken?: string) => fetcher(new URL(endpoint, baseUrl), {
-    method: 'POST', headers: headers(token, leaseToken),
-    ...(body === undefined ? {} : {body: JSON.stringify(body)})
-  });
+const post = (transport: DeploymentExecutorTransport, endpoint: DeploymentExecutorEndpoint, token: string,
+  body?: unknown, leaseToken?: string) => transport.post(endpoint, headers(token, leaseToken),
+    body === undefined ? undefined : JSON.stringify(body));
 
 const failureObservation = (code: string): DeploymentAdapterResult => ({
   outcome: 'failed',
@@ -172,44 +164,112 @@ const failureObservation = (code: string): DeploymentAdapterResult => ({
   rollback: {outcome: 'not_required', reference: null}
 });
 
-export const createLocalDeploymentArtifactResolver = (rootValue: string): DeploymentArtifactResolver => {
-  const root = absolute(rootValue, 'artifact_root');
-  const preflight = async () => {
-    const [rootStat, canonicalRoot] = await Promise.all([lstat(root), realpath(root)]);
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || canonicalRoot !== root) fail('artifact_root_binding');
+export type LocalDeploymentArtifactResolverOptions = Readonly<{
+  sourceRoot: string;
+  stagingRoot: string;
+  expectedUid?: number;
+  expectedGid?: number;
+}>;
+
+export const createLocalDeploymentArtifactResolver = (
+  options: LocalDeploymentArtifactResolverOptions
+): DeploymentArtifactResolver => {
+  const sourceRoot = absolute(options.sourceRoot, 'artifact_root');
+  const stagingRoot = absolute(options.stagingRoot, 'artifact_staging_root');
+  if (sourceRoot === stagingRoot) fail('artifact_roots_not_distinct');
+  const expectedUid = options.expectedUid ?? process.getuid?.();
+  const expectedGid = options.expectedGid ?? process.getgid?.();
+  if (expectedUid === undefined || expectedGid === undefined || !Number.isSafeInteger(expectedUid) ||
+    !Number.isSafeInteger(expectedGid) || expectedUid < 0 || expectedGid < 0) fail('artifact_owner');
+  const verifyDirectory = async (directory: string, code: string) => {
+    const [value, canonical] = await Promise.all([lstat(directory), realpath(directory)]);
+    if (!value.isDirectory() || value.isSymbolicLink() || canonical !== directory || value.uid !== expectedUid ||
+      value.gid !== expectedGid || (value.mode & 0o7777) !== 0o700) fail(code);
+    return value;
   };
-  return {preflight, async resolve(releasePackage, signal) {
+  const preflight = async () => {
+    const [source, staging] = await Promise.all([
+      verifyDirectory(sourceRoot, 'artifact_root_binding'),
+      verifyDirectory(stagingRoot, 'artifact_staging_root_binding')
+    ]);
+    if (source.dev === staging.dev && source.ino === staging.ino) fail('artifact_roots_not_distinct');
+  };
+  return {preflight, async resolve(releasePackage, job, signal) {
     const validated = validateDeploymentReleasePackage(releasePackage);
     const value = validated.ok === true ? validated.value : fail('artifact_reference');
     const match = ARTIFACT_REFERENCE.exec(value.artifactReference);
     if (match === null) throw new Error('deployment_executor_client_artifact_reference');
+    if (!UUID.test(job.jobId) || !positive(job.attempt)) fail('artifact_job_binding');
     await preflight();
-    const canonicalRoot = root;
-    const target = path.join(root, match[1]!);
+    const target = path.join(sourceRoot, match[1]!);
     const [targetStat, canonicalTarget] = await Promise.all([lstat(target), realpath(target)]);
     if (!targetStat.isFile() || targetStat.isSymbolicLink() || canonicalTarget !== target ||
-      path.dirname(canonicalTarget) !== canonicalRoot || targetStat.size < 1 || targetStat.size > MAX_ARTIFACT_BYTES) {
+      path.dirname(canonicalTarget) !== sourceRoot || targetStat.uid !== expectedUid || targetStat.gid !== expectedGid ||
+      (targetStat.mode & 0o7777) !== 0o600 || targetStat.size < 1 || targetStat.size > MAX_ARTIFACT_BYTES) {
       fail('artifact_binding');
     }
-    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stagedPath = path.join(stagingRoot, `${job.jobId}.${job.attempt}.${value.artifactSha256}.package`);
+    const source = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let staged: Awaited<ReturnType<typeof open>> | undefined;
+    let stagedIdentity: Readonly<{dev: number; ino: number}> | undefined;
+    let createdStaged = false;
     try {
-      const before = await handle.stat(); const digest = createHash('sha256');
-      await new Promise<void>((resolve, reject) => {
-        const stream = createReadStream('', {fd: handle.fd, autoClose: false});
-        const abort = () => stream.destroy(new Error('deployment_executor_client_artifact_cancelled'));
-        signal?.addEventListener('abort', abort, {once: true});
-        stream.on('data', (chunk: Buffer) => digest.update(chunk));
-        stream.once('error', reject); stream.once('end', resolve);
-        stream.once('close', () => signal?.removeEventListener('abort', abort));
-        if (signal?.aborted) abort();
-      });
-      const after = await handle.stat();
+      staged = await open(stagedPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
+        constants.O_NOFOLLOW, 0o600);
+      createdStaged = true;
+      const before = await source.stat(); const digest = createHash('sha256');
+      if (before.dev !== targetStat.dev || before.ino !== targetStat.ino || before.uid !== expectedUid ||
+        before.gid !== expectedGid || (before.mode & 0o7777) !== 0o600) fail('artifact_binding');
+      const chunk = Buffer.allocUnsafe(64 * 1024); let copied = 0;
+      for (;;) {
+        if (signal?.aborted) fail('artifact_cancelled');
+        const {bytesRead} = await source.read(chunk, 0, chunk.byteLength);
+        if (bytesRead === 0) break;
+        copied += bytesRead;
+        if (copied > MAX_ARTIFACT_BYTES) fail('artifact_size');
+        digest.update(chunk.subarray(0, bytesRead));
+        let written = 0;
+        while (written < bytesRead) {
+          const result = await staged.write(chunk, written, bytesRead - written);
+          if (result.bytesWritten < 1) fail('artifact_staging_write');
+          written += result.bytesWritten;
+        }
+      }
+      await staged.sync();
+      const [after, stagedStat] = await Promise.all([source.stat(), staged.stat()]);
+      const stagedHash = digest.digest('hex');
       if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
         before.mtimeMs !== after.mtimeMs || before.size !== targetStat.size ||
-        digest.digest('hex') !== value.artifactSha256) fail('artifact_hash_mismatch');
-      return Object.freeze({reference: value.artifactReference, path: target,
-        sha256: value.artifactSha256, sizeBytes: before.size});
-    } finally { await handle.close(); }
+        copied !== before.size || stagedStat.size !== before.size || stagedStat.uid !== expectedUid ||
+        stagedStat.gid !== expectedGid || (stagedStat.mode & 0o7777) !== 0o600 ||
+        stagedHash !== value.artifactSha256) fail('artifact_hash_mismatch');
+      stagedIdentity = {dev: stagedStat.dev, ino: stagedStat.ino};
+      await staged.close(); staged = undefined;
+      const [closedStat, canonicalStaged] = await Promise.all([lstat(stagedPath), realpath(stagedPath)]);
+      if (!closedStat.isFile() || closedStat.isSymbolicLink() || canonicalStaged !== stagedPath ||
+        path.dirname(canonicalStaged) !== stagingRoot || closedStat.dev !== stagedIdentity.dev ||
+        closedStat.ino !== stagedIdentity.ino || closedStat.size !== copied || closedStat.uid !== expectedUid ||
+        closedStat.gid !== expectedGid || (closedStat.mode & 0o7777) !== 0o600) fail('artifact_staging_binding');
+      const artifact = Object.freeze({reference: value.artifactReference, path: stagedPath,
+        sha256: value.artifactSha256, sizeBytes: copied});
+      return Object.freeze({artifact, async cleanup() {
+        const current = await lstat(stagedPath);
+        if (!current.isFile() || current.isSymbolicLink() || current.dev !== stagedIdentity!.dev ||
+          current.ino !== stagedIdentity!.ino || current.uid !== expectedUid || current.gid !== expectedGid ||
+          (current.mode & 0o7777) !== 0o600) fail('artifact_staging_cleanup_binding');
+        await unlink(stagedPath);
+      }});
+    } catch (error) {
+      if (staged !== undefined) await staged.close().catch(() => undefined);
+      const current = createdStaged ? await lstat(stagedPath).catch(() => undefined) : undefined;
+      if (current?.isFile() && !current.isSymbolicLink() && current.uid === expectedUid &&
+        current.gid === expectedGid && (current.mode & 0o7777) === 0o600 &&
+        (stagedIdentity === undefined ||
+          (current.dev === stagedIdentity.dev && current.ino === stagedIdentity.ino))) {
+        await unlink(stagedPath).catch(() => undefined);
+      }
+      throw error;
+    } finally { await source.close(); }
   }};
 };
 
@@ -223,7 +283,7 @@ export const runDeploymentExecutorOnce = async (
   rawOptions: DeploymentExecutorClientOptions
 ): Promise<DeploymentExecutorOnceResult> => {
   const now = rawOptions.now ?? (() => new Date());
-  const options = {...rawOptions, baseUrl: loopbackBaseUrl(rawOptions.baseUrl)};
+  const options = rawOptions;
   if (!BEARER_TOKEN.test(options.bearerToken) || !UUID.test(options.workspaceId) || !SAFE_ID.test(options.executorId) ||
     !UUID.test(options.registrationId) || !UUID.test(options.projectId) ||
     !deploymentEnvironments.includes(options.environment)) fail('invalid_configuration');
@@ -233,8 +293,8 @@ export const runDeploymentExecutorOnce = async (
   }
   await options.artifacts.preflight();
   await options.adapter.preflight({projectId: options.projectId, environment: options.environment});
-  const fetcher = options.fetch ?? createLoopbackJsonFetch();
-  const claimResponse = await post(fetcher, options.baseUrl, '/api/deployment-executor/claim', options.bearerToken);
+  await options.transport.preflight();
+  const claimResponse = await post(options.transport, '/api/deployment-executor/claim', options.bearerToken);
   if (claimResponse.status === 204) return {status: 'idle'};
   if (claimResponse.status !== 200) fail(`claim_${claimResponse.status}`);
   const claim = parseClaim(await claimResponse.json(), options, now());
@@ -244,7 +304,7 @@ export const runDeploymentExecutorOnce = async (
   const heartbeat = async () => {
     if (heartbeatPromise !== undefined) return heartbeatPromise;
     heartbeatPromise = (async () => {
-      const response = await post(fetcher, options.baseUrl, '/api/deployment-executor/heartbeat',
+      const response = await post(options.transport, '/api/deployment-executor/heartbeat',
         options.bearerToken, {jobId: claim.jobId, attempt: claim.attempt}, claim.leaseToken);
       if (response.status !== 200) fail(`heartbeat_${response.status}`);
       const value = await response.json();
@@ -263,10 +323,12 @@ export const runDeploymentExecutorOnce = async (
   const timer = setInterval(() => { void heartbeat().catch(() => undefined); }, heartbeatIntervalMs);
   timer.unref();
   let result: DeploymentAdapterResult;
+  let staged: Awaited<ReturnType<DeploymentArtifactResolver['resolve']>> | undefined;
   try {
-    const artifact = await options.artifacts.resolve(claim.releasePackage, controller.signal);
+    staged = await options.artifacts.resolve(claim.releasePackage,
+      {jobId: claim.jobId, attempt: claim.attempt}, controller.signal);
     result = await options.adapter.execute({projectId: claim.projectId, environment: claim.environment,
-      sourceCommit: claim.releasePackage.sourceCommit, artifact, signal: controller.signal});
+      sourceCommit: claim.releasePackage.sourceCommit, artifact: staged.artifact, signal: controller.signal});
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     const code = /^deployment_executor_client_([A-Za-z0-9._:-]+)$/.exec(message)?.[1] ?? 'execution_failed';
@@ -274,32 +336,38 @@ export const runDeploymentExecutorOnce = async (
   } finally {
     clearInterval(timer); await heartbeatPromise?.catch(() => undefined);
   }
-  if (heartbeatFailure !== undefined) throw heartbeatFailure;
-  const completedAt = now().toISOString();
-  const observation = validateDeploymentObservation({...result,
-    reference: `deployment-job:${claim.jobId}:client-validation`, startedAt, completedAt});
-  const observed = observation.ok === true ? observation.value : fail('adapter_result');
-  const completionPayload = {jobId: claim.jobId, deploymentId: claim.deploymentId,
-      deploymentVersion: claim.deploymentVersion, attempt: claim.attempt, result: {
-        outcome: observed.outcome, startedAt: observed.startedAt,
-        completedAt: observed.completedAt, smokeChecks: observed.smokeChecks,
-        rollback: observed.rollback
-      }};
-  let completionResponse: Response;
   try {
-    completionResponse = await post(fetcher, options.baseUrl, '/api/deployment-executor/complete',
-      options.bearerToken, completionPayload, claim.leaseToken);
-    if (completionResponse.status >= 500) completionResponse = await post(fetcher, options.baseUrl,
-      '/api/deployment-executor/complete', options.bearerToken, completionPayload, claim.leaseToken);
-  } catch {
-    completionResponse = await post(fetcher, options.baseUrl, '/api/deployment-executor/complete',
-      options.bearerToken, completionPayload, claim.leaseToken);
+    if (heartbeatFailure !== undefined) throw heartbeatFailure;
+    const completedAt = now().toISOString();
+    const observation = validateDeploymentObservation({...result,
+      reference: `deployment-job:${claim.jobId}:client-validation`, startedAt, completedAt});
+    const observed = observation.ok === true ? observation.value : fail('adapter_result');
+    const completionPayload = {jobId: claim.jobId, deploymentId: claim.deploymentId,
+        deploymentVersion: claim.deploymentVersion, attempt: claim.attempt, result: {
+          outcome: observed.outcome, startedAt: observed.startedAt,
+          completedAt: observed.completedAt, smokeChecks: observed.smokeChecks,
+          rollback: observed.rollback
+        }};
+    let completionResponse: Response;
+    try {
+      completionResponse = await post(options.transport, '/api/deployment-executor/complete',
+        options.bearerToken, completionPayload, claim.leaseToken);
+      if (completionResponse.status >= 500) completionResponse = await post(options.transport,
+        '/api/deployment-executor/complete', options.bearerToken, completionPayload, claim.leaseToken);
+    } catch {
+      completionResponse = await post(options.transport, '/api/deployment-executor/complete',
+        options.bearerToken, completionPayload, claim.leaseToken);
+    }
+    if (completionResponse.status !== 200) fail(`complete_${completionResponse.status}`);
+    const completion = await completionResponse.json();
+    if (!isRecord(completion) || !exact(completion, ['outcome', 'completedAt']) ||
+      completion.outcome !== observed.outcome || completion.completedAt !== observed.completedAt) {
+      fail('invalid_completion');
+    }
+    return {status: 'completed', outcome: observed.outcome};
+  } finally {
+    await staged?.cleanup();
   }
-  if (completionResponse.status !== 200) fail(`complete_${completionResponse.status}`);
-  const completion = await completionResponse.json();
-  if (!isRecord(completion) || !exact(completion, ['outcome', 'completedAt']) ||
-    completion.outcome !== observed.outcome || completion.completedAt !== observed.completedAt) fail('invalid_completion');
-  return {status: 'completed', outcome: observed.outcome};
 };
 
 const required = (environment: DeploymentExecutorEnvironment, name: string): string => {
@@ -326,7 +394,7 @@ export const deploymentExecutorFromEnvironment = async (
   const uid = process.getuid?.(); const gid = process.getgid?.();
   if (!tokenStat.isFile() || tokenStat.isSymbolicLink() || tokenReal !== tokenFile ||
     uid === undefined || gid === undefined || tokenStat.uid !== uid || tokenStat.gid !== gid ||
-    (tokenStat.mode & 0o077) !== 0) fail('token_file_binding');
+    (tokenStat.mode & 0o7777) !== 0o600) fail('token_file_binding');
   for (const other of ['FAI_HERMES_RUNNER_CLAIM_TOKEN_FILE', 'LOCAL_WORKSTATION_RUNNER_TOKEN_FILE']) {
     if (environment[other] === tokenFile) fail('token_file_not_distinct');
   }
@@ -342,7 +410,6 @@ export const deploymentExecutorFromEnvironment = async (
   const projectId = required(environment, 'FAI_DEPLOYMENT_EXECUTOR_PROJECT_ID');
   const deploymentEnvironment = required(environment,
     'FAI_DEPLOYMENT_EXECUTOR_ENVIRONMENT') as DeploymentEnvironment;
-  const baseUrl = loopbackBaseUrl(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_BASE_URL'));
   const workspaceId = required(environment, 'FAI_DEPLOYMENT_EXECUTOR_WORKSPACE_ID');
   const executorId = required(environment, 'FAI_DEPLOYMENT_EXECUTOR_ID');
   const registrationId = required(environment, 'FAI_DEPLOYMENT_EXECUTOR_REGISTRATION_ID');
@@ -350,17 +417,25 @@ export const deploymentExecutorFromEnvironment = async (
     !UUID.test(projectId) || !deploymentEnvironments.includes(deploymentEnvironment)) {
     fail('invalid_configuration');
   }
-  const artifacts = createLocalDeploymentArtifactResolver(absolute(
-    required(environment, 'FAI_DEPLOYMENT_EXECUTOR_ARTIFACT_ROOT'), 'artifact_root'));
+  const artifacts = createLocalDeploymentArtifactResolver({
+    sourceRoot: absolute(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_ARTIFACT_ROOT'), 'artifact_root'),
+    stagingRoot: absolute(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_STAGING_ROOT'), 'artifact_staging_root')
+  });
+  const socketUid = Number(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_SOCKET_UID'));
+  const socketGid = Number(required(environment, 'FAI_DEPLOYMENT_EXECUTOR_SOCKET_GID'));
+  const transport = createUnixSocketJsonTransport({socketPath: absolute(
+    required(environment, 'FAI_DEPLOYMENT_EXECUTOR_SOCKET_PATH'), 'socket_path'),
+  expectedSocketUid: socketUid, expectedSocketGid: socketGid});
   if (dryRun) {
     await artifacts.preflight();
     await adapter.preflight({projectId, environment: deploymentEnvironment});
+    await transport.preflight();
     return {status: 'dry_run_ready'};
   }
   return runDeploymentExecutorOnce({
-    baseUrl, bearerToken: token, workspaceId, executorId, registrationId,
+    bearerToken: token, workspaceId, executorId, registrationId,
     projectId, environment: deploymentEnvironment, artifacts,
-    adapter
+    adapter, transport
   });
 };
 

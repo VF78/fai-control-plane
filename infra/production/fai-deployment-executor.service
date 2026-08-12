@@ -30,9 +30,11 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 CapabilityBoundingSet=
 AmbientCapabilities=
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
 ReadOnlyPaths=/opt/fai-control-plane-deployment-executor/releases/@RELEASE_COMMIT@ /var/lib/fai-deployment-executor/credentials /var/lib/fai-deployment-executor/release-packages
+ReadOnlyPaths=/run/fai-deployment-api
+ReadWritePaths=/var/lib/fai-deployment-executor/staging
 InaccessiblePaths=/var/lib/fai-hermes-controller /etc/fai-hermes-controller /var/lib/fai-codex-executor /etc/fai-codex-executor /etc/fai-control-plane
 
 [Install]
