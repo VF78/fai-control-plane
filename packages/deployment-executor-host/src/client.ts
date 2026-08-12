@@ -1,6 +1,6 @@
 import {createHash, timingSafeEqual} from 'node:crypto';
 import {constants} from 'node:fs';
-import {lstat, open, realpath, readFile, unlink} from 'node:fs/promises';
+import {lstat, open, realpath, readFile, type FileHandle} from 'node:fs/promises';
 import path from 'node:path';
 import {
   deploymentEnvironments,
@@ -13,6 +13,7 @@ import {
 } from '@fai-control-plane/domain';
 import {createUnixSocketJsonTransport, type DeploymentExecutorEndpoint,
   type DeploymentExecutorTransport} from './unix-socket-json-transport';
+import {createLinuxAnonymousStage, preflightLinuxAnonymousStage} from './linux-anonymous-stage';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -45,18 +46,22 @@ type DeploymentClaim = Readonly<{
 
 export type ResolvedDeploymentArtifact = Readonly<{
   reference: string;
-  path: string;
   sha256: string;
   sizeBytes: number;
+  identity: Readonly<{device: number; inode: number}>;
+  withReadFd<T>(consume: (fd: number) => Promise<T>): Promise<T>;
+}>;
+
+export type ResolvedDeploymentArtifactLease = Readonly<{
+  artifact: ResolvedDeploymentArtifact;
+  verify(): Promise<void>;
+  cleanup(): Promise<void>;
 }>;
 
 export interface DeploymentArtifactResolver {
   preflight(): Promise<void>;
   resolve(releasePackage: DeploymentReleasePackage, job: Readonly<{jobId: string; attempt: number}>,
-    signal?: AbortSignal): Promise<Readonly<{
-      artifact: ResolvedDeploymentArtifact;
-      cleanup(): Promise<void>;
-    }>>;
+    signal?: AbortSignal): Promise<ResolvedDeploymentArtifactLease>;
 }
 
 export type DeploymentAdapterTarget = Readonly<{
@@ -193,6 +198,7 @@ export const createLocalDeploymentArtifactResolver = (
       verifyDirectory(stagingRoot, 'artifact_staging_root_binding')
     ]);
     if (source.dev === staging.dev && source.ino === staging.ino) fail('artifact_roots_not_distinct');
+    await preflightLinuxAnonymousStage(stagingRoot);
   };
   return {preflight, async resolve(releasePackage, job, signal) {
     const validated = validateDeploymentReleasePackage(releasePackage);
@@ -208,15 +214,12 @@ export const createLocalDeploymentArtifactResolver = (
       (targetStat.mode & 0o7777) !== 0o600 || targetStat.size < 1 || targetStat.size > MAX_ARTIFACT_BYTES) {
       fail('artifact_binding');
     }
-    const stagedPath = path.join(stagingRoot, `${job.jobId}.${job.attempt}.${value.artifactSha256}.package`);
     const source = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-    let staged: Awaited<ReturnType<typeof open>> | undefined;
-    let stagedIdentity: Readonly<{dev: number; ino: number}> | undefined;
-    let createdStaged = false;
+    let writer: FileHandle | undefined;
+    let reader: FileHandle | undefined;
     try {
-      staged = await open(stagedPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
-        constants.O_NOFOLLOW, 0o600);
-      createdStaged = true;
+      const anonymous = await createLinuxAnonymousStage(stagingRoot);
+      writer = anonymous.writer;
       const before = await source.stat(); const digest = createHash('sha256');
       if (before.dev !== targetStat.dev || before.ino !== targetStat.ino || before.uid !== expectedUid ||
         before.gid !== expectedGid || (before.mode & 0o7777) !== 0o600) fail('artifact_binding');
@@ -230,44 +233,65 @@ export const createLocalDeploymentArtifactResolver = (
         digest.update(chunk.subarray(0, bytesRead));
         let written = 0;
         while (written < bytesRead) {
-          const result = await staged.write(chunk, written, bytesRead - written);
+          const result = await writer.write(chunk, written, bytesRead - written);
           if (result.bytesWritten < 1) fail('artifact_staging_write');
           written += result.bytesWritten;
         }
       }
-      await staged.sync();
-      const [after, stagedStat] = await Promise.all([source.stat(), staged.stat()]);
+      await writer.sync();
+      await writer.chmod(0o400);
+      await writer.sync();
+      const [after, stagedStat] = await Promise.all([source.stat(), writer.stat()]);
       const stagedHash = digest.digest('hex');
       if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
         before.mtimeMs !== after.mtimeMs || before.size !== targetStat.size ||
         copied !== before.size || stagedStat.size !== before.size || stagedStat.uid !== expectedUid ||
-        stagedStat.gid !== expectedGid || (stagedStat.mode & 0o7777) !== 0o600 ||
+        stagedStat.gid !== expectedGid || stagedStat.nlink !== 0 || (stagedStat.mode & 0o7777) !== 0o400 ||
         stagedHash !== value.artifactSha256) fail('artifact_hash_mismatch');
-      stagedIdentity = {dev: stagedStat.dev, ino: stagedStat.ino};
-      await staged.close(); staged = undefined;
-      const [closedStat, canonicalStaged] = await Promise.all([lstat(stagedPath), realpath(stagedPath)]);
-      if (!closedStat.isFile() || closedStat.isSymbolicLink() || canonicalStaged !== stagedPath ||
-        path.dirname(canonicalStaged) !== stagingRoot || closedStat.dev !== stagedIdentity.dev ||
-        closedStat.ino !== stagedIdentity.ino || closedStat.size !== copied || closedStat.uid !== expectedUid ||
-        closedStat.gid !== expectedGid || (closedStat.mode & 0o7777) !== 0o600) fail('artifact_staging_binding');
-      const artifact = Object.freeze({reference: value.artifactReference, path: stagedPath,
-        sha256: value.artifactSha256, sizeBytes: copied});
-      return Object.freeze({artifact, async cleanup() {
-        const current = await lstat(stagedPath);
-        if (!current.isFile() || current.isSymbolicLink() || current.dev !== stagedIdentity!.dev ||
-          current.ino !== stagedIdentity!.ino || current.uid !== expectedUid || current.gid !== expectedGid ||
-          (current.mode & 0o7777) !== 0o600) fail('artifact_staging_cleanup_binding');
-        await unlink(stagedPath);
+      reader = await anonymous.openReadOnly();
+      const readIdentity = await reader.stat();
+      if (readIdentity.dev !== stagedStat.dev || readIdentity.ino !== stagedStat.ino ||
+        readIdentity.size !== copied || readIdentity.uid !== expectedUid || readIdentity.gid !== expectedGid ||
+        readIdentity.nlink !== 0 || (readIdentity.mode & 0o7777) !== 0o400) fail('artifact_staging_binding');
+      await writer.close(); writer = undefined;
+      const retained = reader; reader = undefined;
+      const identity = Object.freeze({device: stagedStat.dev, inode: stagedStat.ino});
+      let closed = false; let active = false;
+      const verify = async () => {
+        if (closed) fail('artifact_handle_closed');
+        const first = await retained.stat();
+        if (first.dev !== identity.device || first.ino !== identity.inode || first.size !== copied ||
+          first.uid !== expectedUid || first.gid !== expectedGid || first.nlink !== 0 ||
+          (first.mode & 0o7777) !== 0o400) fail('artifact_handle_binding');
+        const verified = createHash('sha256'); const verifyChunk = Buffer.allocUnsafe(64 * 1024);
+        let offset = 0;
+        while (offset < copied) {
+          if (signal?.aborted) fail('artifact_cancelled');
+          const {bytesRead} = await retained.read(verifyChunk, 0,
+            Math.min(verifyChunk.byteLength, copied - offset), offset);
+          if (bytesRead < 1) fail('artifact_handle_size');
+          verified.update(verifyChunk.subarray(0, bytesRead)); offset += bytesRead;
+        }
+        const last = await retained.stat();
+        if (last.dev !== first.dev || last.ino !== first.ino || last.size !== first.size ||
+          last.mtimeMs !== first.mtimeMs || last.ctimeMs !== first.ctimeMs ||
+          verified.digest('hex') !== value.artifactSha256) fail('artifact_handle_hash_mismatch');
+      };
+      const artifact: ResolvedDeploymentArtifact = Object.freeze({reference: value.artifactReference,
+        sha256: value.artifactSha256, sizeBytes: copied, identity,
+        async withReadFd<T>(consume: (fd: number) => Promise<T>): Promise<T> {
+          if (closed || active || typeof consume !== 'function') return fail('artifact_handle_use');
+          active = true;
+          try { return await consume(retained.fd); } finally { active = false; }
+        }});
+      return Object.freeze({artifact, verify, async cleanup() {
+        if (closed || active) fail('artifact_handle_cleanup');
+        closed = true;
+        await retained.close();
       }});
     } catch (error) {
-      if (staged !== undefined) await staged.close().catch(() => undefined);
-      const current = createdStaged ? await lstat(stagedPath).catch(() => undefined) : undefined;
-      if (current?.isFile() && !current.isSymbolicLink() && current.uid === expectedUid &&
-        current.gid === expectedGid && (current.mode & 0o7777) === 0o600 &&
-        (stagedIdentity === undefined ||
-          (current.dev === stagedIdentity.dev && current.ino === stagedIdentity.ino))) {
-        await unlink(stagedPath).catch(() => undefined);
-      }
+      await reader?.close().catch(() => undefined);
+      await writer?.close().catch(() => undefined);
       throw error;
     } finally { await source.close(); }
   }};
@@ -327,8 +351,13 @@ export const runDeploymentExecutorOnce = async (
   try {
     staged = await options.artifacts.resolve(claim.releasePackage,
       {jobId: claim.jobId, attempt: claim.attempt}, controller.signal);
-    result = await options.adapter.execute({projectId: claim.projectId, environment: claim.environment,
-      sourceCommit: claim.releasePackage.sourceCommit, artifact: staged.artifact, signal: controller.signal});
+    await staged.verify();
+    try {
+      result = await options.adapter.execute({projectId: claim.projectId, environment: claim.environment,
+        sourceCommit: claim.releasePackage.sourceCommit, artifact: staged.artifact, signal: controller.signal});
+    } finally {
+      await staged.verify();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     const code = /^deployment_executor_client_([A-Za-z0-9._:-]+)$/.exec(message)?.[1] ?? 'execution_failed';

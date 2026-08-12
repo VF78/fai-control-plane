@@ -13,7 +13,8 @@ export {
   type DeploymentExecutorEnvironment,
   type DeploymentExecutorOnceResult,
   type LocalDeploymentArtifactResolverOptions,
-  type ResolvedDeploymentArtifact
+  type ResolvedDeploymentArtifact,
+  type ResolvedDeploymentArtifactLease
 } from './client';
 export {
   createUnixSocketJsonTransport,

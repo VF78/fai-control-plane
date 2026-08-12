@@ -17,6 +17,7 @@ describe('deployment executor host examples', () => {
     expect(environment).toContain('FAI_DEPLOYMENT_EXECUTOR_SOCKET_PATH=/run/fai-deployment-api/control.sock');
     expect(environment).not.toContain('FAI_DEPLOYMENT_EXECUTOR_BASE_URL');
     expect(environment).not.toMatch(/https?:\/\//);
+    expect(environment).toContain('must support Linux O_TMPFILE');
     expect(service).not.toContain('WantedBy=');
     expect(service).not.toContain('scripts/deploy-prod.sh');
   });

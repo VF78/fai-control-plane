@@ -1,5 +1,7 @@
 import {createHash} from 'node:crypto';
-import {chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, symlink, writeFile} from 'node:fs/promises';
+import {constants, fstatSync, readSync, writeSync} from 'node:fs';
+import {chmod, mkdir, mkdtemp, open, readFile, realpath, rename, symlink, unlink,
+  writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {describe, expect, it, vi} from 'vitest';
@@ -9,7 +11,8 @@ import {
   createUnavailableDeploymentAdapter,
   deploymentExecutorFromEnvironment,
   runDeploymentExecutorOnce,
-  type DeploymentAdapter
+  type DeploymentAdapter,
+  type DeploymentArtifactResolver
 } from './client';
 import type {DeploymentExecutorTransport} from './unix-socket-json-transport';
 
@@ -54,10 +57,36 @@ const transport = (fetcher: typeof fetch): DeploymentExecutorTransport => ({
   }
 });
 
-const options = async (fetcher: typeof fetch, adapter: DeploymentAdapter) => ({
+const descriptorArtifactResolver = (trace?: string[]): DeploymentArtifactResolver => ({
+  async preflight() {},
+  async resolve() {
+    const root = await mkdtemp(path.join(tmpdir(), 'fai-deployment-descriptor-'));
+    const stagedPath = path.join(root, 'anonymous-stage');
+    await writeFile(stagedPath, body, {mode: 0o400});
+    const handle = await open(stagedPath, constants.O_RDONLY);
+    await unlink(stagedPath);
+    const stat = await handle.stat(); let closed = false;
+    const artifact = Object.freeze({reference: releasePackage.artifactReference,
+      sha256: releasePackage.artifactSha256, sizeBytes: body.byteLength,
+      identity: Object.freeze({device: stat.dev, inode: stat.ino}),
+      async withReadFd<T>(consume: (fd: number) => Promise<T>): Promise<T> {
+        if (closed) throw new Error('test_artifact_closed');
+        return consume(handle.fd);
+      }});
+    return Object.freeze({artifact, async verify() {
+      trace?.push('verify');
+      const current = await handle.stat();
+      if (closed || current.dev !== stat.dev || current.ino !== stat.ino || current.size !== body.byteLength) {
+        throw new Error('test_artifact_binding');
+      }
+    }, async cleanup() { trace?.push('cleanup'); closed = true; await handle.close(); }});
+  }
+});
+
+const options = async (fetcher: typeof fetch, adapter: DeploymentAdapter, artifactTrace?: string[]) => ({
   bearerToken: token, workspaceId, executorId: 'executor.production',
   registrationId, projectId, environment: 'production' as const,
-  artifacts: createLocalDeploymentArtifactResolver(await artifactRoot()), adapter, transport: transport(fetcher),
+  artifacts: descriptorArtifactResolver(artifactTrace), adapter, transport: transport(fetcher),
   now: vi.fn()
     .mockReturnValueOnce(new Date('2026-08-12T10:00:00.000Z'))
     .mockReturnValueOnce(new Date('2026-08-12T10:00:01.000Z'))
@@ -75,24 +104,38 @@ describe('deployment executor host client', () => {
       }
       return Response.json({outcome: 'succeeded', completedAt: '2026-08-12T10:00:02.000Z'});
     }) as unknown as typeof fetch;
-    let stagedPath = '';
+    const artifactTrace: string[] = [];
+    let observedFd = -1;
     const adapter: DeploymentAdapter = {adapterId: 'fake', preflight: vi.fn(async () => undefined),
       execute: vi.fn(async ({artifact}) => {
-      stagedPath = artifact.path;
-      expect(await readFile(artifact.path)).toEqual(body);
+      expect('path' in artifact).toBe(false);
+      expect('fd' in artifact).toBe(false);
+      await artifact.withReadFd(async (fd: number) => {
+        observedFd = fd;
+        const stat = fstatSync(fd);
+        expect({device: stat.dev, inode: stat.ino}).toEqual(artifact.identity);
+        expect(stat.nlink).toBe(0);
+        expect(stat.mode & 0o7777).toBe(0o400);
+        const received = Buffer.alloc(artifact.sizeBytes);
+        expect(readSync(fd, received, 0, received.byteLength, 0)).toBe(received.byteLength);
+        expect(received).toEqual(body);
+        expect(() => writeSync(fd, Buffer.from('mutation'))).toThrow();
+      });
       return {
       outcome: 'succeeded', smokeChecks: [{name: 'health', status: 'passed', reference: 'fake:health'}],
       rollback: {outcome: 'not_required', reference: null}
     } as const;})};
-    await expect(runDeploymentExecutorOnce(await options(fetcher, adapter))).resolves.toEqual({
+    await expect(runDeploymentExecutorOnce(await options(fetcher, adapter, artifactTrace))).resolves.toEqual({
       status: 'completed', outcome: 'succeeded'
     });
     expect(adapter.execute).toHaveBeenCalledWith(expect.objectContaining({projectId,
       environment: 'production', sourceCommit: 'a'.repeat(40), artifact: expect.objectContaining({
         reference: releasePackage.artifactReference, sha256: releasePackage.artifactSha256,
-        path: expect.stringMatching(/\.package$/)
+        sizeBytes: body.byteLength, identity: expect.objectContaining({device: expect.any(Number),
+          inode: expect.any(Number)}), withReadFd: expect.any(Function)
       })}));
-    await expect(lstat(stagedPath)).rejects.toThrow();
+    expect(() => fstatSync(observedFd)).toThrow();
+    expect(artifactTrace).toEqual(['verify', 'verify', 'cleanup']);
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
       '/api/deployment-executor/claim', '/api/deployment-executor/heartbeat',
       '/api/deployment-executor/complete'
@@ -131,7 +174,8 @@ describe('deployment executor host client', () => {
 
   it('submits a structured failure when a bound adapter cannot execute', async () => {
     const requests: Request[] = [];
-    let stagedPath = '';
+    let observedFd = -1;
+    const artifactTrace: string[] = [];
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init); requests.push(request);
       if (request.url.endsWith('/claim')) return Response.json(claim());
@@ -139,14 +183,15 @@ describe('deployment executor host client', () => {
       return Response.json({outcome: 'failed', completedAt: '2026-08-12T10:00:02.000Z'});
     }) as unknown as typeof fetch;
     const adapter: DeploymentAdapter = {adapterId: 'fake', preflight: vi.fn(async () => undefined),
-      async execute({artifact}) { stagedPath = artifact.path;
-        throw new Error('deployment_executor_client_adapter_failed'); }};
-    await expect(runDeploymentExecutorOnce(await options(fetcher, adapter)))
+      async execute({artifact}) { return artifact.withReadFd(async (fd) => { observedFd = fd;
+        throw new Error('deployment_executor_client_adapter_failed'); }); }};
+    await expect(runDeploymentExecutorOnce(await options(fetcher, adapter, artifactTrace)))
       .resolves.toEqual({status: 'completed', outcome: 'failed'});
     expect(await requests[2]!.json()).toMatchObject({result: {outcome: 'failed',
       smokeChecks: [{status: 'failed', reference: 'deployment-executor:adapter_failed'}],
       rollback: {outcome: 'not_required', reference: null}}});
-    await expect(lstat(stagedPath)).rejects.toThrow();
+    expect(() => fstatSync(observedFd)).toThrow();
+    expect(artifactTrace).toEqual(['verify', 'verify', 'cleanup']);
   });
 
   it('submits exact approved rollback facts from the typed adapter', async () => {
@@ -221,7 +266,9 @@ describe('deployment executor host client', () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
   }, 3_000);
 
-  it('fails closed on artifact hash drift, arbitrary references, and symlinks', async () => {
+  const linuxIt = process.platform === 'linux' ? it : it.skip;
+
+  linuxIt('fails closed on artifact hash drift, arbitrary references, and symlinks', async () => {
     const roots = await artifactRoot();
     const resolver = createLocalDeploymentArtifactResolver(roots);
     await expect(resolver.resolve({...releasePackage, artifactSha256: '0'.repeat(64)}, {jobId, attempt: 1}))
@@ -235,17 +282,25 @@ describe('deployment executor host client', () => {
       .rejects.toThrow();
   });
 
-  it('stages exact verified bytes and is unaffected when the source is replaced', async () => {
+  linuxIt('retains an anonymous read descriptor when the source path is replaced', async () => {
     const roots = await artifactRoot();
     const resolver = createLocalDeploymentArtifactResolver(roots);
     const staged = await resolver.resolve(releasePackage, {jobId, attempt: 1});
     const sourcePath = path.join(roots.sourceRoot, 'release.tar.gz');
     await rename(sourcePath, `${sourcePath}.replaced`);
     await writeFile(sourcePath, 'attacker replacement', {mode: 0o600});
-    expect(staged.artifact.path.startsWith(`${roots.stagingRoot}${path.sep}`)).toBe(true);
-    await expect(readFile(staged.artifact.path)).resolves.toEqual(body);
+    await staged.verify();
+    await staged.artifact.withReadFd(async (fd) => {
+      const received = Buffer.alloc(body.byteLength);
+      expect(readSync(fd, received, 0, received.byteLength, 0)).toBe(received.byteLength);
+      expect(received).toEqual(body);
+      const stat = fstatSync(fd);
+      expect({device: stat.dev, inode: stat.ino}).toEqual(staged.artifact.identity);
+      expect(stat.nlink).toBe(0);
+      expect(stat.mode & 0o7777).toBe(0o400);
+      expect(() => writeSync(fd, Buffer.from('malicious same-uid write'))).toThrow();
+    });
     await staged.cleanup();
-    await expect(lstat(staged.artifact.path)).rejects.toThrow();
   });
 
   it('rejects unsafe artifact directory ownership and modes', async () => {
@@ -262,17 +317,26 @@ describe('deployment executor host client', () => {
     const currentGid = process.getgid?.();
     if (currentUid === undefined || currentGid === undefined) throw new Error('test_identity_unavailable');
     await expect(createLocalDeploymentArtifactResolver({...roots, expectedUid: currentUid + 1,
-      expectedGid: currentGid}).preflight()).rejects.toThrow('artifact_root_binding');
+      expectedGid: currentGid}).preflight()).rejects.toThrow(/artifact_(?:staging_)?root_binding/);
   });
 
-  it('fails closed without deleting a pre-existing per-job stage', async () => {
+  linuxIt('cleanup closes only its anonymous inode and preserves same-uid path collisions', async () => {
     const roots = await artifactRoot();
-    const stagedPath = path.join(roots.stagingRoot,
+    const collisionPath = path.join(roots.stagingRoot,
       `${jobId}.1.${releasePackage.artifactSha256}.package`);
-    await writeFile(stagedPath, 'existing stage', {mode: 0o600});
-    await expect(createLocalDeploymentArtifactResolver(roots).resolve(releasePackage, {jobId, attempt: 1}))
-      .rejects.toMatchObject({code: 'EEXIST'});
-    await expect(readFile(stagedPath, 'utf8')).resolves.toBe('existing stage');
+    const staged = await createLocalDeploymentArtifactResolver(roots)
+      .resolve(releasePackage, {jobId, attempt: 1});
+    await writeFile(collisionPath, 'unrelated collision', {mode: 0o600});
+    let retainedFd = -1;
+    await staged.artifact.withReadFd(async (fd) => {
+      retainedFd = fd;
+      const received = Buffer.alloc(body.byteLength);
+      readSync(fd, received, 0, received.byteLength, 0);
+      expect(received).toEqual(body);
+    });
+    await staged.cleanup();
+    expect(() => fstatSync(retainedFd)).toThrow();
+    await expect(readFile(collisionPath, 'utf8')).resolves.toBe('unrelated collision');
   });
 
   it('is disabled by default and requires confirmation before reading a token', async () => {
@@ -305,8 +369,13 @@ describe('deployment executor host client', () => {
       FAI_DEPLOYMENT_EXECUTOR_REGISTRATION_ID: registrationId,
       FAI_DEPLOYMENT_EXECUTOR_PROJECT_ID: projectId,
       FAI_DEPLOYMENT_EXECUTOR_ENVIRONMENT: 'production'
-    }, adapter)).rejects.toThrow('socket_directory_binding');
-    expect(adapter.preflight).toHaveBeenCalledWith({projectId, environment: 'production'});
+    }, adapter)).rejects.toThrow(process.platform === 'linux'
+      ? 'socket_directory_binding' : 'artifact_anonymous_staging_unavailable');
+    if (process.platform === 'linux') {
+      expect(adapter.preflight).toHaveBeenCalledWith({projectId, environment: 'production'});
+    } else {
+      expect(adapter.preflight).not.toHaveBeenCalled();
+    }
     expect(adapter.execute).not.toHaveBeenCalled();
   });
 });
