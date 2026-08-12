@@ -169,6 +169,16 @@ class BundleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nondeterministic_dist_hash"):
             bundle.compare_dist(expected, stale)
 
+    def test_trusted_build_opens_the_seeded_store_read_only(self):
+        self.assertEqual(bundle.PNPM_INSTALL, (
+            "install", "--offline", "--frozen-lockfile", "--frozen-store", "--ignore-scripts",
+            "--store-dir", bundle.PNPM_STORE,
+        ))
+        self.assertEqual(
+            bundle.build_provenance([])["installPolicy"],
+            "offline-frozen-lockfile-frozen-store-ignore-scripts",
+        )
+
     def test_activation_pins_release_outside_production_checkout(self):
         activation = MODULE_PATH.with_name("activate-hermes-runner.sh").read_text()
         self.assertIn('release_root="/opt/fai-control-plane-runner/releases/$release_commit"', activation)

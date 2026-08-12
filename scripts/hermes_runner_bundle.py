@@ -15,6 +15,8 @@ PNPM = "/usr/local/bin/pnpm"
 PNPM_VERSION = "11.17.0"
 PNPM_STORE = "/opt/fai-control-plane-runner/build/pnpm-store"
 RUNNERS_BUILD = "tsup src/index.ts src/hermes-runner-cli.ts src/hermes-executor-cli.ts --format esm --dts"
+PNPM_INSTALL = ("install", "--offline", "--frozen-lockfile", "--frozen-store", "--ignore-scripts",
+                "--store-dir", PNPM_STORE)
 DIST_FIXED = frozenset(("index.js", "index.d.ts", "hermes-runner-cli.js", "hermes-runner-cli.d.ts",
                         "hermes-executor-cli.js", "hermes-executor-cli.d.ts"))
 DIST_CHUNK = re.compile(r"chunk-[A-Z0-9]{8}\.js")
@@ -69,7 +71,7 @@ def build_provenance(files):
                    for item in files if Path(item["path"]).parent == Path("packages/runners/dist")),
                   key=lambda item: item["name"])
     return {"strategy": "isolated-double-build", "packageManager": f"pnpm@{PNPM_VERSION}",
-            "installPolicy": "offline-frozen-lockfile-ignore-scripts", "command": RUNNERS_BUILD,
+            "installPolicy": "offline-frozen-lockfile-frozen-store-ignore-scripts", "command": RUNNERS_BUILD,
             "repeatBuilds": 2, "dist": dist}
 
 def validate_build_provenance(manifest):
@@ -228,7 +230,7 @@ def run_pinned_build(checkout):
     Path(environment["HOME"]).mkdir(mode=0o700)
     if subprocess.check_output([PNPM, "--version"], text=True, env=environment).strip() != PNPM_VERSION:
         raise ValueError("pnpm_version")
-    commands = ([PNPM, "install", "--offline", "--frozen-lockfile", "--ignore-scripts", "--store-dir", PNPM_STORE],
+    commands = ([PNPM, *PNPM_INSTALL],
                 [PNPM, "--filter", "@fai-control-plane/runners", "build"])
     try:
         for command in commands:
