@@ -1241,12 +1241,15 @@ export const projectUatProtocols = pgTable('project_uat_protocols', {
   checklist: jsonb('checklist').$type<readonly import('@fai-control-plane/domain').ProjectUatChecklistItem[]>().notNull(),
   requiredSmokeChecks: text('required_smoke_checks').array().notNull(),
   requiredDeploymentEnvironment: text('required_deployment_environment').$type<'staging' | 'production'>().notNull(),
+  deploymentId: uuid('deployment_id'),
+  deploymentLifecycleVersion: integer('deployment_lifecycle_version'),
+  deploymentReleasePackageHash: text('deployment_release_package_hash'),
   contentHash: text('content_hash').notNull(),
   preparedByActorId: uuid('prepared_by_actor_id').notNull(),
   commandId: uuid('command_id').notNull(),
   createdAt: createdAt()
 }, (table) => [
-  uniqueIndex('project_uat_protocols_project_unique').on(table.projectId),
+  index('project_uat_protocols_project_created_idx').on(table.projectId, table.createdAt, table.id),
   uniqueIndex('project_uat_protocols_command_unique').on(table.commandId),
   foreignKey({columns: [table.workspaceId, table.projectId], foreignColumns: [projects.workspaceId, projects.id],
     name: 'project_uat_protocols_workspace_project_fk'}).onDelete('restrict'),
@@ -1262,9 +1265,19 @@ export const projectUatProtocols = pgTable('project_uat_protocols', {
       projectScopeBaselineVersions.sourcePlanVersionId], name: 'project_uat_protocols_baseline_scope_fk'}).onDelete('restrict'),
   foreignKey({columns: [table.workspaceId, table.preparedByActorId],
     foreignColumns: [actors.workspaceId, actors.id], name: 'project_uat_protocols_workspace_actor_fk'}).onDelete('restrict'),
+  foreignKey({columns: [table.deploymentId, table.workspaceId, table.projectId, table.requiredDeploymentEnvironment],
+    foreignColumns: [deployments.id, deployments.workspaceId, deployments.projectId, deployments.environment],
+    name: 'project_uat_protocols_deployment_scope_fk'}).onDelete('restrict'),
   check('project_uat_protocols_checklist_array', sql`jsonb_typeof(${table.checklist}) = 'array' and jsonb_array_length(${table.checklist}) > 0`),
   check('project_uat_protocols_smoke_nonempty', sql`cardinality(${table.requiredSmokeChecks}) between 1 and 50`),
   check('project_uat_protocols_release_environment', sql`${table.requiredDeploymentEnvironment} in ('staging', 'production')`),
+  check('project_uat_protocols_deployment_binding_shape', sql`
+    (${table.deploymentId} is null and ${table.deploymentLifecycleVersion} is null and
+      ${table.deploymentReleasePackageHash} is null) or
+    (${table.deploymentId} is not null and ${table.deploymentLifecycleVersion} = 1 and
+      ${table.deploymentReleasePackageHash} is null) or
+    (${table.deploymentId} is not null and ${table.deploymentLifecycleVersion} = 2 and
+      ${table.deploymentReleasePackageHash} ~ '^[0-9a-f]{64}$')`),
   check('project_uat_protocols_hash_sha256', sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`)
 ]);
 
@@ -1275,7 +1288,7 @@ export const projectAcceptanceSessions = pgTable('project_acceptance_sessions', 
   version: integer('version').default(1).notNull(),
   updatedAt: updatedAt()
 }, (table) => [
-  uniqueIndex('project_acceptance_sessions_project_unique').on(table.projectId),
+  index('project_acceptance_sessions_project_idx').on(table.projectId),
   check('project_acceptance_sessions_version_positive', sql`${table.version} > 0`)
 ]);
 

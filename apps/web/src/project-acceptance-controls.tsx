@@ -2,16 +2,30 @@
 
 import {useState, type FormEvent} from 'react';
 import {BadgeCheck, ClipboardCheck, ShieldCheck} from 'lucide-react';
-import type {ProjectExecutionProjection} from '@fai-control-plane/domain';
+import type {CanonicalDeploymentProjection, ProjectExecutionProjection} from '@fai-control-plane/domain';
 
 const split = (value: FormDataEntryValue | null) => String(value ?? '').split(/[,\n]/)
   .map((item) => item.trim()).filter(Boolean);
 
 export function ProjectAcceptanceControls({projectId, execution, csrfToken, canProductOwner,
-  canClientRepresentative}: Readonly<{projectId: string; execution: ProjectExecutionProjection;
+  canClientRepresentative, deployments}: Readonly<{projectId: string; execution: ProjectExecutionProjection;
+    deployments: readonly CanonicalDeploymentProjection[];
     csrfToken: string | null; canProductOwner: boolean; canClientRepresentative: boolean}>) {
   const [busy, setBusy] = useState(false); const [notice, setNotice] = useState<string | null>(null);
   const acceptance = execution.acceptance ?? null;
+  const canonicalAttempts = deployments.filter((deployment) => ['staging', 'production'].includes(deployment.environment) &&
+    deployment.desired.availability === 'known' && deployment.requested.availability === 'known');
+  const latestByEnvironment = canonicalAttempts.filter((candidate) => !canonicalAttempts.some((other) =>
+    other.environment === candidate.environment && (other.requested.availability === 'known' &&
+      candidate.requested.availability === 'known') &&
+      (other.requested.value.at > candidate.requested.value.at ||
+        other.requested.value.at === candidate.requested.value.at && other.id > candidate.id)));
+  const eligibleDeployments = latestByEnvironment.filter((deployment) => deployment.status === 'observed' &&
+    deployment.externalEvidence.availability === 'known' && deployment.externalEvidence.value.outcome === 'succeeded' &&
+    (deployment.releasePackage.availability !== 'known' || deployment.executorJob.availability === 'known' &&
+      deployment.executorJob.value.status === 'succeeded'));
+  const canReplaceProtocol = acceptance?.blockers.some((blocker) =>
+    blocker === 'bound_deployment_not_latest' || blocker === 'uat_release_binding_required') === true;
   const send = async (body: Record<string, unknown>) => {
     setBusy(true); setNotice(null);
     try {
@@ -25,9 +39,12 @@ export function ProjectAcceptanceControls({projectId, execution, csrfToken, canP
     finally { setBusy(false); }
   };
   const prepare = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const data = new FormData(event.currentTarget);
+    const deploymentId = String(data.get('deploymentId') ?? '');
+    const deployment = eligibleDeployments.find((candidate) => candidate.id === deploymentId);
     void send({action: 'prepare', protocolId: crypto.randomUUID(), expectedExecutionVersion: execution.version,
       requiredSmokeChecks: split(data.get('requiredSmokeChecks')),
-      requiredDeploymentEnvironment: data.get('requiredDeploymentEnvironment')}); };
+      requiredDeploymentEnvironment: deployment?.environment ?? data.get('requiredDeploymentEnvironment'),
+      deploymentId: deployment?.id ?? null}); };
   const record = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (acceptance === null) return;
     const data = new FormData(event.currentTarget); const checks = acceptance.protocol.checklist.map((item) => ({key: item.key,
       outcome: data.get(`outcome:${item.key}`), evidenceReferences: split(data.get(`evidence:${item.key}`)),
@@ -42,16 +59,21 @@ export function ProjectAcceptanceControls({projectId, execution, csrfToken, canP
   return <section className="fcp-section" id="uat"><div className="fcp-section-head"><div>
     <h2>UAT и завершение проекта</h2><span>Неизменяемый протокол · два отдельных signoff · строгая граница релиза</span>
   </div><ClipboardCheck aria-hidden="true" size={18}/></div>
-    {acceptance === null ? <>{!canProductOwner || csrfToken === null || !['blocked', 'paused'].includes(execution.status)
+    {acceptance !== null && !canReplaceProtocol ? null : <>{!canProductOwner || csrfToken === null || !['blocked', 'paused'].includes(execution.status)
       ? <p className="fcp-empty-line">Протокол UAT можно подготовить после приёмки всего скопа и terminal evidence.</p>
       : <details className="fcp-system-details"><summary>Подготовить неизменяемый протокол UAT</summary>
         <form className="fcp-profile-form" onSubmit={prepare}><label>Обязательные smoke checks
           <textarea name="requiredSmokeChecks" required maxLength={1024} placeholder="health, critical_path"/></label>
+          <label>Точный deployment<select name="deploymentId" defaultValue="">
+            <option value="">Релиз не требуется (нужен отдельный waiver PO)</option>
+            {eligibleDeployments.map((deployment) => <option value={deployment.id} key={deployment.id}>
+              {deployment.environment} · {deployment.revision} · {deployment.id}</option>)}</select></label>
           <label>Обязательный контур<select name="requiredDeploymentEnvironment" defaultValue="staging">
             <option value="staging">Тестовый</option><option value="production">Продакшен</option></select></label>
           <button className="fcp-primary-button" disabled={busy} type="submit">Зафиксировать протокол</button>
-          <small>Checklist будет собран из точного активного плана, materialization, baseline и terminal journey evidence.</small>
-        </form></details>}</> : <>
+          <small>Checklist и выбранный deployment/package hash будут заморожены вместе с точным активным plan, materialization, baseline и terminal journey evidence. Только latest attempt контура допустим.</small>
+        </form></details>}</>}
+    {acceptance === null ? null : <>
       <div className="fcp-orchestrator-summary"><div><span>Протокол</span><strong>{acceptance.protocol.checklist.length} проверок</strong>
         <small>hash {acceptance.protocol.contentHash.slice(0, 12)}… · версия сессии {acceptance.version}</small></div>
         <div><span>UAT</span><strong>{acceptance.latestResult === null ? 'Не проводился' : acceptance.latestResult.outcome === 'passed' ? 'Пройден' : 'Не пройден'}</strong>
@@ -59,7 +81,9 @@ export function ProjectAcceptanceControls({projectId, execution, csrfToken, canP
         <div><span>Условие релиза</span><strong>{acceptance.release.state === 'deployment_observed' ? 'Развёртывание подтверждено' : acceptance.release.state === 'not_required' ? 'Не требуется · waiver PO' : 'Не выполнено'}</strong>
           <small>{acceptance.release.deploymentId ?? acceptance.release.waiver?.reason ?? 'Нужен успешный observed deployment или явный waiver.'}</small></div></div>
       <details><summary>Checklist и точные привязки</summary><dl className="fcp-details"><div><dt>Plan</dt><dd>{acceptance.protocol.planVersionId}</dd></div>
-        <div><dt>Materialization</dt><dd>{acceptance.protocol.materializationId}</dd></div><div><dt>Baseline</dt><dd>{acceptance.protocol.baselineId}</dd></div></dl>
+        <div><dt>Materialization</dt><dd>{acceptance.protocol.materializationId}</dd></div><div><dt>Baseline</dt><dd>{acceptance.protocol.baselineId}</dd></div>
+        <div><dt>Deployment</dt><dd>{acceptance.protocol.deploymentId ?? 'not_required pending waiver'}</dd></div>
+        <div><dt>Package hash</dt><dd>{acceptance.protocol.deploymentReleasePackageHash ?? 'legacy / not_required'}</dd></div></dl>
         <ol>{acceptance.protocol.checklist.map((item) => <li key={item.key}><strong>{item.title}</strong><small>{item.requiredEvidence.join(', ')}</small></li>)}</ol></details>
       {acceptance.latestResult?.outcome === 'passed' || !canProductOwner || csrfToken === null ? null
         : <details className="fcp-system-details"><summary>Записать результат UAT</summary><form className="fcp-profile-form" onSubmit={record}>

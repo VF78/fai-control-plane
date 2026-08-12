@@ -13,7 +13,7 @@ export const PROJECT_EXECUTION_COMPLETE_COMMAND = 'project_execution.complete.v1
 
 export type PrepareProjectUatCommand = CanonicalCommandEnvelope<typeof PROJECT_UAT_PREPARE_COMMAND, Readonly<{
   projectId: string; protocolId: string; expectedExecutionVersion: number; requiredSmokeChecks: readonly string[];
-  requiredDeploymentEnvironment: 'staging' | 'production';
+  requiredDeploymentEnvironment: 'staging' | 'production'; deploymentId: string | null;
 }>>;
 export type RecordProjectUatResultCommand = CanonicalCommandEnvelope<typeof PROJECT_UAT_RECORD_RESULT_COMMAND, Readonly<{
   projectId: string; protocolId: string; resultId: string; expectedVersion: number;
@@ -76,13 +76,15 @@ const valid = (command: ProjectAcceptanceCommand): boolean => {
     case PROJECT_UAT_PREPARE_COMMAND: {
       const payload = (command as PrepareProjectUatCommand).payload;
       return exact(payload, ['projectId', 'protocolId', 'expectedExecutionVersion', 'requiredSmokeChecks',
-        'requiredDeploymentEnvironment']) &&
+        'requiredDeploymentEnvironment', 'deploymentId']) &&
+        (payload.deploymentId === null || uuid.test(payload.deploymentId)) &&
         Number.isSafeInteger(payload.expectedExecutionVersion) && payload.expectedExecutionVersion > 0 &&
         ['staging', 'production'].includes(payload.requiredDeploymentEnvironment) &&
         Array.isArray(payload.requiredSmokeChecks) && payload.requiredSmokeChecks.length > 0 &&
         payload.requiredSmokeChecks.length <= 50 && new Set(payload.requiredSmokeChecks).size === payload.requiredSmokeChecks.length &&
         payload.requiredSmokeChecks.every((item) => bounded(item, 120)) &&
-        command.idempotencyKey === `project-uat-prepare:v1:${payload.projectId}:${payload.expectedExecutionVersion}:${actorId}`;
+        command.idempotencyKey ===
+          `project-uat-prepare:v1:${payload.projectId}:${payload.expectedExecutionVersion}:${payload.protocolId}:${actorId}`;
     }
     case PROJECT_UAT_RECORD_RESULT_COMMAND: {
       const payload = (command as RecordProjectUatResultCommand).payload;

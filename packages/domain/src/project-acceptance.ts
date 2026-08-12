@@ -21,6 +21,9 @@ export type ProjectAcceptanceProjection = Readonly<{
     checklist: readonly ProjectUatChecklistItem[];
     requiredSmokeChecks: readonly string[];
     requiredDeploymentEnvironment: 'staging' | 'production';
+    deploymentId: string | null;
+    deploymentLifecycleVersion: 1 | 2 | null;
+    deploymentReleasePackageHash: string | null;
     preparedByActorId: string;
     preparedAt: string;
   }>;
@@ -39,6 +42,8 @@ export type ProjectAcceptanceProjection = Readonly<{
   release: Readonly<{
     state: 'pending' | 'deployment_observed' | 'not_required';
     deploymentId: string | null;
+    blocker: 'uat_release_binding_required' | 'bound_deployment_not_latest' |
+      'bound_deployment_not_observed' | 'bound_deployment_evidence_invalid' | null;
     waiver: Readonly<{actorId: string; reason: string; waivedAt: string}> | null;
   }>;
   completionReady: boolean;
