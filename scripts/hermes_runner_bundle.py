@@ -20,6 +20,7 @@ PNPM_INSTALL = ("install", "--offline", "--frozen-lockfile", "--frozen-store", "
 DIST_FIXED = frozenset(("index.js", "index.d.ts", "hermes-runner-cli.js", "hermes-runner-cli.d.ts",
                         "hermes-executor-cli.js", "hermes-executor-cli.d.ts"))
 DIST_CHUNK = re.compile(r"chunk-[A-Z0-9]{8}\.js")
+DIST_CHUNK_COUNT = 2
 
 def digest(data): return hashlib.sha256(data).hexdigest()
 
@@ -46,7 +47,8 @@ def validate_fs_record(actual_kind, is_link, owner_uid, group_gid, mode, expecte
 def validate_dist_names(names):
     names = set(names)
     chunks = {name for name in names if DIST_CHUNK.fullmatch(name)}
-    if names - DIST_FIXED - chunks or not DIST_FIXED.issubset(names) or len(chunks) != 1 or len(names) != len(DIST_FIXED) + 1:
+    if names - DIST_FIXED - chunks or not DIST_FIXED.issubset(names) or \
+       len(chunks) != DIST_CHUNK_COUNT or len(names) != len(DIST_FIXED) + DIST_CHUNK_COUNT:
         raise ValueError("dist_allowlist")
 
 def collect_dist(root):
