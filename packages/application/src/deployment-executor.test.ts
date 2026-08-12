@@ -30,7 +30,9 @@ describe('deployment executor service', () => {
     const service = createDeploymentExecutorService({store: {claim, heartbeat, complete}, now: () => now,
       tokenGenerator: () => 'l'.repeat(43), nextId: () => randomUUID()});
     const envelope = await service.claim(authorization);
-    expect(envelope).toMatchObject({schemaVersion: 1, jobId: ids.job, deploymentVersion: 2,
+    expect(envelope).toMatchObject({schemaVersion: 1, workspaceId: ids.workspace,
+      executorId: authorization.executorId, registrationId: ids.registration,
+      jobId: ids.job, deploymentVersion: 2,
       releasePackage: {sourceCommit: 'a'.repeat(40)}, leaseToken: 'l'.repeat(43)});
     if (envelope === null) throw new Error('claim');
     now = new Date('2026-08-12T09:01:30.000Z');

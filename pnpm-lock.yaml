@@ -152,6 +152,12 @@ importers:
         specifier: 0.31.10
         version: 0.31.10
 
+  packages/deployment-executor-host:
+    dependencies:
+      '@fai-control-plane/domain':
+        specifier: workspace:*
+        version: link:../domain
+
   packages/domain: {}
 
   packages/integrations:

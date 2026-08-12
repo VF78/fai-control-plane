@@ -93,6 +93,9 @@ export interface DeploymentExecutorStore {
 
 export type DeploymentExecutorClaimEnvelope = Readonly<{
   schemaVersion: 1;
+  workspaceId: string;
+  executorId: string;
+  registrationId: string;
   jobId: string;
   deploymentId: string;
   deploymentVersion: number;
@@ -228,7 +231,9 @@ export const createDeploymentExecutorService = (input: Readonly<{
             !UUID.test(recordValue.approvedByActorId) || !Number.isFinite(recordValue.approvedAt.getTime())) {
             throw new Error('Deployment executor claim record is invalid.');
           }
-          return {schemaVersion: 1, ...recordValue, releasePackage: releasePackage.value,
+          return {schemaVersion: 1, workspaceId: authorization.workspaceId,
+            executorId: authorization.executorId, registrationId: authorization.registrationId,
+            ...recordValue, releasePackage: releasePackage.value,
             approvedAt: recordValue.approvedAt.toISOString(), leaseToken, leaseExpiresAt: leaseExpiresAt.toISOString()};
         });
     },

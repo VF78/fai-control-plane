@@ -1,0 +1,39 @@
+[Unit]
+Description=f(AI) deployment executor host client (adapter unavailable by default)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fai-deployment-executor
+Group=fai-deployment-executor
+Environment=HOME=/var/lib/fai-deployment-executor
+Environment=NODE_OPTIONS=--jitless
+EnvironmentFile=/etc/fai-deployment-executor/executor.env
+ExecStart=/usr/bin/node /opt/fai-control-plane-deployment-executor/releases/@RELEASE_COMMIT@/packages/deployment-executor-host/dist/cli.js
+Restart=on-failure
+RestartSec=15s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadOnlyPaths=/opt/fai-control-plane-deployment-executor/releases/@RELEASE_COMMIT@ /var/lib/fai-deployment-executor/credentials /var/lib/fai-deployment-executor/release-packages
+InaccessiblePaths=/var/lib/fai-hermes-controller /etc/fai-hermes-controller /var/lib/fai-codex-executor /etc/fai-codex-executor /etc/fai-control-plane
+
+[Install]
+# Deliberately absent: activation requires a separately reviewed adapter and explicit operator action.
