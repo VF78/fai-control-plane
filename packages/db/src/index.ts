@@ -72,6 +72,7 @@ export {
   type ProjectExecutionDispatchResult
 } from './project-orchestration';
 export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
+export {createPostgresAgentRoleRequestOutbox} from './agent-role-request-outbox';
 export {
   createPostgresTrackerEvidenceProjectionReader
 } from './tracker-evidence-projection';

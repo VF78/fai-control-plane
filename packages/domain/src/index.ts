@@ -4,6 +4,7 @@ export {
   type TrackerNextActionDecision
 } from './ascon-next-action.ts';
 import type {TrackerNextActionDecision} from './ascon-next-action.ts';
+export * from './agent-role-request.ts';
 export * from './instruction-versioning.ts';
 export * from './delivery-protocol.ts';
 export * from './delivery-journey.ts';

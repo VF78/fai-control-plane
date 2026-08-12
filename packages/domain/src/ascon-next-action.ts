@@ -5,8 +5,8 @@ export type TrackerNextActionDecision = Readonly<{
   issueExternalId: string;
   observedItemVersion: string;
   observedOptionExternalId: string | null;
-  action: 'no_op' | 'human_approval_required' | 'assigned_human' | 'hermes_role_request';
-  hermesRole: 'manager' | 'developer' | 'qa' | null;
+  action: 'no_op' | 'human_approval_required' | 'assigned_human' | 'agent_role_request';
+  agentRole: 'manager' | 'developer' | 'qa' | null;
   reason:
     | 'plan_requested'
     | 'assigned_developer'
@@ -45,7 +45,7 @@ const idempotencyKey = (item: ProjectItem): string =>
 
 /**
  * The complete ASCON status decision table. It emits intent only; transport,
- * retries and execution belong to the Hermes adapter boundary.
+ * retries and execution belong to the configured external-agent adapter boundary.
  */
 export const decideAsconNextAction = (item: ProjectItem): TrackerNextActionDecision => {
   const base = {
@@ -57,22 +57,22 @@ export const decideAsconNextAction = (item: ProjectItem): TrackerNextActionDecis
   };
   switch (item.status.optionExternalId) {
     case ASCON_STATUS.backlog:
-      return {...base, action: 'hermes_role_request', hermesRole: 'manager', reason: 'plan_requested'};
+      return {...base, action: 'agent_role_request', agentRole: 'manager', reason: 'plan_requested'};
     case ASCON_STATUS.ready:
       return item.assignees.length > 0
-        ? {...base, action: 'assigned_human', hermesRole: null, reason: 'assigned_developer'}
-        : {...base, action: 'hermes_role_request', hermesRole: 'developer', reason: 'developer_requested'};
+        ? {...base, action: 'assigned_human', agentRole: null, reason: 'assigned_developer'}
+        : {...base, action: 'agent_role_request', agentRole: 'developer', reason: 'developer_requested'};
     case ASCON_STATUS.inDevelopment:
-      return {...base, action: 'no_op', hermesRole: null, reason: 'development_in_progress'};
+      return {...base, action: 'no_op', agentRole: null, reason: 'development_in_progress'};
     case ASCON_STATUS.qa:
-      return {...base, action: 'hermes_role_request', hermesRole: 'qa', reason: 'qa_requested'};
+      return {...base, action: 'agent_role_request', agentRole: 'qa', reason: 'qa_requested'};
     case ASCON_STATUS.acceptance:
-      return {...base, action: 'human_approval_required', hermesRole: null,
+      return {...base, action: 'human_approval_required', agentRole: null,
         reason: 'product_owner_acceptance_required'};
     case ASCON_STATUS.done:
-      return {...base, action: 'human_approval_required', hermesRole: null,
+      return {...base, action: 'human_approval_required', agentRole: null,
         reason: 'completed_acceptance_required'};
     default:
-      return {...base, action: 'no_op', hermesRole: null, reason: 'status_unmapped'};
+      return {...base, action: 'no_op', agentRole: null, reason: 'status_unmapped'};
   }
 };

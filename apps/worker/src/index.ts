@@ -10,6 +10,7 @@ import {
   createDatabase,
   createPostgresDailyPmReportProducer,
   createPostgresHealthcheckProducer,
+  createPostgresAgentRoleRequestOutbox,
   createPostgresIncomingEventProcessor,
   createPostgresTelegramStatusPublisher,
   createPostgresTelegramStatusResponseOutbox,
@@ -28,6 +29,9 @@ import {
 } from '@fai-control-plane/db/runtime';
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
 import {
+  createHermesApiRunsAdapter,
+  hermesRunsSecretPurpose,
+  hermesRunsSecretScope,
   createTelegramChatAdapter
 } from '@fai-control-plane/integrations/runtime';
 import {
@@ -59,6 +63,8 @@ const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
 const githubSyncEnabled = process.env.GITHUB_SYNC_ENABLED === 'true';
 const telegramStatusResponseEnabled = process.env.TELEGRAM_STATUS_RESPONSE_ENABLED === 'true';
+const hermesApiBaseUrl = process.env.HERMES_API_BASE_URL;
+const hermesApiKeyFile = process.env.HERMES_API_KEY_FILE;
 const telegramIdentitySecretScope = Object.freeze(['telegram:identity:keying']);
 const telegramBotSecretScope = Object.freeze(['telegram:bot:send']);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -125,6 +131,19 @@ const createTelegramFileSecretsProvider = (
   }
 });
 
+const createHermesFileSecretsProvider = (allowedReference: OpaqueSecretRef): SecretsProvider => ({
+  async resolve(reference, purpose) {
+    if (purpose !== hermesRunsSecretPurpose || reference.provider !== allowedReference.provider ||
+      reference.reference !== allowedReference.reference || reference.scope.length !== allowedReference.scope.length ||
+      reference.scope.some((value, index) => value !== allowedReference.scope[index])) throw new Error('Secret reference is not allowed.');
+    const value = (await readFile(allowedReference.reference, 'utf8')).trimEnd();
+    if (value.length === 0 || value.length > 65_536 || /[\0\r\n]/.test(value) || value.trim() !== value) {
+      throw new Error('Hermes secret file is invalid.');
+    }
+    return {value};
+  }
+});
+
 if (!databaseUrl) {
   throw new Error('DATABASE_URL is required');
 }
@@ -148,6 +167,22 @@ const telemetryQueueSender: Readonly<{
   }
 };
 const {db, pool} = createDatabase(databaseUrl);
+if ((hermesApiBaseUrl === undefined) !== (hermesApiKeyFile === undefined)) {
+  throw new Error('HERMES_API_BASE_URL and HERMES_API_KEY_FILE must be configured together.');
+}
+if (hermesApiBaseUrl !== undefined && !githubSyncEnabled) {
+  throw new Error('Hermes role requests require GitHub synchronization.');
+}
+let agentRoleRequests: ReturnType<typeof createPostgresAgentRoleRequestOutbox> | undefined;
+if (hermesApiBaseUrl !== undefined && hermesApiKeyFile !== undefined) {
+  if (!isAbsolute(hermesApiKeyFile)) throw new Error('Hermes secret file path must be absolute.');
+  const credentialRef: OpaqueSecretRef = {provider: 'file', reference: hermesApiKeyFile, scope: hermesRunsSecretScope};
+  agentRoleRequests = createPostgresAgentRoleRequestOutbox(db, createHermesApiRunsAdapter({
+    baseUrl: hermesApiBaseUrl,
+    credentialRef,
+    secrets: createHermesFileSecretsProvider(credentialRef)
+  }));
+}
 const incomingEventProcessor = createPostgresIncomingEventProcessor(db);
 const incomingEventConsumer = createIncomingEventQueueConsumer({
   processor: incomingEventProcessor
@@ -225,8 +260,16 @@ if (telegramStatusResponseEnabled) {
 let telegramStatusPublisherTimer: NodeJS.Timeout | undefined;
 let publishTelegramStatusResponses: (() => Promise<void>) | undefined;
 const githubReconciliation = githubSyncEnabled
-  ? createGitHubReconciliationRuntime(db, pool)
+  ? createGitHubReconciliationRuntime(db, pool, agentRoleRequests)
   : undefined;
+const reconcileGitHub = async (projectId?: string): Promise<void> => {
+  await githubReconciliation!.reconcile(projectId);
+  if (agentRoleRequests === undefined) return;
+  for (let count = 0; count < 10; count += 1) {
+    const result = await agentRoleRequests.publishAvailable();
+    if (result !== 'published') return;
+  }
+};
 
 const server = createServer((request, response) => {
   response.setHeader('Content-Type', 'application/json');
@@ -281,7 +324,7 @@ await boss.work(INCOMING_EVENT_QUEUE, {includeMetadata: true}, async ([job]) => 
       );
       const observed = event.rows[0];
       if (observed?.provider === 'github' && observed.project_id !== null) {
-        await githubReconciliation.reconcile(observed.project_id);
+        await reconcileGitHub(observed.project_id);
       }
     }
     if (telegramStatusResponder !== undefined && publishTelegramStatusResponses !== undefined) {
@@ -326,7 +369,7 @@ if (githubReconciliation !== undefined) {
     if (job === undefined) return;
     return executeDurableJob(GITHUB_RECONCILIATION_QUEUE, job, async () => {
       try {
-        await githubReconciliation.reconcile();
+        await reconcileGitHub();
       } catch (error) {
         const failure = githubReconciliationFailure(error);
         console.error('github reconciliation failed', failure);
@@ -339,7 +382,7 @@ await recoveryScanProducer.run();
 await dailyPmReportProducer.run();
 if (githubReconciliation !== undefined) {
   try {
-    await githubReconciliation.reconcile();
+    await reconcileGitHub();
   } catch (error) {
     const failure = githubReconciliationFailure(error);
     console.error('github reconciliation startup failed', failure);

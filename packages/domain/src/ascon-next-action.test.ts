@@ -11,19 +11,19 @@ const item = (optionExternalId: string | null, assigned = false) => ({
 
 describe('decideAsconNextAction', () => {
   it.each([
-    ['f75ad846', 'hermes_role_request', 'manager'],
-    ['f1d63022', 'hermes_role_request', 'developer'],
+    ['f75ad846', 'agent_role_request', 'manager'],
+    ['f1d63022', 'agent_role_request', 'developer'],
     ['47fc9ee4', 'no_op', null],
-    ['eccb04fa', 'hermes_role_request', 'qa'],
+    ['eccb04fa', 'agent_role_request', 'qa'],
     ['640fe9a8', 'human_approval_required', null],
     ['98236657', 'human_approval_required', null]
   ] as const)('maps the fixed ASCON option %s', (option, action, role) => {
-    expect(decideAsconNextAction(item(option))).toMatchObject({action, hermesRole: role});
+    expect(decideAsconNextAction(item(option))).toMatchObject({action, agentRole: role});
   });
 
   it('keeps an assigned Ready item with its human owner', () => {
     expect(decideAsconNextAction(item('f1d63022', true))).toMatchObject({
-      action: 'assigned_human', hermesRole: null
+      action: 'assigned_human', agentRole: null
     });
   });
 
