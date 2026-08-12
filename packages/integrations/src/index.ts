@@ -5,6 +5,7 @@ export * from './telegram-webhook';
 export * from './telegram-chat';
 export * from './github-repository-read';
 export * from './github-project-status-write';
+export * from './hermes-api-runs';
 export type {
   ChatAdapter,
   TrackerAdapter,

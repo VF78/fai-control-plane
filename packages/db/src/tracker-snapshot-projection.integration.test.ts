@@ -201,7 +201,7 @@ describePostgres('provider-native tracker snapshot projection', () => {
     });
     expect(synchronized).toMatchObject({
       status: 'unchanged',
-      decisions: [{action: 'hermes_role_request', hermesRole: 'developer'}]
+      decisions: [{action: 'agent_role_request', agentRole: 'developer'}]
     });
   });
 

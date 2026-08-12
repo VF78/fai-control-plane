@@ -148,11 +148,21 @@ export type GitHubReconciliationRuntime = Readonly<{
   /** Shared core for both a provider event and the scheduled repair poll. */
   reconcile(projectId?: string): Promise<void>;
 }>;
+export type AgentRoleRequestPreparer = Readonly<{
+  prepareSnapshotDecisions(input: Readonly<{
+    workspaceId: string;
+    projectId: string;
+    actorId: string;
+    snapshot: import('@fai-control-plane/domain').TrackerRepositorySnapshot;
+    decisions: readonly import('@fai-control-plane/domain').TrackerNextActionDecision[];
+  }>): Promise<void>;
+}>;
 
 /** Reconciles only pre-seeded, already-bootstrapped GitHub repository bindings. */
 export const createGitHubReconciliationRuntime = (
   db: Database,
-  pool: Queryable
+  pool: Queryable,
+  agentRoleRequests?: AgentRoleRequestPreparer
 ): GitHubReconciliationRuntime => {
   const workspaceId = requiredUuid('FCP_WORKSPACE_ID');
   const configuredProjectIds: Readonly<Record<ProjectSlug, string>> = {
@@ -337,6 +347,14 @@ export const createGitHubReconciliationRuntime = (
           }
           return fail(failure);
         }
+        const completed = result.result.status === 'replayed' ? result.result.result : result.result;
+        await agentRoleRequests?.prepareSnapshotDecisions({
+          workspaceId: workspace.id,
+          projectId: scope.projectId,
+          actorId: actor.id,
+          snapshot: completed.snapshot,
+          decisions: completed.decisions
+        });
         console.info('github reconciliation', {
           code: 'GITHUB_RECONCILIATION_SNAPSHOT_COMPLETED',
           project,
