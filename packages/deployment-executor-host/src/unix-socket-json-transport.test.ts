@@ -2,11 +2,12 @@ import {createServer} from 'node:http';
 import {chmod, lstat, mkdtemp, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {afterEach, describe, expect, it} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createUnixSocketJsonTransport} from './unix-socket-json-transport';
 
 const servers: ReturnType<typeof createServer>[] = [];
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(servers.splice(0).map((server) =>
     new Promise<void>((resolve) => server.close(() => resolve()))));
 });
@@ -36,6 +37,8 @@ const fixture = async () => {
 
 describe('deployment executor Unix-socket transport', () => {
   it('posts bounded JSON only through the owner-bound socket', async () => {
+    vi.stubGlobal('fetch', () => { throw new Error('global_fetch_must_not_run'); });
+    vi.stubGlobal('Response', class { constructor() { throw new Error('global_response_must_not_run'); } });
     const {transport} = await fixture();
     const response = await transport.post('/api/deployment-executor/heartbeat', {
       authorization: 'Bearer ' + 't'.repeat(32), 'content-type': 'application/json',

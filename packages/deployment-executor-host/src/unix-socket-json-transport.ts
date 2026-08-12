@@ -1,6 +1,12 @@
-import {request as httpRequest} from 'node:http';
 import {lstat, realpath} from 'node:fs/promises';
 import path from 'node:path';
+
+// Node 22's ESM facade enumerates lazy node:http WebSocket exports and initializes
+// undici. Accessing the fixed built-in module loads only the HTTP request API,
+// which remains compatible with the executor's required --jitless boundary.
+const nodeHttp = process.getBuiltinModule('node:http') as typeof import('node:http') | undefined;
+if (nodeHttp === undefined) throw new Error('deployment_executor_transport_http_unavailable');
+const httpRequest = nodeHttp.request;
 
 const ENDPOINTS = new Set([
   '/api/deployment-executor/claim',
@@ -96,11 +102,11 @@ export const createUnixSocketJsonTransport = (
         });
         response.on('error', reject);
         response.on('end', () => {
-          const payload = Buffer.concat(chunks);
-          resolve(new Response(response.statusCode === 204 ? null : payload, {
+          const payload = Buffer.concat(chunks).toString('utf8');
+          resolve(Object.freeze({
             status: response.statusCode ?? 500,
-            headers: {'content-type': response.headers['content-type'] ?? 'application/json'}
-          }));
+            json: async (): Promise<unknown> => JSON.parse(payload) as unknown
+          }) as unknown as Response);
         });
       });
       request.on('error', reject);

@@ -10,7 +10,7 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts --format esm --dts --config tsup.config.ts",
+    "build": "tsup src/index.ts src/cli.ts --format esm --dts --config tsup.config.ts && node scripts/verify-jitless-build.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
