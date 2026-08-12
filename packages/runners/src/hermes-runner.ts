@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {createHermesDirectivePlanner} from './hermes-codex-runtime';
 import {createHermesExecutorTransport} from './hermes-executor-transport';
+import {createLoopbackJsonFetch, isNumericLoopbackHostname} from './loopback-json-fetch';
 import {runWorkstationRunnerOnce, type WorkstationRunnerOnceResult} from './workstation-runner';
 
 const TOKEN = /^[A-Za-z0-9._~+/=-]{32,256}$/;
@@ -26,7 +27,7 @@ const absolute = (value: string, name: string): string => {
 const loopback = (value: string): string => {
   let url: URL;
   try { url = new URL(value); } catch { return fail('invalid_base_url'); }
-  if (url.protocol !== 'http:' || !['127.0.0.1', '::1', 'localhost'].includes(url.hostname) ||
+  if (url.protocol !== 'http:' || !isNumericLoopbackHostname(url.hostname) ||
     url.username !== '' || url.password !== '' || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
     fail('base_url_not_loopback');
   }
@@ -58,7 +59,7 @@ const publishObservation = async (input: Readonly<{
 
 export const runHermesRunnerOnceFromEnvironment = async (
   environment: HermesRunnerEnvironment = process.env,
-  fetcher: typeof fetch = fetch
+  fetcher: typeof fetch = createLoopbackJsonFetch()
 ): Promise<WorkstationRunnerOnceResult> => {
   if (environment.FAI_HERMES_RUNNER_ENABLED !== 'true') fail('disabled');
   const baseUrl = loopback(required(environment, 'FAI_HERMES_RUNNER_BASE_URL'));
@@ -102,12 +103,13 @@ export const runHermesRunnerOnceFromEnvironment = async (
 
 export const runHermesRunnerLoop = async (
   environment: HermesRunnerEnvironment = process.env,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  fetcher: typeof fetch = createLoopbackJsonFetch()
 ): Promise<never> => {
   const intervalMs = Number(required(environment, 'FAI_HERMES_RUNNER_POLL_INTERVAL_MS'));
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 1_000 || intervalMs > 60_000) fail('invalid_poll_interval');
   while (!signal?.aborted) {
-    await runHermesRunnerOnceFromEnvironment(environment);
+    await runHermesRunnerOnceFromEnvironment(environment, fetcher);
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, intervalMs);
       signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, {once: true});
