@@ -21,6 +21,11 @@ DIST_FIXED = frozenset(("index.js", "index.d.ts", "hermes-runner-cli.js", "herme
                         "hermes-executor-cli.js", "hermes-executor-cli.d.ts"))
 DIST_CHUNK = re.compile(r"chunk-[A-Z0-9]{8}\.js")
 DIST_CHUNK_COUNT = 2
+STRICT_CONTROLLER_TREES = (
+    "/var/lib/fai-hermes-controller/credentials",
+    "/var/lib/fai-hermes-controller/hermes",
+    "/var/lib/fai-hermes-controller/state",
+)
 
 def digest(data): return hashlib.sha256(data).hexdigest()
 
@@ -119,10 +124,10 @@ def host_check():
         actual_kind = "file" if stat.S_ISREG(metadata.st_mode) else "directory" if stat.S_ISDIR(metadata.st_mode) else "other"
         validate_fs_record(actual_kind, stat.S_ISLNK(metadata.st_mode), metadata.st_uid, metadata.st_gid,
                            metadata.st_mode, kind, owner_uid, group_gid, mode)
-    for root, owner in (("/var/lib/fai-hermes-controller/credentials", controller),
-                        ("/var/lib/fai-hermes-controller/hermes", controller),
-                        ("/var/lib/fai-hermes-controller/state", controller),
-                        ("/var/lib/fai-codex-executor/codex-home", executor)):
+    # Codex owns its writable HOME and legitimately creates ephemeral helper symlinks there.
+    # Its credential boundary remains the exact, non-symlinked auth.json record checked above.
+    for root in STRICT_CONTROLLER_TREES:
+        owner = controller
         for current, directories, files in os.walk(root, followlinks=False):
             entries = [(item, "directory", 0o700) for item in directories]
             entries += [(item, "file", 0o600) for item in files]

@@ -114,6 +114,16 @@ class BundleTest(unittest.TestCase):
             bundle.validate_fs_record("file", True, 1001, 1001, stat.S_IFLNK | 0o600,
                                       "file", 1001, 1001, 0o600)
 
+    def test_recursive_strictness_stays_on_controller_secrets_not_codex_runtime_home(self):
+        self.assertEqual(set(bundle.STRICT_CONTROLLER_TREES), {
+            "/var/lib/fai-hermes-controller/credentials",
+            "/var/lib/fai-hermes-controller/hermes",
+            "/var/lib/fai-hermes-controller/state",
+        })
+        self.assertNotIn("/var/lib/fai-codex-executor/codex-home", bundle.STRICT_CONTROLLER_TREES)
+        source = MODULE_PATH.read_text()
+        self.assertIn('(\"/var/lib/fai-codex-executor/codex-home/auth.json\", "file"', source)
+
     def test_packaging_is_deterministic_and_requires_clean_commit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"; root.mkdir()
