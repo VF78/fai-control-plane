@@ -15,6 +15,7 @@ MODULE_PATH = Path(__file__).with_name("hermes_runner_bundle.py")
 SPEC = importlib.util.spec_from_file_location("bundle", MODULE_PATH)
 bundle = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bundle)
+DIST_CHUNKS = {"chunk-ABCDEFGH.js", "chunk-IJKLMNOP.js"}
 
 
 def archive_bytes(file_hash=None, extra=None, symlink=False):
@@ -24,7 +25,7 @@ def archive_bytes(file_hash=None, extra=None, symlink=False):
         body = (path + "\n").encode()
         bodies[path] = body
         files.append({"path": path, "sha256": hashlib.sha256(body).hexdigest(), "mode": 0o644})
-    for name in sorted(bundle.DIST_FIXED | {"chunk-ABCDEFGH.js"}):
+    for name in sorted(bundle.DIST_FIXED | DIST_CHUNKS):
         path = "packages/runners/dist/" + name
         body = (path + "\n").encode(); bodies[path] = body
         files.append({"path": path, "sha256": hashlib.sha256(body).hexdigest(), "mode": 0o644})
@@ -127,7 +128,7 @@ class BundleTest(unittest.TestCase):
             commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
             def fake_build(checkout):
                 dist = Path(checkout) / "packages/runners/dist"; dist.mkdir(parents=True)
-                for name in bundle.DIST_FIXED | {"chunk-ABCDEFGH.js"}:
+                for name in bundle.DIST_FIXED | DIST_CHUNKS:
                     (dist / name).write_bytes((name + "\n").encode())
             first = Path(temporary) / "first.tar.gz"; second = Path(temporary) / "second.tar.gz"
             bundle.package(root, commit, first, fake_build); bundle.package(root, commit, second, fake_build)
@@ -150,9 +151,14 @@ class BundleTest(unittest.TestCase):
     def test_dist_rejects_missing_and_extra_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             dist = Path(temporary)
-            for name in bundle.DIST_FIXED | {"chunk-ABCDEFGH.js"}:
+            for name in bundle.DIST_FIXED | DIST_CHUNKS:
                 (dist / name).write_text(name)
             bundle.collect_dist(dist)
+            missing_chunk = next(iter(DIST_CHUNKS))
+            (dist / missing_chunk).unlink()
+            with self.assertRaisesRegex(ValueError, "dist_allowlist"):
+                bundle.collect_dist(dist)
+            (dist / missing_chunk).write_text(missing_chunk)
             (dist / "index.js").unlink()
             with self.assertRaisesRegex(ValueError, "dist_allowlist"):
                 bundle.collect_dist(dist)
@@ -163,7 +169,7 @@ class BundleTest(unittest.TestCase):
 
     def test_dist_rejects_stale_or_tampered_repeat_build(self):
         expected = {name: {"body": name.encode(), "mode": 0o644}
-                    for name in bundle.DIST_FIXED | {"chunk-ABCDEFGH.js"}}
+                    for name in bundle.DIST_FIXED | DIST_CHUNKS}
         stale = {name: dict(value) for name, value in expected.items()}
         stale["hermes-executor-cli.js"]["body"] = b"stale-or-tampered"
         with self.assertRaisesRegex(ValueError, "nondeterministic_dist_hash"):
