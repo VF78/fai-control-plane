@@ -6,7 +6,8 @@ const ids = {workspace: '11111111-1111-4111-8111-111111111111', actor: '22222222
   plan: '55555555-5555-4555-8555-555555555555', materialization: '66666666-6666-4666-8666-666666666666'};
 const body = {_csrf: 'csrf', action: 'request', deploymentId: ids.deployment, projectId: ids.project,
   workItemId: null, planVersionId: ids.plan, materializationId: ids.materialization, environment: 'production',
-  referenceKind: 'commit', reference: 'git-commit:abc', expectedProjectVersion: 1};
+  sourceCommit: 'a'.repeat(40), releasePackageReference: 'artifact:release-package:1',
+  releasePackageSha256: 'b'.repeat(64), expectedProjectVersion: 1};
 const request = (value: unknown) => new Request('https://control.test/api/deployments', {method: 'POST',
   headers: {'content-type': 'application/json'}, body: JSON.stringify(value)});
 const deps = (execute: ReturnType<typeof vi.fn>, requireSession: ReleaseEvidenceCommandDependencies['requireSession'] =
@@ -25,10 +26,14 @@ it('requires CSRF session and emits exact human request/production approval comm
   expect((await releaseEvidenceCommand(request(body), deps(execute))).status).toBe(200);
   expect(execute).toHaveBeenCalledWith(expect.objectContaining({type: 'deployment.request.v1',
     idempotencyKey: `deployment-request:v1:${ids.deployment}:1:${ids.actor}`,
-    payload: expect.objectContaining({environment: 'production', workItemId: null})}));
+    payload: expect.objectContaining({environment: 'production', workItemId: null,
+      reference: {kind: 'commit', reference: `git-commit:${'a'.repeat(40)}`},
+      releasePackage: expect.objectContaining({artifactSha256: 'b'.repeat(64)})})}));
   execute.mockClear();
   await releaseEvidenceCommand(request({_csrf: 'csrf', action: 'approve_production', deploymentId: ids.deployment,
     expectedVersion: 1}), deps(execute));
   expect(execute).toHaveBeenCalledWith(expect.objectContaining({type: 'deployment.production_approve.v1'}));
   expect((await releaseEvidenceCommand(request({...body, observation: {}}), deps(execute))).status).toBe(400);
+  expect((await releaseEvidenceCommand(request({...body,
+    releasePackageReference: 'x'.repeat(513)}), deps(execute))).status).toBe(400);
 });

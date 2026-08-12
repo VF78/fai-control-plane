@@ -6,11 +6,13 @@ import {
   isTrustedActorContext,
   validateDeploymentObservation,
   validateDeploymentReference,
+  validateDeploymentReleasePackage,
   type CanonicalCommandEnvelope,
   type CommandError,
   type DeploymentEnvironment,
   type DeploymentObservation,
-  type DeploymentReference
+  type DeploymentReference,
+  type DeploymentReleasePackage
 } from '@fai-control-plane/domain';
 
 export const DEPLOYMENT_REQUEST_COMMAND = 'deployment.request.v1' as const;
@@ -26,6 +28,7 @@ export type RequestDeploymentCommand = CanonicalCommandEnvelope<typeof DEPLOYMEN
     materializationId: string;
     environment: DeploymentEnvironment;
     reference: DeploymentReference;
+    releasePackage: DeploymentReleasePackage;
     expectedProjectVersion: number;
   }>>;
 export type ApproveProductionDeploymentCommand = CanonicalCommandEnvelope<
@@ -44,7 +47,7 @@ export type DeploymentEvidenceValue = Readonly<{
   environment: DeploymentEnvironment;
   state: 'requested' | 'approved' | 'observed';
   version: number;
-  nextAction: 'approve_production' | 'record_observation' | 'review_observation';
+  nextAction: 'approve_production' | 'await_executor' | 'record_observation' | 'review_observation';
 }>;
 export type DeploymentEvidenceResult = Readonly<{ok: true; value: DeploymentEvidenceValue}> |
   Readonly<{ok: false; error: CommandError}>;
@@ -86,16 +89,19 @@ const envelope = (command: DeploymentEvidenceCommand) => typeof command === 'obj
   uuid.test(command.correlationId) && timestamp(command.issuedAt) && typeof command.idempotencyKey === 'string' &&
   command.idempotencyKey.length > 0 && command.idempotencyKey.length <= 256;
 const positive = (value: unknown) => Number.isSafeInteger(value) && (value as number) > 0;
-const valid = (command: DeploymentEvidenceCommand): boolean => {
+export const validateDeploymentEvidenceCommand = (command: DeploymentEvidenceCommand): boolean => {
   if (!envelope(command) || typeof command.payload !== 'object' || command.payload === null) return false;
   if (command.type === DEPLOYMENT_REQUEST_COMMAND) {
     const payload = command.payload;
+    const releasePackage = validateDeploymentReleasePackage(payload.releasePackage);
     return exact(payload, ['deploymentId', 'projectId', 'workItemId', 'planVersionId',
-      'materializationId', 'environment', 'reference', 'expectedProjectVersion']) &&
+      'materializationId', 'environment', 'reference', 'releasePackage', 'expectedProjectVersion']) &&
       uuid.test(payload.deploymentId) && uuid.test(payload.projectId) &&
       (payload.workItemId === null || uuid.test(payload.workItemId)) && uuid.test(payload.planVersionId) &&
       uuid.test(payload.materializationId) && deploymentEnvironments.includes(payload.environment) &&
       positive(payload.expectedProjectVersion) && validateDeploymentReference(payload.reference).ok &&
+      releasePackage.ok && payload.reference.kind === 'commit' &&
+      payload.reference.reference === `git-commit:${releasePackage.ok ? releasePackage.value.sourceCommit : ''}` &&
       command.idempotencyKey === `deployment-request:v1:${payload.deploymentId}:${payload.expectedProjectVersion}:${command.actor.actorId}`;
   }
   if (command.type === DEPLOYMENT_PRODUCTION_APPROVE_COMMAND) {
@@ -113,7 +119,7 @@ const valid = (command: DeploymentEvidenceCommand): boolean => {
   return false;
 };
 
-const requestHash = (command: DeploymentEvidenceCommand) => createHash('sha256').update(canonicalJson({
+export const hashDeploymentEvidenceCommand = (command: DeploymentEvidenceCommand) => createHash('sha256').update(canonicalJson({
   workspaceId: command.workspaceId,
   idempotencyKey: command.idempotencyKey,
   actorId: command.actor.actorId,
@@ -123,7 +129,7 @@ const requestHash = (command: DeploymentEvidenceCommand) => createHash('sha256')
 
 export const createDeploymentEvidenceService = (store: DeploymentEvidenceStore) => ({
   async execute(command: DeploymentEvidenceCommand): Promise<DeploymentEvidenceExecution> {
-    if (!valid(command)) return {status: 'rejected', error: {
+    if (!validateDeploymentEvidenceCommand(command)) return {status: 'rejected', error: {
       code: 'INVALID_COMMAND', message: 'Deployment evidence command is not canonical.'
     }};
     const observation = command.type === DEPLOYMENT_OBSERVE_RESULT_COMMAND;
@@ -137,7 +143,7 @@ export const createDeploymentEvidenceService = (store: DeploymentEvidenceStore) 
     const decision = authorize(command.actor, observation
       ? {actionCategory: 'write', surface: 'runtime_observation', environment: 'development'}
       : {actionCategory: 'write', surface: 'control_plane', environment: 'development'});
-    const result = await store.execute({command, requestHash: requestHash(command), authorized: decision.ok,
+    const result = await store.execute({command, requestHash: hashDeploymentEvidenceCommand(command), authorized: decision.ok,
       ...(!decision.ok ? {policyError: decision.error} : {})});
     return result.status === 'key_reused' ? {status: 'key_reused', error: {
       code: 'IDEMPOTENCY_KEY_REUSED', message: 'Deployment command key was reused for a different request.'

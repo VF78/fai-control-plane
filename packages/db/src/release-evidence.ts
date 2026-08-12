@@ -5,7 +5,8 @@ import type {
   DeploymentEvidenceResult,
   DeploymentEvidenceStore
 } from '@fai-control-plane/application';
-import {validateDeliveryProtocolDefinition, validateDeploymentObservation, validateDeploymentReference,
+import {hashDeploymentReleasePackage, validateDeliveryProtocolDefinition, validateDeploymentObservation,
+  validateDeploymentReference, validateDeploymentReleasePackage,
   type CommandError, type DeploymentEnvironment} from '@fai-control-plane/domain';
 import * as schema from './schema';
 
@@ -14,6 +15,7 @@ type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 type Command = Parameters<DeploymentEvidenceStore['execute']>[0]['command'];
 const DEPLOYMENT_REQUEST_COMMAND = 'deployment.request.v1' as const;
 const DEPLOYMENT_PRODUCTION_APPROVE_COMMAND = 'deployment.production_approve.v1' as const;
+const deploymentExecutorCapability = (environment: DeploymentEnvironment) => `deploy:runner:${environment}`;
 const fail = (code: CommandError['code'], message: string): DeploymentEvidenceResult =>
   ({ok: false, error: {code, message}});
 const expectedVersion = (command: Command) => command.type === DEPLOYMENT_REQUEST_COMMAND
@@ -42,6 +44,44 @@ const systemAuthority = async (tx: Transaction, workspaceId: string, actorId: st
     eq(schema.actors.type, 'system'), eq(schema.actors.authMode, 'system'), isNull(schema.actors.disabledAt)
   )).limit(1);
   return actor !== undefined;
+};
+const deploymentExecutorRegistration = async (tx: Transaction, input: Readonly<{
+  workspaceId: string; projectId: string; environment: DeploymentEnvironment;
+}>) => {
+  const [registration] = await tx.select({
+    id: schema.deploymentExecutorRegistrations.id,
+    version: schema.deploymentExecutorRegistrations.version,
+    systemActorId: schema.deploymentExecutorRegistrations.systemActorId,
+    enabled: schema.deploymentExecutorRegistrations.enabled,
+    actorType: schema.actors.type,
+    actorAuthMode: schema.actors.authMode,
+    actorDisabledAt: schema.actors.disabledAt,
+    actorCapabilities: schema.actors.capabilities
+  }).from(schema.deploymentExecutorRegistrations)
+    .innerJoin(schema.actors, and(
+      eq(schema.actors.id, schema.deploymentExecutorRegistrations.systemActorId),
+      eq(schema.actors.workspaceId, schema.deploymentExecutorRegistrations.workspaceId)
+    )).where(and(
+      eq(schema.deploymentExecutorRegistrations.workspaceId, input.workspaceId),
+      eq(schema.deploymentExecutorRegistrations.projectId, input.projectId),
+      eq(schema.deploymentExecutorRegistrations.environment, input.environment)
+    )).limit(1).for('update', {of: schema.deploymentExecutorRegistrations});
+  return registration !== undefined && registration.enabled && registration.actorType === 'system' &&
+    registration.actorAuthMode === 'system' && registration.actorDisabledAt === null &&
+    registration.actorCapabilities[deploymentExecutorCapability(input.environment)] === true ? registration : null;
+};
+const queueDeploymentExecutorJob = async (tx: Transaction, input: Readonly<{
+  workspaceId: string; projectId: string; deploymentId: string; deploymentVersion: number;
+  registration: NonNullable<Awaited<ReturnType<typeof deploymentExecutorRegistration>>>;
+  releasePackageHash: string; now: Date;
+}>) => {
+  await tx.insert(schema.deploymentExecutorJobs).values({
+    id: randomUUID(), workspaceId: input.workspaceId, projectId: input.projectId,
+    deploymentId: input.deploymentId, deploymentVersion: input.deploymentVersion,
+    registrationId: input.registration.id, registrationVersion: input.registration.version,
+    systemActorId: input.registration.systemActorId, releasePackageHash: input.releasePackageHash,
+    status: 'queued', version: 1, createdAt: input.now, updatedAt: input.now
+  });
 };
 const releaseReadinessError = async (tx: Transaction, projectId: string, planVersionId: string,
   environment: DeploymentEnvironment, workItemId: string | null): Promise<CommandError | null> => {
@@ -186,6 +226,12 @@ export const createPostgresDeploymentEvidenceStore = (
         }
         const desired = validateDeploymentReference(command.payload.reference);
         if (!desired.ok) { result = desired; return complete(); }
+        const releasePackage = validateDeploymentReleasePackage(command.payload.releasePackage);
+        if (!releasePackage.ok || desired.value.kind !== 'commit' ||
+          desired.value.reference !== `git-commit:${releasePackage.ok ? releasePackage.value.sourceCommit : ''}`) {
+          result = fail('INVALID_COMMAND', 'Deployment requires an exact commit-bound immutable release package.');
+          return complete();
+        }
         const [plan] = await tx.select({id: schema.projectPlanVersions.id})
           .from(schema.projectPlanVersions).where(and(eq(schema.projectPlanVersions.id, command.payload.planVersionId),
             eq(schema.projectPlanVersions.workspaceId, command.workspaceId),
@@ -203,30 +249,43 @@ export const createPostgresDeploymentEvidenceStore = (
         const readiness = await releaseReadinessError(tx, project.id, command.payload.planVersionId,
           command.payload.environment, command.payload.workItemId);
         if (readiness !== null) { result = {ok: false, error: readiness}; return complete(); }
+        const registration = await deploymentExecutorRegistration(tx, {workspaceId: command.workspaceId,
+          projectId: project.id, environment: command.payload.environment});
+        if (registration === null) {
+          result = fail('INVALID_TRANSITION', 'An enabled deployment executor registration is required for this project and environment.');
+          return complete();
+        }
         const [collision] = await tx.select({id: schema.deployments.id}).from(schema.deployments)
           .where(eq(schema.deployments.id, command.payload.deploymentId)).limit(1).for('update');
         if (collision !== undefined) { result = fail('VERSION_CONFLICT', 'Deployment identity already exists.'); return complete(); }
         const now = options.now?.() ?? new Date();
         const production = command.payload.environment === 'production';
+        const releasePackageHash = hashDeploymentReleasePackage(releasePackage.value);
         await tx.insert(schema.deployments).values({id: command.payload.deploymentId,
           workspaceId: command.workspaceId, projectId: project.id, workItemId: command.payload.workItemId,
           environment: command.payload.environment, revision: desired.value.reference,
           referenceKind: desired.value.kind, status: production ? 'requested' : 'approved', externalRef: null,
           planVersionId: command.payload.planVersionId, materializationId: command.payload.materializationId,
+          releasePackage: releasePackage.value, releasePackageHash,
+          deploymentExecutorRegistrationId: registration.id,
+          deploymentExecutorRegistrationVersion: registration.version,
           requestedByActorId: command.actor.actorId, requestedAt: now,
           approvedByActorId: production ? null : command.actor.actorId, approvedAt: production ? null : now,
-          lifecycleVersion: 1, version: 1});
+          lifecycleVersion: 2, version: 1});
+        if (!production) await queueDeploymentExecutorJob(tx, {workspaceId: command.workspaceId,
+          projectId: project.id, deploymentId: command.payload.deploymentId, deploymentVersion: 1,
+          registration, releasePackageHash, now});
         resultVersion = 1;
         result = {ok: true, value: {deploymentId: command.payload.deploymentId, projectId: project.id,
           environment: command.payload.environment, state: production ? 'requested' : 'approved', version: 1,
-          nextAction: production ? 'approve_production' : 'record_observation'}};
+          nextAction: production ? 'approve_production' : 'await_executor'}};
         return complete();
       }
 
       const [deployment] = await tx.select().from(schema.deployments).where(and(
         eq(schema.deployments.id, deploymentId(command)), eq(schema.deployments.workspaceId, command.workspaceId)
       )).limit(1).for('update');
-      if (deployment === undefined || deployment.lifecycleVersion !== 1 ||
+      if (deployment === undefined || ![1, 2].includes(deployment.lifecycleVersion ?? 0) ||
         !['development', 'staging', 'production'].includes(deployment.environment)) {
         result = fail('NOT_FOUND', 'Canonical deployment request was not found.'); return complete();
       }
@@ -242,6 +301,16 @@ export const createPostgresDeploymentEvidenceStore = (
         if (deployment.environment !== 'production' || deployment.status !== 'requested') {
           result = fail('INVALID_TRANSITION', 'Only a pending production request can be approved.'); return complete();
         }
+        const registration = deployment.lifecycleVersion === 2
+          ? await deploymentExecutorRegistration(tx, {workspaceId: command.workspaceId,
+              projectId: deployment.projectId, environment: 'production'}) : null;
+        if (deployment.lifecycleVersion === 2 && (registration === null ||
+          registration.id !== deployment.deploymentExecutorRegistrationId ||
+          registration.version !== deployment.deploymentExecutorRegistrationVersion ||
+          deployment.releasePackageHash === null)) {
+          result = fail('INVALID_TRANSITION', 'The deployment executor registration changed; create a new deployment request.');
+          return complete();
+        }
         const now = options.now?.() ?? new Date();
         const [updated] = await tx.update(schema.deployments).set({status: 'approved',
           approvedByActorId: command.actor.actorId, approvedAt: now, version: deployment.version + 1,
@@ -249,12 +318,22 @@ export const createPostgresDeploymentEvidenceStore = (
             eq(schema.deployments.version, command.payload.expectedVersion), eq(schema.deployments.status, 'requested')))
           .returning({version: schema.deployments.version});
         if (updated === undefined) throw new Error('deployment_production_approval_cas');
+        if (deployment.lifecycleVersion === 2 && registration !== null && deployment.releasePackageHash !== null) {
+          await queueDeploymentExecutorJob(tx, {workspaceId: command.workspaceId, projectId: deployment.projectId,
+            deploymentId: deployment.id, deploymentVersion: updated.version, registration,
+            releasePackageHash: deployment.releasePackageHash, now});
+        }
         resultVersion = updated.version;
         result = {ok: true, value: {deploymentId: deployment.id, projectId: deployment.projectId,
-          environment: 'production', state: 'approved', version: updated.version, nextAction: 'record_observation'}};
+          environment: 'production', state: 'approved', version: updated.version,
+          nextAction: deployment.lifecycleVersion === 2 ? 'await_executor' : 'record_observation'}};
         return complete();
       }
 
+      if (deployment.lifecycleVersion === 2) {
+        result = fail('INVALID_TRANSITION', 'Privileged deployment results must arrive through the exact executor job lease.');
+        return complete('deny');
+      }
       if (!await systemAuthority(tx, command.workspaceId, command.actor.actorId)) {
         result = fail('CAPABILITY_DENIED', 'Deployment observations require an active trusted system identity.');
         return complete('deny');

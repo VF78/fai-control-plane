@@ -20,7 +20,8 @@ import type {
   AccessResourceType
 } from './access.ts';
 import type {RuntimeRegistration} from './runtime-registration.ts';
-import type {DeploymentEnvironment, DeploymentObservation, DeploymentReference} from './release-evidence.ts';
+import type {DeploymentEnvironment, DeploymentObservation, DeploymentReference,
+  DeploymentReleasePackage} from './release-evidence.ts';
 
 export * from './access.ts';
 export * from './runtime-registration.ts';
@@ -1878,6 +1879,19 @@ export type CanonicalDeploymentProjection = Readonly<{
     materializationId: string;
     workItemId: string | null;
   }>>;
+  releasePackage: ProjectionAvailability<Readonly<{
+    value: DeploymentReleasePackage;
+    sha256: string;
+  }>>;
+  executorJob: ProjectionAvailability<Readonly<{
+    id: string;
+    status: 'queued' | 'running' | 'succeeded' | 'failed' | 'rolled_back';
+    attempt: number;
+    executorId: string | null;
+    heartbeatAt: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+  }>>;
   requested: ProjectionAvailability<Readonly<{
     by: ProjectionAvailability<Readonly<{id: string; displayName: string; type: ActorType; role: string}>>;
     at: string;
@@ -1888,7 +1902,8 @@ export type CanonicalDeploymentProjection = Readonly<{
     at: string | null;
   }>>;
   externalEvidence: ProjectionAvailability<DeploymentObservation>;
-  nextAction: 'approve_production' | 'record_observation' | 'review_observation' | 'migrate_legacy_record';
+  nextAction: 'approve_production' | 'await_executor' | 'record_observation' |
+    'review_observation' | 'migrate_legacy_record';
 }>;
 
 export type ProjectTaskProjectionTask = Readonly<{

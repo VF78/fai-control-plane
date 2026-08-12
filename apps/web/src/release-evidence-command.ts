@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {DEPLOYMENT_PRODUCTION_APPROVE_COMMAND, DEPLOYMENT_REQUEST_COMMAND} from '@fai-control-plane/application';
-import {deploymentEnvironments, deploymentReferenceKinds} from '@fai-control-plane/domain';
+import {deploymentEnvironments} from '@fai-control-plane/domain';
 import {requireOperatorSession} from './operator-auth-runtime';
 import {getDeliveryRuntime} from './delivery-runtime';
 
@@ -54,21 +54,27 @@ export async function releaseEvidenceCommand(request: Request,
       correlationId: overrides.nextId(), issuedAt: overrides.now().toISOString(), actor: actor.value};
     let result;
     if (body.action === 'request' && exact(body, ['_csrf', 'action', 'deploymentId', 'projectId',
-      'workItemId', 'planVersionId', 'materializationId', 'environment', 'referenceKind', 'reference',
+      'workItemId', 'planVersionId', 'materializationId', 'environment', 'sourceCommit',
+      'releasePackageReference', 'releasePackageSha256',
       'expectedProjectVersion']) && typeof body.deploymentId === 'string' && UUID.test(body.deploymentId) &&
       typeof body.projectId === 'string' && UUID.test(body.projectId) &&
       (body.workItemId === null || typeof body.workItemId === 'string' && UUID.test(body.workItemId)) &&
       typeof body.planVersionId === 'string' && UUID.test(body.planVersionId) &&
       typeof body.materializationId === 'string' && UUID.test(body.materializationId) &&
       deploymentEnvironments.includes(body.environment as never) &&
-      deploymentReferenceKinds.includes(body.referenceKind as never) && typeof body.reference === 'string' &&
+      typeof body.sourceCommit === 'string' && /^[0-9a-f]{40}$/.test(body.sourceCommit) &&
+      typeof body.releasePackageReference === 'string' && body.releasePackageReference.length <= 512 &&
+      typeof body.releasePackageSha256 === 'string' &&
+      /^[0-9a-f]{64}$/.test(body.releasePackageSha256) &&
       Number.isSafeInteger(body.expectedProjectVersion) && (body.expectedProjectVersion as number) > 0) {
       result = await runtime.deploymentEvidence.execute({...base, type: DEPLOYMENT_REQUEST_COMMAND,
         idempotencyKey: `deployment-request:v1:${body.deploymentId}:${body.expectedProjectVersion}:${actor.value.actorId}`,
         payload: {deploymentId: body.deploymentId, projectId: body.projectId, workItemId: body.workItemId as string | null,
           planVersionId: body.planVersionId, materializationId: body.materializationId,
           environment: body.environment as 'development' | 'staging' | 'production',
-          reference: {kind: body.referenceKind as 'artifact' | 'commit' | 'reference', reference: body.reference},
+          reference: {kind: 'commit', reference: `git-commit:${body.sourceCommit}`},
+          releasePackage: {schemaVersion: 1, sourceCommit: body.sourceCommit,
+            artifactReference: body.releasePackageReference, artifactSha256: body.releasePackageSha256},
           expectedProjectVersion: body.expectedProjectVersion as number}});
     } else if (body.action === 'approve_production' && exact(body, ['_csrf', 'action', 'deploymentId',
       'expectedVersion']) && typeof body.deploymentId === 'string' && UUID.test(body.deploymentId) &&

@@ -21,7 +21,10 @@ describe('deployment evidence service', () => {
     const request = await service.execute({...base(user.value), type: DEPLOYMENT_REQUEST_COMMAND,
       idempotencyKey: `deployment-request:v1:${ids.deployment}:1:${ids.actor}`, payload: {deploymentId: ids.deployment,
         projectId: ids.project, workItemId: null, planVersionId: ids.plan, materializationId: ids.materialization,
-        environment: 'production', reference: {kind: 'commit', reference: 'git-commit:abc'}, expectedProjectVersion: 1}});
+        environment: 'production', reference: {kind: 'commit', reference: `git-commit:${'a'.repeat(40)}`},
+        releasePackage: {schemaVersion: 1, sourceCommit: 'a'.repeat(40),
+          artifactReference: 'artifact:release-package:1', artifactSha256: 'b'.repeat(64)},
+        expectedProjectVersion: 1}});
     expect(request.status).toBe('completed');
     expect((await service.execute({...base(user.value), type: DEPLOYMENT_PRODUCTION_APPROVE_COMMAND,
       idempotencyKey: `deployment-production-approve:v1:${ids.deployment}:1:${ids.actor}`,

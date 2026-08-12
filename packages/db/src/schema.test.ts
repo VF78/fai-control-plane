@@ -161,6 +161,8 @@ describe('canonical schema foundation', () => {
       schema.actorExternalIdentities,
       schema.resourceAccessGrants,
       schema.runtimeRegistrations,
+      schema.deploymentExecutorRegistrations,
+      schema.deploymentExecutorJobs,
       schema.projectExecutions
     ]) {
       expect(getTableColumns(table)).toHaveProperty('version');
@@ -182,6 +184,20 @@ describe('canonical schema foundation', () => {
         'completed_at'
       ])
     );
+  });
+
+  it('keeps privileged deployment execution separate from AgentRun state and secrets', () => {
+    const deploymentColumns = Object.values(getTableColumns(schema.deployments)).map(({name}) => name);
+    expect(deploymentColumns).toEqual(expect.arrayContaining([
+      'release_package', 'release_package_hash', 'deployment_executor_registration_id',
+      'deployment_executor_registration_version'
+    ]));
+    const jobColumns = Object.values(getTableColumns(schema.deploymentExecutorJobs)).map(({name}) => name);
+    expect(jobColumns).toEqual(expect.arrayContaining([
+      'deployment_id', 'registration_id', 'lease_token_hash', 'completion_replay_hash',
+      'result_hash', 'observation_reference'
+    ]));
+    expect(jobColumns).not.toEqual(expect.arrayContaining(['task_packet_id', 'agent_profile_id', 'credential']));
   });
 
   it('persists bounded evidence lifecycle fields on snapshot-backed facts', () => {
