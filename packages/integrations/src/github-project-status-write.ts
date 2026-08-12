@@ -1,8 +1,8 @@
 import type {
   SecretsProvider,
-  TaskTrackerTransitionPort,
-  TrackerWorkItemTransitionInput,
-  TrackerWorkItemTransitionResult
+  TrackerProjectItemUpdateInput,
+  TrackerProjectItemUpdatePort,
+  TrackerProjectItemUpdateResult
 } from '@fai-control-plane/domain';
 import {githubRepositoryScopeDefinitions} from './github-contract';
 
@@ -36,18 +36,17 @@ const object = (value: unknown): Record<string, unknown> | null =>
     : null;
 
 const optionFor = (
-  input: TrackerWorkItemTransitionInput
-): Readonly<{fullName: 'VF78/MSA' | 'VF78/ascon'; optionId: string}> | null => {
+  input: TrackerProjectItemUpdateInput
+): string | null => {
   const scope = githubRepositoryScopeDefinitions.find((candidate) =>
     `github:repository:${candidate.repositoryId}` === input.target.repositoryExternalId &&
     candidate.projectNodeId === input.target.projectExternalId &&
     candidate.projectStatusFieldNodeId === input.target.fieldExternalId
   );
   if (scope === undefined) return null;
-  const option = Object.entries(scope.projectStatusOptionMap).find(
-    ([, status]) => status === input.status
-  );
-  return option === undefined ? null : {fullName: scope.fullName, optionId: option[0]};
+  return scope.projectStatusOptions[input.target.optionExternalId] === undefined
+    ? null
+    : input.target.optionExternalId;
 };
 
 const headers = (token: string): Readonly<Record<string, string>> => ({
@@ -131,7 +130,7 @@ const graphql = async (
 
 const observedOption = (
   data: Record<string, unknown>,
-  input: TrackerWorkItemTransitionInput
+  input: TrackerProjectItemUpdateInput
 ): Readonly<{status: 'observed'; optionId: string | null}> | Readonly<{status: 'identity_denied'}> => {
   const item = object(data.node);
   const project = item === null ? null : object(item.project);
@@ -164,15 +163,11 @@ const observedOption = (
 export const createGitHubProjectStatusWriteAdapter = (input: Readonly<{
   secretsProvider: SecretsProvider;
   fetch?: GitHubFetch;
-}>): TaskTrackerTransitionPort => {
+}>): TrackerProjectItemUpdatePort => {
   const fetch = input.fetch ?? ((url, init) => globalThis.fetch(url, init));
   return {
     provider: 'github',
-    capabilities: {
-      readWorkItems: false,
-      writeWorkItems: true
-    },
-    async transitionWorkItem(command): Promise<TrackerWorkItemTransitionResult> {
+    async updateProjectItem(command): Promise<TrackerProjectItemUpdateResult> {
       const target = optionFor(command);
       if (
         target === null || !allowedProjectNodeIds.has(command.target.projectExternalId) ||
@@ -199,20 +194,20 @@ export const createGitHubProjectStatusWriteAdapter = (input: Readonly<{
       if (before.status !== 'ok') return before;
       const observedBefore = observedOption(before.data, command);
       if (observedBefore.status === 'identity_denied') return observedBefore;
-      if (observedBefore.optionId === target.optionId) {
+      if (observedBefore.optionId === target) {
         return {status: 'confirmed', receipt: {
           verification: 'read_after_write',
           projectItemExternalId: command.target.projectItemExternalId,
-          optionExternalId: target.optionId,
+          optionExternalId: target,
           clientMutationId: command.mutationId
         }};
       }
-      if (observedBefore.optionId !== command.expectedProviderOptionId) return {status: 'stale'};
+      if (observedBefore.optionId !== command.expectedOptionExternalId) return {status: 'stale'};
       const updated = await graphql(fetch, token, updateStatusMutation, {
         projectId: command.target.projectExternalId,
         itemId: command.target.projectItemExternalId,
         fieldId: command.target.fieldExternalId,
-        optionId: target.optionId,
+        optionId: target,
         clientMutationId: command.mutationId
       });
       if (updated.status !== 'ok') return updated;
@@ -228,11 +223,11 @@ export const createGitHubProjectStatusWriteAdapter = (input: Readonly<{
       if (after.status !== 'ok') return after;
       const observedAfter = observedOption(after.data, command);
       if (observedAfter.status === 'identity_denied') return observedAfter;
-      return observedAfter.optionId === target.optionId
+      return observedAfter.optionId === target
         ? {status: 'confirmed', receipt: {
           verification: 'read_after_write',
           projectItemExternalId: command.target.projectItemExternalId,
-          optionExternalId: target.optionId,
+          optionExternalId: target,
           clientMutationId: command.mutationId
         }}
         : {status: 'stale'};

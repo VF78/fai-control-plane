@@ -791,6 +791,7 @@ export type ProjectData = Readonly<{
   runnerQueueEnabled: boolean;
   autonomousQaTransportAvailable?: boolean;
   deployments: readonly import('@fai-control-plane/domain').CanonicalDeploymentProjection[];
+  tracker: import('@fai-control-plane/domain').ProjectTaskProjection;
   setup?: Readonly<{
     id: string;
     state: 'pending' | 'in_progress' | 'blocked';
@@ -941,7 +942,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
   const [project] = await scopedProjects(db, [scope]);
   if (project === undefined) return null;
   const slug = project.slug;
-  const [setups, snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations, execution, deploymentProjection] = await Promise.all([
+  const [setups, snapshots, operations, items, bindings, repositoryScopes, availableProfiles, packetFacts, runFacts, approvalFacts, protocolRows, journeys, journeyEvidence, members, scopeBaselines, scopeOutcomes, scopeObservations, execution, trackerProjection] = await Promise.all([
     db.select({id: projectSetups.id, state: projectSetups.state, version: projectSetups.version,
       lastErrorCode: projectSetups.lastErrorCode, configuration: projectSetups.configuration})
       .from(projectSetups).where(eq(projectSetups.projectId, project.id)).limit(1),
@@ -1053,6 +1054,7 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     loadProjectExecutionProjection(db, project.workspaceId, project.id),
     createPostgresProjectTaskProjectionReader(db).read({workspaceId: project.workspaceId, projectId: project.id})
   ]);
+  if (trackerProjection === null) return null;
   const scopeLinks = scopeOutcomes.length === 0 ? [] : await db.select({
     outcomeId: workItemScopeOutcomes.outcomeId,
     workItemId: workItemScopeOutcomes.workItemId
@@ -1224,7 +1226,8 @@ export const loadProjectData = (scope: AuthorizedProjectScope): Promise<Operator
     project,
     runnerQueueEnabled: runnerActivationEnabled(),
     autonomousQaTransportAvailable,
-    deployments: deploymentProjection?.project.deployments ?? [],
+    deployments: [],
+    tracker: trackerProjection,
     setup: setups[0] === undefined ? null : {
       ...setups[0], state: setups[0].state as 'pending' | 'in_progress' | 'blocked'
     },

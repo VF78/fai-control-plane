@@ -9,12 +9,131 @@ import {
   type AccessData
 } from './operator-data';
 import {workspaceRoute} from './operator-workspace-route';
-import {WorkspaceShell, type WorkspaceData} from './workspace-ui';
+import type {ProjectData} from './operator-data';
+import {WorkspaceShell as ProviderWorkspaceShell, type WorkspaceData} from './workspace-ui';
 import {ProjectPlanControls} from './project-plan-controls';
 import {RiskDispositionControls} from './risk-disposition-controls';
 import {ProjectExecutionControls} from './project-execution-controls';
 
 vi.mock('next/navigation', () => ({useRouter: () => ({refresh: vi.fn()})}));
+
+const statusName = (status: string): string => ({
+  backlog: 'Backlog', ready: 'Ready', in_dev: 'In Dev', qa: 'QA',
+  acceptance: 'Acceptance', done: 'Done'
+}[status] ?? status);
+
+/** Keeps unrelated historical UI fixtures focused while task screens use provider facts. */
+const withProviderMirror = (project: ProjectData): ProjectData => {
+  if ((project as Partial<ProjectData>).tracker !== undefined) return project;
+  const repository = project.project.slug === 'ascon' ? 'VF78/ascon' : 'VF78/MSA';
+  return {
+    ...project,
+    runnerQueueEnabled: project.runnerQueueEnabled ?? false,
+    deployments: project.deployments ?? [],
+    tracker: {
+      project: {
+        id: project.project.id,
+        name: project.project.name,
+        slug: project.project.slug,
+        version: project.project.version ?? 1,
+        source: {provider: 'github', repository, url: `https://github.com/${repository}`},
+        observedAt: project.synchronizedAt?.toISOString() ?? null,
+        freshness: project.synchronizedAt === null ? 'unavailable' : 'fresh',
+        error: project.synchronizedAt === null ? 'provider_snapshot_unavailable' : null
+      },
+      tasks: project.workItems.map((item, index) => ({
+        id: item.id,
+        issueExternalId: `github:issue:${index + 1}`,
+        title: item.title,
+        requirements: item.summary,
+        state: item.status === 'done' ? 'closed' : 'open',
+        status: {optionExternalId: null, optionName: statusName(item.status)},
+        assignees: item.owner === null ? [] : [{externalId: `github:user:${item.owner}`, login: item.owner}],
+        targetDate: null,
+        parentIssueExternalId: null,
+        subIssueExternalIds: [],
+        dependencyExternalIds: [],
+        sourceUrl: item.externalUrl ?? `https://github.com/${repository}/issues/${index + 1}`,
+        observedVersion: `github:test:${item.id}`
+      })),
+      pullRequests: [],
+      checks: []
+    }
+  };
+};
+
+const normalizeWorkspaceData = (data: WorkspaceData): WorkspaceData => ({
+  ...data,
+  project: data.project?.state === 'ready' && data.project.data !== null
+    ? {...data.project, data: withProviderMirror(data.project.data)}
+    : data.project,
+  projectIndex: data.projectIndex.map(withProviderMirror)
+});
+
+function WorkspaceShell(props: Parameters<typeof ProviderWorkspaceShell>[0]) {
+  return createElement(ProviderWorkspaceShell, {...props, data: normalizeWorkspaceData(props.data)});
+}
+
+const providerTask = (
+  id: string,
+  title: string,
+  optionName = 'In Dev'
+): ProjectData['tracker']['tasks'][number] => ({
+  id,
+  issueExternalId: `github:issue:${id}`,
+  title,
+  requirements: `Requirements for ${title}`,
+  state: optionName === 'Done' ? 'closed' : 'open',
+  status: {optionExternalId: `option:${optionName}`, optionName},
+  assignees: [],
+  targetDate: null,
+  parentIssueExternalId: null,
+  subIssueExternalIds: [],
+  dependencyExternalIds: [],
+  sourceUrl: `https://github.com/VF78/MSA/issues/${id}`,
+  observedVersion: `github:item:${id}`
+});
+
+const providerProject = (
+  tasks: readonly ProjectData['tracker']['tasks'][number][] = [],
+  input: Readonly<{name?: string; slug?: 'msa' | 'ascon'; error?: string | null}> = {}
+): ProjectData => {
+  const name = input.name ?? 'MSA';
+  const slug = input.slug ?? 'msa';
+  const observedAt = new Date('2026-08-12T12:00:00.000Z');
+  const repository = slug === 'ascon' ? 'VF78/ascon' : 'VF78/MSA';
+  return {
+    project: {id: `${slug}-id`, workspaceId: 'workspace-1', name, slug,
+      description: null, defaultBranch: 'main', version: 1, updatedAt: observedAt},
+    runnerQueueEnabled: false,
+    deployments: [],
+    tracker: {
+      project: {id: `${slug}-id`, name, slug, version: 1,
+        source: {provider: 'github', repository, url: `https://github.com/${repository}`},
+        observedAt: observedAt.toISOString(), freshness: 'fresh', error: input.error ?? null},
+      tasks,
+      pullRequests: [],
+      checks: []
+    },
+    agentProfiles: [],
+    snapshot: null,
+    synchronizedAt: observedAt,
+    protocol: null,
+    execution: {projectId: `${slug}-id`, status: 'stopped', version: 0, selection: null,
+      dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null,
+      completedAt: null, updatedAt: null},
+    workItems: []
+  } as unknown as ProjectData;
+};
+
+const projectWorkspace = (project: ProjectData): WorkspaceData => ({
+  portfolio: {state: 'unconfigured'},
+  access: {state: 'unconfigured'},
+  project: {state: 'ready', data: project},
+  runs: null,
+  health: null,
+  projectIndex: [project]
+});
 
 it('renders the canonical risk decision controls in Russian', () => {
   const markup = renderToStaticMarkup(createElement(RiskDispositionControls, {
@@ -45,31 +164,24 @@ it('maps only canonical workspace routes and preserves scope on deep links', () 
   expect(workspaceRoute(['people'], {})).toMatchObject({screen: 'people', project: null});
 });
 
-it('renders the Russian source-draft-approval lifecycle under project setup', () => {
-  const now = new Date('2026-08-09T10:00:00.000Z');
+it('keeps project setup read-only around the GitHub binding', () => {
   const project = {
-    project: {id: '22222222-2222-4222-8222-222222222222', workspaceId: '11111111-1111-4111-8111-111111111111', name: 'Проект', slug: 'project', description: null, defaultBranch: 'main', updatedAt: now},
-    setup: {id: '33333333-3333-4333-8333-333333333333', state: 'pending', version: 1, lastErrorCode: null, configuration: {repositoryBinding: 'none', trackerBinding: 'none', internalChat: 'none', clientChat: 'none', executionMode: 'manual', agentProfileId: null}},
-    plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null},
-    agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []
+    ...providerProject(),
+    setup: {id: 'setup-1', state: 'pending' as const, version: 1, lastErrorCode: null,
+      configuration: {repositoryBinding: 'link_existing' as const, trackerBinding: 'link_existing' as const,
+        internalChat: 'none' as const, clientChat: 'none' as const, executionMode: 'manual' as const,
+        agentProfileId: null}}
   };
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'setup', project: 'project', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data: {
-    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf', project: {state: 'ready', data: project}
-  } as unknown as WorkspaceData}));
-  expect(markup).toContain('План проекта');
-  expect(markup).toContain('Исходные материалы');
-  expect(markup).toContain('Готовность досье');
-  expect(markup).toContain('Добавьте источник: паспорт проекта.');
-  expect(markup).toContain('Архитектура решения');
-  expect(markup).toContain('неизменяемом протоколе UAT');
-  expect(markup).toContain('Категория');
-  expect(markup).toContain('.txt, .md, .json, .pdf, .docx');
-  expect(markup).toContain('accept=".txt,.md,.json,.pdf,.docx"');
-  expect(markup).toContain('Черновик плана');
-  expect(markup).toContain('Утверждение Product Owner');
-  expect(markup).not.toContain('Сгенерировать');
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'setup'], {})!,
+    data: projectWorkspace(project)
+  }));
+  expect(markup).toContain('Задачи, статусы, назначения, даты и зависимости изменяются в GitHub Project');
+  expect(markup).toContain('Открыть GitHub Project');
+  expect(markup).not.toContain('План проекта');
+  expect(markup).not.toContain('Исходные материалы');
+  expect(markup).not.toContain('Материализовать');
 });
-
 it('distinguishes edit-only delivery authority from Product Owner approval', () => {
   const markup = renderToStaticMarkup(createElement(ProjectPlanControls, {
     projectId: '22222222-2222-4222-8222-222222222222',
@@ -340,95 +452,50 @@ it('keeps the web-first workspace IA and honest unavailable state', () => {
   expect(markup).not.toContain('Provider ID');
 });
 
-it('renders the persisted weighted scope baseline without deriving progress from task counts', () => {
-  const observedAt = new Date('2026-08-04T15:02:00.000Z');
-  const data = {
-    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
-    project: {state: 'ready', data: {
-      project: {id: 'msa-id', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: observedAt},
-      agentProfiles: [], snapshot: {health: 'yellow', capturedAt: observedAt}, synchronizedAt: observedAt, protocol: null,
-      execution: {projectId: 'msa-id', status: 'stopped', version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null},
-      workItems: [],
-      scopeBaseline: {id: 'baseline-1', version: 1, approvedAt: observedAt, updatedAt: observedAt, outcomes: [
-        {key: 'accepted', title: 'Принятый результат', weight: 45, state: 'accepted', acceptedBy: 'Vladimir', acceptedAt: observedAt, evidenceReference: '#91'},
-        {key: 'review', title: 'Результат на проверке', weight: 15, state: 'review', acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
-        {key: 'progress', title: 'Результат в работе', weight: 25, state: 'in_progress', acceptedBy: null, acceptedAt: null, evidenceReference: '#91'},
-        {key: 'planned', title: 'Результат не начат', weight: 15, state: 'not_started', acceptedBy: null, acceptedAt: null, evidenceReference: '#91'}
-      ], checkpoint: {title: 'Совместный E2E-сценарий и бизнес-приёмка', status: 'in_dev', owner: 'Vladimir', targetAt: null}, observations: [{acceptedWeight: 12, totalWeight: 80, observedAt: new Date('2026-08-01T15:02:00.000Z')}, {acceptedWeight: 45, totalWeight: 100, observedAt}]}
-    }}
-  } as unknown as WorkspaceData;
+it('keeps project overview on provider facts instead of a local progress surrogate', () => {
+  const project = {
+    ...providerProject([providerTask('1', 'Provider task')]),
+    scopeBaseline: {id: 'baseline-1', version: 1, approvedAt: new Date(), updatedAt: new Date(),
+      checkpoint: null, observations: [], outcomes: [{key: 'accepted', title: 'Legacy outcome',
+        weight: 100, state: 'accepted' as const, acceptedBy: 'Vladimir', acceptedAt: new Date(),
+        evidenceReference: '#91'}]}
+  };
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: {screen: 'overview', project: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data
+    route: workspaceRoute(['projects', 'msa', 'overview'], {})!,
+    data: projectWorkspace(project)
   }));
-
-  expect(markup).toContain('45 / 100');
-  expect(markup).toContain('Принято 45');
-  expect(markup).toContain('Совместный E2E-сценарий и бизнес-приёмка');
-  expect(markup).toContain('График принятого скопа: 45 из 100');
-  expect(markup).not.toContain('Task lifecycle');
+  expect(markup).toContain('Источник истины');
+  expect(markup).toContain('Read mirror, без локального task lifecycle');
+  expect(markup).toContain('Provider task');
+  expect(markup).not.toContain('Legacy outcome');
+  expect(markup).not.toContain('Управленческий маршрут');
 });
-
-it('does not offer agent activation to a project owner without the exact write capability', () => {
-    const actorId = '00000000-0000-4000-8000-000000000090';
-    const selection = {planVersionId: 'plan-1', workItemId: 'work-1', title: 'Автономная работа', workItemVersion: 1,
-      protocolId: 'protocol-1', protocolVersion: 1, journeyVersion: 1, stageKey: 'execute', stageName: 'Исполнение',
-      executionMode: 'autonomous' as const, responsibleActor: {id: 'agent-1', displayName: 'Codex', type: 'agent' as const, agentProfileId: 'profile-1'},
-      boundary: 'autonomous_ready' as const};
-    const accessData = {actors: [{id: actorId, displayName: 'Owner', type: 'human' as const,
-      role: 'developer', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1',
-      project: 'MSA', projectSlug: 'msa', actorId, roles: ['project_owner'], active: true, version: 1}],
-    externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [],
-    sharing: {enabled: false, projects: [], grants: []}};
-    const data = {portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
-      csrfToken: 'csrf', operatorActorId: actorId,
-      access: {state: 'ready', data: accessData},
-      project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1',
-        name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()},
-      runnerQueueEnabled: true, deployments: [], agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: [],
-      execution: {projectId: 'project-1', status: 'running', version: 1, selection, dispatch: null,
-        blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null}}}
-    } as unknown as WorkspaceData;
-    const route = {screen: 'overview' as const, project: 'msa' as const, taskId: null, runId: null,
-      agentId: null, scope: {environment: null, from: null, to: null}};
-    const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route, data}));
-    expect(markup).not.toContain('Подготовить запуск агента');
-    expect(markup).toContain('Нужна capability write:control_plane:development');
-    const permitted = renderToStaticMarkup(createElement(WorkspaceShell, {route, data: {
-      ...data, access: {state: 'ready', data: {...accessData, actors: [{...accessData.actors[0]!,
-        capabilities: {'write:control_plane:development': true}}]}}
-    } as unknown as WorkspaceData}));
-    expect(permitted).toContain('Подготовить запуск агента');
-    if (data.project?.state !== 'ready' || data.project.data === null) throw new Error('Expected ready project data.');
-    const disabled = renderToStaticMarkup(createElement(WorkspaceShell, {route, data: {
-      ...data, access: {state: 'ready', data: {...accessData, actors: [{...accessData.actors[0]!,
-        capabilities: {'write:control_plane:development': true}}]}}, project: {state: 'ready', data: {
-        ...data.project.data, runnerQueueEnabled: false}}
-    } as unknown as WorkspaceData}));
-    expect(disabled).not.toContain('Подготовить запуск агента');
-    expect(disabled).toContain('очередь runner или локальный transport не включены');
+it('does not expose local execution activation from the provider overview', () => {
+  const project = providerProject([providerTask('1', 'Provider task')]);
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'overview'], {})!,
+    data: projectWorkspace(project)
+  }));
+  expect(markup).toContain('Источник истины');
+  expect(markup).not.toContain('Подготовить запуск агента');
+  expect(markup).not.toContain('Запустить исполнение');
+  expect(markup).not.toContain('write:control_plane:development');
 });
-
-it('renders a compact eight-step management route at the 390px breakpoint structure', () => {
-  const data = {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [],
-    project: {state: 'ready', data: {project: {id: 'ascon-id', workspaceId: 'workspace-1', name: 'ASCON', slug: 'ascon', description: null, defaultBranch: 'main', updatedAt: new Date()},
-      runnerQueueEnabled: false, deployments: [{id: 'deployment-failed', version: 1, revision: 'commit:failed',
-        desired: {availability: 'unknown'}, requested: {availability: 'unknown'}, approval: {availability: 'unknown'},
-        releasePackage: {availability: 'unknown'}, executorJob: {availability: 'unknown'},
-        externalEvidence: {availability: 'known', value: {outcome: 'failed', completedAt: new Date().toISOString(),
-          smokeChecks: [], rollback: {outcome: 'failed', reference: 'rollback:failed'}}}, nextAction: 'review_observation'}],
-      agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, plan: {artifacts: [], draft: null, approved: null, approvedSourceManifest: [], approvedSourceManifestHash: null, approvedSimulation: null, materialization: null, plannerEligibility: {eligible: false, remediation: 'Hermes не назначен.'}}, workItems: [],
-      execution: {projectId: 'ascon-id', status: 'stopped', version: 0, selection: null, dispatch: null, blockReason: null, decisions: [], startedAt: null, pausedAt: null, completedAt: null, updatedAt: null, acceptance: null}}}
-  } as unknown as WorkspaceData;
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'overview', project: 'ascon', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
-  expect(markup).toContain('Управленческий маршрут');
-  expect((markup.match(/fcp-management-route-step/g) ?? []).length).toBe(8);
-  expect(markup).toContain('Исполнение / запуски');
-  expect(markup).toContain('Завершение');
-  expect(markup).toContain('href="/projects/ascon/setup#plan"');
-  expect(markup).toContain('Есть запрос; нужен наблюдаемый факт.');
-  expect(markup).not.toContain('Наблюдаемый факт развёртывания зафиксирован.');
+it('keeps the provider overview structurally simple at the 390px breakpoint', () => {
+  const project = providerProject([providerTask('1', 'ASCON task', 'QA')], {
+    name: 'ASCON', slug: 'ascon'
+  });
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'ascon', 'overview'], {})!,
+    data: projectWorkspace(project)
+  }));
+  expect(markup).toContain('Источник истины');
+  expect(markup).toContain('Открытые задачи');
+  expect(markup).toContain('ASCON task');
+  expect(markup).not.toContain('fcp-management-route-step');
+  expect(markup).not.toContain('Исполнение / запуски');
+  expect(markup).not.toContain('Развёртывание');
 });
-
 it('keeps autonomous QA truthful and actionable only after a structured pass at the 390px structure', () => {
   const selection = {planVersionId: 'plan-1', workItemId: 'work-1', title: 'QA work',
     workItemVersion: 4, protocolId: 'protocol-1', protocolVersion: 2, journeyVersion: 3,
@@ -549,102 +616,61 @@ it('renders real authenticated onboarding forms only inside People and Agents ma
   expect(agents).toContain('Секреты и настройки провайдера не принимаются');
 });
 
-it('renders a project-specific board with journey responsibility and no cross-project task pile', () => {
-  const observedAt = new Date('2026-07-30T12:00:00.000Z');
-  const baseProject = {workspaceId: 'workspace-1', description: null, defaultBranch: 'main', updatedAt: observedAt};
-  const activeTask = {
-    id: 'task-active', title: 'MSA active task', summary: null, status: 'qa' as const,
-    blocked: false, owner: null, updatedAt: observedAt, externalUrl: null, version: 2,
-    journey: {
-      protocolId: 'protocol-1', protocolVersion: 1, stageKey: 'qa', version: 2, deadlineAt: null,
-      stage: {name: 'QA', taskStatus: 'qa' as const, executionMode: 'autonomous', responsibility: 'agent', nextStage: 'Staging', actor: {displayName: 'Hermes', type: 'agent' as const}},
-      evidence: [], requiredEvidence: ['QA result']
-    },
-    canBuildPacket: false, handoff: null
+it('renders the same provider-native task facts in desktop and mobile project views', () => {
+  const task = {
+    ...providerTask('PVTI_MSA_1', 'MSA provider task', 'QA'),
+    assignees: [{externalId: 'github:user:vitaliy', login: 'vitaliy'}],
+    targetDate: '2026-08-31',
+    dependencyExternalIds: ['github:issue:9']
   };
-  const projectIndex = [
-    {project: {id: 'msa', name: 'MSA', slug: 'msa' as const, ...baseProject}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [
-      activeTask,
-      {id: 'task-backlog', title: 'MSA backlog task', summary: null, status: 'backlog' as const, blocked: false, owner: null, updatedAt: observedAt, externalUrl: null, canBuildPacket: false, handoff: null}
-    ]},
-    {project: {id: 'ascon', name: 'ASCON', slug: 'ascon' as const, ...baseProject}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [
-      {id: 'task-done', title: 'ASCON completed task', summary: null, status: 'done' as const, blocked: false, owner: 'Vladimir', updatedAt: observedAt, externalUrl: null, canBuildPacket: false, handoff: null}
-    ]}
-  ];
-  const data = {
-    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: {state: 'ready', data: projectIndex[0]},
-    runs: null, health: null, projectIndex
-  } as unknown as WorkspaceData;
-  const route = workspaceRoute(['projects', 'msa', 'tasks'], {})!;
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route, data}));
-
-  expect(markup).toContain('MSA active task');
-  expect(markup).toContain('Hermes');
-  expect(markup).toContain('Перевести: Staging');
-  expect(markup).toContain('MSA backlog task');
-  expect(markup).not.toContain('ASCON completed task');
-  expect(markup).toContain('MSA task board');
-  expect(markup).toContain('Доска');
-  expect(markup).toContain('Мои задачи');
-  expect(markup).toContain('Заблокировано');
-  expect(markup).toContain('Ответственный');
-  expect(markup).toContain('Бэклог');
-  expect(markup).toContain('Разработка');
-  expect(markup).toContain('Приёмка');
-  expect(markup).toContain('Завершено');
-  expect(markup).toContain('Требует внимания');
-  expect(markup).toContain('href="/projects/msa/tasks/task-active"');
-  expect(markup).not.toContain('name="project"');
-  expect(markup).not.toContain('All projects');
-});
-
-it('bounds the completed column by default and keeps an explicit full completed view', () => {
-  const observedAt = new Date('2026-07-30T12:00:00.000Z');
-  const workItems = Array.from({length: 25}, (_, index) => ({
-    id: `done-${index}`, title: `Completed task ${index}`, summary: null, status: 'done' as const,
-    blocked: false, owner: 'Vladimir', updatedAt: observedAt, externalUrl: null,
-    canBuildPacket: false, handoff: null
-  }));
-  const project = {project: {id: 'msa', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const,
-    description: null, defaultBranch: 'main', updatedAt: observedAt}, agentProfiles: [], snapshot: null,
-    synchronizedAt: observedAt, protocol: null, workItems};
-  const data = {portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'},
-    project: {state: 'ready', data: project}, runs: null, health: null, projectIndex: [project]} as unknown as WorkspaceData;
+  const project = providerProject([task]);
+  const other = providerProject([providerTask('PVTI_ASCON_1', 'ASCON task', 'Done')], {
+    name: 'ASCON', slug: 'ascon'
+  });
+  const data = {...projectWorkspace(project), projectIndex: [project, other]};
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: workspaceRoute(['projects', 'msa', 'tasks'], {})!, data
   }));
-  expect(markup).toContain('Completed task 19');
-  expect(markup).not.toContain('Completed task 20');
-  expect(markup).toContain('Показаны последние 20 из 25');
-  expect(markup).toContain('/projects/msa/tasks?status=done');
+  expect(markup.match(/MSA provider task/g)).toHaveLength(2);
+  expect(markup).toContain('QA');
+  expect(markup).toContain('vitaliy');
+  expect(markup).toContain('Зависимости: 1');
+  expect(markup).toContain('2026-08-31');
+  expect(markup).not.toContain('ASCON task');
+  expect(markup).not.toContain('Перевести:');
+  expect(markup).not.toContain('Требует внимания');
 });
-
-it('derives unassigned task responsibility from the active protocol without fabricating a provider assignee', () => {
-  const observedAt = new Date('2026-07-30T12:00:00.000Z');
+it('does not impose an arbitrary local cap on provider tasks', () => {
+  const tasks = Array.from({length: 25}, (_, index) =>
+    providerTask(String(index), `Provider task ${index}`, 'Done'));
+  const project = providerProject(tasks);
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'tasks'], {})!,
+    data: projectWorkspace(project)
+  }));
+  expect(markup).toContain('Provider task 0');
+  expect(markup).toContain('Provider task 24');
+  expect(markup).not.toContain('Показаны последние 20');
+  expect(markup).not.toContain('name="status"');
+});
+it('does not infer a provider assignee from a local protocol role', () => {
   const project = {
-    project: {id: 'msa-id', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: observedAt},
-    agentProfiles: [], snapshot: null, synchronizedAt: observedAt,
-    protocol: {id: 'protocol-1', projectId: 'msa-id', name: 'Delivery', version: 1, revision: 1, state: 'published' as const, active: true, contentHash: 'a'.repeat(64), definition: {schemaVersion: 1 as const, stages: [
-      {key: 'development', name: 'Development', enabled: true, taskStatus: 'in_dev' as const, responsibility: {kind: 'project_role' as const, role: 'contributor' as const}, executionMode: 'manual' as const, entryCriteria: ['Ready'], requiredEvidence: ['Change'], allowedNextStageKey: 'qa'},
-      {key: 'qa', name: 'QA', enabled: true, taskStatus: 'qa' as const, responsibility: {kind: 'project_role' as const, role: 'project_owner' as const}, executionMode: 'human_approval' as const, entryCriteria: ['Change'], requiredEvidence: ['QA result'], allowedNextStageKey: null}
-    ]}},
-    workItems: [{id: 'task-1', title: 'Unassigned implementation', summary: null, status: 'in_dev' as const, blocked: false, owner: null, updatedAt: observedAt, externalUrl: 'https://github.com/VF78/MSA/issues/42', version: 1, journey: null, canBuildPacket: false, handoff: null}]
+    ...providerProject([providerTask('PVTI_MSA_1', 'Unassigned provider task')]),
+    protocol: {id: 'protocol-1', projectId: 'msa-id', name: 'Delivery', version: 1, revision: 1,
+      state: 'published' as const, active: true, contentHash: 'a'.repeat(64), definition: {
+        schemaVersion: 1 as const, stages: [{key: 'development', name: 'Development', enabled: true,
+          taskStatus: 'in_dev' as const, responsibility: {kind: 'project_role' as const, role: 'contributor' as const},
+          executionMode: 'manual' as const, entryCriteria: ['Ready'], requiredEvidence: ['Change'],
+          allowedNextStageKey: null}]}}
   };
-  const access = {canRetireAgents: false, actors: [
-    {id: 'vladimir', displayName: 'Vladimir', type: 'human' as const, role: 'workspace_admin', disabledAt: null, capabilities: {}},
-    {id: 'vitaliy', displayName: 'Vitaliy', type: 'human' as const, role: 'developer', disabledAt: null, capabilities: {}}
-  ], memberships: [
-    {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa' as const, actorId: 'vladimir', roles: ['project_owner' as const], active: true, version: 1},
-    {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa' as const, actorId: 'vitaliy', roles: ['contributor' as const], active: true, version: 1}
-  ], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}};
-  const data = {portfolio: {state: 'unconfigured'}, access: {state: 'ready', data: access}, project: {state: 'ready', data: project}, runs: null, health: null, projectIndex: [], operatorActorId: 'vladimir'} as unknown as WorkspaceData;
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'msa', 'tasks'], {})!, data}));
-
-  expect(markup).toContain('GitHub #42');
-  expect(markup).toContain('По протоколу · Vitaliy');
-  expect(markup).toContain('Перевести: QA');
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'tasks'], {})!,
+    data: projectWorkspace(project)
+  }));
+  expect(markup).toContain('Не назначен');
+  expect(markup).not.toContain('По протоколу');
+  expect(markup).not.toContain('Перевести:');
 });
-
 it('shows only active project memberships and denies a direct cross-project route', () => {
   const project = {id: 'msa-id', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: new Date()};
   const data = {
@@ -1055,184 +1081,87 @@ it('deep-links only a safe provider-confirmed access observation', () => {
   expect(markup).not.toContain('javascript:');
 });
 
-it('preserves scope and keeps the run handoff separate from an absent approval', () => {
-  const data = {
-    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null,
-    project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'ASCON', slug: 'ascon', description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [{id: 'task-1', title: 'Bounded task', summary: null, status: 'in_dev', blocked: false, owner: null, updatedAt: new Date(), externalUrl: null, canBuildPacket: false, handoff: {label: 'Run completed', state: 'done', kind: 'run', targetId: 'run-1', href: '/runs?project=ascon#run-run-1'}}]}},
-    runs: {state: 'ready', data: {runs: [{id: 'run-1', workItemId: 'task-1', workItem: 'Bounded task', agent: 'Observed runner', status: 'done', runtimeProfile: 'read_safe', startedAt: null, completedAt: null, receipt: null, artifacts: [], canAcceptReceipt: false}], approvals: [], packets: []}}
-  } as unknown as WorkspaceData;
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'ascon', taskId: 'task-1', runId: null, agentId: null, scope: {environment: 'staging', from: '2026-07-01', to: '2026-07-31'}}, data}));
-
-  expect(markup).toContain('Ответственный человек</dt><dd>Не определён');
-  expect(markup).toContain('Ответственный агент</dt><dd>Не применяется');
-  expect(markup).toContain('Исполнение');
-  expect(markup).toContain('Подтверждение</dt><dd>Не зафиксировано');
-  expect(markup).toContain('href="/projects/ascon/runs/run-1?environment=staging&amp;from=2026-07-01&amp;to=2026-07-31"');
-  expect(markup).toContain('href="/projects/ascon/overview?environment=staging&amp;from=2026-07-01&amp;to=2026-07-31"');
-});
-
-it('renders the task lifecycle rail from recorded packet, approval, run, receipt, evidence, and write-back facts', () => {
-  const observedAt = new Date('2026-07-30T12:00:00.000Z');
-  const data = {
-    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, projectIndex: [],
-    project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: observedAt}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [{id: 'task-1', title: 'Lifecycle task', summary: null, status: 'in_dev', blocked: false, owner: null, updatedAt: observedAt, externalUrl: null, canBuildPacket: false, handoff: {label: 'Run completed', state: 'done', kind: 'run', targetId: 'run-1', href: '/runs?project=msa#run-run-1'}}]}},
-    runs: {state: 'ready', data: {runs: [], approvals: [], packets: []}},
-    lifecycle: {state: 'ready', data: {packet: {id: 'packet-1', contentHash: 'a'.repeat(64), createdAt: observedAt}, approval: {status: 'approved', policyVersion: 3, environment: 'staging', decidedAt: observedAt, createdAt: observedAt}, run: {id: 'run-1', status: 'done', createdAt: observedAt, startedAt: observedAt, completedAt: observedAt}, receipt: {terminal: 'done', completedAt: observedAt}, artifactCount: 2, journeyEvidenceCount: 1, writeBack: {destination: 'github', eventType: 'github.project_status.write.v1', status: 'published', updatedAt: observedAt, failureCode: null}, audit: {action: 'work_item.transition', outcome: 'succeeded', occurredAt: observedAt}}}
-  } as unknown as WorkspaceData;
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
-
-  expect(markup).toContain('aria-label="Delivery lifecycle"');
-  expect(markup).toContain('Задача');
-  expect(markup).toContain('Неизменяемый пакет');
-  expect(markup).toContain('Правило и подтверждение');
-  expect(markup).toContain('Исполнение');
-  expect(markup).toContain('Отчёт и подтверждения');
-  expect(markup).toContain('Передача и следующий шаг');
-  expect(markup).toContain('Hash aaaaaaaaaaaa');
-  expect(markup).toContain('Правило v3 · staging');
-  expect(markup).toContain('2 артефактов · 1 подтверждений');
-  expect(markup).toContain('github · published');
-
-  const unavailable = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
-    data: {...data, lifecycle: {state: 'unavailable'}}
+it('keeps provider task detail independent from local runs and approvals', () => {
+  const project = providerProject([providerTask('PVTI_ASCON_1', 'Bounded provider task')], {
+    name: 'ASCON', slug: 'ascon'
+  });
+  const data = {...projectWorkspace(project), runs: {state: 'ready' as const, data: {
+    runs: [{id: 'run-1', workItemId: 'local-task', workItem: 'Legacy run', agent: 'Runner',
+      status: 'done', runtimeProfile: 'read_safe', startedAt: null, completedAt: null,
+      receipt: null, artifacts: [], canAcceptReceipt: false}], approvals: [], packets: []}}};
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: {...workspaceRoute(['projects', 'ascon', 'tasks', 'PVTI_ASCON_1'], {
+      environment: 'staging', from: '2026-07-01', to: '2026-07-31'
+    })!},
+    data
   }));
-  expect(unavailable).toContain('Недоступно');
-  expect(unavailable).toContain('Чтение PostgreSQL недоступно');
+  expect(markup).toContain('GitHub Project');
+  expect(markup).toContain('PVTI_ASCON_1');
+  expect(markup).not.toContain('Legacy run');
+  expect(markup).not.toContain('Подтверждение</dt>');
+  expect(markup).not.toContain('/runs/run-1');
 });
-
-it('keeps the governed task to receipt journey inside project task and run detail', () => {
-  const observedAt = new Date('2026-07-30T12:00:00.000Z');
-  const taskId = '00000000-0000-4000-8000-000000000001';
-  const packetId = '00000000-0000-4000-8000-000000000002';
-  const runId = '00000000-0000-4000-8000-000000000003';
-  const actorId = '00000000-0000-4000-8000-000000000004';
-  const baseTask = {
-    id: taskId, title: 'Governed delivery', summary: null, status: 'in_dev' as const,
-    blocked: false, owner: 'Vladimir', updatedAt: observedAt, externalUrl: null, version: 3,
-    journey: {
-      protocolId: 'protocol-1', protocolVersion: 1, stageKey: 'development', version: 2,
-      deadlineAt: null,
-      stage: {name: 'Development', taskStatus: 'in_dev' as const, executionMode: 'human_approval', responsibility: 'project_owner', nextStage: 'Quality assurance', actor: {displayName: 'Vladimir', type: 'human' as const}},
-      evidence: [], requiredEvidence: []
-    },
-    canBuildPacket: true,
-    handoff: null
-  };
-  const project = {
-    project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: observedAt},
-    agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: [baseTask]
-  };
-  const shellData = (workItem: unknown, runs: unknown): WorkspaceData => ({
-    portfolio: {state: 'unconfigured'}, access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: actorId, displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId, roles: ['project_owner'], active: true, version: 1}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}}, health: null, projectIndex: [],
-    csrfToken: 'csrf', operatorActorId: actorId,
-    project: {state: 'ready', data: {...project, workItems: [workItem]}},
-    runs: {state: 'ready', data: runs}
-  } as unknown as WorkspaceData);
-  const taskRoute = {screen: 'task' as const, project: 'msa' as const, taskId, runId: null, agentId: null, scope: {environment: null, from: null, to: null}};
-  const runRoute = {screen: 'run' as const, project: 'msa' as const, taskId: null, runId, agentId: null, scope: {environment: null, from: null, to: null}};
-  const emptyRuns = {runs: [], approvals: [], packets: []};
-
+it('does not read or render the retired PostgreSQL lifecycle on a provider task route', () => {
+  const project = providerProject([providerTask('PVTI_MSA_1', 'Provider lifecycle truth')]);
+  const data = {...projectWorkspace(project), lifecycle: {state: 'ready', data: {
+    packet: {id: 'legacy-packet'}, approval: {status: 'approved'}, run: {id: 'legacy-run'},
+    receipt: {terminal: 'done'}, artifactCount: 2, journeyEvidenceCount: 1,
+    writeBack: {destination: 'github', status: 'published'}, audit: {action: 'work_item.transition'}
+  }}} as unknown as WorkspaceData;
+  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'tasks', 'PVTI_MSA_1'], {})!, data
+  }));
+  expect(markup).toContain('Provider lifecycle truth');
+  expect(markup).toContain('Единственный источник task lifecycle');
+  expect(markup).not.toContain('Delivery lifecycle');
+  expect(markup).not.toContain('legacy-packet');
+  expect(markup).not.toContain('work_item.transition');
+});
+it('keeps provider tasks separate from the legacy run route', () => {
+  const task = providerTask('PVTI_MSA_1', 'Provider task');
+  const project = providerProject([task]);
+  const queuedRun = {id: 'run-1', project: 'MSA', projectSlug: 'msa', workItemId: 'local-task',
+    workItem: 'Legacy local run', agent: 'Hermes', status: 'queued', runtimeProfile: 'read_safe',
+    attempt: 1, packetGoal: 'Legacy goal', timeboxMinutes: 30, startedAt: null, completedAt: null,
+    heartbeatAt: null, failureCode: null, version: 2, workItemVersion: 3,
+    canAcceptReceipt: false, approverActorId: null, receipt: null, artifacts: []};
+  const data = {...projectWorkspace(project), runs: {state: 'ready' as const,
+    data: {runs: [queuedRun], approvals: [], packets: []}}};
   const taskMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: taskRoute, data: shellData(baseTask, emptyRuns)
+    route: workspaceRoute(['projects', 'msa', 'tasks', task.id], {})!, data
   }));
-  expect(taskMarkup).toContain('Собрать пакет задачи');
-  expect(taskMarkup).toContain('Собрать пакет из текущей канонической версии задачи.');
-  expect(taskMarkup).not.toContain('/runs?');
+  expect(taskMarkup).toContain('Provider task');
+  expect(taskMarkup).not.toContain('Собрать пакет задачи');
+  expect(taskMarkup).not.toContain('Legacy local run');
 
-  const packet = {
-    id: packetId, project: 'MSA', projectSlug: 'msa', workItemId: taskId, workItemTitle: 'Governed delivery',
-    frozenWorkItemVersion: 3, currentWorkItemVersion: 3, goal: 'Implement bounded change',
-    acceptanceCriteria: ['Focused checks pass'], inScope: ['Bounded implementation'], outOfScope: ['Production'],
-    relevantLinks: [], relevantFiles: ['apps/web'], allowedTools: ['test'], forbiddenSurfaces: ['production'],
-    dataPolicy: {}, expectedOutputSchema: {}, timeboxMinutes: 30, reviewer: 'Vladimir',
-    approver: 'Vladimir', approverActorId: actorId, authMode: 'user', runtimeProfile: 'read_safe',
-    agentProfileSnapshotVersion: 1, agentProfileSnapshotHash: 'b'.repeat(64), contentHash: 'a'.repeat(64),
-    profiles: [{
-      id: 'profile-1', name: 'Hermes', runtimeId: 'hermes',
-      policyPreview: {
-        runnable: true, decision: 'ask', policyVersion: 1, actorType: 'agent',
-        actionCategory: 'code_change', surface: 'repository', environment: 'development',
-        actionHash: 'c'.repeat(64), baseCommit: 'd'.repeat(40), stopFactors: [],
-        requiredHumanPacketHash: 'a'.repeat(64)
-      }
-    }],
-    runnable: true, nonRunnableReason: null
-  };
-  const packetMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: taskRoute,
-    data: shellData({...baseTask, canBuildPacket: false, handoff: {label: 'Packet needs confirmation', state: 'queued', kind: 'packet', targetId: packetId, href: `/projects/msa/tasks/${taskId}#packet-${packetId}`}}, {...emptyRuns, packets: [packet]})
+  const runMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'runs', 'run-1'], {})!, data
   }));
-  expect(packetMarkup).toContain('зафиксирована v3');
-  expect(packetMarkup).toContain('Проверить правило');
-  expect(packetMarkup).toContain('Подтверждаю точный hash пакета');
-  expect(packetMarkup).toContain('Подтвердить и поставить в очередь');
-
-  const queuedRun = {
-    id: runId, project: 'MSA', projectSlug: 'msa', workItemId: taskId, workItem: 'Governed delivery',
-    agent: 'Hermes', status: 'queued', runtimeProfile: 'read_safe', attempt: 1, packetGoal: 'Implement bounded change',
-    timeboxMinutes: 30, startedAt: null, completedAt: null, heartbeatAt: null, failureCode: null,
-    version: 2, workItemVersion: 3, canAcceptReceipt: false, approverActorId: actorId,
-    receipt: null, artifacts: []
-  };
-  const queuedMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [queuedRun]})
-  }));
-  expect(queuedMarkup).toContain('Отменить запуск в очереди');
-  expect(queuedMarkup).toContain('Ожидать безопасного получения задания исполнителем или отменить запуск до начала.');
-
-  const completedRun = {
-    ...queuedRun, status: 'done', completedAt: observedAt, canAcceptReceipt: true,
-    workItemStatus: 'in_dev', acceptanceTargetStage: 'Peer review',
-    acceptanceTargetStatus: 'in_dev',
-    receipt: {terminal: 'done', completedAt: observedAt, runtimeId: 'hermes', runtimeProfile: 'read_safe', durationMs: 1000, receiptSha256: 'e'.repeat(64), cost: null, usage: null}
-  };
-  const receiptMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: runRoute, data: shellData(baseTask, {...emptyRuns, runs: [completedRun]})
-  }));
-  expect(receiptMarkup).toContain('Отчёт сохранён');
-  expect(receiptMarkup).toContain('Принять evidence и передать на этап «Peer review»');
-  expect(receiptMarkup).toContain('Этап изменится; статус задачи останется прежним.');
-  expect(receiptMarkup).toContain('Product Owner проверяет точную связь запуска');
-
-  const acceptedMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: {...runRoute, handoffResult: 'accepted'},
-    data: shellData(baseTask, {...emptyRuns, runs: [{...completedRun, canAcceptReceipt: false}]})
-  }));
-  expect(acceptedMarkup).toContain('Результат принят Product Owner; задача переведена на разрешённый следующий этап, исполнение проекта приостановлено.');
-  expect(acceptedMarkup).toContain(`href="/projects/msa/tasks/${taskId}"`);
-
-  const qaTask = {
-    ...baseTask, status: 'qa' as const, canBuildPacket: false,
-    journey: {
-      ...baseTask.journey, stageKey: 'qa', version: 3,
-      stage: {name: 'Quality assurance', taskStatus: 'qa' as const, executionMode: 'human_approval', responsibility: 'project_owner', nextStage: 'Acceptance', actor: {displayName: 'Vladimir', type: 'human' as const}},
-      requiredEvidence: ['QA result']
-    }
-  };
-  const nextStageMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: taskRoute,
-    data: shellData(qaTask, {...emptyRuns, runs: [{...completedRun, canAcceptReceipt: false, workItemVersion: 4}]})
-  }));
-  expect(nextStageMarkup).toContain('Зафиксировать обязательные подтверждения: QA result.');
-  expect(nextStageMarkup).toContain('Ещё требуется');
-  expect(nextStageMarkup).toContain('QA result');
+  expect(runMarkup).toContain('Legacy local run');
+  expect(runMarkup).toContain('Ожидать безопасного получения задания');
+  expect(runMarkup).not.toContain(`href="/projects/msa/tasks/${task.id}"`);
 });
-
-it('renders immutable protocol stages and persisted journey responsibility/evidence as facts', () => {
-  const data = {
-    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf',
-    project: {state: 'ready', data: {project: {id: '11111111-1111-4111-8111-111111111111', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: {id: '22222222-2222-4222-8222-222222222222', projectId: '11111111-1111-4111-8111-111111111111', name: 'Delivery', version: 2, revision: 3, state: 'published', active: true, contentHash: 'a'.repeat(64), definition: {schemaVersion: 1, stages: [{key: 'development', name: 'Development', enabled: true, taskStatus: 'in_dev', responsibility: {kind: 'project_role', role: 'contributor'}, executionMode: 'manual', entryCriteria: ['Ready'], requiredEvidence: ['Implementation change'], allowedNextStageKey: null}]}}, workItems: [{id: 'task-1', title: 'Bounded task', summary: null, status: 'in_dev', blocked: false, owner: null, updatedAt: new Date(), externalUrl: null, version: 1, journey: {protocolId: '22222222-2222-4222-8222-222222222222', protocolVersion: 2, stageKey: 'development', version: 1, deadlineAt: null, stage: {name: 'Development', taskStatus: 'in_dev', executionMode: 'manual', responsibility: 'contributor', nextStage: null, actor: {displayName: 'Canonical contributor', type: 'human'}}, evidence: [{stageKey: 'development', requirement: 'Implementation change', reference: 'commit:abc123'}], requiredEvidence: ['Implementation change', 'Relevant checks']}, canBuildPacket: false, handoff: null}]}},
-  } as unknown as WorkspaceData;
-  const protocol = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'protocol', project: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
-  const task = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'task', project: 'msa', taskId: 'task-1', runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
-  expect(protocol).toContain('Активная версия останется неизменной');
-  expect(protocol).toContain('Создать черновик изменений');
+it('keeps protocol facts separate from provider task facts', () => {
+  const project = {
+    ...providerProject([providerTask('PVTI_MSA_1', 'Bounded provider task')]),
+    protocol: {id: 'protocol-1', projectId: 'msa-id', name: 'Delivery', version: 2, revision: 3,
+      state: 'published' as const, active: true, contentHash: 'a'.repeat(64), definition: {
+        schemaVersion: 1 as const, stages: [{key: 'development', name: 'Development', enabled: true,
+          taskStatus: 'in_dev' as const, responsibility: {kind: 'project_role' as const, role: 'contributor' as const},
+          executionMode: 'manual' as const, entryCriteria: ['Ready'],
+          requiredEvidence: ['Implementation change'], allowedNextStageKey: null}]}}
+  };
+  const data = projectWorkspace(project);
+  const protocol = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'protocol'], {})!, data
+  }));
+  const task = renderToStaticMarkup(createElement(WorkspaceShell, {
+    route: workspaceRoute(['projects', 'msa', 'tasks', 'PVTI_MSA_1'], {})!, data
+  }));
   expect(protocol).toContain('Разработка');
   expect(protocol).toContain('Изменения реализации');
-  expect(protocol).not.toContain('canonical commands');
-  expect(protocol).not.toContain('disabled=""');
-  expect(task).toContain('Canonical contributor');
-  expect(task).toContain('commit:abc123');
-  expect(task).toContain('Relevant checks');
+  expect(task).toContain('Bounded provider task');
+  expect(task).not.toContain('Canonical contributor');
+  expect(task).not.toContain('commit:abc123');
+  expect(task).not.toContain('Relevant checks');
 });

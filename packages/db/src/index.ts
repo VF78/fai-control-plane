@@ -71,9 +71,6 @@ export {
   type ProjectExecutionDispatchInput,
   type ProjectExecutionDispatchResult
 } from './project-orchestration';
-export {
-  createPostgresGitHubProjectStatusPublisher,
-} from './github-project-status-writeback';
 export {createPostgresTrackerSnapshotProjector} from './tracker-snapshot-projection';
 export {
   createPostgresTrackerEvidenceProjectionReader
@@ -81,10 +78,6 @@ export {
 export {
   createPostgresProjectTaskProjectionReader
 } from './project-task-projection';
-export {
-  createPostgresTrackerStatusObservationProcessor,
-  type TrackerStatusObservationProcessorResult
-} from './tracker-status-observation-processor';
 export {
   activeWorkItemStaleAfterMs,
   createPostgresHealthcheckProducer,

@@ -2,7 +2,7 @@ import {describe, expect, it, vi} from 'vitest';
 import type {
   OpaqueSecretRef,
   SecretsProvider,
-  TrackerWorkItemTransitionInput
+  TrackerProjectItemUpdateInput
 } from '@fai-control-plane/domain';
 import {
   createGitHubProjectStatusWriteAdapter,
@@ -25,18 +25,14 @@ const credentialRef: OpaqueSecretRef = {
   scope: githubProjectsOAuthScope
 };
 
-const command = (overrides: Partial<TrackerWorkItemTransitionInput> = {}): TrackerWorkItemTransitionInput => ({
-  bindingId: 'd7b7e8b8-712b-4b9c-a2ce-563ae202a8d5',
-  workItemId: '0c9c03a1-8e8f-408b-b701-2f04737b45de',
-  canonicalVersion: 1,
-  status: 'in_dev',
-  expectedBindingVersion: 'github:issue:1',
-  expectedProviderOptionId: '1f121483',
+const command = (overrides: Partial<TrackerProjectItemUpdateInput> = {}): TrackerProjectItemUpdateInput => ({
+  expectedOptionExternalId: '1f121483',
   target: {
     repositoryExternalId: 'github:repository:1278325372',
     projectExternalId: 'PVT_kwHOBIUvJs4Bbefq',
     projectItemExternalId: 'PVTI_MSA_1',
-    fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc'
+    fieldExternalId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
+    optionExternalId: 'f37309f6'
   },
   mutationId: 'b688754d-64b0-424b-a8bf-533acd9e8752',
   credentialRef,
@@ -61,7 +57,7 @@ describe('GitHub Project status write adapter', () => {
     const resolve = vi.fn<SecretsProvider['resolve']>();
     const fetch = vi.fn<GitHubFetch>();
     const write = createGitHubProjectStatusWriteAdapter({secretsProvider: {resolve}, fetch})
-      .transitionWorkItem!;
+      .updateProjectItem;
 
     await expect(write(command({credentialRef: {...credentialRef, scope: ['project', 'repo']}})))
       .resolves.toEqual({status: 'identity_denied'});
@@ -73,16 +69,13 @@ describe('GitHub Project status write adapter', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('declares the provider-neutral task-tracker write capability', () => {
+  it('declares one provider-native Project item update operation', () => {
     const adapter = createGitHubProjectStatusWriteAdapter({
       secretsProvider: {resolve: vi.fn<SecretsProvider['resolve']>()}
     });
 
-    expect(adapter).toMatchObject({
-      provider: 'github',
-      capabilities: {readWorkItems: false, writeWorkItems: true}
-    });
-    expect(adapter.transitionWorkItem).toEqual(expect.any(Function));
+    expect(adapter.provider).toBe('github');
+    expect(adapter.updateProjectItem).toEqual(expect.any(Function));
   });
 
   it('writes an allowlisted Project status with the configured OAuth bearer and confirms it', async () => {
@@ -94,7 +87,7 @@ describe('GitHub Project status write adapter', () => {
       }}}))
       .mockResolvedValueOnce(jsonResponse(projectItem('f37309f6')));
     const result = await createGitHubProjectStatusWriteAdapter({secretsProvider: {resolve}, fetch})
-      .transitionWorkItem!(command());
+      .updateProjectItem(command());
 
     expect(result).toEqual({status: 'confirmed', receipt: {
       verification: 'read_after_write',
@@ -119,6 +112,29 @@ describe('GitHub Project status write adapter', () => {
       .mockResolvedValueOnce(jsonResponse(projectItem('1f121483')));
 
     await expect(createGitHubProjectStatusWriteAdapter({secretsProvider: {resolve}, fetch})
-      .transitionWorkItem!(command())).resolves.toEqual({status: 'stale'});
+      .updateProjectItem(command())).resolves.toEqual({status: 'stale'});
+  });
+
+  it('does not mutate when the exact Project item already has the target option', async () => {
+    const fetch = vi.fn<GitHubFetch>()
+      .mockResolvedValueOnce(jsonResponse(projectItem('f37309f6')));
+    await expect(createGitHubProjectStatusWriteAdapter({
+      secretsProvider: {resolve: async () => ({value: 'oauth-access-token'})},
+      fetch
+    }).updateProjectItem(command())).resolves.toMatchObject({
+      status: 'confirmed',
+      receipt: {verification: 'read_after_write', optionExternalId: 'f37309f6'}
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails the provider CAS without mutation when the observed option is stale', async () => {
+    const fetch = vi.fn<GitHubFetch>()
+      .mockResolvedValueOnce(jsonResponse(projectItem('b4f120e4')));
+    await expect(createGitHubProjectStatusWriteAdapter({
+      secretsProvider: {resolve: async () => ({value: 'oauth-access-token'})},
+      fetch
+    }).updateProjectItem(command())).resolves.toEqual({status: 'stale'});
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

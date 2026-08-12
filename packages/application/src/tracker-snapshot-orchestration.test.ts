@@ -30,15 +30,18 @@ const snapshot: TrackerRepositorySnapshot = {
     externalId: 'provider:repository:1', externalVersion: 'provider:repository:v1',
     owner: 'owner', name: 'repository', defaultBranch: 'main', headSha: 'a'.repeat(40)
   },
-  externalVersion: 'provider:snapshot:v1', workItems: [], pullRequests: [], checks: []
+  externalVersion: 'provider:snapshot:v1', projectItems: [], pullRequests: [], checks: []
 };
 const workItem = () => ({
-  externalId: 'provider:issue:1', externalVersion: 'provider:issue:v1',
+  externalId: 'provider:project-item:1', issueExternalId: 'provider:issue:1',
+  externalVersion: 'provider:issue:v1',
   url: 'https://provider.test/issues/1', htmlUrl: 'https://provider.test/issues/1',
   number: 1, title: 'Issue', state: 'open' as const,
   labels: [{externalId: 'provider:label:1', name: 'bug', color: 'd73a4a'}],
   assignees: [{externalId: 'provider:user:1', login: 'maintainer'}], milestone: null,
-  projectStatus: null
+  projectExternalId: 'provider:project:1',
+  status: {fieldExternalId: 'provider:field:status', optionExternalId: null, optionName: null},
+  targetDate: null, parentIssueExternalId: null, subIssueExternalIds: [], dependencyExternalIds: []
 });
 const pullRequest = () => ({
   externalId: 'provider:pr:1', externalVersion: 'provider:pr:v1',
@@ -46,7 +49,7 @@ const pullRequest = () => ({
   number: 1, title: 'Pull request', state: 'open' as const, draft: false, merged: false,
   headRef: 'feature', headSha: 'a'.repeat(40), baseRef: 'main', labels: [],
   assignees: [{externalId: 'provider:user:1', login: 'maintainer'}], milestone: null,
-  linkedWorkItemExternalIds: []
+  linkedIssueExternalIds: []
 });
 const check = () => ({
   externalId: 'provider:check:1', externalVersion: 'provider:check:v1',
@@ -56,16 +59,8 @@ const check = () => ({
 const applied = {
   status: 'applied' as const,
   snapshotExternalVersion: snapshot.externalVersion,
-  createdWorkItems: 0,
-  updatedWorkItems: 0,
-  updatedWorkItemStatuses: 0,
-  projectedPullRequests: 0,
-  projectedChecks: 0,
-  unknownWorkItemExternalIds: [],
-  unknownProjectStatusWorkItemExternalIds: [],
-  unmappablePullRequestExternalIds: [],
-  ambiguousPullRequestExternalIds: [],
-  unknownCheckExternalIds: []
+  snapshot,
+  decisions: []
 };
 
 const actorFor = (capabilities: readonly string[]) => {
@@ -296,7 +291,7 @@ describe('tracker repository snapshot orchestration', () => {
     const fake = fakes();
     const readWorkItems = vi.fn<TaskTrackerPort['readWorkItems']>(async () => ({
       externalVersion: 'jira-like:work-items:v1',
-      workItems: snapshot.workItems
+      projectItems: snapshot.projectItems
     }));
     const readRepositoryObservation = vi.fn<RepositoryObservationPort['readRepositoryObservation']>(
       async () => ({
@@ -342,7 +337,7 @@ describe('tracker repository snapshot orchestration', () => {
       provider: 'forge-like',
       providers: {taskTracker: 'linear-like', repositoryObservation: 'forge-like'},
       snapshot: expect.objectContaining({
-        workItems: snapshot.workItems,
+        projectItems: snapshot.projectItems,
         repository: snapshot.repository,
         externalVersion: expect.stringMatching(/^composed:sha256:/)
       })
@@ -387,7 +382,7 @@ describe('tracker repository snapshot orchestration', () => {
       taskTracker: {
         provider: 'linear-like',
         capabilities: {readWorkItems: true, writeWorkItems: false},
-        readWorkItems: async () => ({externalVersion: 'shared:v1', workItems: snapshot.workItems})
+        readWorkItems: async () => ({externalVersion: 'shared:v1', projectItems: snapshot.projectItems})
       },
       repositoryObservation: {
         provider: 'forge-like',
@@ -540,7 +535,7 @@ describe('tracker repository snapshot orchestration', () => {
   it.each([
     ['a work item with malformed nested labels', {
       ...snapshot,
-      workItems: [{...workItem(), labels: [{
+      projectItems: [{...workItem(), labels: [{
         ...workItem().labels[0], unsupported: true
       }]}]
     }],

@@ -10,7 +10,6 @@ import {
   createDatabase,
   createPostgresDailyPmReportProducer,
   createPostgresHealthcheckProducer,
-  createPostgresGitHubProjectStatusPublisher,
   createPostgresIncomingEventProcessor,
   createPostgresTelegramStatusPublisher,
   createPostgresTelegramStatusResponseOutbox,
@@ -29,9 +28,7 @@ import {
 } from '@fai-control-plane/db/runtime';
 import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
 import {
-  createGitHubProjectStatusWriteAdapter,
-  createTelegramChatAdapter,
-  githubProjectsOAuthScope
+  createTelegramChatAdapter
 } from '@fai-control-plane/integrations/runtime';
 import {
   recordDurableJobEnqueue,
@@ -60,10 +57,8 @@ import {
 
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
-const writebackEnabled = process.env.GITHUB_STATUS_WRITEBACK_ENABLED === 'true';
 const githubSyncEnabled = process.env.GITHUB_SYNC_ENABLED === 'true';
 const telegramStatusResponseEnabled = process.env.TELEGRAM_STATUS_RESPONSE_ENABLED === 'true';
-const writebackSecretPurpose = 'github_project_status_write_oauth_token';
 const telegramIdentitySecretScope = Object.freeze(['telegram:identity:keying']);
 const telegramBotSecretScope = Object.freeze(['telegram:bot:send']);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -106,27 +101,6 @@ const requiredTelegramAllowlist = (name: string): number[] => {
   }
   return ids;
 };
-
-const createWritebackFileSecretsProvider = (
-  allowedReference: OpaqueSecretRef
-): SecretsProvider => ({
-  async resolve(reference, purpose) {
-    if (
-      purpose !== writebackSecretPurpose ||
-      reference.provider !== allowedReference.provider ||
-      reference.reference !== allowedReference.reference ||
-      reference.scope.length !== allowedReference.scope.length ||
-      reference.scope.some((value, index) => value !== allowedReference.scope[index])
-    ) {
-      throw new Error('Secret reference is not allowed.');
-    }
-    const value = await readFile(allowedReference.reference, 'utf8');
-    if (value.length === 0 || value.length > 65_536 || value.includes('\0')) {
-      throw new Error('GitHub Projects OAuth token file is invalid.');
-    }
-    return {value: value.trimEnd()};
-  }
-});
 
 const createTelegramFileSecretsProvider = (
   identityRef: OpaqueSecretRef,
@@ -248,7 +222,6 @@ if (telegramStatusResponseEnabled) {
     telegramStatusProjectIds
   );
 }
-let statusPublisherTimer: NodeJS.Timeout | undefined;
 let telegramStatusPublisherTimer: NodeJS.Timeout | undefined;
 let publishTelegramStatusResponses: (() => Promise<void>) | undefined;
 const githubReconciliation = githubSyncEnabled
@@ -301,6 +274,16 @@ await boss.work(INCOMING_EVENT_QUEUE, {includeMetadata: true}, async ([job]) => 
   if (job === undefined) return;
   return executeDurableJob(INCOMING_EVENT_QUEUE, job, async () => {
     const result = await incomingEventConsumer.consume(job.data);
+    if (githubReconciliation !== undefined) {
+      const event = await pool.query<{provider: string; project_id: string | null}>(
+        `select provider, project_id from incoming_events where id = $1`,
+        [result.eventId]
+      );
+      const observed = event.rows[0];
+      if (observed?.provider === 'github' && observed.project_id !== null) {
+        await githubReconciliation.reconcile(observed.project_id);
+      }
+    }
     if (telegramStatusResponder !== undefined && publishTelegramStatusResponses !== undefined) {
       await telegramStatusResponder.prepare(result.eventId);
       await publishTelegramStatusResponses();
@@ -385,45 +368,6 @@ if (telegramStatusPublisher !== undefined) {
     void publishTelegramStatusResponses!();
   }, 1_000);
 }
-if (githubSyncEnabled && writebackEnabled) {
-  const tokenPath = process.env.GITHUB_PROJECTS_OAUTH_TOKEN_FILE;
-  if (tokenPath === undefined || !isAbsolute(tokenPath)) {
-    throw new Error('GitHub status write-back configuration is invalid.');
-  }
-  const credentialRef: OpaqueSecretRef = {
-    provider: 'file',
-    reference: tokenPath,
-    scope: githubProjectsOAuthScope
-  };
-  const publisher = createPostgresGitHubProjectStatusPublisher(
-    db,
-    createGitHubProjectStatusWriteAdapter({
-      secretsProvider: createWritebackFileSecretsProvider(credentialRef)
-    }),
-    credentialRef
-  );
-  let publishing = false;
-  const publish = async (): Promise<void> => {
-    if (publishing || stopping) return;
-    publishing = true;
-    try {
-      for (let count = 0; count < 10; count += 1) {
-        const result = await publisher.publishAvailable();
-        if (result.status === 'idle') return;
-      }
-    } catch {
-      console.error('github status write-back failed', {
-        code: 'GITHUB_STATUS_WRITEBACK_FAILED'
-      });
-    } finally {
-      publishing = false;
-    }
-  };
-  await publish();
-  statusPublisherTimer = setInterval(() => {
-    void publish();
-  }, 1_000);
-}
 ready = true;
 
 async function shutdown(signal: NodeJS.Signals) {
@@ -431,7 +375,6 @@ async function shutdown(signal: NodeJS.Signals) {
 
   stopping = true;
   ready = false;
-  if (statusPublisherTimer !== undefined) clearInterval(statusPublisherTimer);
   if (telegramStatusPublisherTimer !== undefined) clearInterval(telegramStatusPublisherTimer);
   console.info(`received ${signal}; shutting down`);
 

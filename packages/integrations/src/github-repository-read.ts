@@ -13,10 +13,9 @@ import type {
   TrackerIdentity,
   TrackerLabel,
   TrackerMilestone,
-  TrackerProjectStatusObservation,
+  TrackerProjectItemSnapshot,
   TrackerPullRequestSnapshot,
   TrackerRepositorySnapshot,
-  TrackerWorkItemSnapshot
 } from '@fai-control-plane/domain';
 import {
   containsHighConfidenceSecretContent,
@@ -226,10 +225,10 @@ const byStableId = <T extends Readonly<{externalId: string}>>(
     : identityOrder;
 });
 
-const byNumber = <T extends Readonly<{number: number; externalId: string}>>(
+const byNumber = <T extends Readonly<{number: number}>>(
   values: readonly T[]
 ): readonly T[] => [...values].sort((left, right) =>
-  left.number - right.number || left.externalId.localeCompare(right.externalId)
+  left.number - right.number || stableVersion(left).localeCompare(stableVersion(right))
 );
 
 const assertUnique = <T>(
@@ -274,10 +273,24 @@ const milestone = (value: unknown): TrackerMilestone | null => {
   };
 };
 
-const workItem = (
+type RepositoryIssueSnapshot = Readonly<{
+  issueExternalId: string;
+  externalVersion: string;
+  url: string;
+  htmlUrl: string;
+  number: number;
+  title: string;
+  requirements: string | null;
+  state: 'open' | 'closed';
+  labels: readonly TrackerLabel[];
+  assignees: readonly TrackerIdentity[];
+  milestone: TrackerMilestone | null;
+}>;
+
+const issue = (
   value: unknown,
   scope: GitHubRepositoryScopeDefinition
-): TrackerWorkItemSnapshot | null => {
+): RepositoryIssueSnapshot | null => {
   const source = object(value);
   if (source.pull_request !== undefined) return null;
   const id = positiveInteger(source.id);
@@ -289,7 +302,7 @@ const workItem = (
   const labels = byStableId(providerLabels);
   const assignees = byStableId(providerAssignees);
   const snapshot = {
-    externalId: stableId('issue', id),
+    issueExternalId: stableId('issue', id),
     url: entityUrl(
       source.url,
       'api.github.com',
@@ -306,8 +319,7 @@ const workItem = (
     state: state(source.state),
     labels,
     assignees,
-    milestone: milestone(source.milestone),
-    projectStatus: null
+    milestone: milestone(source.milestone)
   };
   return {...snapshot, externalVersion: stableVersion(snapshot)};
 };
@@ -315,7 +327,7 @@ const workItem = (
 const pullRequest = (
   value: unknown,
   scope: GitHubRepositoryScopeDefinition,
-  linkedWorkItemExternalIds: readonly string[]
+  linkedIssueExternalIds: readonly string[]
 ): TrackerPullRequestSnapshot => {
   const source = object(value);
   const head = object(source.head);
@@ -352,7 +364,7 @@ const pullRequest = (
     labels,
     assignees,
     milestone: milestone(source.milestone),
-    linkedWorkItemExternalIds
+    linkedIssueExternalIds
   };
   return {...snapshot, externalVersion: stableVersion(snapshot)};
 };
@@ -394,8 +406,18 @@ const projectItemsQuery = `query ProjectStatus($projectId: ID!, $after: String) 
           content {
             __typename
             ... on Issue {
+              databaseId
               number
               repository { nameWithOwner }
+              parent { databaseId repository { nameWithOwner } }
+              subIssues(first: 100) {
+                nodes { databaseId repository { nameWithOwner } }
+                pageInfo { hasNextPage }
+              }
+              blockedBy(first: 100) {
+                nodes { databaseId repository { nameWithOwner } }
+                pageInfo { hasNextPage }
+              }
             }
           }
           fieldValues(first: 100) {
@@ -403,6 +425,10 @@ const projectItemsQuery = `query ProjectStatus($projectId: ID!, $after: String) 
               ... on ProjectV2ItemFieldSingleSelectValue {
                 optionId
                 field { ... on ProjectV2SingleSelectField { id } }
+              }
+              ... on ProjectV2ItemFieldDateValue {
+                date
+                field { ... on ProjectV2Field { id } }
               }
             }
             pageInfo { hasNextPage }
@@ -436,8 +462,23 @@ const pullRequestEvidenceQuery = `query PullRequestEvidence(
 }`;
 
 type ProjectEvidence = Readonly<{
-  statusByIssueNumber: ReadonlyMap<number, TrackerProjectStatusObservation>;
-  linkedWorkItemExternalIdsByPullRequestNumber: ReadonlyMap<number, readonly string[]>;
+  itemsByIssueNumber: ReadonlyMap<number, ProjectItemEvidence>;
+  linkedIssueExternalIdsByPullRequestNumber: ReadonlyMap<number, readonly string[]>;
+}>;
+
+type ProjectItemEvidence = Readonly<{
+  externalId: string;
+  issueExternalId: string;
+  projectExternalId: string;
+  status: Readonly<{
+    fieldExternalId: string;
+    optionExternalId: string | null;
+    optionName: string | null;
+  }>;
+  targetDate: string | null;
+  parentIssueExternalId: string | null;
+  subIssueExternalIds: readonly string[];
+  dependencyExternalIds: readonly string[];
 }>;
 
 const createRequest = (fetch: GitHubFetch) => {
@@ -578,7 +619,7 @@ const mintInstallationToken = async (
 const projectEvidencePage = (
   payload: JsonObject,
   scope: GitHubRepositoryScopeDefinition,
-  statusByIssueNumber: Map<number, TrackerProjectStatusObservation>
+  itemsByIssueNumber: Map<number, ProjectItemEvidence>
 ): string | null => {
   const project = object(payload.node);
   if (boundedString(project.id, 512) !== scope.projectNodeId) {
@@ -601,36 +642,84 @@ const projectEvidencePage = (
     const repository = object(entity.repository);
     if (boundedString(repository.nameWithOwner, 256) !== scope.fullName) continue;
     const number = positiveInteger(entity.number);
+    const issueExternalId = stableId('issue', positiveInteger(entity.databaseId));
+    const linkedIssues = (value: unknown): readonly string[] => {
+      const connection = object(value);
+      if (boolean(object(connection.pageInfo).hasNextPage)) {
+        return fail('github_pagination_exceeded');
+      }
+      const identifiers = array(connection.nodes).flatMap((entry) => {
+        const issue = object(entry);
+        const issueRepository = object(issue.repository);
+        return boundedString(issueRepository.nameWithOwner, 256) === scope.fullName
+          ? [stableId('issue', positiveInteger(issue.databaseId))]
+          : [];
+      }).sort((left, right) => left.localeCompare(right));
+      assertUnique(identifiers, (externalId) => externalId);
+      return identifiers;
+    };
+    const parent = entity.parent === null ? null : object(entity.parent);
+    const parentIssueExternalId = parent === null
+      ? null
+      : boundedString(object(parent.repository).nameWithOwner, 256) === scope.fullName
+        ? stableId('issue', positiveInteger(parent.databaseId))
+        : null;
+    const subIssueExternalIds = linkedIssues(entity.subIssues);
+    const dependencyExternalIds = linkedIssues(entity.blockedBy);
     const fieldValues = object(source.fieldValues);
     if (boolean(object(fieldValues.pageInfo).hasNextPage)) return fail('github_pagination_exceeded');
-    let status: TrackerProjectStatusObservation = {
-      projectExternalId: scope.projectNodeId,
-      projectItemExternalId: boundedString(source.id, 512),
+    let status: ProjectItemEvidence['status'] = {
       fieldExternalId: scope.projectStatusFieldNodeId,
       optionExternalId: null,
-      status: null
+      optionName: null
     };
+    let targetDate: string | null = null;
     let foundStatusField = false;
+    let foundTargetDateField = false;
     for (const fieldValue of array(fieldValues.nodes)) {
       const value = object(fieldValue);
-      if (value.field === undefined || value.optionId === undefined) continue;
+      if (value.field === undefined) continue;
       const field = object(value.field);
-      if (boundedString(field.id, 512) !== scope.projectStatusFieldNodeId) continue;
-      if (foundStatusField) return fail('github_response_invalid');
-      foundStatusField = true;
-      if (value.optionId !== null) {
+      const fieldExternalId = boundedString(field.id, 512);
+      if (fieldExternalId === scope.projectStatusFieldNodeId && value.optionId !== undefined) {
+        if (foundStatusField) return fail('github_response_invalid');
+        foundStatusField = true;
+        if (value.optionId === null) continue;
         const optionExternalId = boundedString(value.optionId, 512);
+        const optionName = scope.projectStatusOptions[optionExternalId];
+        if (optionName === undefined) return fail('github_response_invalid');
         status = {
-          projectExternalId: scope.projectNodeId,
-          projectItemExternalId: boundedString(source.id, 512),
           fieldExternalId: scope.projectStatusFieldNodeId,
           optionExternalId,
-          status: scope.projectStatusOptionMap[optionExternalId] ?? null
+          optionName
         };
+        continue;
+      }
+      if (
+        scope.projectTargetDateFieldNodeId !== null &&
+        fieldExternalId === scope.projectTargetDateFieldNodeId &&
+        value.date !== undefined
+      ) {
+        if (foundTargetDateField) return fail('github_response_invalid');
+        foundTargetDateField = true;
+        if (value.date !== null) {
+          const date = boundedString(value.date, 10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return fail('github_response_invalid');
+          targetDate = date;
+        }
       }
     }
-    if (statusByIssueNumber.has(number)) return fail('github_response_invalid');
-    statusByIssueNumber.set(number, status);
+    if (itemsByIssueNumber.has(number)) return fail('github_response_invalid');
+    itemsByIssueNumber.set(number, {
+      externalId: boundedString(source.id, 512),
+      issueExternalId,
+      projectExternalId: scope.projectNodeId,
+      status,
+      targetDate,
+      parentIssueExternalId,
+      subIssueExternalIds,
+      dependencyExternalIds
+    });
   }
   if (!boolean(pageInfo.hasNextPage)) return null;
   return boundedString(pageInfo.endCursor, 512);
@@ -679,8 +768,8 @@ const readProjectEvidence = async (
   repositoryClient: ReturnType<typeof createClient>,
   scope: GitHubRepositoryScopeDefinition
 ): Promise<ProjectEvidence> => {
-  const statusByIssueNumber = new Map<number, TrackerProjectStatusObservation>();
-  const linkedWorkItemExternalIdsByPullRequestNumber = new Map<number, readonly string[]>();
+  const itemsByIssueNumber = new Map<number, ProjectItemEvidence>();
+  const linkedIssueExternalIdsByPullRequestNumber = new Map<number, readonly string[]>();
   const [repositoryOwner, repositoryName] = scope.fullName.split('/');
   if (repositoryOwner === undefined || repositoryName === undefined) {
     return fail('github_response_invalid');
@@ -694,7 +783,7 @@ const readProjectEvidence = async (
         after: pullRequestAfter
       }),
       scope,
-      linkedWorkItemExternalIdsByPullRequestNumber
+      linkedIssueExternalIdsByPullRequestNumber
     );
     if (pullRequestAfter === null) break;
     if (page === maximumPages - 1) return fail('github_pagination_exceeded');
@@ -707,10 +796,10 @@ const readProjectEvidence = async (
     const nextCursor = projectEvidencePage(
       payload,
       scope,
-      statusByIssueNumber
+      itemsByIssueNumber
     );
     if (nextCursor === null) {
-      return {statusByIssueNumber, linkedWorkItemExternalIdsByPullRequestNumber};
+      return {itemsByIssueNumber, linkedIssueExternalIdsByPullRequestNumber};
     }
     after = nextCursor;
   }
@@ -803,13 +892,13 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
       `/repos/${fullName}/issues?state=all`,
       array
     );
-    const rawWorkItems = byNumber(issuePayloads.map(
-      (payload) => workItem(payload, scope)
+    const rawIssues = byNumber(issuePayloads.map(
+      (payload) => issue(payload, scope)
     ).filter(
-      (item): item is TrackerWorkItemSnapshot => item !== null
+      (item): item is RepositoryIssueSnapshot => item !== null
     ));
-    assertUnique(rawWorkItems, ({externalId}) => externalId);
-    assertUnique(rawWorkItems, ({number}) => number);
+    assertUnique(rawIssues, ({issueExternalId}) => issueExternalId);
+    assertUnique(rawIssues, ({number}) => number);
     const pullRequestPayloads = await repositoryClient.pages(
       `/repos/${fullName}/pulls?state=all`,
       array
@@ -818,19 +907,26 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
     const rawPullRequests = byNumber(pullRequestPayloads.map(
       (payload) => {
         const number = positiveInteger(object(payload).number);
-        const linkedWorkItemExternalIds = evidence
-          .linkedWorkItemExternalIdsByPullRequestNumber
+        const linkedIssueExternalIds = evidence
+          .linkedIssueExternalIdsByPullRequestNumber
           .get(number) ?? [];
-        return pullRequest(payload, scope, linkedWorkItemExternalIds);
+        return pullRequest(payload, scope, linkedIssueExternalIds);
       }
     ));
     assertUnique(rawPullRequests, ({externalId}) => externalId);
     assertUnique(rawPullRequests, ({number}) => number);
-    const workItems = rawWorkItems.map((item) => {
-      const projectStatus = evidence.statusByIssueNumber.get(item.number) ?? null;
-      const snapshot = {...item, projectStatus};
+    const issuesByNumber = new Map(rawIssues.map((item) => [item.number, item]));
+    const projectItems = [...evidence.itemsByIssueNumber.entries()].map(([number, projectItem]) => {
+      const repositoryIssue = issuesByNumber.get(number);
+      if (repositoryIssue === undefined || repositoryIssue.issueExternalId !== projectItem.issueExternalId) {
+        return fail('github_response_invalid');
+      }
+      const snapshot: Omit<TrackerProjectItemSnapshot, 'externalVersion'> = {
+        ...repositoryIssue,
+        ...projectItem
+      };
       return {...snapshot, externalVersion: stableVersion(snapshot)};
-    });
+    }).sort((left, right) => left.number - right.number || left.externalId.localeCompare(right.externalId));
     const pullRequests = rawPullRequests;
     const checks: TrackerCheckSnapshot[] = [];
     const openPullRequests = pullRequests.filter(({state}) => state === 'open');
@@ -856,7 +952,7 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
 
     const snapshotContent = {
       repository: repositoryModel,
-      workItems,
+      projectItems,
       pullRequests,
       checks: byStableId(checks)
     };
@@ -1033,7 +1129,7 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
     },
     async readWorkItems(input) {
       const snapshot = await readCompatibilitySnapshot(input);
-      return {externalVersion: snapshot.externalVersion, workItems: snapshot.workItems};
+      return {externalVersion: snapshot.externalVersion, projectItems: snapshot.projectItems};
     },
     async readRepositoryObservation(input) {
       const snapshot = await readCompatibilitySnapshot(input);

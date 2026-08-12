@@ -1,4 +1,4 @@
-import type {TrackerCheckConclusion, WorkItemStatus} from '@fai-control-plane/domain';
+import type {TrackerCheckConclusion} from '@fai-control-plane/domain';
 
 export type GitHubRepositoryScopeDefinition = Readonly<{
   repositoryId: number;
@@ -7,7 +7,8 @@ export type GitHubRepositoryScopeDefinition = Readonly<{
   projectNumber: number;
   projectNodeId: string;
   projectStatusFieldNodeId: string;
-  projectStatusOptionMap: Readonly<Record<string, WorkItemStatus>>;
+  projectTargetDateFieldNodeId: string | null;
+  projectStatusOptions: Readonly<Record<string, string>>;
 }>;
 
 export const githubRepositoryScopeDefinitions:
@@ -19,13 +20,14 @@ readonly GitHubRepositoryScopeDefinition[] = Object.freeze([
     projectNumber: 3,
     projectNodeId: 'PVT_kwHOBIUvJs4Bbefq',
     projectStatusFieldNodeId: 'PVTSSF_lAHOBIUvJs4BbefqzhWOwBc',
-    projectStatusOptionMap: Object.freeze({
-      '18997dc4': 'backlog',
-      '1f121483': 'ready',
-      f37309f6: 'in_dev',
-      b4f120e4: 'qa',
-      '2f615ec5': 'acceptance',
-      a6fa8659: 'done'
+    projectTargetDateFieldNodeId: null,
+    projectStatusOptions: Object.freeze({
+      '18997dc4': 'Backlog',
+      '1f121483': 'Ready',
+      f37309f6: 'In Dev',
+      b4f120e4: 'QA',
+      '2f615ec5': 'Acceptance',
+      a6fa8659: 'Done'
     })
   }),
   Object.freeze({
@@ -35,13 +37,14 @@ readonly GitHubRepositoryScopeDefinition[] = Object.freeze([
     projectNumber: 4,
     projectNodeId: 'PVT_kwHOBIUvJs4Bbi0Q',
     projectStatusFieldNodeId: 'PVTSSF_lAHOBIUvJs4Bbi0QzhWSnmU',
-    projectStatusOptionMap: Object.freeze({
-      f75ad846: 'backlog',
-      f1d63022: 'ready',
-      '47fc9ee4': 'in_dev',
-      eccb04fa: 'qa',
-      '640fe9a8': 'acceptance',
-      '98236657': 'done'
+    projectTargetDateFieldNodeId: 'PVTF_lAHOBIUvJs4Bbi0QzhWSnuc',
+    projectStatusOptions: Object.freeze({
+      f75ad846: 'Backlog',
+      f1d63022: 'Ready',
+      '47fc9ee4': 'In Dev',
+      eccb04fa: 'QA',
+      '640fe9a8': 'Acceptance',
+      '98236657': 'Done'
     })
   })
 ]);

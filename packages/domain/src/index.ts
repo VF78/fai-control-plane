@@ -1,4 +1,9 @@
 import {createHash} from 'node:crypto';
+export {
+  decideAsconNextAction,
+  type TrackerNextActionDecision
+} from './ascon-next-action.ts';
+import type {TrackerNextActionDecision} from './ascon-next-action.ts';
 export * from './instruction-versioning.ts';
 export * from './delivery-protocol.ts';
 export * from './delivery-journey.ts';
@@ -1712,8 +1717,11 @@ export type TrackerMilestone = Readonly<{
   title: string;
   state: 'open' | 'closed';
 }>;
-export type TrackerWorkItemSnapshot = Readonly<{
+export type TrackerProjectItemSnapshot = Readonly<{
+  /** GitHub ProjectV2 item node ID: the canonical task identity. */
   externalId: string;
+  /** Repository issue identity retained only as provider content provenance. */
+  issueExternalId: string;
   externalVersion: string;
   url: string;
   htmlUrl: string;
@@ -1724,15 +1732,16 @@ export type TrackerWorkItemSnapshot = Readonly<{
   labels: readonly TrackerLabel[];
   assignees: readonly TrackerIdentity[];
   milestone: TrackerMilestone | null;
-  projectStatus: TrackerProjectStatusObservation | null;
-}>;
-/** A Project V2 Status observation, including an explicit unknown or missing option. */
-export type TrackerProjectStatusObservation = Readonly<{
   projectExternalId: string;
-  projectItemExternalId: string;
-  fieldExternalId: string;
-  optionExternalId: string | null;
-  status: WorkItemStatus | null;
+  status: Readonly<{
+    fieldExternalId: string;
+    optionExternalId: string | null;
+    optionName: string | null;
+  }>;
+  targetDate: string | null;
+  parentIssueExternalId: string | null;
+  subIssueExternalIds: readonly string[];
+  dependencyExternalIds: readonly string[];
 }>;
 export type TrackerPullRequestSnapshot = Readonly<{
   externalId: string;
@@ -1750,7 +1759,7 @@ export type TrackerPullRequestSnapshot = Readonly<{
   labels: readonly TrackerLabel[];
   assignees: readonly TrackerIdentity[];
   milestone: TrackerMilestone | null;
-  linkedWorkItemExternalIds: readonly string[];
+  linkedIssueExternalIds: readonly string[];
 }>;
 export type TrackerCheckConclusion =
   | 'action_required'
@@ -1789,7 +1798,7 @@ export type TrackerRepositorySnapshot = Readonly<{
     headSha: string;
   }>;
   externalVersion: string;
-  workItems: readonly TrackerWorkItemSnapshot[];
+  projectItems: readonly TrackerProjectItemSnapshot[];
   pullRequests: readonly TrackerPullRequestSnapshot[];
   checks: readonly TrackerCheckSnapshot[];
 }>;
@@ -1871,11 +1880,18 @@ export type ProjectTaskProjection = Readonly<{
     name: string;
     slug: string;
     version: number;
-    status: ProjectionAvailability<never>;
-    blocked: ProjectionAvailability<never>;
-    deployments: readonly CanonicalDeploymentProjection[];
+    source: Readonly<{
+      provider: string;
+      repository: string | null;
+      url: string | null;
+    }>;
+    observedAt: string | null;
+    freshness: 'fresh' | 'stale' | 'unavailable';
+    error: string | null;
   }>;
   tasks: readonly ProjectTaskProjectionTask[];
+  pullRequests: readonly TrackerPullRequestSnapshot[];
+  checks: readonly TrackerCheckSnapshot[];
 }>;
 
 export type CanonicalDeploymentProjection = Readonly<{
@@ -1930,55 +1946,18 @@ export type CanonicalDeploymentProjection = Readonly<{
 
 export type ProjectTaskProjectionTask = Readonly<{
   id: string;
+  issueExternalId: string;
   title: string;
-  summary: string | null;
-  status: WorkItemStatus;
-  blocked: boolean;
-  version: number;
-  owner: ProjectionAvailability<Readonly<{
-    id: string;
-    displayName: string;
-    type: ActorType;
-    role: string;
-  }>>;
-  milestone: ProjectionAvailability<Readonly<{
-    id: string;
-    title: string;
-    closedAt: string | null;
-    targetAt: ProjectionAvailability<string>;
-  }>>;
-  deadline: ProjectionAvailability<string>;
-  sourceBindings: ReadonlyArray<Readonly<{
-    bindingId: string;
-    providerRef: string;
-    surface: string;
-    externalRef: string;
-    deepLink: string | null;
-    evidence: ProviderEvidence;
-  }>>;
-  pullRequests: ReadonlyArray<Readonly<{
-    id: string;
-    providerRef: string;
-    repositoryRef: string;
-    externalRef: string;
-    url: string | null;
-    headRef: string;
-    baseRef: string;
-    state: string;
-    draft: boolean;
-    evidence: ProviderEvidence;
-    checks: ReadonlyArray<Readonly<{
-      id: string;
-      providerRef: string;
-      externalRef: string;
-      name: string;
-      status: string;
-      conclusion: string | null;
-      detailsUrl: string | null;
-      evidence: ProviderEvidence;
-    }>>;
-  }>>;
-  deployments: readonly CanonicalDeploymentProjection[];
+  requirements: string | null;
+  state: 'open' | 'closed';
+  status: Readonly<{optionExternalId: string | null; optionName: string | null}>;
+  assignees: readonly TrackerIdentity[];
+  targetDate: string | null;
+  parentIssueExternalId: string | null;
+  subIssueExternalIds: readonly string[];
+  dependencyExternalIds: readonly string[];
+  sourceUrl: string;
+  observedVersion: string;
 }>;
 
 export type ProjectTaskProjectionReader = Readonly<{
@@ -1986,7 +1965,7 @@ export type ProjectTaskProjectionReader = Readonly<{
 }>;
 export type TaskTrackerObservation = Readonly<{
   externalVersion: string;
-  workItems: readonly TrackerWorkItemSnapshot[];
+  projectItems: readonly TrackerProjectItemSnapshot[];
 }>;
 export type RepositoryObservation = Readonly<{
   repository: TrackerRepositorySnapshot['repository'];
@@ -2133,15 +2112,27 @@ const trackerSnapshotAssignees = (value: unknown): readonly TrackerIdentity[] | 
     : null;
 };
 
-const trackerSnapshotWorkItem = (value: unknown): TrackerWorkItemSnapshot | null => {
+const trackerSnapshotIdentifierList = (value: unknown): readonly string[] | null => {
+  const values = trackerSnapshotArray(value, 1_000);
+  if (values === null) return null;
+  const identifiers = values.map((entry) => trackerSnapshotIdentifier(entry, 512));
+  return identifiers.some((entry) => entry === null) ||
+    !trackerSnapshotUnique(identifiers as string[], (entry) => entry)
+    ? null
+    : identifiers as string[];
+};
+
+const trackerSnapshotProjectItem = (value: unknown): TrackerProjectItemSnapshot | null => {
   const hasRequirements = isPlainObject(value) && Object.hasOwn(value, 'requirements');
   const record = trackerSnapshotObject(value, [
-    'externalId', 'externalVersion', 'url', 'htmlUrl', 'number', 'title', 'state',
-    'labels', 'assignees', 'milestone', 'projectStatus',
+    'externalId', 'issueExternalId', 'externalVersion', 'url', 'htmlUrl', 'number', 'title', 'state',
+    'labels', 'assignees', 'milestone', 'projectExternalId', 'status', 'targetDate',
+    'parentIssueExternalId', 'subIssueExternalIds', 'dependencyExternalIds',
     ...(hasRequirements ? ['requirements'] : [])
   ]);
   if (record === null || (record.state !== 'open' && record.state !== 'closed')) return null;
   const externalId = trackerSnapshotIdentifier(record.externalId, 512);
+  const issueExternalId = trackerSnapshotIdentifier(record.issueExternalId, 512);
   const externalVersion = trackerSnapshotIdentifier(record.externalVersion, 512);
   const url = trackerSnapshotUrl(record.url);
   const htmlUrl = trackerSnapshotUrl(record.htmlUrl);
@@ -2150,54 +2141,57 @@ const trackerSnapshotWorkItem = (value: unknown): TrackerWorkItemSnapshot | null
   const labels = trackerSnapshotLabels(record.labels);
   const assignees = trackerSnapshotAssignees(record.assignees);
   const milestone = trackerSnapshotMilestone(record.milestone);
-  const projectStatus = trackerSnapshotProjectStatus(record.projectStatus);
+  const projectExternalId = trackerSnapshotIdentifier(record.projectExternalId, 512);
+  const statusRecord = trackerSnapshotObject(record.status, [
+    'fieldExternalId', 'optionExternalId', 'optionName'
+  ]);
+  const fieldExternalId = statusRecord === null
+    ? null
+    : trackerSnapshotIdentifier(statusRecord.fieldExternalId, 512);
+  const optionExternalId = statusRecord?.optionExternalId === null
+    ? null
+    : trackerSnapshotIdentifier(statusRecord?.optionExternalId, 512);
+  const optionName = statusRecord?.optionName === null
+    ? null
+    : trackerSnapshotString(statusRecord?.optionName, 256);
+  const targetDate = record.targetDate === null
+    ? null
+    : typeof record.targetDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(record.targetDate)
+      ? record.targetDate
+      : undefined;
+  const parentIssueExternalId = record.parentIssueExternalId === null
+    ? null
+    : trackerSnapshotIdentifier(record.parentIssueExternalId, 512);
+  const subIssueExternalIds = trackerSnapshotIdentifierList(record.subIssueExternalIds);
+  const dependencyExternalIds = trackerSnapshotIdentifierList(record.dependencyExternalIds);
   const requirements = hasRequirements
     ? trackerSnapshotRequirements(record.requirements)
     : undefined;
-  return externalId === null || externalVersion === null || url === null || htmlUrl === null ||
+  return externalId === null || issueExternalId === null || externalVersion === null ||
+    url === null || htmlUrl === null ||
     number === null || title === null || labels === null || assignees === null ||
+    projectExternalId === null || statusRecord === null || fieldExternalId === null ||
+    (statusRecord.optionExternalId !== null && optionExternalId === null) ||
+    (statusRecord.optionName !== null && optionName === null) || targetDate === undefined ||
+    (record.parentIssueExternalId !== null && parentIssueExternalId === null) ||
+    subIssueExternalIds === null || dependencyExternalIds === null ||
     (hasRequirements && requirements === undefined) ||
-    (record.milestone !== null && milestone === null) ||
-    (record.projectStatus !== null && projectStatus === null)
+    (record.milestone !== null && milestone === null)
     ? null
     : {
-        externalId, externalVersion, url, htmlUrl, number, title, state: record.state,
-        labels, assignees, milestone, projectStatus,
+        externalId, issueExternalId, externalVersion, url, htmlUrl, number, title,
+        state: record.state, labels, assignees, milestone, projectExternalId,
+        status: {fieldExternalId, optionExternalId, optionName}, targetDate,
+        parentIssueExternalId, subIssueExternalIds, dependencyExternalIds,
         ...(hasRequirements ? {requirements: requirements as string | null} : {})
       };
-};
-
-const trackerSnapshotProjectStatus = (
-  value: unknown
-): TrackerProjectStatusObservation | null => {
-  if (value === null) return null;
-  const record = trackerSnapshotObject(value, [
-    'projectExternalId', 'projectItemExternalId', 'fieldExternalId', 'optionExternalId', 'status'
-  ]);
-  if (record === null) return null;
-  const projectExternalId = trackerSnapshotIdentifier(record.projectExternalId, 512);
-  const projectItemExternalId = trackerSnapshotIdentifier(record.projectItemExternalId, 512);
-  const fieldExternalId = trackerSnapshotIdentifier(record.fieldExternalId, 512);
-  const optionExternalId = record.optionExternalId === null
-    ? null
-    : trackerSnapshotIdentifier(record.optionExternalId, 512);
-  const status = record.status === null
-    ? null
-    : typeof record.status === 'string' && workItemStatuses.includes(record.status as WorkItemStatus)
-      ? record.status as WorkItemStatus
-      : null;
-  return projectExternalId === null || projectItemExternalId === null || fieldExternalId === null ||
-    (optionExternalId === null && record.optionExternalId !== null) ||
-    (record.status !== null && status === null)
-    ? null
-    : {projectExternalId, projectItemExternalId, fieldExternalId, optionExternalId, status};
 };
 
 const trackerSnapshotPullRequest = (value: unknown): TrackerPullRequestSnapshot | null => {
   const record = trackerSnapshotObject(value, [
     'externalId', 'externalVersion', 'url', 'htmlUrl', 'number', 'title', 'state', 'draft',
     'merged', 'headRef', 'headSha', 'baseRef', 'labels', 'assignees', 'milestone',
-    'linkedWorkItemExternalIds'
+    'linkedIssueExternalIds'
   ]);
   if (
     record === null || (record.state !== 'open' && record.state !== 'closed') ||
@@ -2215,19 +2209,19 @@ const trackerSnapshotPullRequest = (value: unknown): TrackerPullRequestSnapshot 
   const labels = trackerSnapshotLabels(record.labels);
   const assignees = trackerSnapshotAssignees(record.assignees);
   const milestone = trackerSnapshotMilestone(record.milestone);
-  const linkedWorkItemExternalIds = trackerSnapshotArray(record.linkedWorkItemExternalIds, 2)?.map(
+  const linkedIssueExternalIds = trackerSnapshotArray(record.linkedIssueExternalIds, 2)?.map(
     (entry) => trackerSnapshotIdentifier(entry, 512)
   );
   return externalId === null || externalVersion === null || url === null || htmlUrl === null ||
     number === null || title === null || headRef === null || headSha === null || baseRef === null ||
     labels === null || assignees === null || (record.milestone !== null && milestone === null) ||
-    linkedWorkItemExternalIds === undefined || linkedWorkItemExternalIds.some((entry) => entry === null) ||
-    !trackerSnapshotUnique(linkedWorkItemExternalIds as string[], (entry) => entry)
+    linkedIssueExternalIds === undefined || linkedIssueExternalIds.some((entry) => entry === null) ||
+    !trackerSnapshotUnique(linkedIssueExternalIds as string[], (entry) => entry)
     ? null
     : {
         externalId, externalVersion, url, htmlUrl, number, title, state: record.state,
         draft: record.draft, merged: record.merged, headRef, headSha, baseRef, labels, assignees,
-        milestone, linkedWorkItemExternalIds: linkedWorkItemExternalIds as string[]
+        milestone, linkedIssueExternalIds: linkedIssueExternalIds as string[]
       };
 };
 
@@ -2284,7 +2278,7 @@ export const validateTrackerRepositorySnapshot = (
   input: TrackerRepositorySnapshotValidationInput
 ): TrackerRepositorySnapshot | null => {
   const snapshot = trackerSnapshotObject(input.snapshot, [
-    'repository', 'externalVersion', 'workItems', 'pullRequests', 'checks'
+    'repository', 'externalVersion', 'projectItems', 'pullRequests', 'checks'
   ]);
   if (snapshot === null) return null;
   const repository = trackerSnapshotObject(snapshot.repository, [
@@ -2299,9 +2293,9 @@ export const validateTrackerRepositorySnapshot = (
     trackerSnapshotGitShaPattern.test(repository.headSha)
     ? repository.headSha
     : null;
-  const workItems = trackerSnapshotCollection(
-    snapshot.workItems,
-    trackerSnapshotWorkItem,
+  const projectItems = trackerSnapshotCollection(
+    snapshot.projectItems,
+    trackerSnapshotProjectItem,
     (item) => item.externalId
   );
   const pullRequests = trackerSnapshotCollection(
@@ -2313,7 +2307,8 @@ export const validateTrackerRepositorySnapshot = (
   return externalId === null || repositoryExternalVersion === null || externalVersion === null ||
     defaultBranch === null || headSha === null ||
     repository.owner !== input.repository.owner || repository.name !== input.repository.repository ||
-    externalId !== input.repositoryExternalId || workItems === null || pullRequests === null || checks === null
+    externalId !== input.repositoryExternalId || projectItems === null ||
+    pullRequests === null || checks === null
     ? null
     : {
         repository: {
@@ -2321,7 +2316,7 @@ export const validateTrackerRepositorySnapshot = (
           owner: input.repository.owner, name: input.repository.repository,
           defaultBranch, headSha
         },
-        externalVersion, workItems, pullRequests, checks
+        externalVersion, projectItems, pullRequests, checks
       };
 };
 export type TrackerSnapshotProjectionBase = Readonly<{
@@ -2354,16 +2349,14 @@ export type TrackerSnapshotProjectionResult =
   | Readonly<{
       status: 'applied';
       snapshotExternalVersion: string;
-      createdWorkItems: number;
-      updatedWorkItems: number;
-      updatedWorkItemStatuses: number;
-      projectedPullRequests: number;
-      projectedChecks: number;
-      unknownWorkItemExternalIds: readonly string[];
-      unknownProjectStatusWorkItemExternalIds: readonly string[];
-      unmappablePullRequestExternalIds: readonly string[];
-      ambiguousPullRequestExternalIds: readonly string[];
-      unknownCheckExternalIds: readonly string[];
+      snapshot: TrackerRepositorySnapshot;
+      decisions: readonly TrackerNextActionDecision[];
+    }>
+  | Readonly<{
+      status: 'unchanged';
+      snapshotExternalVersion: string;
+      snapshot: TrackerRepositorySnapshot;
+      decisions: readonly TrackerNextActionDecision[];
     }>
   | Readonly<{
       status: 'replayed';
@@ -2418,6 +2411,35 @@ export type TaskTrackerTransitionPort = Pick<
   TaskTrackerPort,
   'provider' | 'capabilities' | 'transitionWorkItem'
 >;
+export type TrackerProjectItemUpdateInput = Readonly<{
+  target: Readonly<{
+    repositoryExternalId: string;
+    projectExternalId: string;
+    projectItemExternalId: string;
+    fieldExternalId: string;
+    optionExternalId: string;
+  }>;
+  expectedOptionExternalId: string | null;
+  mutationId: string;
+  credentialRef: OpaqueSecretRef;
+}>;
+export type TrackerProjectItemUpdateResult =
+  | Readonly<{
+      status: 'confirmed';
+      receipt: Readonly<{
+        verification: 'read_after_write';
+        projectItemExternalId: string;
+        optionExternalId: string;
+        clientMutationId: string;
+      }>;
+    }>
+  | Readonly<{status: 'stale'}>
+  | Readonly<{status: 'identity_denied'}>
+  | Readonly<{status: 'retryable'}>;
+export type TrackerProjectItemUpdatePort = Readonly<{
+  provider: string;
+  updateProjectItem(input: TrackerProjectItemUpdateInput): Promise<TrackerProjectItemUpdateResult>;
+}>;
 export type RepositoryObservationPort = Readonly<{
   provider: string;
   capabilities: Pick<TrackerCapabilities, 'readPullRequests' | 'readChecks'>;
