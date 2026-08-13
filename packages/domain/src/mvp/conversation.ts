@@ -40,35 +40,6 @@ export const validateConversationEnvelope = (input: ConversationEnvelope): boole
   }
 };
 
-/** Deliberately small deterministic command grammar; free text remains pending. */
-export const parseConversationCommand = (value: string): ConversationAction | null => {
-  if (!text(value, 4_000)) return null;
-  if (value === '/facts') return {type: 'project_facts.read'};
-  if (value.startsWith('/issue ')) {
-    const [title, ...statement] = value.slice(7).split(' | ');
-    return text(title, 160) && text(statement.join(' | '), 4_000)
-      ? {type: 'issue.create', title, statement: statement.join(' | ')} : null;
-  }
-  if (value.startsWith('/clarify ')) {
-    const [head, ...statement] = value.slice(9).split(' | '); const [referenceId, expectedVersion] = head?.split(' ') ?? [];
-    return isBoundedId(referenceId) && isBoundedId(expectedVersion) && text(statement.join(' | '), 4_000)
-      ? {type: 'issue.clarify', referenceId, expectedVersion, statement: statement.join(' | ')} : null;
-  }
-  if (value.startsWith('/source ')) {
-    const [name, ...content] = value.slice(8).split(' | ');
-    return text(name, 200) && text(content.join(' | '), 4_000)
-      ? {type: 'source.add', name, content: content.join(' | ')} : null;
-  }
-  if (value.startsWith('/approve ')) {
-    const [kind, approvalId, targetReference, decision] = value.slice(9).split(' ');
-    return approvalKinds.includes(kind as (typeof approvalKinds)[number]) && isBoundedId(approvalId) &&
-      isBoundedId(targetReference) && (decision === 'approved' || decision === 'rejected')
-      ? {type: 'approval.decide', kind: kind as (typeof approvalKinds)[number], approvalId,
-        targetReference, decision} : null;
-  }
-  return null;
-};
-
 export const parseConversationEnvelope = (value: unknown): ConversationEnvelope | null => {
   if (value === null || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;

@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {authorizeConversation, parseConversationCommand, validateConversationEnvelope, type ConversationEnvelope} from './conversation.ts';
+import {authorizeConversation, validateConversationEnvelope, type ConversationEnvelope} from './conversation.ts';
 
 const envelope = (contour: 'trusted-main' | 'client-edge' = 'client-edge'): ConversationEnvelope => ({
   message: {
@@ -38,13 +38,5 @@ describe('MVP conversation boundary', () => {
     }})).toBe(false);
     expect(validateConversationEnvelope({...value, action: {type: 'approval.decide', approvalId: 'a',
       kind: 'client_uat', targetReference: 't', decision: 'invalid' as 'approved'}})).toBe(false);
-  });
-
-  it('parses only the explicit bounded grammar and leaves free text pending', () => {
-    expect(parseConversationCommand('/issue Defect | Reproduction')).toEqual({type: 'issue.create', title: 'Defect', statement: 'Reproduction'});
-    expect(parseConversationCommand('/source Test protocol | Expected result')).toEqual({
-      type: 'source.add', name: 'Test protocol', content: 'Expected result'
-    });
-    expect(parseConversationCommand('Please interpret me')).toBeNull();
   });
 });

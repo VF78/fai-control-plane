@@ -77,7 +77,7 @@ jobs:
           set -Eeuo pipefail
           secret_dir="$RUNNER_TEMP/fcp-secrets"
           mkdir -p "$secret_dir"
-          for name in postgres github-login github-projects github-webhook hermes bitrix-app bitrix-rest telegram; do
+          for name in postgres github-login github-projects github-webhook hermes telegram internal-action client-action; do
             printf 'ci-placeholder\n' > "$secret_dir/$name"
           done
           export POSTGRES_DB=fai_control_plane_mvp POSTGRES_USER=fai
@@ -86,14 +86,27 @@ jobs:
           export GITHUB_PROJECTS_TOKEN_HOST_FILE="$secret_dir/github-projects"
           export GITHUB_WEBHOOK_SECRET_HOST_FILE="$secret_dir/github-webhook"
           export HERMES_TOKEN_HOST_FILE="$secret_dir/hermes"
-          export BITRIX24_APPLICATION_TOKEN_HOST_FILE="$secret_dir/bitrix-app"
-          export BITRIX24_REST_TOKEN_HOST_FILE="$secret_dir/bitrix-rest"
           export TELEGRAM_BOT_TOKEN_HOST_FILE="$secret_dir/telegram"
+          export HERMES_INTERNAL_ACTION_TOKEN_HOST_FILE="$secret_dir/internal-action"
+          export HERMES_CLIENT_ACTION_TOKEN_HOST_FILE="$secret_dir/client-action"
           cp .env.example .env
           docker compose --profile bootstrap config --quiet
           rendered=$(docker compose --profile bootstrap config --services | sort)
           expected=$(printf '%s\n' bootstrap migrate postgres web worker | sort)
           test "$rendered" = "$expected"
+          printf 'API_SERVER_KEY=ci-placeholder\n' > "$secret_dir/hermes-api.env"
+          printf 'TELEGRAM_BOT_TOKEN=ci-placeholder\n' > "$secret_dir/hermes-telegram.env"
+          export HERMES_IMAGE=nousresearch/hermes-agent:v2026.8.13
+          export HERMES_MODEL=gpt-5.6-terra
+          export HERMES_API_SECRET_ENV_FILE="$secret_dir/hermes-api.env"
+          export HERMES_TELEGRAM_SECRET_ENV_FILE="$secret_dir/hermes-telegram.env"
+          export HERMES_TELEGRAM_ALLOWED_USERS=96211907,355724486
+          export HERMES_TELEGRAM_CHAT_ID=-5540760630
+          export FCP_CONVERSATION_ACTION_URL=https://app.f-ai.studio/api/hermes/conversation-actions
+          export HERMES_INTERNAL_BRIDGE_TOKEN_FILE="$secret_dir/internal-action"
+          export HERMES_CLIENT_BRIDGE_TOKEN_FILE="$secret_dir/client-action"
+          docker compose -f infra/hermes-ascon/compose.yaml config --quiet
+          python3 -m unittest discover -s infra/hermes-ascon/tests -p 'test_*.py'
 
   secret-scan:
     runs-on: ubuntu-latest

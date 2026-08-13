@@ -21,7 +21,10 @@ export const migrate = async (): Promise<void> => {
       }
       return;
     }
-    const sql = await readFile(fileURLToPath(new URL('../../mvp-drizzle/0000_mvp.sql', import.meta.url)), 'utf8');
+    const baseline = import.meta.url.includes('/dist/')
+      ? new URL('../mvp-drizzle/0000_mvp.sql', import.meta.url)
+      : new URL('../../mvp-drizzle/0000_mvp.sql', import.meta.url);
+    const sql = await readFile(fileURLToPath(baseline), 'utf8');
     await database.query(`begin;\n${sql}\ncommit;`);
   } finally {
     await database.end();

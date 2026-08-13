@@ -35,6 +35,6 @@ describe('MVP fresh schema', () => {
   it('stores references and hashes, not secret values or chat transcripts', () => {
     expect(expected).toContain('secret_refs');
     expect(expected).not.toContain('secrets');
-    expect(sql).not.toMatch(/message_body|chat_history|secret_value|storage_reference/i);
+    expect(sql).not.toMatch(/message_body|chat_history|secret_value|storage_reference|action_payload|processed_at/i);
   });
 });

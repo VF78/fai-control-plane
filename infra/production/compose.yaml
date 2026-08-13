@@ -75,6 +75,8 @@ services:
       - github-login-client-secret
       - github-projects-token
       - github-webhook-secret
+      - hermes-internal-action-token
+      - hermes-client-action-token
     networks:
       - database
       - egress
@@ -142,3 +144,7 @@ secrets:
     file: ${HERMES_TOKEN_HOST_FILE:?required}
   telegram-bot-token:
     file: ${TELEGRAM_BOT_TOKEN_HOST_FILE:?required}
+  hermes-internal-action-token:
+    file: ${HERMES_INTERNAL_ACTION_TOKEN_HOST_FILE:?required}
+  hermes-client-action-token:
+    file: ${HERMES_CLIENT_ACTION_TOKEN_HOST_FILE:?required}

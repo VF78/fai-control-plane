@@ -5,6 +5,9 @@ readonly deploy_root=/opt/fai-hermes-ascon
 readonly environment_file=/etc/fai-hermes-ascon/production.env
 readonly compose_file="$deploy_root/infra/hermes-ascon/compose.yaml"
 readonly api_secret_file=/etc/fai-hermes-ascon/secrets/api-server.env
+readonly telegram_secret_file=/etc/fai-hermes-ascon/secrets/telegram.env
+readonly internal_bridge_token=/etc/fai-hermes-ascon/secrets/internal-bridge-token
+readonly client_bridge_token=/etc/fai-hermes-ascon/secrets/client-bridge-token
 readonly project=fai-hermes-ascon
 
 fail() {
@@ -25,7 +28,8 @@ readonly action=$1
 [[ "${HERMES_APPROVED_CONFIG_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] ||
   fail 'approved config digest is missing or invalid'
 
-for path in "$environment_file" "$api_secret_file"; do
+for path in "$environment_file" "$api_secret_file" "$telegram_secret_file" \
+  "$internal_bridge_token" "$client_bridge_token"; do
   [[ -f "$path" && -r "$path" ]] || fail "missing required file: $path"
   [[ $(stat -c '%U:%G:%a' "$path") == root:root:600 ]] ||
     fail "file must be root:root mode 0600: $path"
@@ -41,6 +45,12 @@ grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' "$environment_file" &&
   fail 'production environment contains a placeholder'
 [[ $(grep -c '^API_SERVER_KEY=' "$api_secret_file") -eq 1 ]] ||
   fail 'API secret file must contain exactly one API_SERVER_KEY'
+[[ $(grep -c '^TELEGRAM_BOT_TOKEN=' "$telegram_secret_file") -eq 1 ]] ||
+  fail 'Telegram secret file must contain exactly one TELEGRAM_BOT_TOKEN'
+for path in "$internal_bridge_token" "$client_bridge_token"; do
+  token_length=$(wc -c < "$path")
+  (( token_length >= 33 && token_length <= 513 )) || fail "invalid bridge token length: $path"
+done
 
 compose=(
   docker compose

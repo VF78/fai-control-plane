@@ -1,0 +1,7 @@
+model:
+  provider: openai-codex
+  default: gpt-5.6-terra
+
+# Intentionally no browser or action toolset until stable Bitrix message and
+# author identities can be proven by a supported persistent browser backend.
+toolsets: []

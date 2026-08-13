@@ -45,17 +45,7 @@ export const databaseMvpReady = async (database: Database): Promise<boolean> => 
       'workspaces','actors','oauth_login_attempts','operator_sessions','projects','project_memberships',
       'actor_external_identities','project_source_artifacts','secret_refs','tracker_bindings','tracker_snapshots',
       'incoming_events','approval_evidence','command_receipts','outbox_events','audit_events']]);
-  const column = await database.query(
-    `select 1 from information_schema.columns where table_schema='public'
-     and table_name='incoming_events' and column_name='action_payload'`);
-  return result.rows[0]?.count === '16' && column.rowCount === 1;
-};
-
-export const pendingInterpretationCount = async (database: Database): Promise<number> => {
-  const result = await database.query<{count: string}>(
-    `select count(*)::text as count from incoming_events
-     where processed_at is null and event_type='conversation.pending_interpretation'`);
-  return Number(result.rows[0]?.count ?? 0);
+  return result.rows[0]?.count === '16';
 };
 
 export type ProjectRow = Readonly<{
@@ -248,50 +238,14 @@ export const addSourceArtifact = async (database: Database, input: Readonly<{
 
 export const appendIncomingEvent = async (database: Database, input: Readonly<{
   projectId: string; provider: string; providerDeliveryId: string; eventType: string; payloadHash: string;
-  actionPayload?: Readonly<Record<string, unknown>>; receivedAt: string;
+  receivedAt: string;
 }>): Promise<'recorded' | 'duplicate'> => {
-  const payload = input.actionPayload === undefined ? null : JSON.stringify(input.actionPayload);
-  if (payload !== null && Buffer.byteLength(payload) > 16_000) throw new Error('incoming_payload_too_large');
   const result = await database.query(
-    `insert into incoming_events(project_id,provider,provider_delivery_id,event_type,payload_hash,action_payload,received_at)
-     values($1,$2,$3,$4,$5,$6,$7) on conflict(provider,provider_delivery_id) do nothing returning id`,
-    [input.projectId, input.provider, input.providerDeliveryId, input.eventType, input.payloadHash, payload, input.receivedAt]
+    `insert into incoming_events(project_id,provider,provider_delivery_id,event_type,payload_hash,received_at)
+     values($1,$2,$3,$4,$5,$6) on conflict(provider,provider_delivery_id) do nothing returning id`,
+    [input.projectId, input.provider, input.providerDeliveryId, input.eventType, input.payloadHash, input.receivedAt]
   );
   return result.rowCount === 1 ? 'recorded' : 'duplicate';
-};
-
-export type PendingIncomingEvent = Readonly<{
-  id: string; projectId: string; provider: string; providerDeliveryId: string;
-  eventType: string; actionPayload: Readonly<Record<string, unknown>> | null;
-}>;
-export const readPendingIncomingEvents = async (database: Database, limit: number): Promise<readonly PendingIncomingEvent[]> => {
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('incoming_limit_invalid');
-  const result = await database.query<PendingIncomingEvent>(
-    `update incoming_events set processed_at=now()
-     where id in (select id from incoming_events where event_type='conversation.action' and action_payload is not null
-       and (processed_at is null or processed_at < now() - interval '5 minutes')
-       order by received_at limit $1 for update skip locked)
-     returning id,project_id as "projectId",provider,provider_delivery_id as "providerDeliveryId",
-       event_type as "eventType",action_payload as "actionPayload"`, [limit]);
-  return result.rows;
-};
-export const releaseIncomingEvent = async (database: Database, id: string): Promise<void> => {
-  await database.query('update incoming_events set processed_at=null where id=$1 and action_payload is not null', [id]);
-};
-export const completeIncomingEvent = async (database: Database, id: string, processedAt: string): Promise<void> => {
-  const result = await database.query(
-    'update incoming_events set processed_at=$2,action_payload=null where id=$1 and action_payload is not null', [id, processedAt]);
-  if (result.rowCount !== 1) throw new Error('incoming_completion_conflict');
-};
-
-export const latestTelegramUpdateId = async (database: Database, projectId: string): Promise<number | null> => {
-  const result = await database.query<{providerDeliveryId: string}>(
-    `select provider_delivery_id as "providerDeliveryId" from incoming_events
-     where project_id=$1 and provider in ('telegram','telegram-cursor') order by received_at desc limit 1`, [projectId]);
-  const value = result.rows[0]?.providerDeliveryId;
-  if (value === undefined) return null;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 };
 
 export const createStores = (database: Database, workspaceId: string): Readonly<{
