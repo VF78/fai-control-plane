@@ -11,22 +11,27 @@ const request = {
 
 describe('MVP Hermes adapter', () => {
   it('delivers the neutral role contract and returns opaque evidence', async () => {
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({deliveryReference: 'delivery-ref', sessionReference: 'session-ref'}), {status: 202}));
-    const adapter = createHermesDeliveryAdapter({endpoint: 'https://agent.example.test/role-requests',
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({run_id: 'run-ref', status: 'started'}), {status: 202}));
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://agent.example.test/v1/runs',
       credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
       secrets: {resolve: async () => ({value: 'bearer'})}, fetch});
-    await expect(adapter.submit(request)).resolves.toEqual({deliveryReference: 'delivery-ref', sessionReference: 'session-ref'});
-    expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string)).toMatchObject({contract: 'fai.agent-role-request.v1'});
+    await expect(adapter.submit(request)).resolves.toEqual({deliveryReference: 'run-ref', sessionReference: 'correlation'});
+    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as {input: string; session_id: string};
+    expect(JSON.parse(body.input)).toMatchObject({contract: 'fai.agent-role-request.v1'});
+    expect(body.session_id).toBe('correlation');
   });
 
   it('rejects a non-HTTPS agent endpoint at composition', () => {
-    expect(() => createHermesDeliveryAdapter({endpoint: 'http://agent.example.test/requests',
+    expect(() => createHermesDeliveryAdapter({endpoint: 'http://agent.example.test/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}})).toThrow('agent_endpoint_invalid');
+    expect(() => createHermesDeliveryAdapter({endpoint: 'https://agent.example.test/role-requests',
       credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
       secrets: {resolve: async () => ({value: 'bearer'})}})).toThrow('agent_endpoint_invalid');
   });
 
   it('rejects malformed provider evidence', async () => {
-    const adapter = createHermesDeliveryAdapter({endpoint: 'https://agent.example.test/role-requests',
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://agent.example.test/v1/runs',
       credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
       secrets: {resolve: async () => ({value: 'bearer'})},
       fetch: vi.fn(async () => new Response('{}', {status: 202}))});

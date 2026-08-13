@@ -15,7 +15,8 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
   fetch?: Fetch;
 }>): AgentDeliveryPort => {
   const endpoint = new URL(input.endpoint);
-  if (endpoint.protocol !== 'https:' || endpoint.username !== '' || endpoint.password !== '') {
+  if (endpoint.protocol !== 'https:' || endpoint.username !== '' || endpoint.password !== '' ||
+    endpoint.pathname !== '/v1/runs' || endpoint.search !== '' || endpoint.hash !== '') {
     throw new Error('agent_endpoint_invalid');
   }
   const request = input.fetch ?? globalThis.fetch;
@@ -26,15 +27,15 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     const response = await request(endpoint, {
       method: 'POST',
       headers: {accept: 'application/json', authorization: `Bearer ${token}`, 'content-type': 'application/json'},
-      body: renderAgentRoleRequest(roleRequest),
+      body: JSON.stringify({input: renderAgentRoleRequest(roleRequest), session_id: roleRequest.correlationId}),
       signal: AbortSignal.timeout(15_000)
     });
-    if (!response.ok) throw new Error('agent_delivery_failed');
+    if (response.status !== 202) throw new Error('agent_delivery_failed');
     const value = await response.json() as Record<string, unknown>;
-    if (typeof value.deliveryReference !== 'string' || typeof value.sessionReference !== 'string' ||
-      value.deliveryReference.length === 0 || value.sessionReference.length === 0) {
+    if (typeof value.run_id !== 'string' || value.run_id.length === 0 || value.run_id.length > 256 ||
+      value.status !== 'started') {
       throw new Error('agent_response_invalid');
     }
-    return {deliveryReference: value.deliveryReference, sessionReference: value.sessionReference};
+    return {deliveryReference: value.run_id, sessionReference: roleRequest.correlationId};
   }};
 };

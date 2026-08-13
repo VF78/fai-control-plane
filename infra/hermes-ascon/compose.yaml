@@ -1,0 +1,35 @@
+name: fai-hermes-ascon
+
+services:
+  gateway:
+    image: ${HERMES_IMAGE:?required}
+    command: ["gateway", "run"]
+    env_file:
+      - ${HERMES_API_SECRET_ENV_FILE:?required}
+      - ${HERMES_PROVIDER_SECRET_ENV_FILE:?required}
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      HERMES_DASHBOARD: "0"
+      HERMES_GATEWAY_NO_SUPERVISE: "1"
+      HERMES_PROVIDER: ${HERMES_PROVIDER:?required}
+      HERMES_MODEL: ${HERMES_MODEL:?required}
+    volumes:
+      - /var/lib/fai-hermes-ascon:/opt/data
+      - ./config.yaml:/opt/data/config.yaml:ro
+    ports:
+      - "127.0.0.1:13020:8642"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    cpus: "1.0"
+    mem_limit: 1g
+    pids_limit: 256
+    shm_size: 1g
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped

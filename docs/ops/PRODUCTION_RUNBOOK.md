@@ -1,59 +1,240 @@
-# Production deployment is blocked
+# ASCON MVP production approval package
 
-This repository now contains the fresh 16-table MVP architecture. It has not
-been activated in production, and this file does not authorize a deployment.
+This is an inactive production procedure for issue #174. It does not authorize
+deployment, callback registration, DNS, TLS, provider writes or secret access.
+Vladimir must approve the exact release commit, this diff, values still marked
+`REQUIRED_*`, secret references and commands before use.
 
-## Canonical host and protected boundary
+## Fixed host boundary
 
-- SSH endpoint: `root@46.225.163.123`.
-- Replaceable Control Plane public endpoint: `https://app.f-ai.studio/`.
-- The OAuth callback is
-  `https://app.f-ai.studio/oauth/github/complete`.
-- The GitHub and Bitrix24 webhook endpoints are respectively
-  `https://app.f-ai.studio/api/webhooks/github` and
-  `https://app.f-ai.studio/api/webhooks/bitrix24`.
+- SSH host: `root@46.225.163.123`.
+- Public Control Plane: `https://app.f-ai.studio/`.
+- New checkout: `/opt/fai-control-plane-mvp`.
+- New Compose project: `fai-control-plane-mvp`.
+- New web bind: `127.0.0.1:13010`; worker and PostgreSQL are not published.
+- New database volume: `fai-control-plane-mvp-postgres-data`.
+- Non-secret configuration: `/etc/fai-control-plane-mvp/production.env`.
+- Secret directory: `/etc/fai-control-plane-mvp/secrets`, root-owned mode 0700;
+  each secret file is root-owned mode 0600.
 
-Vladimir has authorized replacing the application currently served at
-`app.f-ai.studio` with the approved MVP version. That authorization is limited
-to the exact reviewed Control Plane release. It does not authorize a deployment
-before the exact commit and production diff are approved.
+The existing rollback target stays running and unchanged: checkout
+`/opt/fai-control-plane`, Compose project `fai-control-plane-production`, image
+and commit `63cc41832bb216edfa5c29e270ce1394f45d9231`, upstream
+`127.0.0.1:13000`, and its existing volumes. Never migrate, attach, rename,
+stop or delete the old database/project. Other legacy files retained under
+`infra/production/` are rollback evidence only; the MVP script references only
+the new Compose file, environment template and Nginx upstream contract.
 
-The VPS also runs the f(AI) Studio marketing site, the MSA project test
-environment, the MSA-specific Hermes deployment and Amnezia VPN. These are
-protected neighbouring services. Do not stop, restart, reconfigure, upgrade or
-delete them, and do not reuse or modify their ports, proxy routes, files,
-volumes, databases, credentials, systemd units, containers or
-network/firewall/VPN rules. Preflight and smoke checks must prove that all four
-remain healthy before and after the Control Plane change.
+The marketing site (`myshopai-website.service`), Payload/test service
+(`fai-content-platform.service`), MSA-only Hermes
+(`hermes-gateway.service`, `fai-hermes-runner.service`,
+`fai-codex-executor.service`) and `amnezia-awg2` are protected neighbours.
+The deployment script checks only their active/running state and never reads or
+changes their configuration.
 
-The existing Hermes belongs only to MSA. Never point ASCON at its endpoint,
-reuse its credential, alter its profiles or share its state/work directory.
-ASCON requires a separate project-isolated Hermes deployment with a distinct
-literal HTTPS endpoint, state/work directory and credential. Its exact host
-diff and activation require approval under issue #174.
+## Minimal topology
 
-## ASCON Telegram binding
+The Compose file contains exactly PostgreSQL, one-shot `migrate`, one-shot
+`bootstrap`, web and worker. It adds no proxy container, observability stack,
+registry, backup framework, host daemon or cleanup. Web and worker run as the
+image `node` user. Their only durable business state is the fresh PostgreSQL
+volume.
 
-- bot username: `@f_AI_Control_Bot`;
-- internal group chat ID: `-5540760630`;
-- Vladimir Telegram user ID: `96211907`;
-- Vitaliy Telegram user ID: `355724486`.
+The application build base is pinned to the Node 24 Bookworm Slim multi-arch
+digest `sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03`;
+PostgreSQL 16 Bookworm is pinned to
+`sha256:60f4761b9035e0b8d5218f701a8c3382f641bf12b1604822574cf5be3baeb537`.
+Both were resolved from their official registries on 2026-08-14.
 
-The bot token is stored only in the macOS login Keychain under service
-`fai-control-plane/ascon/telegram-bot-token`, account
-`@f_AI_Control_Bot`. Never print or copy its value into Git, GitHub, Project,
-logs or shell configuration. During an approved deployment, copy it directly
-into the host-owned mode-0600 file
-`/etc/fai-control-plane-mvp/secrets/telegram-bot-token` without exposing the
-value.
+## Exact provider bindings
 
-The MVP must use a new independent host directory, Compose project and
-PostgreSQL volume. The legacy database, commit and credentials remain unchanged
-as the rollback boundary. The files under `infra/production/` are retained only
-as rollback evidence for the legacy commit; they are not compatible with the
-MVP and must not be applied from this branch.
+### GitHub
 
-Issue #174 must define and verify the minimal MVP deployment configuration,
-exact secret references, ASCON bindings and rollback procedure. Vladimir must
-approve the exact commit and production diff before that procedure is used.
-Until then, `scripts/deploy-prod.sh` fails closed.
+- repository: private `VF78/ascon`, node `R_kgDOTD27Gw`, branch `main`;
+- user Project #4: `PVT_kwHOBIUvJs4Bbi0Q`, URL
+  `https://github.com/users/VF78/projects/4`;
+- OAuth callback: `https://app.f-ai.studio/oauth/github/complete`, scope
+  `read:user`; OAuth client ID remains `REQUIRED_GITHUB_OAUTH_CLIENT_ID`;
+- webhook: `https://app.f-ai.studio/api/webhooks/github`, content type JSON,
+  secret ref `/etc/fai-control-plane-mvp/secrets/github-webhook-secret`;
+- subscribe only to repository `issues` and `sub_issues` events. GitHub sends
+  the initial `ping`. User Project #4 cannot emit `projects_v2_item`; webhook
+  deliveries are reconcile hints and the bounded full Project poll is the
+  authority for Project status/date changes;
+- activation tracker credential: dedicated fine-grained token restricted to
+  owner `VF78`, repository `VF78/ascon`, repository Metadata/Issues read and
+  account Projects read. Secret ref:
+  `/etc/fai-control-plane-mvp/secrets/github-projects-token`. Issue mutation
+  remains provider-denied until separate exact write permission is approved.
+
+### Telegram
+
+- bot `@f_AI_Control_Bot`, chat `-5540760630`;
+- allowed humans: Vladimir `96211907`, Vitaliy `355724486`;
+- workstation source: macOS login Keychain service
+  `fai-control-plane/ascon/telegram-bot-token`, account `@f_AI_Control_Bot`;
+- host ref: `/etc/fai-control-plane-mvp/secrets/telegram-bot-token`.
+
+Never print the token. A separately approved transfer must write directly to
+the mode-0600 host file.
+
+### Bitrix24
+
+- portal `https://b24.ascon.spb.ru/`, task `154312`;
+- callback `https://app.f-ai.studio/api/webhooks/bitrix24` for
+  `OnTaskCommentAdd`;
+- receive: verify application token, portal domain, exact
+  `auth[member_id]`, task and allowed human authors; refetch with
+  `tasks.task.get` and `im.dialog.messages.get`;
+- send: `tasks.task.chat.message.send`;
+- refs: `/etc/fai-control-plane-mvp/secrets/bitrix24-application-token` and
+  `/etc/fai-control-plane-mvp/secrets/bitrix24-rest-token`.
+
+The exact member ID, allowed author IDs and credential-authorized method check
+remain required before activation.
+
+### Separate ASCON Hermes
+
+The selected supported binding is
+`https://hermes-ascon.f-ai.studio/v1/runs`. Control Plane posts the bounded
+`fai.agent-role-request.v1` as the run `input`, sets the existing correlation as
+`session_id`, and uses Bearer authentication.
+
+The separate deployment uses `/opt/fai-hermes-ascon`, state/work directory
+`/var/lib/fai-hermes-ascon` (mounted only at `/opt/data`) and dedicated work
+directory `/var/lib/fai-hermes-ascon/work`, candidate loopback port `13020`, Hermes-side ref
+`/etc/fai-hermes-ascon/secrets/api-server.env` containing only the required
+`API_SERVER_KEY`, provider ref `/etc/fai-hermes-ascon/secrets/provider.env`
+containing only the selected provider credential key, and Control-Plane-side ref
+`/etc/fai-control-plane-mvp/secrets/hermes-token`. DNS, TLS, receiver
+implementation/registration and proof of this ACK remain pending explicit
+approval. The MSA Hermes endpoint, state and credentials are forbidden.
+
+Current upstream research establishes the API contract: Hermes Agent
+v0.18.2 (`v2026.7.7.2`) officially supports `POST /v1/runs`, Bearer
+`API_SERVER_KEY`, optional `session_id` and `instructions`, and returns HTTP 202
+`{"run_id":"...","status":"started"}`. Therefore the supported literal URL
+is `https://hermes-ascon.f-ai.studio/v1/runs`; the earlier invented
+`/role-requests` is rejected. The Control Plane adapter maps `run_id` to
+delivery evidence and the sent `session_id` to session evidence. No
+compatibility proxy is permitted.
+
+The supported deployment choice is the official Docker image
+`nousresearch/hermes-agent:v2026.7.7.2@sha256:9c841866021c54c4596849f6135717e8a4d52ba510b7f52c50aef1de1a283973`
+in a
+separate Compose project `fai-hermes-ascon`, with dashboard/messaging/cron and
+browser tooling disabled, API bound inside the container and published only to
+`127.0.0.1:13020`. An Nginx server dedicated to
+`hermes-ascon.f-ai.studio` terminates TLS and forwards only the API paths;
+Control Plane is the only intended caller. `API_SERVER_KEY` is mandatory.
+Initial limits are 1 CPU, 1 GiB memory, 256 PIDs and 1 GiB shared memory; the
+host preflight must be repeated because official guidance recommends 2–4 GiB
+when browser tooling is used. Rollback restores the prior pinned ASCON Hermes
+image only and never addresses any MSA unit, directory or credential.
+The official image keeps its immutable installation under `/opt/hermes`; only
+the isolated `/var/lib/fai-hermes-ascon` bind mounted at `/opt/data` is writable
+ASCON state.
+
+Hermes staging is deliberately separate from Control Plane deployment and does
+not install DNS, TLS or Nginx configuration. After those are separately
+approved and installed, the only command interface is:
+
+```bash
+cd /opt/fai-hermes-ascon
+HERMES_APPROVED_IMAGE='<exact-approved-image@sha256>' \
+HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
+  ./scripts/deploy-hermes-ascon.sh stage
+
+cd /opt/fai-hermes-ascon
+HERMES_APPROVED_IMAGE='<exact-approved-image@sha256>' \
+HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
+  ./scripts/deploy-hermes-ascon.sh rollback
+```
+
+`stage` validates the clean isolated checkout, exact image/config digest,
+root-only environment and secret files, then creates only the ASCON data/work
+directory, pulls and starts only project `fai-hermes-ascon`, and checks public
+health plus authenticated capabilities without displaying credentials.
+`rollback` stops only that Compose project and preserves its data. Neither
+action changes DNS, Nginx, TLS or any MSA service.
+
+Research sources reviewed 2026-08-14:
+
+- official API server/runs/auth contract:
+  <https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server>;
+- official Docker data mount, gateway supervision, limits and upgrade model:
+  <https://hermes-agent.nousresearch.com/docs/user-guide/docker/>;
+- official release `v2026.7.7.2`:
+  <https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.7.2>;
+- public operational evidence reports deployment/auth confusion and unsafe
+  unauthenticated exposure. It reinforces loopback-only publish, mandatory API
+  key, no dashboard and a direct `/health` plus authenticated `/v1/capabilities`
+  preflight: <https://github.com/NousResearch/hermes-agent/issues/6439>,
+  <https://github.com/NousResearch/hermes-agent/issues/39365>, and
+  <https://www.reddit.com/r/hermesagent/comments/1ucke01/vps_deployment_megathread_hermes_agent_june_2026/>.
+
+## Preflight and deployment
+
+Prepare `production.env` from `infra/production/production.env.example`, fill
+every `REQUIRED_*`, and install all eight secret files without displaying their
+contents. Review the exact commit and diff before copying the clean checkout to
+`/opt/fai-control-plane-mvp`.
+
+The only approved command interface is:
+
+```bash
+cd /opt/fai-control-plane-mvp
+FCP_APPROVED_RELEASE_COMMIT=<approved-40-hex> \
+FCP_APPROVED_CONFIG_SHA256=<approved-production-env-sha256> \
+  ./scripts/deploy-prod.sh stage <approved-40-hex>
+```
+
+`stage` verifies the old rollback image and protected-neighbour health, rejects
+dirty/mismatched checkouts, placeholders, missing/mis-permissioned secret files
+and an environment-file digest different from the approved non-secret config.
+It then builds and starts only the new stack, migrates the empty database,
+bootstraps idempotently, and checks the unpublished candidate through
+`127.0.0.1:13010`. It does not touch Nginx.
+
+The reviewed stage value is `FCP_WORKER_ACTIVE=false`: the worker process is
+healthy but performs no poll, reconciliation, delivery or provider call, and
+its readiness remains 503. Changing it to `true` is a separate exact config
+approval (with a new SHA-256) after provider registrations and synthetic-safe
+Hermes configuration are complete. This prevents staging from starting live
+ASCON work implicitly.
+
+Before activation, prove exactly 16 MVP tables, one ASCON project/binding,
+GitHub Project read/freshness, one synthetic Hermes ACK, Telegram allow/deny
+and Bitrix refetch/allow/deny evidence. Do not mutate a live ASCON task.
+
+After Vladimir approves that evidence and the exact one-line proxy change:
+
+```bash
+cd /opt/fai-control-plane-mvp
+FCP_APPROVED_RELEASE_COMMIT=<approved-40-hex> \
+FCP_APPROVED_CONFIG_SHA256=<approved-production-env-sha256> \
+  ./scripts/deploy-prod.sh activate <approved-40-hex>
+```
+
+`activate` requires web and worker readiness, changes only the existing
+`fai_control_plane_web` server from `127.0.0.1:13000` to
+`127.0.0.1:13010`, validates Nginx and reloads it. No other server block,
+route, service or network rule changes.
+
+## Disable and rollback
+
+If candidate readiness or public smoke fails, run:
+
+```bash
+cd /opt/fai-control-plane-mvp
+FCP_APPROVED_RELEASE_COMMIT=<approved-40-hex> \
+  ./scripts/deploy-prod.sh rollback <approved-40-hex>
+```
+
+Rollback first proves the old app ready, changes only the upstream line back to
+`127.0.0.1:13000`, validates/reloads Nginx, stops only the new MVP web/worker,
+and rechecks protected health. Leave all containers and the fresh volume intact
+for evidence; stopped containers are not removed. Do not delete data or
+retry deployment until the failure is understood. Provider callbacks/tokens
+are disabled only through their separately approved registrations; this script
+does not manage them.
