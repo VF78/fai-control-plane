@@ -1,7 +1,5 @@
 import {createHash, createSign} from 'node:crypto';
 import type {
-  AccessLevel,
-  AccessObservationPort,
   OpaqueSecretRef,
   RepositoryObservationPort,
   SecretsProvider,
@@ -812,7 +810,7 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
   appPrivateKeyRef: OpaqueSecretRef;
   projectsSecretsProvider: SecretsProvider;
   now?: () => Date;
-}>): TrackerAdapter & TaskTrackerPort & RepositoryObservationPort & AccessObservationPort => {
+}>): TrackerAdapter & TaskTrackerPort & RepositoryObservationPort => {
   const compatibilityAdapter: TrackerAdapter = ({
   provider: 'github',
   capabilities: {
@@ -988,145 +986,6 @@ export const createGitHubRepositoryReadAdapter = (dependencies: Readonly<{
   };
   return {
     ...compatibilityAdapter,
-    async observeAccess(input) {
-      if (input.resourceType === 'tracker') return {
-        state: 'unsupported',
-        remediation: 'GitHub Project V2 membership observation is not supported; verify it in GitHub.'
-      };
-      if (input.resourceType !== 'repository') return {
-        state: 'unsupported',
-        remediation: `GitHub cannot observe ${input.resourceType} access.`
-      };
-      const accountId = input.externalSubject.match(/^github:user:([1-9][0-9]{0,15})$/)?.[1];
-      if (accountId === undefined || !Number.isSafeInteger(Number(accountId))) return {
-        state: 'unobserved',
-        remediation: 'Bind an active GitHub identity as github:user:<numeric-id>.'
-      };
-      const fullName = `${input.repository.owner}/${input.repository.repository}`;
-      const scope = githubRepositoryScopeDefinitions.find((candidate) => candidate.fullName === fullName);
-      if (scope === undefined || input.repository.externalId !== stableId('repository', scope.repositoryId)) {
-        return {
-          state: 'unobserved',
-          remediation: 'Configure an immutable GitHub repository binding for this project.'
-        };
-      }
-      const request = createRequest(dependencies.fetch);
-      let installationToken: string;
-      try {
-        installationToken = await mintInstallationToken(
-          request,
-          dependencies.appSecretsProvider,
-          dependencies.appPrivateKeyRef
-        );
-      } catch (error) {
-        return {
-          state: 'unavailable',
-          remediation: error instanceof GitHubRepositoryReadError && error.code === 'github_rate_limited'
-            ? 'GitHub rate limit reached; retry after the provider window resets.'
-            : 'GitHub repository access observation is unavailable; verify the App installation.'
-        };
-      }
-      const read = async (path: string): Promise<Readonly<{status: number; payload?: unknown}>> => {
-        let response: Response;
-        try {
-          response = await dependencies.fetch(`https://api.github.com${path}`, {
-            method: 'GET', headers: requestHeaders(installationToken)
-          });
-        } catch {
-          return {status: 503};
-        }
-        const remaining = response.headers.get('x-ratelimit-remaining');
-        const retryAfter = response.headers.get('retry-after');
-        if (response.status === 429 || (response.status === 403 && (remaining === '0' || retryAfter !== null))) {
-          return {status: 429};
-        }
-        if (response.status !== 200) return {status: response.status};
-        try {
-          return {status: 200, payload: await response.json()};
-        } catch {
-          return {status: 502};
-        }
-      };
-      const user = await read(`/user/${accountId}`);
-      if (user.status === 404) return {
-        state: 'unobserved',
-        remediation: `GitHub user ID ${accountId} no longer resolves; update the external identity.`
-      };
-      if (user.status !== 200) return {
-        state: 'unavailable',
-        remediation: user.status === 429
-          ? 'GitHub rate limit reached; retry after the provider window resets.'
-          : 'GitHub user lookup is unavailable; verify App permissions and retry.'
-      };
-      let login: string;
-      try {
-        const payload = object(user.payload);
-        if (positiveInteger(payload.id) !== Number(accountId)) return fail('github_response_invalid');
-        login = boundedString(payload.login, 39);
-      } catch {
-        return {
-          state: 'unavailable',
-          remediation: 'GitHub returned an invalid user identity response; retry before changing bindings.'
-        };
-      }
-      const permission = await read(
-        `/repos/${encodeURIComponent(input.repository.owner)}/${encodeURIComponent(input.repository.repository)}` +
-        `/collaborators/${encodeURIComponent(login)}/permission`
-      );
-      if (permission.status === 404) {
-        const repository = await read(`/repositories/${scope.repositoryId}`);
-        if (repository.status !== 200) return {
-          state: 'unavailable',
-          remediation: 'GitHub repository identity could not be revalidated after a missing collaborator response.'
-        };
-        try {
-          const payload = object(repository.payload);
-          if (
-            positiveInteger(payload.id) !== scope.repositoryId ||
-            boundedString(payload.full_name, 256) !== scope.fullName
-          ) return fail('github_response_invalid');
-        } catch {
-          return {
-            state: 'unavailable',
-            remediation: 'GitHub repository revalidation returned a mismatched immutable identity.'
-          };
-        }
-        return {
-          state: 'confirmed', provider: 'github',
-          externalResourceRef: input.repository.externalId,
-          confirmedLevel: 'none',
-          observedAt: (dependencies.now ?? (() => new Date()))().toISOString()
-        };
-      }
-      if (permission.status !== 200) return {
-        state: 'unavailable',
-        remediation: permission.status === 429
-          ? 'GitHub rate limit reached; retry after the provider window resets.'
-          : 'GitHub collaborator permission is unavailable; verify repository administration access.'
-      };
-      let confirmedLevel: AccessLevel;
-      try {
-        const value = boundedString(object(permission.payload).permission, 32);
-        const levels: Readonly<Record<string, AccessLevel>> = {
-          none: 'none', read: 'read', triage: 'read',
-          write: 'write', maintain: 'write', admin: 'admin'
-        };
-        const mapped = levels[value];
-        if (mapped === undefined) return fail('github_response_invalid');
-        confirmedLevel = mapped;
-      } catch {
-        return {
-          state: 'unavailable',
-          remediation: 'GitHub returned an unknown collaborator permission; update the adapter before confirming access.'
-        };
-      }
-      return {
-        state: 'confirmed', provider: 'github',
-        externalResourceRef: input.repository.externalId,
-        confirmedLevel,
-        observedAt: (dependencies.now ?? (() => new Date()))().toISOString()
-      };
-    },
     async readWorkItems(input) {
       const snapshot = await readCompatibilitySnapshot(input);
       return {externalVersion: snapshot.externalVersion, projectItems: snapshot.projectItems};

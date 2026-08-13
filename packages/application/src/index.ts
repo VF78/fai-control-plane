@@ -1,5 +1,6 @@
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
-export * from './access-observation.ts';
+export * from './conversation-dispatcher.ts';
+export * from './conversation-process-composition.ts';
 export {
   createDeploymentExecutorService,
   parseDeploymentExecutorCompletionPayload,
@@ -48,17 +49,6 @@ export {
   type PrepareQaTaskPacketCommand,
   type RecordQaReviewCommand
 } from './governed-qa.ts';
-export {
-  CONVERSATION_CHANNEL_SET_COMMAND,
-  conversationChannelStates,
-  createConversationChannelService,
-  type ConversationChannelExecution,
-  type ConversationChannelReceipt,
-  type ConversationChannelState,
-  type ConversationChannelStore,
-  type ConversationChannelValue,
-  type SetConversationChannelCommand
-} from './conversation-management.ts';
 export {
   PROJECT_OUTCOME_ACCEPTANCE_COMMAND,
   createProjectOutcomeAcceptanceService,
@@ -174,26 +164,9 @@ export {
   type PublishInstructionVersionCommand,
   type RollbackInstructionVersionCommand
 } from './instruction-versioning.ts';
-export {
-  createProjectShareService,
-  type CreateProjectShareGrantInput,
-  type CreateProjectShareInput,
-  type CreateProjectShareServiceInput,
-  type ProjectShareGrant,
-  type ProjectShareService,
-  type ProjectShareStore,
-  type PublicProjectItem,
-  type PublicProjectProjection,
-  type RevokeProjectShareGrantInput,
-  type RevokeProjectShareInput
-} from './project-share.ts';
-export * from './environment-access-reconciliation.ts';
 import {
   actionCategories,
   actorOnboardingRolesAreCompatible,
-  accessLevels,
-  accessResourceTypes,
-  accessRequestStatuses,
   agentRunStatuses,
   CURRENT_POLICY_VERSION,
   authorize,
@@ -211,18 +184,15 @@ import {
   OPERATOR_RECOVERED_EXPIRED_LEASE,
   policySurfaces,
   projectMembershipRoles,
-  projectEnvironmentKinds,
   replaceRuntimeRegistrations,
   setWorkItemBlocked,
   trackerCheckStatuses,
-  transitionAccessRequest,
   transitionAgentRun,
   transitionApproval,
   transitionWorkItem,
   updateAgentProfile,
   validateQaMachineReviewEvidence,
   workItemStatuses,
-  type AccessRequest,
   type ActorOnboarding,
   type ActorExternalIdentity,
   type ActionCategory,
@@ -251,9 +221,7 @@ import {
   type PolicyDecision,
   type PolicyRequest,
   type ProjectMembership,
-  type ProjectEnvironment,
   type QaMachineReviewEvidence,
-  type ResourceAccessGrant,
   type RetirableAgent,
   type RuntimeRegistration,
   type RuntimeRecoveryPolicy,
@@ -291,14 +259,14 @@ export interface Clock {
 export type VerifiedIncomingEventInput = Readonly<{
   workspaceId: string;
   projectId: string;
-  provider: 'github' | 'telegram';
+  provider: 'github';
   deliveryId: string;
-  eventType: 'issues' | 'pull_request' | 'check_run' | 'chat_command';
+  eventType: 'issues' | 'pull_request' | 'check_run';
   action: string;
   payloadSha256: string;
   verification: Readonly<{
     outcome: 'verified';
-    method: 'hmac-sha256' | 'shared-token';
+    method: 'hmac-sha256';
   }>;
   source: IncomingEvent['source'];
   projection: Readonly<Record<string, CanonicalJson>>;
@@ -1008,17 +976,11 @@ const commandTypes = new Set<CanonicalCommand['type']>([
   'agent_run.transition',
   'approval.request',
   'approval.decide',
-  'access_request.request',
-  'environment_access.request',
-  'access_request.decide',
   'project_membership.set',
   'project.create',
   'actor.onboard',
   'actor_external_identity.bind',
   'actor.retire',
-  'resource_access_grant.set',
-  'resource_access_grant.observe',
-  'project_environment.set',
   'runtime_registration.create',
   'runtime_registration.update',
   'runtime_registration.disable',
@@ -1552,7 +1514,7 @@ const cloneSafeProjection = (
       ? ['pullRequest']
       : eventType === 'check_run'
         ? ['checkRun']
-        : ['command'];
+        : [];
   const projection = exactObject(value, 'projection', projectionKeys);
 
   if (eventType === 'issues') {
@@ -1604,14 +1566,6 @@ const cloneSafeProjection = (
         )
       }
     };
-  }
-
-  if (eventType === 'chat_command') {
-    const command = exactObject(projection.command, 'projection.command', ['name']);
-    if (command.name !== 'status') {
-      throw new TypeError('projection.command is invalid.');
-    }
-    return {command: {name: 'status'}};
   }
 
   const checkRun = exactObject(projection.checkRun, 'projection.checkRun', [
@@ -1725,10 +1679,10 @@ export const createIncomingEventIngestionService = (
       ) {
         throw new TypeError('Incoming event workspaceId and projectId must be UUIDs.');
       }
-      if (value.provider !== 'github' && value.provider !== 'telegram') {
+      if (value.provider !== 'github') {
         throw new TypeError('Incoming event provider is unsupported.');
       }
-      const eventTypes = ['issues', 'pull_request', 'check_run', 'chat_command'] as const;
+      const eventTypes = ['issues', 'pull_request', 'check_run'] as const;
       if (
         typeof value.eventType !== 'string' ||
         !eventTypes.includes(value.eventType as (typeof eventTypes)[number])
@@ -1741,46 +1695,24 @@ export const createIncomingEventIngestionService = (
       ]);
       if (
         verification.outcome !== 'verified' ||
-        (verification.method !== 'hmac-sha256' && verification.method !== 'shared-token') ||
-        (value.provider === 'github' && verification.method !== 'hmac-sha256') ||
-        (value.provider === 'telegram' && verification.method !== 'shared-token')
+        verification.method !== 'hmac-sha256'
       ) {
         throw new TypeError('Incoming event verification is invalid.');
       }
-      const source = value.provider === 'github'
-        ? exactObject(value.source, 'source', [
-            'installationId',
-            'kind',
-            'projectNodeId',
-            'repositoryId'
-          ])
-        : exactObject(value.source, 'source', ['chatId', 'kind', 'messageId', 'userId']);
-      if (value.provider === 'github') {
-        if (
-          source.kind !== 'github' ||
-          typeof source.installationId !== 'string' ||
-          !decimalIdentifierPattern.test(source.installationId) ||
-          typeof source.repositoryId !== 'string' ||
-          !decimalIdentifierPattern.test(source.repositoryId)
-        ) {
-          throw new TypeError('Incoming event GitHub source identity is invalid.');
-        }
-      } else if (
-        source.kind !== 'telegram' ||
-        typeof source.messageId !== 'string' ||
-        !/^tgid:v1:[0-9a-f]{64}$/.test(source.messageId) ||
-        typeof source.chatId !== 'string' ||
-        !/^tgid:v1:[0-9a-f]{64}$/.test(source.chatId) ||
-        typeof source.userId !== 'string' ||
-        !/^tgid:v1:[0-9a-f]{64}$/.test(source.userId)
-      ) {
-        throw new TypeError('Incoming event Telegram source identity is invalid.');
-      }
+      const source = exactObject(value.source, 'source', [
+        'installationId',
+        'kind',
+        'projectNodeId',
+        'repositoryId'
+      ]);
       if (
-        (value.provider === 'github' && value.eventType === 'chat_command') ||
-        (value.provider === 'telegram' && (value.eventType !== 'chat_command' || value.action !== 'status'))
+        source.kind !== 'github' ||
+        typeof source.installationId !== 'string' ||
+        !decimalIdentifierPattern.test(source.installationId) ||
+        typeof source.repositoryId !== 'string' ||
+        !decimalIdentifierPattern.test(source.repositoryId)
       ) {
-        throw new TypeError('Incoming event provider and type are incompatible.');
+        throw new TypeError('Incoming event GitHub source identity is invalid.');
       }
 
       const eventId = ids.next();
@@ -1810,25 +1742,18 @@ export const createIncomingEventIngestionService = (
         payloadSha256: value.payloadSha256,
         verification: {
           outcome: 'verified',
-          method: verification.method as 'hmac-sha256' | 'shared-token'
+          method: 'hmac-sha256'
         },
-        source: value.provider === 'github'
-          ? {
-              kind: 'github',
-              installationId: source.installationId as string,
-              repositoryId: source.repositoryId as string,
-              projectNodeId: requiredBoundedIdentifier(
-                source.projectNodeId,
-                'source.projectNodeId',
-                128
-              )
-            }
-          : {
-              kind: 'telegram',
-              messageId: source.messageId as string,
-              chatId: source.chatId as string,
-              userId: source.userId as string
-            },
+        source: {
+          kind: 'github',
+          installationId: source.installationId as string,
+          repositoryId: source.repositoryId as string,
+          projectNodeId: requiredBoundedIdentifier(
+            source.projectNodeId,
+            'source.projectNodeId',
+            128
+          )
+        },
         projection: cloneSafeProjection(
           value.eventType as VerifiedIncomingEventInput['eventType'],
           value.projection
@@ -1943,21 +1868,6 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
       ]) && isUuid(payload.approvalId) && isOneOf(['approved', 'rejected'] as const, payload.status) &&
         isVersion(payload.expectedVersion) && typeof payload.expectedActionHash === 'string' &&
         sha256Pattern.test(payload.expectedActionHash) && isVersion(payload.expectedPolicyVersion);
-    case 'access_request.request':
-      return hasExactKeys(payload, ['requestId', 'targetSurface', 'requestedScope']) && isUuid(payload.requestId) &&
-        isOneOf(policySurfaces, payload.targetSurface) && isDenseArray(payload.requestedScope) &&
-        (payload.requestedScope as readonly unknown[]).every(isNonEmptyString);
-    case 'environment_access.request':
-      return hasExactKeys(payload, [
-        'requestId', 'projectId', 'subjectActorId', 'environmentId',
-        'credentialRefId', 'expiresAt'
-      ]) && isUuid(payload.requestId) && isUuid(payload.projectId) &&
-        isUuid(payload.subjectActorId) && isUuid(payload.environmentId) &&
-        isUuid(payload.credentialRefId) && isCanonicalTimestamp(payload.expiresAt);
-    case 'access_request.decide':
-      return hasExactKeys(payload, ['requestId', 'status', 'expectedVersion']) && isUuid(payload.requestId) &&
-        isOneOf(accessRequestStatuses.filter((status) => status !== 'pending'), payload.status) &&
-        isVersion(payload.expectedVersion);
     case 'project_membership.set':
       return hasExactKeys(payload, [
         'membershipId', 'projectId', 'subjectActorId', 'roles', 'active', 'expectedVersion'
@@ -2052,44 +1962,6 @@ const commandPayloadIsSafe = (type: CanonicalCommand['type'], payload: Canonical
         (payload.expectedVersion === null || isVersion(payload.expectedVersion));
     case 'actor.retire':
       return hasExactKeys(payload, ['agentId']) && isUuid(payload.agentId);
-    case 'resource_access_grant.set':
-      return (hasExactKeys(payload, [
-        'grantId', 'projectId', 'subjectActorId', 'resourceType', 'resourceId',
-        'desiredLevel', 'expectedVersion'
-      ]) || hasExactKeys(payload, [
-        'grantId', 'projectId', 'subjectActorId', 'resourceType', 'resourceId',
-        'desiredLevel', 'credentialRefId', 'approvalRequestId', 'expiresAt', 'expectedVersion'
-      ])) && isUuid(payload.grantId) && isUuid(payload.projectId) &&
-        isUuid(payload.subjectActorId) && isOneOf(accessResourceTypes, payload.resourceType) &&
-        isUuid(payload.resourceId) && isOneOf(accessLevels, payload.desiredLevel) &&
-        (payload.credentialRefId === undefined || payload.credentialRefId === null || isUuid(payload.credentialRefId)) &&
-        (payload.approvalRequestId === undefined || payload.approvalRequestId === null || isUuid(payload.approvalRequestId)) &&
-        (payload.expiresAt === undefined || payload.expiresAt === null || isCanonicalTimestamp(payload.expiresAt)) &&
-        (payload.expectedVersion === null || isVersion(payload.expectedVersion));
-    case 'project_environment.set':
-      return hasExactKeys(payload, [
-        'environmentId', 'projectId', 'kind', 'provider', 'endpoint', 'port',
-        'purpose', 'adapterKey', 'adapterCredentialRefId', 'reconcilerActorId', 'enabled', 'expectedVersion'
-      ]) && isUuid(payload.environmentId) && isUuid(payload.projectId) &&
-        isOneOf(projectEnvironmentKinds, payload.kind) && isProviderKey(payload.provider) &&
-        isExternalReference(payload.endpoint) && !containsHighConfidenceSecretContent(payload.endpoint) &&
-        Number.isInteger(payload.port) &&
-        (payload.port as number) >= 1 && (payload.port as number) <= 65535 &&
-        typeof payload.purpose === 'string' && payload.purpose.trim() === payload.purpose &&
-        payload.purpose.length >= 1 && payload.purpose.length <= 240 &&
-        !containsHighConfidenceSecretContent(payload.purpose) &&
-        isProviderKey(payload.adapterKey) && isUuid(payload.adapterCredentialRefId) &&
-        isUuid(payload.reconcilerActorId) &&
-        typeof payload.enabled === 'boolean' &&
-        (payload.expectedVersion === null || isVersion(payload.expectedVersion));
-    case 'resource_access_grant.observe':
-      return hasExactKeys(payload, [
-        'grantId', 'provider', 'externalResourceRef', 'confirmedLevel', 'observedAt',
-        'expectedVersion'
-      ]) && isUuid(payload.grantId) && isProviderKey(payload.provider) &&
-        isExternalReference(payload.externalResourceRef) &&
-        isOneOf(accessLevels, payload.confirmedLevel) &&
-        isCanonicalTimestamp(payload.observedAt) && isVersion(payload.expectedVersion);
     case 'runtime_registration.create':
       return hasExactKeys(payload, [
         'registrationId', 'projectId', 'subjectActorId', 'agentProfileId',
@@ -2340,7 +2212,7 @@ export const createCanonicalCommandService = (
       );
     }
     const systemObservation = command.actor.kind === 'trusted_system' &&
-      (command.type === 'runtime_availability.observe' || command.type === 'resource_access_grant.observe');
+      command.type === 'runtime_availability.observe';
     const routine = authorize(command.actor, systemObservation
       ? {actionCategory: 'write', surface: 'runtime_observation', environment: 'development'}
       : CANONICAL_COMMAND_POLICY);
@@ -2360,17 +2232,11 @@ export const createCanonicalCommandService = (
       case 'agent_run.transition': return agentRunTransition(transaction, claimToken, claim, command);
       case 'approval.request': return approvalRequest(transaction, claimToken, claim, command);
       case 'approval.decide': return approvalDecide(transaction, claimToken, claim, command);
-      case 'access_request.request': return accessRequestCreate(transaction, claimToken, claim, command);
-      case 'environment_access.request': return environmentAccessRequest(transaction, claimToken, claim, command);
-      case 'access_request.decide': return accessRequestDecide(transaction, claimToken, claim, command);
       case 'project_membership.set': return projectMembershipSet(transaction, claimToken, claim, command);
       case 'project.create': return projectCreate(transaction, claimToken, claim, command);
       case 'actor.onboard': return actorOnboard(transaction, claimToken, claim, command);
       case 'actor_external_identity.bind': return actorExternalIdentityBind(transaction, claimToken, claim, command);
       case 'actor.retire': return actorRetire(transaction, claimToken, claim, command);
-      case 'resource_access_grant.set': return resourceAccessGrantSet(transaction, claimToken, claim, command);
-      case 'resource_access_grant.observe': return resourceAccessGrantObserve(transaction, claimToken, claim, command);
-      case 'project_environment.set': return projectEnvironmentSet(transaction, claimToken, claim, command);
       case 'runtime_registration.create': return runtimeRegistrationCreate(transaction, claimToken, claim, command);
       case 'runtime_registration.update': return runtimeRegistrationUpdate(transaction, claimToken, claim, command);
       case 'runtime_registration.disable': return runtimeRegistrationDisable(transaction, claimToken, claim, command);
@@ -2914,113 +2780,6 @@ export const createCanonicalCommandService = (
     }, resultTarget, value);
   }
 
-  async function accessRequestCreate(
-    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
-    command: Extract<CanonicalCommand, {type: 'access_request.request'}>
-  ) {
-    const request: AccessRequest = {
-      id: command.payload.requestId,
-      workspaceId: command.workspaceId,
-      requesterActorId: command.actor.actorId,
-      targetSurface: command.payload.targetSurface as AccessRequest['targetSurface'],
-      requestedScope: [...command.payload.requestedScope],
-      status: 'pending', version: 1
-    };
-    const target = targetFor('access_request', request.id, undefined, 1);
-    const value = succeeded(compactAccessRequest(request));
-    return completeMutation(transaction, token, claim, command, {
-      kind: 'non_approval', mutation: {aggregateType: 'access_request', aggregateId: request.id, expectedPersistedVersion: null, aggregate: request},
-      audit: audit(claim, ids, clock, target, command.actor.actorId, command.type, 'write', value)
-    }, target, value);
-  }
-
-  async function environmentAccessRequest(
-    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
-    command: Extract<CanonicalCommand, {type: 'environment_access.request'}>
-  ) {
-    const payload = command.payload;
-    const target = targetFor('access_request', payload.requestId);
-    const authorization = await accessAuthority(transaction, token, command, payload.projectId);
-    if (!authorization.ok) return completeNoMutation(
-      transaction, token, claim, command, target, authorization, 'access_change'
-    );
-    if (transaction.loadEnvironmentAccessContext === undefined) return completeNoMutation(
-      transaction, token, claim, command, target,
-      failed('NOT_FOUND', 'Environment access is not configured.'), 'access_change'
-    );
-    const context = await transaction.loadEnvironmentAccessContext(token, {
-      projectId: payload.projectId,
-      subjectActorId: payload.subjectActorId,
-      environmentId: payload.environmentId,
-      credentialRefId: payload.credentialRefId,
-      approvalRequestId: null
-    });
-    const expiresAt = new Date(payload.expiresAt).getTime();
-    const now = clock.now().getTime();
-    if (context === null || context.environmentKind !== 'production' || context.subjectType !== 'human' ||
-      !context.environmentEnabled || !context.subjectEligible || !context.credentialRefValid ||
-      expiresAt <= now || expiresAt > now + 30 * 24 * 60 * 60 * 1000) {
-      return completeNoMutation(transaction, token, claim, command, target,
-        failed('CAPABILITY_DENIED', 'Production environment access request is not eligible.'),
-        'access_change', 'deny');
-    }
-    const request: AccessRequest = {
-      id: payload.requestId,
-      workspaceId: command.workspaceId,
-      requesterActorId: command.actor.actorId,
-      targetSurface: 'runner',
-      requestedScope: ['ssh:login'],
-      projectId: payload.projectId,
-      subjectActorId: payload.subjectActorId,
-      resourceType: 'environment',
-      resourceId: payload.environmentId,
-      requestedLevel: 'write',
-      credentialRefId: payload.credentialRefId,
-      expiresAt: payload.expiresAt,
-      status: 'pending', version: 1
-    };
-    const resultTarget = targetFor('access_request', request.id, undefined, 1);
-    const value = succeeded(compactAccessRequest(request));
-    return completeMutation(transaction, token, claim, command, {
-      kind: 'non_approval',
-      mutation: {aggregateType: 'access_request', aggregateId: request.id, expectedPersistedVersion: null, aggregate: request},
-      audit: audit(claim, ids, clock, resultTarget, command.actor.actorId, command.type, 'access_change', value, 'allow')
-    }, resultTarget, value);
-  }
-
-  async function accessRequestDecide(
-    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
-    command: Extract<CanonicalCommand, {type: 'access_request.decide'}>
-  ) {
-    const target = targetFor('access_request', command.payload.requestId, command.payload.expectedVersion);
-    const request = await transaction.loadAccessRequest(token, command.payload.requestId);
-    if (request === null) return completeNoMutation(transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.'));
-    if (request.resourceType === 'environment') {
-      if (request.projectId == null) return completeNoMutation(transaction, token, claim, command, target,
-        failed('INVALID_COMMAND', 'Environment access request is incomplete.'), 'access_change', 'deny');
-      const authorization = await accessAuthority(transaction, token, command, request.projectId);
-      if (!authorization.ok) return completeNoMutation(
-        transaction, token, claim, command, target, authorization, 'access_change', 'deny'
-      );
-      if (request.expiresAt == null || new Date(request.expiresAt).getTime() <= clock.now().getTime()) {
-        return completeNoMutation(transaction, token, claim, command, target,
-          failed('INVALID_TRANSITION', 'Expired production access cannot be approved.'), 'access_change', 'deny');
-      }
-    }
-    if (request.version !== command.payload.expectedVersion) return completeNoMutation(transaction, token, claim, command,
-      targetFor('access_request', request.id, command.payload.expectedVersion, request.version), failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'));
-    const transitioned = transitionAccessRequest(request, command.payload.status);
-    if (!transitioned.ok) return completeNoMutation(transaction, token, claim, command, target, transitioned);
-    const updated: AccessRequest = {...transitioned.value,
-      decidedByActorId: command.actor.actorId, decidedAt: clock.now().toISOString()};
-    const resultTarget = targetFor('access_request', updated.id, request.version, updated.version);
-    const value = succeeded(compactAccessRequest(updated));
-    return completeMutation(transaction, token, claim, command, {
-      kind: 'non_approval', mutation: {aggregateType: 'access_request', aggregateId: updated.id, expectedPersistedVersion: request.version, aggregate: updated},
-      audit: audit(claim, ids, clock, resultTarget, command.actor.actorId, command.type, 'write', value)
-    }, resultTarget, value);
-  }
-
   async function accessAuthority(
     transaction: CanonicalCommandTransaction,
     token: ReceiptClaimToken,
@@ -3310,267 +3069,6 @@ export const createCanonicalCommandService = (
         aggregateId: identity.id,
         expectedPersistedVersion: payload.expectedVersion,
         aggregate: identity
-      },
-      audit: audit(
-        claim, ids, clock, resultTarget, command.actor.actorId, command.type,
-        'access_change', value, 'allow'
-      )
-    }, resultTarget, value);
-  }
-
-  async function resourceAccessGrantSet(
-    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
-    command: Extract<CanonicalCommand, {type: 'resource_access_grant.set'}>
-  ) {
-    const payload = command.payload;
-    const target = targetFor(
-      'resource_access_grant', payload.grantId, payload.expectedVersion ?? undefined
-    );
-    const authorization = await accessAuthority(transaction, token, command, payload.projectId);
-    if (!authorization.ok) return completeNoMutation(
-      transaction, token, claim, command, target, authorization, 'access_change'
-    );
-    const current = await transaction.loadResourceAccessGrant(token, payload.grantId);
-    if (
-      (payload.expectedVersion === null && current !== null) ||
-      (payload.expectedVersion !== null && current?.version !== payload.expectedVersion)
-    ) return completeNoMutation(
-      transaction, token, claim, command,
-      targetFor('resource_access_grant', payload.grantId, payload.expectedVersion ?? undefined, current?.version),
-      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
-      'access_change'
-    );
-    if (current !== null && (
-      current.projectId !== payload.projectId ||
-      current.actorId !== payload.subjectActorId ||
-      current.resourceType !== payload.resourceType ||
-      current.resourceId !== payload.resourceId
-    )) return completeNoMutation(
-      transaction, token, claim, command, target,
-      failed('INVALID_COMMAND', 'Resource grant binding keys are immutable.'),
-      'access_change'
-    );
-    if (payload.resourceType === 'environment') {
-      if (payload.desiredLevel !== 'none' && payload.desiredLevel !== 'write') return completeNoMutation(
-        transaction, token, claim, command, target,
-        failed('INVALID_COMMAND', 'SSH access supports only login or revoked state.'),
-        'access_change', 'deny'
-      );
-      if (transaction.loadProjectEnvironment === undefined) return completeNoMutation(
-        transaction, token, claim, command, target,
-        failed('NOT_FOUND', 'Environment is not configured.'), 'access_change'
-      );
-      const environment = await transaction.loadProjectEnvironment(token, payload.resourceId);
-      if (environment === null || environment.projectId !== payload.projectId) return completeNoMutation(
-        transaction, token, claim, command, target,
-        failed('NOT_FOUND', 'Environment is not configured for this project.'), 'access_change'
-      );
-      if (payload.desiredLevel === 'write') {
-        if (payload.credentialRefId == null || payload.expiresAt == null ||
-          transaction.loadEnvironmentAccessContext === undefined) return completeNoMutation(
-          transaction, token, claim, command, target,
-          failed('INVALID_COMMAND', 'SSH login requires an opaque credential reference and expiry.'),
-          'access_change', 'deny'
-        );
-        const context = await transaction.loadEnvironmentAccessContext(token, {
-          projectId: payload.projectId,
-          subjectActorId: payload.subjectActorId,
-          environmentId: payload.resourceId,
-          credentialRefId: payload.credentialRefId,
-          approvalRequestId: payload.approvalRequestId ?? null
-        });
-        const expiresAt = new Date(payload.expiresAt).getTime();
-        const maximum = environment.kind === 'production' ? 30 : 90;
-        const validWindow = expiresAt > clock.now().getTime() &&
-          expiresAt <= clock.now().getTime() + maximum * 24 * 60 * 60 * 1000;
-        const approvalValid = environment.kind === 'development' || (
-          context?.approval?.status === 'granted' &&
-          context.approval.projectId === payload.projectId &&
-          context.approval.subjectActorId === payload.subjectActorId &&
-          context.approval.resourceId === payload.resourceId &&
-          context.approval.requestedLevel === 'write' &&
-          context.approval.credentialRefId === payload.credentialRefId &&
-          context.approval.expiresAt === payload.expiresAt
-        );
-        if (context === null || !environment.enabled || !context.subjectEligible ||
-          (environment.kind === 'production' && context.subjectType !== 'human') ||
-          !context.credentialRefValid || !validWindow || !approvalValid) return completeNoMutation(
-          transaction, token, claim, command, target,
-          failed('CAPABILITY_DENIED', 'Environment SSH grant is not eligible or approved.'),
-          'access_change', 'deny'
-        );
-      } else if (payload.credentialRefId != null || payload.approvalRequestId != null || payload.expiresAt != null) {
-        return completeNoMutation(transaction, token, claim, command, target,
-          failed('INVALID_COMMAND', 'SSH revocation cannot supply new credential, approval, or expiry bindings.'),
-          'access_change', 'deny');
-      }
-    }
-    const nextEnvironmentCredentialRefId = payload.resourceType !== 'environment'
-      ? current?.credentialRefId ?? null
-      : payload.desiredLevel === 'none'
-        ? current?.credentialRefId ?? null
-        : payload.credentialRefId ?? null;
-    const nextEnvironmentApprovalRequestId = payload.resourceType === 'environment' &&
-      payload.desiredLevel === 'write' ? payload.approvalRequestId ?? null : null;
-    const nextEnvironmentExpiresAt = payload.resourceType === 'environment' &&
-      payload.desiredLevel === 'write' ? payload.expiresAt ?? null : null;
-    const grant: ResourceAccessGrant = {
-      id: payload.grantId,
-      projectId: payload.projectId,
-      actorId: payload.subjectActorId,
-      resourceType: payload.resourceType,
-      resourceId: payload.resourceId,
-      desiredLevel: payload.desiredLevel,
-      credentialRefId: nextEnvironmentCredentialRefId,
-      approvalRequestId: payload.resourceType === 'environment' ? nextEnvironmentApprovalRequestId : current?.approvalRequestId ?? null,
-      expiresAt: payload.resourceType === 'environment' ? nextEnvironmentExpiresAt : current?.expiresAt ?? null,
-      providerObservation: current !== null &&
-        current.desiredLevel === payload.desiredLevel &&
-        (current.credentialRefId ?? null) === nextEnvironmentCredentialRefId &&
-        (current.approvalRequestId ?? null) === nextEnvironmentApprovalRequestId &&
-        (current.expiresAt ?? null) === nextEnvironmentExpiresAt
-        ? current.providerObservation ?? null
-        : null,
-      version: (payload.expectedVersion ?? 0) + 1
-    };
-    return persistAccessGrant(transaction, token, claim, command, grant, payload.expectedVersion);
-  }
-
-  async function projectEnvironmentSet(
-    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
-    command: Extract<CanonicalCommand, {type: 'project_environment.set'}>
-  ) {
-    const payload = command.payload;
-    const target = targetFor('project_environment', payload.environmentId, payload.expectedVersion ?? undefined);
-    const authorization = await accessAuthority(transaction, token, command, payload.projectId);
-    if (!authorization.ok) return completeNoMutation(
-      transaction, token, claim, command, target, authorization, 'access_change'
-    );
-    if (transaction.loadProjectEnvironment === undefined || transaction.loadProjectEnvironmentContext === undefined) {
-      return completeNoMutation(transaction, token, claim, command, target,
-        failed('NOT_FOUND', 'Environment registry is unavailable.'), 'access_change');
-    }
-    const [current, context] = await Promise.all([
-      transaction.loadProjectEnvironment(token, payload.environmentId),
-      transaction.loadProjectEnvironmentContext(token, {
-        projectId: payload.projectId,
-        adapterCredentialRefId: payload.adapterCredentialRefId,
-        reconcilerActorId: payload.reconcilerActorId
-      })
-    ]);
-    if ((payload.expectedVersion === null && current !== null) ||
-      (payload.expectedVersion !== null && current?.version !== payload.expectedVersion)) {
-      return completeNoMutation(transaction, token, claim, command,
-        targetFor('project_environment', payload.environmentId, payload.expectedVersion ?? undefined, current?.version),
-        failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'), 'access_change');
-    }
-    if (current !== null && (current.projectId !== payload.projectId || current.kind !== payload.kind)) {
-      return completeNoMutation(transaction, token, claim, command, target,
-        failed('INVALID_COMMAND', 'Environment project and kind are immutable.'), 'access_change', 'deny');
-    }
-    if (context === null || !context.projectExists || !context.credentialRefValid ||
-      !context.reconcilerActorValid) {
-      return completeNoMutation(transaction, token, claim, command, target,
-        failed('NOT_FOUND', 'Project or host-owned adapter credential reference was not found.'), 'access_change');
-    }
-    const environment: ProjectEnvironment = {
-      id: payload.environmentId, projectId: payload.projectId, kind: payload.kind,
-      provider: payload.provider, endpoint: payload.endpoint, port: payload.port,
-      purpose: payload.purpose, adapterKey: payload.adapterKey,
-      adapterCredentialRefId: payload.adapterCredentialRefId,
-      reconcilerActorId: payload.reconcilerActorId, enabled: payload.enabled,
-      version: (payload.expectedVersion ?? 0) + 1
-    };
-    const resultTarget = targetFor('project_environment', environment.id,
-      payload.expectedVersion ?? undefined, environment.version);
-    const value = succeeded(compactAccessAggregate(environment));
-    return completeMutation(transaction, token, claim, command, {
-      kind: 'non_approval',
-      mutation: {aggregateType: 'project_environment', aggregateId: environment.id,
-        expectedPersistedVersion: payload.expectedVersion, aggregate: environment},
-      audit: audit(claim, ids, clock, resultTarget, command.actor.actorId,
-        command.type, 'access_change', value, 'allow')
-    }, resultTarget, value);
-  }
-
-  async function resourceAccessGrantObserve(
-    transaction: CanonicalCommandTransaction, token: ReceiptClaimToken, claim: CommandReceiptClaim,
-    command: Extract<CanonicalCommand, {type: 'resource_access_grant.observe'}>
-  ) {
-    const payload = command.payload;
-    const target = targetFor('resource_access_grant', payload.grantId, payload.expectedVersion);
-    const current = await transaction.loadResourceAccessGrant(token, payload.grantId);
-    if (current === null) return completeNoMutation(
-      transaction, token, claim, command, target, failed('NOT_FOUND', 'Resource was not found.'),
-      'access_change'
-    );
-    const environment = current.resourceType === 'environment' &&
-      transaction.loadProjectEnvironment !== undefined
-      ? await transaction.loadProjectEnvironment(token, current.resourceId)
-      : null;
-    const authorization = current.resourceType === 'environment'
-      ? command.actor.kind === 'trusted_system' && environment !== null &&
-        environment.projectId === current.projectId && environment.provider === payload.provider &&
-        environment.reconcilerActorId === command.actor.actorId &&
-        (payload.confirmedLevel === 'none' || payload.confirmedLevel === 'write')
-        ? succeeded(true)
-        : failed('CAPABILITY_DENIED', 'Environment observation requires its configured reconciler.')
-      : await accessAuthority(transaction, token, command, current.projectId);
-    if (!authorization.ok) return completeNoMutation(
-      transaction, token, claim, command, target, authorization, 'access_change'
-    );
-    if (current.version !== payload.expectedVersion) return completeNoMutation(
-      transaction, token, claim, command,
-      targetFor('resource_access_grant', current.id, payload.expectedVersion, current.version),
-      failed('VERSION_CONFLICT', 'Resource version conflicts with the command.'),
-      'access_change'
-    );
-    if (
-      current.providerObservation != null &&
-      new Date(payload.observedAt).getTime() <=
-        new Date(current.providerObservation.observedAt).getTime()
-    ) return completeNoMutation(
-      transaction, token, claim, command, target,
-      failed('INVALID_COMMAND', 'Provider access observation must be newer.'),
-      'access_change'
-    );
-    const observation = {
-      provider: payload.provider,
-      externalResourceRef: payload.externalResourceRef,
-      confirmedLevel: payload.confirmedLevel,
-      observedAt: payload.observedAt
-    };
-    const grant: ResourceAccessGrant = {
-      ...current,
-      credentialRefId: current.resourceType === 'environment' && current.desiredLevel === 'none' &&
-        payload.confirmedLevel === 'none' ? null : current.credentialRefId ?? null,
-      providerObservation: observation,
-      version: current.version + 1
-    };
-    return persistAccessGrant(transaction, token, claim, command, grant, current.version);
-  }
-
-  async function persistAccessGrant(
-    transaction: CanonicalCommandTransaction,
-    token: ReceiptClaimToken,
-    claim: CommandReceiptClaim,
-    command: Extract<CanonicalCommand, {
-      type: 'resource_access_grant.set' | 'resource_access_grant.observe'
-    }>,
-    grant: ResourceAccessGrant,
-    expectedVersion: number | null
-  ) {
-    const resultTarget = targetFor(
-      'resource_access_grant', grant.id, expectedVersion ?? undefined, grant.version
-    );
-    const value = succeeded(compactAccessAggregate(grant));
-    return completeMutation(transaction, token, claim, command, {
-      kind: 'non_approval',
-      mutation: {
-        aggregateType: 'resource_access_grant',
-        aggregateId: grant.id,
-        expectedPersistedVersion: expectedVersion,
-        aggregate: grant
       },
       audit: audit(
         claim, ids, clock, resultTarget, command.actor.actorId, command.type,
@@ -3908,9 +3406,6 @@ const commandTarget = (command: CanonicalCommand): Target => {
     case 'approval.request':
     case 'approval.decide': return targetFor('approval', command.payload.approvalId,
       command.type === 'approval.decide' ? command.payload.expectedVersion : undefined);
-    case 'access_request.request': return targetFor('access_request', command.payload.requestId);
-    case 'environment_access.request': return targetFor('access_request', command.payload.requestId);
-    case 'access_request.decide': return targetFor('access_request', command.payload.requestId, command.payload.expectedVersion);
     case 'project_membership.set':
       return targetFor('project_membership', command.payload.membershipId, command.payload.expectedVersion ?? undefined);
     case 'project.create': return targetFor('project_setup', command.payload.setupId);
@@ -3920,12 +3415,6 @@ const commandTarget = (command: CanonicalCommand): Target => {
       return targetFor('actor_external_identity', command.payload.identityId, command.payload.expectedVersion ?? undefined);
     case 'actor.retire':
       return targetFor('actor', command.payload.agentId, 0);
-    case 'resource_access_grant.set':
-      return targetFor('resource_access_grant', command.payload.grantId, command.payload.expectedVersion ?? undefined);
-    case 'resource_access_grant.observe':
-      return targetFor('resource_access_grant', command.payload.grantId, command.payload.expectedVersion);
-    case 'project_environment.set':
-      return targetFor('project_environment', command.payload.environmentId, command.payload.expectedVersion ?? undefined);
     case 'runtime_registration.create':
       return targetFor('runtime_registration', command.payload.registrationId);
     case 'runtime_registration.update':
@@ -3963,9 +3452,8 @@ const compactApproval = (approval: Approval): ApprovalReceipt => ({
   ...(approval.decidedByActorId === undefined ? {} : {decidedByActorId: approval.decidedByActorId}),
   ...(approval.decidedAt === undefined ? {} : {decidedAt: approval.decidedAt})
 });
-const compactAccessRequest = (request: AccessRequest): CanonicalJson => ({id: request.id, status: request.status, version: request.version});
 const compactAccessAggregate = (
-  aggregate: ProjectMembership | ActorExternalIdentity | ResourceAccessGrant | ProjectEnvironment
+  aggregate: ProjectMembership | ActorExternalIdentity
 ): CanonicalJson => ({
   id: aggregate.id,
   version: aggregate.version

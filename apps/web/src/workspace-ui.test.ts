@@ -307,8 +307,8 @@ it('renders a dynamic authorized project card, manager intake, and resumable set
   const access = {canRetireAgents: false, instructionBaselines: [], actors: [{id: actorId, displayName: 'Manager',
     type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {'write:control_plane:development': true}}],
     memberships: [{id: 'membership-1', projectId, project: 'Dynamic', projectSlug: 'dynamic-project', actorId,
-      roles: ['project_owner'], active: true, version: 1, canManage: true}], externalIdentities: [], resourceGrants: [],
-    agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}};
+      roles: ['project_owner'], active: true, version: 1, canManage: true}], externalIdentities: [],
+    agentSystems: []};
   const base = {portfolio: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [project],
     csrfToken: 'csrf', operatorActorId: actorId, access: {state: 'ready', data: access}} as unknown as WorkspaceData;
   const projectsMarkup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects'], {})!, data: base}));
@@ -336,7 +336,7 @@ it('renders authenticated, version-checked instruction publication and rollback 
     access: {state: 'ready', data: {
       canRetireAgents: false,
       instructionBaselines: [{workspaceId: 'workspace-1', current: {id: 'version-2', version: 2, instructions: 'Use evidence.', createdAt: new Date('2026-08-09T12:00:00.000Z'), rollbackOfVersionId: null}, previous: {id: 'version-1', version: 1, instructions: 'Use facts.', createdAt: new Date('2026-08-08T12:00:00.000Z'), rollbackOfVersionId: null}}],
-      actors: [], memberships: [], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}
+      actors: [], memberships: [], externalIdentities: [], agentSystems: []
     }}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
@@ -573,7 +573,7 @@ it('keeps the five workspace areas explicit and deferred actions non-operative',
   }));
   expect(markup).toContain('Рабочие разделы');
   expect(markup).toContain('Контроль');
-  expect(markup).toContain('Доступы недоступны');
+  expect(markup).toContain('Участники недоступны');
   expect(markup).not.toContain('Manage members');
 });
 
@@ -594,20 +594,20 @@ it('renders only the fixed MSA and ASCON roster memberships in People & Access',
         {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', roles: ['project_owner'], active: true, version: 1},
         {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'vitaliy', roles: ['contributor'], active: false, version: 2},
         {projectId: 'ascon', project: 'ASCON', projectSlug: 'ascon', actorId: 'hermes', roles: ['agent'], active: false, version: 2}
-      ], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}
+      ], externalIdentities: [], agentSystems: []
     }}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
     route: {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data
   }));
-  expect(markup).toContain('Vladimir</strong><small>MSA · Владелец продукта · человек');
-  expect(markup).toContain('Vitaliy</strong><small>MSA · Разработчик · человек');
+  expect(markup).toContain('Vladimir</strong><small>MSA · Владелец продукта');
+  expect(markup).toContain('Vitaliy</strong><small>MSA · Разработчик');
   expect(markup).toContain('Hermes</strong><small>MSA · ИИ-агент</small>');
-  expect(markup).toContain('Vladimir</strong><small>ASCON · Владелец продукта · человек');
+  expect(markup).toContain('Vladimir</strong><small>ASCON · Владелец продукта');
   expect(markup).not.toContain('Vitaliy</strong><small>ASCON');
   expect(markup).not.toContain('Hermes</strong><small>ASCON');
   expect(markup).not.toContain('href="/projects/ascon/access/hermes"');
-  expect(markup).toContain('Роль зафиксирована');
+  expect(markup).toContain('Роль активна');
   expect(markup).toContain('Неизвестно');
   expect(markup).not.toContain('Add person');
 });
@@ -617,8 +617,7 @@ it('renders real authenticated onboarding forms only inside People and Agents ma
     canRetireAgents: false,
     actors: [{id: 'owner', displayName: 'Owner', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}],
     memberships: [{projectId: '11111111-1111-4111-8111-111111111111', project: 'MSA', projectSlug: 'msa', actorId: 'owner', roles: ['project_owner'], active: true, version: 1, canManage: true}],
-    externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [],
-    sharing: {enabled: false, projects: [], grants: []}
+    externalIdentities: [], agentSystems: [],
   };
   const data = {portfolio: {state: 'unconfigured'}, project: null, runs: null, health: null, projectIndex: [], csrfToken: 'csrf', access: {state: 'ready', data: access}} as unknown as WorkspaceData;
   const people = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['people'], {})!, data}));
@@ -695,7 +694,7 @@ it('shows only active project memberships and denies a direct cross-project rout
       {id: 'msa-id', name: 'MSA', slug: 'msa', health: 'green', snapshotAt: null, synchronizedAt: null, unresolvedRiskCount: 0, metrics: {}},
       {id: 'ascon-id', name: 'ASCON', slug: 'ascon', health: 'green', snapshotAt: null, synchronizedAt: null, unresolvedRiskCount: 0, metrics: {}}
     ]}},
-    access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: 'vitaliy', displayName: 'Vitaliy', type: 'human', role: 'developer', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', roles: ['contributor'], active: true, version: 1}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
+    access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: 'vitaliy', displayName: 'Vitaliy', type: 'human', role: 'developer', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', roles: ['contributor'], active: true, version: 1}], externalIdentities: [], agentSystems: []}},
     project: {state: 'ready', data: {project, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []}}, runs: null, health: null, projectIndex: [], operatorActorId: 'vitaliy'
   } as unknown as WorkspaceData;
   const allowed = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'msa', 'tasks'], {})!, data}));
@@ -718,12 +717,11 @@ it('keeps every global surface within the operator membership and rejects unauth
     ], memberships: [
       {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'vitaliy', roles: ['contributor'], active: true, version: 1},
       {projectId: 'ascon-id', project: 'ASCON', projectSlug: 'ascon', actorId: 'ascon-agent', roles: ['agent'], active: true, version: 1}
-    ], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
+    ], externalIdentities: [], agentSystems: []}},
     health: {state: 'ready', data: {jobs: [
       {id: 'msa-job', project: 'MSA', projectSlug: 'msa', name: 'MSA health', status: 'healthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null},
       {id: 'ascon-job', project: 'ASCON', projectSlug: 'ascon', name: 'ASCON secret health', status: 'unhealthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null}
     ], integrations: [], risks: [], audit: [], costLedger: []}},
-    conversations: {state: 'ready', data: {projects: [{id: 'ascon-id', name: 'ASCON', slug: 'ascon', channels: [{conversationClass: 'internal', state: 'ready', freshnessAt: new Date(), failure: null, participants: [], messages: [{id: 'ascon-message', participantId: 'none', author: 'ASCON', sentAt: new Date(), text: 'ASCON secret conversation', attachmentSummary: null, reply: false, threaded: false}]}]}]}},
     project: null, runs: null, projectIndex: [
       {project: {id: 'msa-id', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []},
       {project: {id: 'ascon-id', workspaceId: 'workspace-1', name: 'ASCON', slug: 'ascon' as const, description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, protocol: null, workItems: []}
@@ -733,7 +731,6 @@ it('keeps every global surface within the operator membership and rejects unauth
   const people = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['people'], {})!, data}));
   const agents = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['agents'], {project: 'msa'})!, data}));
   const deniedAgents = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['agents'], {project: 'ascon'})!, data}));
-  const deniedChats = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['chats'], {project: 'ascon'})!, data}));
 
   expect(dashboard).toContain('MSA');
   expect(dashboard).not.toContain('ASCON');
@@ -744,8 +741,6 @@ it('keeps every global surface within the operator membership and rejects unauth
   expect(agents).not.toContain('ASCON secret health');
   expect(deniedAgents).toContain('Проект недоступен');
   expect(deniedAgents).not.toContain('ASCON secret health');
-  expect(deniedChats).toContain('Проект недоступен');
-  expect(deniedChats).not.toContain('ASCON secret conversation');
 });
 
 it('keeps the legacy global tasks route project-scoped instead of rendering a mixed board', () => {
@@ -757,60 +752,6 @@ it('keeps the legacy global tasks route project-scoped instead of rendering a mi
   expect(markup).toContain('href="/projects/msa/tasks"');
   expect(markup).not.toContain('All projects');
   expect(markup).not.toContain('name="project"');
-});
-
-it('keeps the legacy global chats route project-first', () => {
-  const data = {
-    portfolio: {state: 'unconfigured'}, access: {state: 'unconfigured'}, project: null,
-    runs: null, health: null, projectIndex: [],
-    conversations: {state: 'ready', data: {projects: [{
-      id: 'msa-id', name: 'MSA', slug: 'msa', channels: [
-        {
-          conversationClass: 'internal', state: 'ready',
-          freshnessAt: new Date('2026-07-30T12:00:00.000Z'), failure: null,
-          participants: [{id: 'p1', displayName: 'Vladimir', resolution: 'resolved', controlPlaneAccess: 'project owner', lastObservedAt: new Date('2026-07-30T12:00:00.000Z')}],
-          messages: [{id: 'm1', participantId: 'p1', author: 'Vladimir', sentAt: new Date('2026-07-30T12:00:00.000Z'), text: '<unsafe>', attachmentSummary: null, reply: false, threaded: false}]
-        },
-        {
-          conversationClass: 'client', state: 'not_configured',
-          freshnessAt: null, failure: null, participants: [], messages: []
-        }
-      ]
-    }]}}
-  } as unknown as WorkspaceData;
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {
-    route: {screen: 'global_chats', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}},
-    data
-  }));
-  expect(markup).toContain('Чаты проекта');
-  expect(markup).not.toContain('&lt;unsafe&gt;');
-  expect(markup).not.toContain('Not configured. No verified chat binding');
-});
-
-it('renders chat intent, provider observation, read-only messages and manager controls separately', () => {
-  const projectId = '11111111-1111-4111-8111-111111111111';
-  const actorId = '22222222-2222-4222-8222-222222222222';
-  const channelId = '33333333-3333-4333-8333-333333333333';
-  const project = {id: projectId, workspaceId: '44444444-4444-4444-8444-444444444444', name: 'MSA', slug: 'msa' as const, description: null, defaultBranch: 'main', updatedAt: new Date()};
-  const data = {
-    portfolio: {state: 'unconfigured'}, runs: null, health: null, projectIndex: [], csrfToken: 'csrf', operatorActorId: actorId,
-    project: {state: 'ready', data: {project, agentProfiles: [], snapshot: null, synchronizedAt: null, execution: {status: 'stopped', version: 0}, protocol: null, workItems: []}},
-    access: {state: 'ready', data: {canRetireAgents: false, actors: [{id: actorId, displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {'write:control_plane:development': true}}], memberships: [{projectId, project: 'MSA', projectSlug: 'msa', actorId, roles: ['project_owner'], active: true, version: 1, canManage: true}], externalIdentities: [], resourceGrants: [], agentSystems: [], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}},
-    conversations: {state: 'ready', data: {projects: [{id: projectId, name: 'MSA', slug: 'msa', channels: [{
-      conversationClass: 'internal', state: 'ready', configuration: {id: channelId, desiredState: 'active', provider: 'telegram', version: 1}, freshnessAt: new Date('2026-08-09T12:00:00.000Z'), failure: null,
-      access: [{actorId, displayName: 'Vladimir', roles: ['project_owner'], grantId: null, grantVersion: null, desiredLevel: 'write', observedLevel: 'read', observedAt: new Date('2026-08-09T11:59:00.000Z'), confirmation: 'mismatch'}],
-      participants: [{id: 'p1', displayName: 'Vladimir', resolution: 'resolved', observedLevel: 'read', observedAt: new Date('2026-08-09T11:59:00.000Z'), lastObservedAt: new Date('2026-08-09T12:00:00.000Z')}],
-      messages: [{id: 'm1', participantId: 'p1', author: 'Vladimir', sentAt: new Date('2026-08-09T12:00:00.000Z'), text: 'Готово к проверке', attachmentSummary: null, reply: false, threaded: false}]
-    }, {conversationClass: 'client', state: 'not_used', configuration: {id: '55555555-5555-4555-8555-555555555555', desiredState: 'not_used', provider: null, version: 1}, freshnessAt: null, failure: null, access: [], participants: [], messages: []}]}]}}
-  } as unknown as WorkspaceData;
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: workspaceRoute(['projects', 'msa', 'chats'], {})!, data}));
-  expect(markup).toContain('желаемый: Запись');
-  expect(markup).toContain('факт: Чтение');
-  expect(markup).toContain('Есть расхождение');
-  expect(markup).toContain('Готово к проверке');
-  expect(markup).toContain('action="/api/conversations/access"');
-  expect(markup).toContain('action="/api/conversations/channel"');
-  expect(markup).toContain('Изменение участника выполняется в Telegram');
 });
 
 it('renders persisted agent registrations and authorized new-claim controls without inferring liveness', () => {
@@ -826,7 +767,7 @@ it('renders persisted agent registrations and authorized new-claim controls with
   const data = {
     portfolio: {state: 'unconfigured'}, project: null, runs: null, projectIndex: [], csrfToken: 'csrf',
     health: {state: 'ready', data: {jobs: [{id: 'job-1', project: 'MSA', projectSlug: 'msa', name: 'recovery', status: 'unhealthy', heartbeatAt: null, lastSuccessAt: null, nextRunAt: null}], integrations: [], risks: [], audit: [], costLedger: []}},
-    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'agent-1', roles: ['agent'], active: true, version: 1}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64), registrations: [{id: 'registration-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true, version: 3, updatedAt: new Date('2026-07-30T11:00:00.000Z'), availability: unavailable, canManage: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null, fleet: {health: 'unknown', freshnessAt: null, currentWork: null, lastReceipt: null}}]}], requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}}}
+    access: {state: 'ready', data: {actors: [{id: 'agent-1', displayName: 'Hermes', type: 'agent', role: 'contributor', disabledAt: null, capabilities: {}}], memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'agent-1', roles: ['agent'], active: true, version: 1}], agentSystems: [{actorId: 'agent-1', profiles: [{id: 'profile-1', runtimeId: 'hermes', runtimeProfile: 'read_safe', allowedTools: [], forbiddenSurfaces: [], instructions: 'Observe only.', settings: {resultFormat: 'structured_v1', includeEvidence: true}, enabled: true, version: 1, configHash: 'a'.repeat(64), registrations: [{id: 'registration-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', provider: 'provider_neutral', runtimeKey: 'hermes', enabled: true, version: 3, updatedAt: new Date('2026-07-30T11:00:00.000Z'), availability: unavailable, canManage: true}], instruction: {workspaceVersion: 3, profileVersion: 2, hash: 'b'.repeat(64), provenance: 'workspace v3 + profile v2'}, latestRun: null, fleet: {health: 'unknown', freshnessAt: null, currentWork: null, lastReceipt: null}}]}]}}
   } as unknown as WorkspaceData;
   const list = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agents', project: null, globalProject: 'msa', taskId: null, runId: null, agentId: null, scope: {environment: null, from: null, to: null}}, data}));
   const detail = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'agent', project: null, taskId: null, runId: null, agentId: 'agent-1', scope: {environment: null, from: null, to: null}}, data}));
@@ -990,7 +931,7 @@ it('shows owned Hermes availability attention and treats ASCON no-bot scope as c
       {projectId: 'msa-id', project: 'MSA', projectSlug: 'msa', actorId: 'hermes', roles: ['agent'], active: true, version: 1},
       {projectId: 'ascon-id', project: 'ASCON', projectSlug: 'ascon', actorId: 'vladimir', roles: ['project_owner'], active: true, version: 1}
     ],
-    externalIdentities: [], resourceGrants: [],
+    externalIdentities: [],
     agentSystems: [{actorId: 'hermes', profiles: [{
       id: 'profile-hermes', runtimeId: 'hermes', runtimeProfile: 'read_safe',
       enabled: true, configHash: 'a'.repeat(64), allowedTools: [], forbiddenSurfaces: [],
@@ -1003,7 +944,6 @@ it('shows owned Hermes availability attention and treats ASCON no-bot scope as c
       instruction: null, latestRun: null,
       fleet: {health: 'stale', freshnessAt: observedAt, currentWork: null, lastReceipt: null}
     }]}],
-    requests: [], secretRefs: [], policy: [], sharing: {enabled: false, projects: [], grants: []}
   } as unknown as AccessData;
   const alerts = deriveRuntimeAvailabilityAlerts(access);
   expect(alerts).toMatchObject([{
@@ -1040,62 +980,23 @@ it('shows owned Hermes availability attention and treats ASCON no-bot scope as c
   expect(ascon).not.toContain('Hermes</strong>');
 });
 
-it('renders project membership and provider-confirmed grant facts in the access detail', () => {
+it('renders project membership and external identity facts in the access detail', () => {
   const data = {
     portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf',
     project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: []}},
-    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{id: 'membership-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', roles: ['project_owner', 'contributor'], active: true, version: 2, canManage: true}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], resourceGrants: [{id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), observationState: 'confirmed', remediation: null, providerAccessUrl: null, version: 3}], agentSystems: [], requests: [{id: 'request-1', requester: 'Vladimir', targetSurface: 'repository', requestedScope: ['msa'], status: 'pending', expiresAt: null, decidedAt: null}], secretRefs: [], policy: [], sharing: {enabled: true, projects: [{name: 'MSA', slug: 'msa', workItems: []}], grants: []}}}
+    access: {state: 'ready', data: {actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}], memberships: [{id: 'membership-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', roles: ['project_owner', 'contributor'], active: true, version: 2, canManage: true}], externalIdentities: [{actorId: 'actor-1', provider: 'github', active: true}], agentSystems: [], instructionBaselines: [], canRetireAgents: false}}
   } as unknown as WorkspaceData;
   const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'access', project: 'msa', taskId: null, runId: null, agentId: null, accessActorId: 'actor-1', scope: {environment: null, from: null, to: null}}, data}));
 
-  expect(markup).toContain('Карта доступов проекта');
+  expect(markup).toContain('Роль в проекте и внешние учётные записи');
   expect(markup).toContain('Владелец продукта · Разработчик');
-  expect(markup).toContain('Требуемый и подтверждённый уровень');
-  expect(markup).toContain('github');
+  expect(markup).toContain('github · активна');
   expect(markup).toContain('href="/projects/msa/access/actor-1"');
-  expect(markup).toContain('Доступ клиента');
-  expect(markup).toContain('Ссылка ограничена проектом MSA');
-  expect(markup).toContain('Запросы доступа');
-  expect(markup).toContain('Управляемые заявки рабочей области');
   expect(markup).toContain('action="/api/access/memberships/membership-1"');
   expect(markup).toMatch(/name="roleContributor" checked=""/);
   expect(markup).toMatch(/name="roleProjectOwner" checked=""/);
-  expect(markup).toContain('action="/api/access/grants/grant-1"');
-  expect(markup).toContain('После сохранения Control Plane покажет расхождение');
-  expect(markup).not.toContain('Secret refs');
-});
-
-it('deep-links only a safe provider-confirmed access observation', () => {
-  const data = {
-    portfolio: {state: 'unconfigured'}, health: null, runs: null, projectIndex: [], csrfToken: 'csrf',
-    project: {state: 'ready', data: {project: {id: 'project-1', workspaceId: 'workspace-1', name: 'MSA', slug: 'msa', description: null, defaultBranch: 'main', updatedAt: new Date()}, agentProfiles: [], snapshot: null, synchronizedAt: null, workItems: []}},
-    access: {state: 'ready', data: {
-      actors: [{id: 'actor-1', displayName: 'Vladimir', type: 'human', role: 'workspace_admin', disabledAt: null, capabilities: {}}],
-      memberships: [{projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', roles: ['project_owner'], active: true, version: 2}],
-      externalIdentities: [],
-      resourceGrants: [
-        {id: 'grant-1', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'repository', desiredLevel: 'admin', observedProvider: 'github', observedLevel: 'admin', observedAt: new Date('2026-07-30T12:00:00.000Z'), observationState: 'confirmed', remediation: null, providerAccessUrl: 'https://github.com/VF78/MSA/settings/access', version: 3},
-        {id: 'grant-2', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'tracker', desiredLevel: 'write', observedProvider: null, observedLevel: null, observedAt: null, observationState: 'unsupported', remediation: 'GitHub Project V2 не поддерживает проверку прав участников через этот адаптер. Проверьте доступ в GitHub.', providerAccessUrl: null, version: 1},
-        {id: 'grant-3', projectId: 'project-1', project: 'MSA', projectSlug: 'msa', actorId: 'actor-1', resourceType: 'internal_chat', desiredLevel: 'write', observedProvider: 'telegram', observedLevel: 'read', observedAt: new Date('2026-07-30T12:00:00.000Z'), observationState: 'confirmed', remediation: null, providerAccessUrl: null, version: 1}
-      ],
-      agentSystems: [], requests: [], secretRefs: [], policy: [],
-      sharing: {enabled: true, projects: [{name: 'MSA', slug: 'msa', workItems: []}], grants: []}
-    }}
-  } as unknown as WorkspaceData;
-  const markup = renderToStaticMarkup(createElement(WorkspaceShell, {route: {screen: 'access', project: 'msa', taskId: null, runId: null, agentId: null, accessActorId: 'actor-1', scope: {environment: null, from: null, to: null}}, data}));
-
-  expect(markup).toContain('Требуемый уровень: admin');
-  expect(markup).toContain('Подтверждено');
-  expect(markup).toContain('Не поддерживается');
-  expect(markup).toContain('GitHub Project V2 не поддерживает проверку прав участников');
-  expect(markup).toContain('Проверено 30 июл.');
-  expect(markup).toContain('Проверка ещё не зафиксирована');
-  expect(markup.match(/>Подтверждено</g)).toHaveLength(2);
-  expect(markup.match(/>Не поддерживается</g)).toHaveLength(1);
-  expect(markup).toContain('href="https://github.com/VF78/MSA/settings/access"');
-  expect(markup).toContain('Открыть у провайдера');
-  expect(markup).toContain('Не настроено');
-  expect(markup).not.toContain('javascript:');
+  expect(markup).not.toContain('/api/access/grants/');
+  expect(markup).not.toContain('Запросы доступа');
 });
 
 it('keeps provider task detail independent from local runs and approvals', () => {

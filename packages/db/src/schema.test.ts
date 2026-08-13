@@ -8,10 +8,6 @@ const requiredTables = [
   schema.projectExecutions,
   schema.projectMemberships,
   schema.actorExternalIdentities,
-  schema.conversationBindings,
-  schema.conversationParticipants,
-  schema.conversationMessages,
-  schema.resourceAccessGrants,
   schema.milestones,
   schema.workItems,
   schema.statusTransitions,
@@ -33,7 +29,6 @@ const requiredTables = [
   schema.agentRuns,
   schema.projectExecutionDispatches,
   schema.approvalRequests,
-  schema.accessRequests,
   schema.artifacts,
   schema.riskSignals,
   schema.riskSignalDispositionEvents,
@@ -59,10 +54,6 @@ describe('canonical schema foundation', () => {
       'project_executions',
       'project_memberships',
       'actor_external_identities',
-      'conversation_bindings',
-      'conversation_participants',
-      'conversation_messages',
-      'resource_access_grants',
       'milestones',
       'work_items',
       'status_transitions',
@@ -84,7 +75,6 @@ describe('canonical schema foundation', () => {
       'agent_runs',
       'project_execution_dispatches',
       'approval_requests',
-      'access_requests',
       'artifacts',
       'risk_signals',
       'risk_signal_disposition_events',
@@ -130,36 +120,12 @@ describe('canonical schema foundation', () => {
     expect(incomingEventColumns).toContain('sanitized_payload');
   });
 
-  it('persists only bounded conversation observations, never raw provider payloads or bodies', () => {
-    expect(Object.values(getTableColumns(schema.conversationBindings)).map(({name}) => name))
-      .toContain('active');
-    const messageColumns = Object.values(
-      getTableColumns(schema.conversationMessages)
-    ).map((column) => column.name);
-    expect(messageColumns).toEqual(expect.arrayContaining([
-      'participant_id',
-      'sent_at',
-      'reply_to_message_ref',
-      'thread_ref',
-      'text',
-      'attachments'
-    ]));
-    for (const forbidden of [
-      'raw_payload',
-      'attachment_body',
-      'provider_token',
-      'webhook_secret'
-    ]) expect(messageColumns).not.toContain(forbidden);
-  });
-
   it('models optimistic versions and atomic command receipt state', () => {
     for (const table of [
       schema.agentRuns,
       schema.approvalRequests,
-      schema.accessRequests,
       schema.projectMemberships,
       schema.actorExternalIdentities,
-      schema.resourceAccessGrants,
       schema.runtimeRegistrations,
       schema.deploymentExecutorRegistrations,
       schema.deploymentExecutorJobs,

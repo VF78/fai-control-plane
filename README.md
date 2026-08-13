@@ -12,7 +12,8 @@ explicit approvals, bindings and minimal correlation/audit facts.
 
 The authoritative current scope is [issue
 #158](https://github.com/VF78/fai-control-plane/issues/158), its linked Project
-items and [ADR 0006](docs/adr/0006-thin-control-plane-authority.md). Existing
+items, [ADR 0006](docs/adr/0006-thin-control-plane-authority.md) and
+[ADR 0007](docs/adr/0007-vendor-neutral-project-conversations.md). Existing
 task/run/QA/deployment/IAM surfaces are legacy pending inventory and deletion;
 their presence in the repository is not authorization to extend them.
 
@@ -110,8 +111,7 @@ ASCON receive active memberships for Vladimir (`project_owner`), Vitaliy
 (`contributor`), and Hermes (`agent`). Codex CLI remains a governed execution
 runtime without a fabricated project membership. The bootstrap operator keeps
 the enabled `pm-qa-bot` / `read_safe` profile for QA intake packet creation.
-The seed creates no provider access grants. Mount the GitHub App private key at
-`GITHUB_APP_PRIVATE_KEY_FILE`, and mount the exact-scope
+Mount the GitHub App private key at `GITHUB_APP_PRIVATE_KEY_FILE`, and mount the exact-scope
 Projects OAuth token at `GITHUB_PROJECTS_OAUTH_TOKEN_FILE`. The App mints an
 installation token in memory for repository, issue, pull-request, check, and
 PR-link reads. The OAuth token is used only for the two allowlisted ProjectV2
@@ -227,24 +227,24 @@ real host file with mode `0600`. Keep `GITHUB_INGRESS_ENABLED=false` until the
 incoming-event consumer is deployed; the webhook route returns `404` while
 either synchronization or ingress is disabled.
 
-Telegram ingress is disabled by default. When enabled, the webhook observes
-messages only from the explicitly configured MSA/ASCON internal/client group
-bindings. Each optional binding requires both
-`TELEGRAM_<PROJECT>_<INTERNAL|CLIENT>_CHAT_ID` and the ISO-8601
-`..._ACTIVATED_AT`; messages sent before activation are ignored. Chat commands
-are never executed. PostgreSQL retains only the 500 most recent sanitized
-observations per binding. It stores no raw webhook payload or attachment body.
-Optional `TELEGRAM_VLADIMIR_USER_ID`, `TELEGRAM_VITALIY_USER_ID`, and
-`TELEGRAM_HERMES_USER_ID` values are keyed before canonical identity
-reconciliation; an omitted value remains unresolved. Removing a chat binding
-deactivates it without deleting retained observations.
-`TELEGRAM_WEBHOOK_SECRET_HOST_FILE` verifies the webhook only; use the separate,
-stable `TELEGRAM_IDENTITY_SECRET_HOST_FILE` for keyed delivery/message/chat/user
-identities. The legacy response worker also requires a mounted
-`TELEGRAM_BOT_TOKEN_HOST_FILE` before it can send. Keep
-`TELEGRAM_STATUS_RESPONSE_ENABLED=false` until Vladimir explicitly approves the
-exact Telegram response template and policy; this repository never sends while
-the flag is disabled.
+The legacy Control Plane Telegram webhook, conversation projection, public
+task-sharing route and local status-response worker have been removed. Channel
+history remains with the channel provider; Control Plane retains only bounded
+action, approval and audit evidence.
+
+The approved conversation topology is ADR 0007: one operational agent
+deployment per project with an OS-isolated `trusted-main` process for execution
+and internal Telegram, plus an isolated `client-edge` process for Matrix/Element
+(MSA) or the Bitrix24 task chat (ASCON). Hermes native gateways own Telegram and
+Matrix. Bitrix24 uses its supported REST/events surface. PostgreSQL stores no
+chat transcript or local status response; only bounded source/action/approval
+evidence is retained. No channel or runtime activation is authorized by the
+presence of adapter code or configuration placeholders.
+
+The external contour may request approval for an exact GitHub reference and
+observed version, but external-room membership alone grants no decision right.
+Telegram and Matrix stay native runtime gateways; do not add Control Plane
+wrapper webhooks for them.
 
 ### Verify
 
@@ -330,3 +330,5 @@ docker compose down --volumes
 - [ADR 0003: Authentication and secret handling](docs/adr/0003-authentication-and-secrets.md)
 - [ADR 0004: Runner isolation and artifacts](docs/adr/0004-runner-isolation-and-artifacts.md)
 - [ADR 0005: Telemetry, retention, and public sharing](docs/adr/0005-telemetry-retention-and-public-sharing.md)
+- [ADR 0006: Thin Control Plane over GitHub Project and Hermes](docs/adr/0006-thin-control-plane-authority.md)
+- [ADR 0007: Vendor-neutral project conversations](docs/adr/0007-vendor-neutral-project-conversations.md)

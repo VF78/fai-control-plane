@@ -31,15 +31,12 @@ export {
   type NotificationIntentInput
 } from './notification-intent';
 export {
-  CONVERSATION_MESSAGE_LIMIT,
-  createPostgresConversationStore,
-  loadConversationRows,
-  type ConversationBindingConfiguration,
-  type ConversationIdentityConfiguration,
-  type ConversationObservation,
-  type ConversationParticipantObservation
-} from './conversations';
-export {createPostgresConversationChannelStore} from './conversation-management';
+  createPostgresConversationApprovalRequestPort,
+  prepareConversationApprovalRequest,
+  ConversationApprovalRequestError,
+  type ConversationApprovalRequestErrorCode,
+  type ConversationApprovalRequestPlan
+} from './conversation-approval-request';
 export {createPostgresUnitOfWork} from './persistence';
 export {
   isHermesTransportConfigured,
@@ -94,11 +91,6 @@ export {
   createPostgresIncomingEventProcessor
 } from './incoming-event-consumer';
 export {
-  createPostgresTelegramStatusPublisher,
-  createPostgresTelegramStatusResponseOutbox,
-  formatTelegramStatusResponse
-} from './telegram-status-response';
-export {
   createPostgresIncomingEventInbox,
   INCOMING_EVENT_QUEUE,
   type PgBossTransactionalSender
@@ -133,7 +125,6 @@ export {
   type PmQaBotResult
 } from './pm-qa-bot';
 export {createPostgresRunnerClaimStore} from './runner-claim';
-export {createPostgresProjectShareStore} from './project-share';
 export {resolveWorkItemResponsibility} from './work-item-responsibility';
 export {createPostgresInstructionVersionStore} from './instruction-versioning';
 export {

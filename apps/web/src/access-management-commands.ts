@@ -1,5 +1,4 @@
 import {
-  accessLevels,
   canonicalProjectMembershipRoles,
   containsHighConfidenceSecretContent,
   projectMembershipRoles
@@ -30,14 +29,6 @@ const readForm = async (request: Request): Promise<URLSearchParams | null> => {
   ) return null;
   const text = await request.text();
   return Buffer.byteLength(text) <= MAX_BODY_BYTES ? new URLSearchParams(text) : null;
-};
-
-const exact = (form: URLSearchParams | null, keys: readonly string[]): Record<string, string> | null => {
-  if (form === null) return null;
-  const entries = [...form.entries()];
-  if (entries.length !== keys.length || new Set(entries.map(([key]) => key)).size !== keys.length) return null;
-  if (!keys.every((key) => form.has(key))) return null;
-  return Object.fromEntries(entries);
 };
 
 const redirect = (request: Request): Response => {
@@ -151,34 +142,6 @@ export async function setMembershipCommand(
       roles,
       active: values.active === 'true'
     }));
-  } catch {
-    return json('unavailable', 503);
-  }
-}
-
-export async function setDesiredAccessCommand(
-  request: Request,
-  grantId: string,
-  overrides: AccessManagementCommandDependencies = dependencies
-): Promise<Response> {
-  const values = exact(await readForm(request), ['_csrf', 'expectedVersion', 'desiredLevel']);
-  const authorization = await overrides.requireSession(request, {csrfToken: values?._csrf ?? null});
-  if (!authorization.ok) return authorization.response;
-  if (
-    values === null || !uuidPattern.test(grantId) ||
-    !/^[1-9][0-9]{0,8}$/.test(values.expectedVersion ?? '') ||
-    !accessLevels.includes(values.desiredLevel as never)
-  ) return json('invalid_request', 400);
-  try {
-    const status = await (await overrides.getRuntime()).setDesiredAccess({
-      workspaceId: authorization.runtime.config.workspaceId,
-      operatorActorId: authorization.session.actorId,
-      grantId,
-      expectedVersion: Number(values.expectedVersion),
-      desiredLevel: values.desiredLevel as (typeof accessLevels)[number]
-    });
-    if (status === 'updated' || status === 'replayed') return redirect(request);
-    return responseFor(request, status);
   } catch {
     return json('unavailable', 503);
   }

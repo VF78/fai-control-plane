@@ -8,7 +8,6 @@ import {
   createApprovalBinding,
   createTaskPacket,
   hashAgentProfileConfiguration,
-  type AccessRequest,
   type ActorExternalIdentity,
   type AgentProfileConfiguration,
   type AgentRunView,
@@ -21,7 +20,6 @@ import {
   type CompletedCanonicalCommand,
   type ReceiptClaimToken,
   type ProjectMembership,
-  type ResourceAccessGrant,
   type RetirableAgent,
   type RuntimeRegistration,
   type RuntimeRecoveryPolicy,
@@ -120,11 +118,9 @@ class FakeUnitOfWork implements UnitOfWork {
   readonly taskPackets = new Map<string, TaskPacket>();
   readonly agentRuns = new Map<string, AgentRunView>();
   readonly approvals = new Map<string, Approval>();
-  readonly accessRequests = new Map<string, AccessRequest>();
   readonly projectMemberships = new Map<string, ProjectMembership>();
   readonly actorExternalIdentities = new Map<string, ActorExternalIdentity>();
   readonly retirableAgents = new Map<string, RetirableAgent>();
-  readonly resourceAccessGrants = new Map<string, ResourceAccessGrant>();
   readonly runtimeRegistrations = new Map<string, RuntimeRegistration>();
   readonly runtimeRecoveryPolicies = new Map<string, RuntimeRecoveryPolicy>();
   readonly receipts = new Map<string, CommandReceipt>();
@@ -154,7 +150,6 @@ class FakeUnitOfWork implements UnitOfWork {
     const taskPackets = new Map(this.taskPackets);
     const agentRuns = new Map(this.agentRuns);
     const approvals = new Map(this.approvals);
-    const accessRequests = new Map(this.accessRequests);
     let completedReceipt: CommandReceipt | undefined;
     const token = {} as ReceiptClaimToken;
     const transaction: CanonicalCommandTransaction = {
@@ -174,7 +169,6 @@ class FakeUnitOfWork implements UnitOfWork {
       },
       loadAgentRun: async (_token, value) => this.agentRuns.get(value) ?? null,
       loadApproval: async (_token, value) => this.approvals.get(value) ?? null,
-      loadAccessRequest: async (_token, value) => this.accessRequests.get(value) ?? null,
       loadProjectMembership: async (_token, value) =>
         this.projectMemberships.get(value) ?? null,
       loadActorOnboardingConflict: async () => this.onboardingConflict,
@@ -182,8 +176,6 @@ class FakeUnitOfWork implements UnitOfWork {
         this.actorExternalIdentities.get(value) ?? null,
       loadRetirableAgent: async (_token, value) =>
         this.retirableAgents.get(value) ?? null,
-      loadResourceAccessGrant: async (_token, value) =>
-        this.resourceAccessGrants.get(value) ?? null,
       loadRuntimeRegistration: async (_token, value) =>
         this.runtimeRegistrations.get(value) ?? null,
       loadRuntimeRecoveryPolicy: async (_token, value) =>
@@ -203,11 +195,9 @@ class FakeUnitOfWork implements UnitOfWork {
         if (mutation.aggregateType === 'task_packet') this.taskPackets.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'agent_run') this.agentRuns.set(mutation.aggregateId, {aggregate: mutation.aggregate, projectId});
         if (mutation.aggregateType === 'approval') this.approvals.set(mutation.aggregateId, mutation.aggregate);
-        if (mutation.aggregateType === 'access_request') this.accessRequests.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'project_membership') this.projectMemberships.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'actor_external_identity') this.actorExternalIdentities.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'actor') this.retirableAgents.set(mutation.aggregateId, mutation.aggregate);
-        if (mutation.aggregateType === 'resource_access_grant') this.resourceAccessGrants.set(mutation.aggregateId, mutation.aggregate);
         if (mutation.aggregateType === 'runtime_registration') {
           this.runtimeRegistrations.set(mutation.aggregateId, mutation.aggregate);
           if (mutation.replacementTarget !== undefined) {
@@ -249,7 +239,6 @@ class FakeUnitOfWork implements UnitOfWork {
       this.taskPackets.clear(); taskPackets.forEach((value, key) => this.taskPackets.set(key, value));
       this.agentRuns.clear(); agentRuns.forEach((value, key) => this.agentRuns.set(key, value));
       this.approvals.clear(); approvals.forEach((value, key) => this.approvals.set(key, value));
-      this.accessRequests.clear(); accessRequests.forEach((value, key) => this.accessRequests.set(key, value));
       throw cause;
     }
     if (completedReceipt === undefined) throw new Error('Command did not complete a receipt.');
@@ -398,12 +387,6 @@ describe('canonical command service', () => {
       const approval = approvalFixture('pending');
       uow.approvals.set(approval.id, approval);
       return command('approval.decide', approvalDecision(approval, 'approved'));
-    }],
-    ['access_request.request', () => command('access_request.request', {requestId: id(), targetSurface: 'repository', requestedScope: ['read']})],
-    ['access_request.decide', (uow: FakeUnitOfWork) => {
-      const request: AccessRequest = {id: id(), workspaceId, requesterActorId: actorId, targetSurface: 'repository', requestedScope: ['read'], status: 'pending', version: 1};
-      uow.accessRequests.set(request.id, request);
-      return command('access_request.decide', {requestId: request.id, status: 'granted', expectedVersion: 1});
     }]
   ])('executes %s through an audited receipt', async (_name, make) => {
     const uow = new FakeUnitOfWork();
@@ -608,13 +591,10 @@ describe('canonical command service', () => {
       version: 1
     };
     const approval = approvalFixture('approved');
-    const request: AccessRequest = {id: id(), workspaceId, requesterActorId: actorId, targetSurface: 'repository', requestedScope: ['read'], status: 'granted', version: 1};
-    uow.agentRuns.set(run.id, {aggregate: run, projectId}); uow.approvals.set(approval.id, approval); uow.accessRequests.set(request.id, request);
+    uow.agentRuns.set(run.id, {aggregate: run, projectId}); uow.approvals.set(approval.id, approval);
     await expect(serviceFor(uow).execute(command('agent_run.transition', {agentRunId: run.id, status: 'done', expectedVersion: 1})))
       .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
     await expect(serviceFor(uow).execute(command('approval.decide', approvalDecision(approval, 'rejected'))))
-      .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
-    await expect(serviceFor(uow).execute(command('access_request.decide', {requestId: request.id, status: 'rejected', expectedVersion: 1})))
       .resolves.toMatchObject({receipt: {result: {error: {code: 'INVALID_TRANSITION'}}}});
     const aggregate = item(); uow.workItems.set(aggregate.id, aggregate); uow.failure = 'version_conflict';
     await expect(serviceFor(uow).execute(command('work_item.set_blocked', {workItemId: aggregate.id, blocked: true, expectedVersion: 1})))
@@ -965,57 +945,6 @@ describe('canonical command service', () => {
       settings: {resultFormat: 'structured_v1', includeEvidence: true}
     });
     expect(uow.agentProfiles.get(profile.id)?.version).toBe(3);
-  });
-
-  it('governs access aggregates with owner authority, CAS, audit, and observations', async () => {
-    const uow = new FakeUnitOfWork();
-    const service = serviceFor(uow);
-    const subjectActorId = id();
-    const membershipId = id();
-    const grantId = id();
-    const resourceId = id();
-
-    await expect(service.execute(command('project_membership.set', {
-      membershipId,
-      projectId,
-      subjectActorId,
-      roles: ['agent'],
-      active: true,
-      expectedVersion: null
-    }))).resolves.toMatchObject({
-      status: 'completed',
-      receipt: {result: {ok: true, value: {id: membershipId, version: 1}}}
-    });
-    await expect(service.execute(command('resource_access_grant.set', {
-      grantId,
-      projectId,
-      subjectActorId,
-      resourceType: 'repository',
-      resourceId,
-      desiredLevel: 'write',
-      expectedVersion: null
-    }))).resolves.toMatchObject({
-      receipt: {result: {ok: true, value: {id: grantId, version: 1}}}
-    });
-    await expect(service.execute(command('resource_access_grant.observe', {
-      grantId,
-      provider: 'github',
-      externalResourceRef: 'github:repository:123',
-      confirmedLevel: 'read',
-      observedAt: '2026-07-29T10:00:00.000Z',
-      expectedVersion: 1
-    }))).resolves.toMatchObject({
-      receipt: {result: {ok: true, value: {id: grantId, version: 2}}}
-    });
-    expect(uow.resourceAccessGrants.get(grantId)).toMatchObject({
-      desiredLevel: 'write',
-      providerObservation: {
-        provider: 'github',
-        confirmedLevel: 'read'
-      },
-      version: 2
-    });
-    expect(uow.mutations).toHaveLength(3);
   });
 
   it('denies access commands by default without owner authority', async () => {

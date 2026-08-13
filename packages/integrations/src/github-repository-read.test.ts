@@ -353,39 +353,3 @@ describe('GitHub provider-native project reader', () => {
       .toEqual(['PVTI_MSA_1', 'PVTI_MSA_2']);
   });
 });
-
-describe('GitHub repository access observation', () => {
-  it.each([
-    ['none', 'none'], ['read', 'read'], ['triage', 'read'], ['write', 'write'],
-    ['maintain', 'write'], ['admin', 'admin']
-  ])('maps GitHub %s permission to canonical %s', async (permission, expected) => {
-    const fetch: GitHubFetch = async (rawUrl) => {
-      const path = new URL(rawUrl).pathname;
-      if (path === '/app/installations/149112973/access_tokens') return jsonResponse({
-        token: 'installation-token', expires_at: new Date(Date.now() + 60 * 60_000).toISOString()
-      });
-      if (path === '/user/75837222') return jsonResponse({id: 75837222, login: 'VF78'});
-      if (path.endsWith('/collaborators/VF78/permission')) return jsonResponse({permission});
-      throw new Error(`Unexpected route ${path}`);
-    };
-    await expect(adapter(fetch).observeAccess({
-      resourceType: 'repository',
-      externalSubject: 'github:user:75837222',
-      repository: {owner: 'VF78', repository: 'MSA', externalId: 'github:repository:1278325372'}
-    })).resolves.toMatchObject({state: 'confirmed', confirmedLevel: expected});
-  });
-
-  it('does not guess a mutable login or Project access', async () => {
-    const fetch = vi.fn<GitHubFetch>();
-    const github = adapter(fetch);
-    await expect(github.observeAccess({
-      resourceType: 'repository', externalSubject: 'github:user:VF78',
-      repository: {owner: 'VF78', repository: 'MSA', externalId: 'github:repository:1278325372'}
-    })).resolves.toMatchObject({state: 'unobserved'});
-    await expect(github.observeAccess({
-      resourceType: 'tracker', externalSubject: 'github:user:75837222',
-      repository: {owner: 'VF78', repository: 'MSA', externalId: 'github:repository:1278325372'}
-    })).resolves.toMatchObject({state: 'unsupported'});
-    expect(fetch).not.toHaveBeenCalled();
-  });
-});

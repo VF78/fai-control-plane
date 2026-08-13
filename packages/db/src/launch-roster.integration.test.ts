@@ -16,7 +16,6 @@ import {
   createDatabase,
   projectMemberships,
   projects,
-  resourceAccessGrants,
   workspaces
 } from './index';
 
@@ -203,7 +202,6 @@ describePostgres('launch roster reconciliation', () => {
       {project: 'ascon', actor: 'Vitaliy', actorType: 'human', roles: ['contributor'], active: false}
     ]);
     expect(memberships.some(({actor}) => actor === 'Codex CLI')).toBe(false);
-    expect(await db.select({id: resourceAccessGrants.id}).from(resourceAccessGrants)).toEqual([]);
 
     const finalMembershipIds = (await db.select({id: projectMemberships.id})
       .from(projectMemberships)).map(({id}) => id).sort();

@@ -12,8 +12,6 @@ import {
   createPostgresHealthcheckProducer,
   createPostgresAgentRoleRequestOutbox,
   createPostgresIncomingEventProcessor,
-  createPostgresTelegramStatusPublisher,
-  createPostgresTelegramStatusResponseOutbox,
   createPostgresPmReportCheckProducer,
   createPostgresQaIntakeProducer,
   createPostgresPmQaBotRunner,
@@ -31,8 +29,7 @@ import type {OpaqueSecretRef, SecretsProvider} from '@fai-control-plane/domain';
 import {
   createHermesApiRunsAdapter,
   hermesRunsSecretPurpose,
-  hermesRunsSecretScope,
-  createTelegramChatAdapter
+  hermesRunsSecretScope
 } from '@fai-control-plane/integrations/runtime';
 import {
   recordDurableJobEnqueue,
@@ -62,13 +59,8 @@ import {
 const databaseUrl = process.env.DATABASE_URL;
 const port = Number.parseInt(process.env.PORT ?? '3001', 10);
 const githubSyncEnabled = process.env.GITHUB_SYNC_ENABLED === 'true';
-const telegramStatusResponseEnabled = process.env.TELEGRAM_STATUS_RESPONSE_ENABLED === 'true';
 const hermesApiBaseUrl = process.env.HERMES_API_BASE_URL;
 const hermesApiKeyFile = process.env.HERMES_API_KEY_FILE;
-const telegramIdentitySecretScope = Object.freeze(['telegram:identity:keying']);
-const telegramBotSecretScope = Object.freeze(['telegram:bot:send']);
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const positiveIntegerPattern = /^[1-9][0-9]{0,19}$/;
 
 type DurableQueueJob = Readonly<{id: string; retryCount: number}>;
 
@@ -89,47 +81,6 @@ const required = (name: string): string => {
   }
   return value;
 };
-
-const requiredUuid = (name: string): string => {
-  const value = required(name);
-  if (!uuidPattern.test(value)) throw new Error(`Invalid UUID configuration: ${name}`);
-  return value;
-};
-
-const requiredTelegramAllowlist = (name: string): number[] => {
-  const entries = required(name).split(',');
-  if (entries.length === 0 || entries.some((entry) => !positiveIntegerPattern.test(entry))) {
-    throw new Error(`Invalid Telegram allowlist configuration: ${name}`);
-  }
-  const ids = entries.map(Number);
-  if (ids.some((id) => !Number.isSafeInteger(id)) || new Set(ids).size !== ids.length) {
-    throw new Error(`Invalid Telegram allowlist configuration: ${name}`);
-  }
-  return ids;
-};
-
-const createTelegramFileSecretsProvider = (
-  identityRef: OpaqueSecretRef,
-  botTokenRef: OpaqueSecretRef
-): SecretsProvider => ({
-  async resolve(reference, purpose) {
-    const allowed = purpose === 'telegram.identity.keying'
-      ? identityRef
-      : purpose === 'telegram.bot.send'
-        ? botTokenRef
-        : undefined;
-    if (
-      allowed === undefined || reference.provider !== allowed.provider ||
-      reference.reference !== allowed.reference || reference.scope.length !== allowed.scope.length ||
-      reference.scope.some((value, index) => value !== allowed.scope[index])
-    ) throw new Error('Secret reference is not allowed.');
-    const value = await readFile(allowed.reference, 'utf8');
-    if (value.length === 0 || value.length > 65_536 || value.includes('\0')) {
-      throw new Error('Telegram secret file is invalid.');
-    }
-    return {value: value.trimEnd()};
-  }
-});
 
 const createHermesFileSecretsProvider = (allowedReference: OpaqueSecretRef): SecretsProvider => ({
   async resolve(reference, purpose) {
@@ -217,48 +168,6 @@ const qaIntakeTaskPacketConsumer = createPostgresQaIntakeTaskPacketConsumer(
   createCanonicalCommandService({unitOfWork: createPostgresUnitOfWork(db)})
 );
 const pmQaBotRunner = createPostgresPmQaBotRunner(db);
-let telegramStatusResponder: Readonly<{prepare(eventId: string): Promise<'prepared' | 'skipped'>}> | undefined;
-let telegramStatusPublisher: Readonly<{publishAvailable(): Promise<'published' | 'failed' | 'idle'>}> | undefined;
-if (telegramStatusResponseEnabled) {
-  if (process.env.TELEGRAM_INGRESS_ENABLED !== 'true') {
-    throw new Error('Telegram ingress must be enabled for status responses.');
-  }
-  const identityFile = required('TELEGRAM_IDENTITY_SECRET_FILE');
-  const botTokenFile = required('TELEGRAM_BOT_TOKEN_FILE');
-  if (!isAbsolute(identityFile) || !isAbsolute(botTokenFile)) {
-    throw new Error('Telegram secret file paths must be absolute.');
-  }
-  const identityRef: OpaqueSecretRef = {
-    provider: 'file', reference: identityFile, scope: telegramIdentitySecretScope
-  };
-  const botTokenRef: OpaqueSecretRef = {
-    provider: 'file', reference: botTokenFile, scope: telegramBotSecretScope
-  };
-  const adapter = createTelegramChatAdapter({
-    identitySecretRef: identityRef,
-    botTokenRef,
-    allowedUserIds: requiredTelegramAllowlist('TELEGRAM_ALLOWED_USER_IDS'),
-    allowedPrivateChatIds: requiredTelegramAllowlist('TELEGRAM_ALLOWED_PRIVATE_CHAT_IDS')
-  }, createTelegramFileSecretsProvider(identityRef, botTokenRef));
-  const telegramStatusProjectIds = [
-    requiredUuid('TELEGRAM_MSA_PROJECT_ID'),
-    requiredUuid('TELEGRAM_ASCON_PROJECT_ID')
-  ];
-  if (new Set(telegramStatusProjectIds).size !== telegramStatusProjectIds.length) {
-    throw new Error('Telegram project configuration must contain distinct projects.');
-  }
-  telegramStatusResponder = createPostgresTelegramStatusResponseOutbox(db, {
-    workspaceId: requiredUuid('FCP_WORKSPACE_ID'),
-    projectIds: telegramStatusProjectIds
-  });
-  telegramStatusPublisher = createPostgresTelegramStatusPublisher(
-    db,
-    adapter,
-    telegramStatusProjectIds
-  );
-}
-let telegramStatusPublisherTimer: NodeJS.Timeout | undefined;
-let publishTelegramStatusResponses: (() => Promise<void>) | undefined;
 const githubReconciliation = githubSyncEnabled
   ? createGitHubReconciliationRuntime(db, pool, agentRoleRequests)
   : undefined;
@@ -327,10 +236,6 @@ await boss.work(INCOMING_EVENT_QUEUE, {includeMetadata: true}, async ([job]) => 
         await reconcileGitHub(observed.project_id);
       }
     }
-    if (telegramStatusResponder !== undefined && publishTelegramStatusResponses !== undefined) {
-      await telegramStatusResponder.prepare(result.eventId);
-      await publishTelegramStatusResponses();
-    }
     return result;
   });
 });
@@ -388,29 +293,6 @@ if (githubReconciliation !== undefined) {
     console.error('github reconciliation startup failed', failure);
   }
 }
-if (telegramStatusPublisher !== undefined) {
-  let publishing = false;
-  publishTelegramStatusResponses = async (): Promise<void> => {
-    if (publishing || stopping) return;
-    publishing = true;
-    try {
-      for (let count = 0; count < 10; count += 1) {
-        const result = await telegramStatusPublisher!.publishAvailable();
-        if (result === 'idle') return;
-      }
-    } catch {
-      console.error('telegram status response publish failed', {
-        code: 'TELEGRAM_STATUS_RESPONSE_PUBLISH_FAILED'
-      });
-    } finally {
-      publishing = false;
-    }
-  };
-  await publishTelegramStatusResponses();
-  telegramStatusPublisherTimer = setInterval(() => {
-    void publishTelegramStatusResponses!();
-  }, 1_000);
-}
 ready = true;
 
 async function shutdown(signal: NodeJS.Signals) {
@@ -418,7 +300,6 @@ async function shutdown(signal: NodeJS.Signals) {
 
   stopping = true;
   ready = false;
-  if (telegramStatusPublisherTimer !== undefined) clearInterval(telegramStatusPublisherTimer);
   console.info(`received ${signal}; shutting down`);
 
   await new Promise<void>((resolve, reject) => {

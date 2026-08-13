@@ -56,7 +56,6 @@ const fixture = {
   repositoryScopeId: randomUUID(),
   secretRefId: randomUUID(),
   approvalId: randomUUID(),
-  accessRequestId: randomUUID(),
   otherWorkspaceId: randomUUID(),
   otherProjectId: randomUUID(),
   otherActorId: randomUUID(),
@@ -600,12 +599,6 @@ describePostgres(
           fixture.actorId
         ]
       );
-      await testPool.query(
-        `INSERT INTO access_requests (
-           id, workspace_id, requester_actor_id, target_surface, requested_scope, status, version
-         ) VALUES ($1, $2, $3, 'repository', ARRAY['contents:read'], 'pending', 1)`,
-        [fixture.accessRequestId, fixture.workspaceId, fixture.actorId]
-      );
     }, 30_000);
 
     afterAll(async () => {
@@ -676,9 +669,7 @@ describePostgres(
             transaction.loadAgentRun(claimToken, randomUUID()),
             transaction.loadAgentRun(claimToken, 'not-a-uuid'),
             transaction.loadApproval(claimToken, fixture.approvalId),
-            transaction.loadApproval(claimToken, randomUUID()),
-            transaction.loadAccessRequest(claimToken, fixture.accessRequestId),
-            transaction.loadAccessRequest(claimToken, 'not-a-uuid')
+            transaction.loadApproval(claimToken, randomUUID())
           ]);
           return completeNoMutation(transaction, receiptClaim, claimToken, value);
         }
@@ -695,9 +686,7 @@ describePostgres(
         missingRun,
         invalidRun,
         approval,
-        missingApproval,
-        access,
-        invalidAccess
+        missingApproval
       ] = result.command.value;
       expect(item).toMatchObject({id: fixture.workItemId, projectId: fixture.projectId});
       expect(otherItem).toBeNull();
@@ -722,8 +711,6 @@ describePostgres(
       expect(invalidRun).toBeNull();
       expect(approval).toMatchObject({id: fixture.approvalId, workItemId: fixture.workItemId});
       expect(missingApproval).toBeNull();
-      expect(access).toMatchObject({id: fixture.accessRequestId, workspaceId: fixture.workspaceId});
-      expect(invalidAccess).toBeNull();
     });
 
     it('records and completes no-op outcomes without mutating an aggregate', async () => {
@@ -1108,50 +1095,6 @@ describePostgres(
         .catch((cause: unknown) => cause);
       expect(approvalResult).toEqual({status: 'not_found'});
 
-      const accessClaim = {
-        ...claim(`missing-access-actor-${randomUUID()}`),
-        commandType: 'access_request.request' as const
-      };
-      const requestId = randomUUID();
-      const accessOutcome: NonApprovalCommandOutcome = {
-        kind: 'non_approval',
-        mutation: {
-          aggregateType: 'access_request',
-          aggregateId: requestId,
-          expectedPersistedVersion: null,
-          aggregate: {
-            id: requestId,
-            workspaceId: fixture.workspaceId,
-            requesterActorId: randomUUID(),
-            targetSurface: 'repository',
-            requestedScope: ['contents:read'],
-            status: 'pending',
-            version: 1
-          }
-        },
-        audit: {
-          id: randomUUID(),
-          workspaceId: fixture.workspaceId,
-          commandId: accessClaim.commandId,
-          correlationId: accessClaim.correlationId,
-          actorId: fixture.actorId,
-          actionCategory: 'write',
-          action: 'access_request.request',
-          targetType: 'access_request',
-          targetId: requestId,
-          resultVersion: 1,
-          occurredAt: new Date().toISOString()
-        }
-      };
-      const accessResult = await unitOfWork
-        .executeCommand(accessClaim, async (transaction, claimToken) => {
-          throw await transaction.persistAuditedMutation({
-            claimToken,
-            outcome: accessOutcome
-          });
-        })
-        .catch((cause: unknown) => cause);
-      expect(accessResult).toEqual({status: 'not_found'});
     });
 
     it('rejects a deserialized TaskPacket update mode before audit or SQL', async () => {
@@ -1734,7 +1677,6 @@ describePostgres(
         actor: randomUUID(),
         workItem: randomUUID(),
         approval: randomUUID(),
-        access: randomUUID(),
         audit: randomUUID(),
         receipt: randomUUID()
       };
@@ -1772,12 +1714,6 @@ describePostgres(
           [ids.approval, ids.project, ids.workItem, ids.actor]
         );
         await legacyPool.query(
-          `INSERT INTO access_requests (
-             id, workspace_id, requester_actor_id, target_surface, status
-           ) VALUES ($1, $2, $3, 'repository', 'pending')`,
-          [ids.access, ids.workspace, ids.actor]
-        );
-        await legacyPool.query(
           `INSERT INTO audit_events (
              id, workspace_id, actor_id, action_category, action, target_type,
              target_id, correlation_id
@@ -1806,10 +1742,6 @@ describePostgres(
           'SELECT version FROM approval_requests WHERE id = $1',
           [ids.approval]
         );
-        const access = await legacyPool.query(
-          'SELECT version FROM access_requests WHERE id = $1',
-          [ids.access]
-        );
         const receipt = await legacyPool.query(
           `SELECT state, request_hash, completed_at
            FROM command_receipts WHERE id = $1`,
@@ -1820,7 +1752,6 @@ describePostgres(
           [ids.audit]
         );
         expect(approval.rows[0]).toEqual({version: 1});
-        expect(access.rows[0]).toEqual({version: 1});
         expect(receipt.rows[0]).toMatchObject({
           state: 'completed',
           request_hash: `legacy:${ids.receipt}`

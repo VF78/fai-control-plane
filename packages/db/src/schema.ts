@@ -47,20 +47,6 @@ export const projectMembershipRoleEnum = pgEnum('project_membership_role', [
   'client_viewer',
   'agent'
 ]);
-export const accessResourceTypeEnum = pgEnum('access_resource_type', [
-  'repository',
-  'tracker',
-  'internal_chat',
-  'client_chat',
-  'environment',
-  'control_plane_action'
-]);
-export const accessLevelEnum = pgEnum('access_level', [
-  'none',
-  'read',
-  'write',
-  'admin'
-]);
 export const authModeEnum = pgEnum('auth_mode', ['user', 'agent', 'system']);
 export const runStatusEnum = pgEnum('agent_run_status', [
   'queued',
@@ -72,12 +58,6 @@ export const runStatusEnum = pgEnum('agent_run_status', [
 export const approvalStatusEnum = pgEnum('approval_status', [
   'pending',
   'approved',
-  'rejected',
-  'expired'
-]);
-export const accessRequestStatusEnum = pgEnum('access_request_status', [
-  'pending',
-  'granted',
   'rejected',
   'expired'
 ]);
@@ -148,15 +128,6 @@ export const auditOutcomeEnum = pgEnum('audit_outcome', [
   'failed',
   'rejected',
   'approval_required'
-]);
-export const conversationClassEnum = pgEnum('conversation_class', [
-  'internal',
-  'client'
-]);
-export const conversationChannelStateEnum = pgEnum('conversation_channel_state', [
-  'active',
-  'inactive',
-  'not_used'
 ]);
 export const runtimeAvailabilityComponentEnum = pgEnum(
   'runtime_availability_component',
@@ -483,313 +454,6 @@ export const actorExternalIdentities = pgTable(
       sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
     ),
     check('actor_external_identities_version_positive', sql`${table.version} > 0`)
-  ]
-);
-
-export type ConversationAttachmentMetadata = Readonly<{
-  kind: 'document' | 'photo' | 'video' | 'audio' | 'voice' | 'sticker' | 'animation';
-  fileName?: string;
-  mimeType?: string;
-  sizeBytes?: number;
-}>;
-
-export const conversationChannelConfigurations = pgTable(
-  'conversation_channel_configurations',
-  {
-    id: id(),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, {onDelete: 'restrict'}),
-    conversationClass: conversationClassEnum('conversation_class').notNull(),
-    desiredState: conversationChannelStateEnum('desired_state').notNull(),
-    provider: text('provider'),
-    configurationRef: text('configuration_ref'),
-    version: integer('version').default(1).notNull(),
-    createdAt: createdAt(),
-    updatedAt: updatedAt()
-  },
-  (table) => [
-    uniqueIndex('conversation_channel_configurations_project_class_unique').on(
-      table.projectId,
-      table.conversationClass
-    ),
-    check(
-      'conversation_channel_configurations_binding_complete',
-      sql`(${table.desiredState} = 'not_used' and ${table.provider} is null and ${table.configurationRef} is null)
-        or (${table.desiredState} in ('active', 'inactive')
-          and ${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'
-          and ${table.configurationRef} ~ '^[a-z][a-z0-9._:-]{0,127}$')`
-    ),
-    check('conversation_channel_configurations_version_positive', sql`${table.version} > 0`)
-  ]
-);
-
-export const conversationBindings = pgTable(
-  'conversation_bindings',
-  {
-    id: id(),
-    configurationId: uuid('configuration_id')
-      .references(() => conversationChannelConfigurations.id, {onDelete: 'restrict'}),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, {onDelete: 'restrict'}),
-    conversationClass: conversationClassEnum('conversation_class').notNull(),
-    provider: text('provider').notNull(),
-    externalRef: text('external_ref').notNull(),
-    activatedAt: timestamp('activated_at', {withTimezone: true}).notNull(),
-    active: boolean('active').default(true).notNull(),
-    lastObservedAt: timestamp('last_observed_at', {withTimezone: true}),
-    lastFailureAt: timestamp('last_failure_at', {withTimezone: true}),
-    lastFailureCode: text('last_failure_code'),
-    failureCount: integer('failure_count').default(0).notNull(),
-    createdAt: createdAt(),
-    updatedAt: updatedAt()
-  },
-  (table) => [
-    uniqueIndex('conversation_bindings_project_class_unique').on(
-      table.projectId,
-      table.conversationClass
-    ).where(sql`${table.active} = true`),
-    uniqueIndex('conversation_bindings_provider_external_unique').on(
-      table.provider,
-      table.externalRef
-    ),
-    uniqueIndex('conversation_bindings_configuration_unique').on(table.configurationId)
-      .where(sql`${table.configurationId} is not null`),
-    check(
-      'conversation_bindings_provider_key',
-      sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
-    ),
-    check(
-      'conversation_bindings_external_ref_bounded',
-      sql`length(${table.externalRef}) between 1 and 128`
-    ),
-    check(
-      'conversation_bindings_failure_complete',
-      sql`(${table.lastFailureAt} is null and ${table.lastFailureCode} is null)
-        or (${table.lastFailureAt} is not null
-          and length(${table.lastFailureCode}) between 1 and 64)`
-    ),
-    check('conversation_bindings_failure_count_nonnegative', sql`${table.failureCount} >= 0`)
-  ]
-);
-
-export const conversationParticipants = pgTable(
-  'conversation_participants',
-  {
-    id: id(),
-    bindingId: uuid('binding_id')
-      .notNull()
-      .references(() => conversationBindings.id, {onDelete: 'cascade'}),
-    externalSubject: text('external_subject').notNull(),
-    actorId: uuid('actor_id').references(() => actors.id, {onDelete: 'restrict'}),
-    displayName: text('display_name').notNull(),
-    observedLevel: accessLevelEnum('observed_level'),
-    observedAt: timestamp('observed_at', {withTimezone: true}),
-    lastObservationRef: text('last_observation_ref'),
-    firstObservedAt: timestamp('first_observed_at', {withTimezone: true}).notNull(),
-    lastObservedAt: timestamp('last_observed_at', {withTimezone: true}).notNull(),
-    createdAt: createdAt(),
-    updatedAt: updatedAt()
-  },
-  (table) => [
-    uniqueIndex('conversation_participants_binding_subject_unique').on(
-      table.bindingId,
-      table.externalSubject
-    ),
-    index('conversation_participants_actor_idx').on(table.actorId),
-    check(
-      'conversation_participants_subject_bounded',
-      sql`length(${table.externalSubject}) between 1 and 128`
-    ),
-    check(
-      'conversation_participants_display_name_bounded',
-      sql`length(${table.displayName}) between 1 and 120`
-    ),
-    check(
-      'conversation_participants_observation_order',
-      sql`${table.lastObservedAt} >= ${table.firstObservedAt}`
-    ),
-    check(
-      'conversation_participants_access_observation_complete',
-      sql`(${table.observedLevel} is null and ${table.observedAt} is null and ${table.lastObservationRef} is null)
-        or (${table.observedLevel} is not null and ${table.observedAt} is not null
-          and length(${table.lastObservationRef}) between 1 and 128)`
-    )
-  ]
-);
-
-export const conversationMessages = pgTable(
-  'conversation_messages',
-  {
-    id: id(),
-    bindingId: uuid('binding_id')
-      .notNull()
-      .references(() => conversationBindings.id, {onDelete: 'cascade'}),
-    participantId: uuid('participant_id')
-      .notNull()
-      .references(() => conversationParticipants.id, {onDelete: 'restrict'}),
-    deliveryRef: text('delivery_ref').notNull(),
-    messageRef: text('message_ref').notNull(),
-    replyToMessageRef: text('reply_to_message_ref'),
-    threadRef: text('thread_ref'),
-    sentAt: timestamp('sent_at', {withTimezone: true}).notNull(),
-    text: text('text'),
-    attachments: jsonb('attachments')
-      .$type<readonly ConversationAttachmentMetadata[]>()
-      .default(sql`'[]'::jsonb`)
-      .notNull(),
-    observedAt: timestamp('observed_at', {withTimezone: true}).defaultNow().notNull()
-  },
-  (table) => [
-    uniqueIndex('conversation_messages_binding_delivery_unique').on(
-      table.bindingId,
-      table.deliveryRef
-    ),
-    uniqueIndex('conversation_messages_binding_message_unique').on(
-      table.bindingId,
-      table.messageRef
-    ),
-    index('conversation_messages_binding_sent_idx').on(table.bindingId, table.sentAt),
-    check('conversation_messages_delivery_ref_bounded', sql`length(${table.deliveryRef}) between 1 and 128`),
-    check('conversation_messages_message_ref_bounded', sql`length(${table.messageRef}) between 1 and 128`),
-    check('conversation_messages_reply_ref_bounded', sql`${table.replyToMessageRef} is null or length(${table.replyToMessageRef}) between 1 and 128`),
-    check('conversation_messages_thread_ref_bounded', sql`${table.threadRef} is null or length(${table.threadRef}) between 1 and 128`),
-    check('conversation_messages_text_bounded', sql`${table.text} is null or length(${table.text}) between 1 and 4000`),
-    check('conversation_messages_attachments_array', sql`jsonb_typeof(${table.attachments}) = 'array'`),
-    check('conversation_messages_has_content', sql`${table.text} is not null or jsonb_array_length(${table.attachments}) > 0`)
-  ]
-);
-
-export const resourceAccessGrants = pgTable(
-  'resource_access_grants',
-  {
-    id: id(),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, {onDelete: 'restrict'}),
-    actorId: uuid('actor_id')
-      .notNull()
-      .references(() => actors.id, {onDelete: 'restrict'}),
-    resourceType: accessResourceTypeEnum('resource_type').notNull(),
-    resourceId: uuid('resource_id').notNull(),
-    desiredLevel: accessLevelEnum('desired_level').notNull(),
-    credentialRefId: uuid('credential_ref_id').references(() => secretRefs.id, {onDelete: 'restrict'}),
-    approvalRequestId: uuid('approval_request_id').references(() => accessRequests.id, {onDelete: 'restrict'}),
-    expiresAt: timestamp('expires_at', {withTimezone: true}),
-    observedProvider: text('observed_provider'),
-    observedExternalResourceRef: text('observed_external_resource_ref'),
-    observedLevel: accessLevelEnum('observed_level'),
-    observedAt: timestamp('observed_at', {withTimezone: true}),
-    version: integer('version').default(1).notNull(),
-    createdAt: createdAt(),
-    updatedAt: updatedAt()
-  },
-  (table) => [
-    uniqueIndex('resource_access_grants_binding_unique').on(
-      table.projectId,
-      table.actorId,
-      table.resourceType,
-      table.resourceId
-    ),
-    index('resource_access_grants_actor_project_idx').on(
-      table.actorId,
-      table.projectId
-    ),
-    check(
-      'resource_access_grants_observation_complete',
-      sql`(${table.observedProvider} is null
-          and ${table.observedExternalResourceRef} is null
-          and ${table.observedLevel} is null
-          and ${table.observedAt} is null)
-        or (${table.observedProvider} is not null
-          and ${table.observedExternalResourceRef} is not null
-          and ${table.observedLevel} is not null
-          and ${table.observedAt} is not null)`
-    ),
-    check('resource_access_grants_environment_binding_complete', sql`
-      (${table.resourceType} <> 'environment' and ${table.credentialRefId} is null and
-       ${table.approvalRequestId} is null and ${table.expiresAt} is null)
-      or
-      (${table.resourceType} = 'environment' and ${table.desiredLevel} = 'none' and
-       ${table.approvalRequestId} is null and ${table.expiresAt} is null)
-      or
-      (${table.resourceType} = 'environment' and ${table.desiredLevel} = 'write' and
-       ${table.credentialRefId} is not null and ${table.expiresAt} is not null)
-    `),
-    check('resource_access_grants_environment_observed_level', sql`
-      ${table.resourceType} <> 'environment' or ${table.observedLevel} is null or
-      ${table.observedLevel} in ('none', 'write')
-    `),
-    check(
-      'resource_access_grants_observed_provider_key',
-      sql`${table.observedProvider} is null
-        or ${table.observedProvider} ~ '^[a-z][a-z0-9_-]{0,63}$'`
-    ),
-    check('resource_access_grants_version_positive', sql`${table.version} > 0`)
-  ]
-);
-
-export const projectShareGrants = pgTable(
-  'project_share_grants',
-  {
-    id: id(),
-    workspaceId: uuid('workspace_id')
-      .notNull()
-      .references(() => workspaces.id, {onDelete: 'cascade'}),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, {onDelete: 'cascade'}),
-    createdByActorId: uuid('created_by_actor_id')
-      .notNull()
-      .references(() => actors.id, {onDelete: 'restrict'}),
-    tokenHash: text('token_hash').notNull(),
-    fieldScope: jsonb('field_scope')
-      .$type<readonly [
-        'publicTitle',
-        'publicStatus',
-        'publicSummary',
-        'updatedTime'
-      ]>()
-      .default(sql`'["publicTitle","publicStatus","publicSummary","updatedTime"]'::jsonb`)
-      .notNull(),
-    expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
-    revokedAt: timestamp('revoked_at', {withTimezone: true}),
-    revokedByActorId: uuid('revoked_by_actor_id').references(() => actors.id, {
-      onDelete: 'restrict'
-    }),
-    lastAccessedAt: timestamp('last_accessed_at', {withTimezone: true}),
-    accessCount: integer('access_count').default(0).notNull(),
-    createdAt: createdAt()
-  },
-  (table) => [
-    uniqueIndex('project_share_grants_token_hash_unique').on(table.tokenHash),
-    index('project_share_grants_project_idx').on(table.projectId),
-    index('project_share_grants_expires_idx').on(table.expiresAt),
-    check(
-      'project_share_grants_token_hash_sha256',
-      sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`
-    ),
-    check(
-      'project_share_grants_field_scope_fixed',
-      sql`${table.fieldScope} = '["publicTitle","publicStatus","publicSummary","updatedTime"]'::jsonb`
-    ),
-    check(
-      'project_share_grants_expiry_after_creation',
-      sql`${table.expiresAt} > ${table.createdAt}`
-    ),
-    check(
-      'project_share_grants_revocation_consistent',
-      sql`(${table.revokedAt} is null and ${table.revokedByActorId} is null)
-        or (${table.revokedAt} is not null and ${table.revokedByActorId} is not null
-          and ${table.revokedAt} >= ${table.createdAt})`
-    ),
-    check(
-      'project_share_grants_access_consistent',
-      sql`(${table.accessCount} = 0 and ${table.lastAccessedAt} is null)
-        or (${table.accessCount} > 0 and ${table.lastAccessedAt} is not null
-          and ${table.lastAccessedAt} >= ${table.createdAt})`
-    )
   ]
 );
 
@@ -1523,25 +1187,6 @@ export const deliveryJourneyEvidence = pgTable(
   ]
 );
 
-export const projectShareWorkItems = pgTable(
-  'project_share_work_items',
-  {
-    grantId: uuid('grant_id')
-      .notNull()
-      .references(() => projectShareGrants.id, {onDelete: 'cascade'}),
-    workItemId: uuid('work_item_id')
-      .notNull()
-      .references(() => workItems.id, {onDelete: 'cascade'})
-  },
-  (table) => [
-    primaryKey({
-      name: 'project_share_work_items_pk',
-      columns: [table.grantId, table.workItemId]
-    }),
-    index('project_share_work_items_work_item_idx').on(table.workItemId)
-  ]
-);
-
 export const statusTransitions = pgTable(
   'status_transitions',
   {
@@ -2166,16 +1811,13 @@ export const incomingEvents = pgTable(
     installationId: text('installation_id'),
     repositoryId: text('repository_id'),
     projectNodeId: text('project_node_id'),
-    telegramMessageId: text('telegram_message_id'),
-    telegramChatId: text('telegram_chat_id'),
-    telegramUserId: text('telegram_user_id'),
     payloadSha256: text('payload_sha256'),
     verification: jsonb('verification')
       .$type<
         | {outcome: 'unverified'; method: 'none'}
         | {
             outcome: 'verified' | 'rejected';
-            method: 'hmac-sha256' | 'signature-sha256' | 'shared-token';
+            method: 'hmac-sha256' | 'signature-sha256';
           }
       >()
       .notNull(),
@@ -2229,10 +1871,8 @@ export const incomingEvents = pgTable(
         '{"outcome":"unverified","method":"none"}'::jsonb,
         '{"outcome":"verified","method":"hmac-sha256"}'::jsonb,
         '{"outcome":"verified","method":"signature-sha256"}'::jsonb,
-        '{"outcome":"verified","method":"shared-token"}'::jsonb,
         '{"outcome":"rejected","method":"hmac-sha256"}'::jsonb,
-        '{"outcome":"rejected","method":"signature-sha256"}'::jsonb,
-        '{"outcome":"rejected","method":"shared-token"}'::jsonb
+        '{"outcome":"rejected","method":"signature-sha256"}'::jsonb
       )`
     ),
     check(
@@ -2263,18 +1903,6 @@ export const incomingEvents = pgTable(
         and ${table.repositoryId} ~ '^[1-9][0-9]{0,19}$'
         and ${table.projectNodeId} is not null
         and length(${table.projectNodeId}) between 1 and 128
-      )`
-    ),
-    check(
-      'incoming_events_telegram_verified_source',
-      sql`${table.provider} <> 'telegram' or (
-        ${table.verification} = '{"outcome":"verified","method":"shared-token"}'::jsonb
-        and ${table.installationId} is null
-        and ${table.repositoryId} is null
-        and ${table.projectNodeId} is null
-        and ${table.telegramMessageId} ~ '^tgid:v1:[0-9a-f]{64}$'
-        and ${table.telegramChatId} ~ '^tgid:v1:[0-9a-f]{64}$'
-        and ${table.telegramUserId} ~ '^tgid:v1:[0-9a-f]{64}$'
       )`
     )
   ]
@@ -2346,40 +1974,6 @@ export const secretRefs = pgTable(
 );
 
 /** Canonical provider-neutral identity for a project's SSH-capable environment. */
-export const projectEnvironments = pgTable(
-  'project_environments',
-  {
-    id: id(),
-    projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
-    kind: text('kind').$type<'development' | 'production'>().notNull(),
-    provider: text('provider').notNull(),
-    endpoint: text('endpoint').notNull(),
-    port: integer('port').notNull(),
-    purpose: text('purpose').notNull(),
-    adapterKey: text('adapter_key').notNull(),
-    adapterCredentialRefId: uuid('adapter_credential_ref_id').notNull()
-      .references(() => secretRefs.id, {onDelete: 'restrict'}),
-    reconcilerActorId: uuid('reconciler_actor_id').notNull()
-      .references(() => actors.id, {onDelete: 'restrict'}),
-    enabled: boolean('enabled').default(false).notNull(),
-    version: integer('version').default(1).notNull(),
-    createdAt: createdAt(),
-    updatedAt: updatedAt()
-  },
-  (table) => [
-    uniqueIndex('project_environments_kind_unique').on(table.projectId, table.kind),
-    index('project_environments_reconciler_idx').on(table.reconcilerActorId),
-    check('project_environments_kind', sql`${table.kind} in ('development', 'production')`),
-    check('project_environments_provider_key', sql`${table.provider} ~ '^[a-z][a-z0-9_-]{0,63}$'`),
-    check('project_environments_adapter_key', sql`${table.adapterKey} ~ '^[a-z][a-z0-9_-]{0,63}$'`),
-    check('project_environments_endpoint_bounded', sql`length(${table.endpoint}) between 1 and 255`),
-    check('project_environments_port', sql`${table.port} between 1 and 65535`),
-    check('project_environments_purpose_bounded', sql`length(${table.purpose}) between 1 and 240`),
-    check('project_environments_version_positive', sql`${table.version} > 0`)
-  ]
-);
-
-/** Immutable configured repository identity used to authorize tracker reads before bootstrap. */
 export const projectTrackerRepositoryScopes = pgTable(
   'project_tracker_repository_scopes',
   {
@@ -2813,55 +2407,6 @@ export const approvalRequests = pgTable(
       sql`${table.expiresAt} > ${table.createdAt} and ${table.expiresAt} <= ${table.createdAt} + interval '24 hours'`
     ),
     check('approval_requests_version_positive', sql`${table.version} > 0`)
-  ]
-);
-
-export const accessRequests = pgTable(
-  'access_requests',
-  {
-    id: id(),
-    workspaceId: uuid('workspace_id')
-      .notNull()
-      .references(() => workspaces.id, {onDelete: 'restrict'}),
-    requesterActorId: uuid('requester_actor_id')
-      .notNull()
-      .references(() => actors.id, {onDelete: 'restrict'}),
-    targetSurface: text('target_surface').notNull(),
-    requestedScope: text('requested_scope')
-      .array()
-      .default(sql`'{}'::text[]`)
-      .notNull(),
-    projectId: uuid('project_id').references(() => projects.id, {onDelete: 'restrict'}),
-    subjectActorId: uuid('subject_actor_id').references(() => actors.id, {onDelete: 'restrict'}),
-    resourceType: accessResourceTypeEnum('resource_type'),
-    resourceId: uuid('resource_id'),
-    requestedLevel: accessLevelEnum('requested_level'),
-    credentialRefId: uuid('credential_ref_id').references(() => secretRefs.id, {onDelete: 'restrict'}),
-    status: accessRequestStatusEnum('status').default('pending').notNull(),
-    decidedByActorId: uuid('decided_by_actor_id').references(
-      () => actors.id,
-      {onDelete: 'restrict'}
-    ),
-    expiresAt: timestamp('expires_at', {withTimezone: true}),
-    decidedAt: timestamp('decided_at', {withTimezone: true}),
-    version: integer('version').default(1).notNull(),
-    createdAt: createdAt(),
-    updatedAt: updatedAt()
-  },
-  (table) => [
-    index('access_requests_status_expiry_idx').on(
-      table.status,
-      table.expiresAt
-    ),
-    check('access_requests_version_positive', sql`${table.version} > 0`)
-    ,check('access_requests_environment_binding_complete', sql`
-      (${table.resourceType} is null and ${table.projectId} is null and ${table.subjectActorId} is null and
-       ${table.resourceId} is null and ${table.requestedLevel} is null and ${table.credentialRefId} is null)
-      or
-      (${table.resourceType} = 'environment' and ${table.projectId} is not null and
-       ${table.subjectActorId} is not null and ${table.resourceId} is not null and
-       ${table.requestedLevel} = 'write' and ${table.credentialRefId} is not null and ${table.expiresAt} is not null)
-    `)
   ]
 );
 

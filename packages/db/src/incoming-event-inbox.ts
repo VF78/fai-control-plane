@@ -75,22 +75,6 @@ const boundedRef = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= 255;
 
 const assertSanitizedProjection = (event: IncomingEvent): void => {
-  if (event.eventType === 'chat_command') {
-    const projection = exactDataObject(event.projection, ['command']);
-    const command = projection === null
-      ? null
-      : exactDataObject(projection.command, ['name']);
-    if (
-      event.provider !== 'telegram' ||
-      event.action !== 'status' ||
-      event.verification.method !== 'shared-token' ||
-      event.source.kind !== 'telegram' ||
-      command?.name !== 'status'
-    ) {
-      throw new TypeError('Incoming event projection is not persistable.');
-    }
-    return;
-  }
   const projectionKey =
     event.eventType === 'issues'
       ? 'issue'
@@ -202,19 +186,9 @@ const immutableIdentityMatches = (
   row.deliveryId === event.deliveryId &&
   row.eventType === event.eventType &&
   row.action === event.action &&
-  (event.source.kind === 'github'
-    ? row.installationId === event.source.installationId &&
-      row.repositoryId === event.source.repositoryId &&
-      row.projectNodeId === event.source.projectNodeId &&
-      row.telegramMessageId === null &&
-      row.telegramChatId === null &&
-      row.telegramUserId === null
-    : row.installationId === null &&
-      row.repositoryId === null &&
-      row.projectNodeId === null &&
-      row.telegramMessageId === event.source.messageId &&
-      row.telegramChatId === event.source.chatId &&
-      row.telegramUserId === event.source.userId) &&
+  row.installationId === event.source.installationId &&
+  row.repositoryId === event.source.repositoryId &&
+  row.projectNodeId === event.source.projectNodeId &&
   row.payloadSha256 === event.payloadSha256 &&
   row.verification.outcome === event.verification.outcome &&
   row.verification.method === event.verification.method;
@@ -245,18 +219,9 @@ export const createPostgresIncomingEventInbox = (
           deliveryId: event.deliveryId,
           eventType: event.eventType,
           action: event.action,
-          installationId:
-            event.source.kind === 'github' ? event.source.installationId : null,
-          repositoryId:
-            event.source.kind === 'github' ? event.source.repositoryId : null,
-          projectNodeId:
-            event.source.kind === 'github' ? event.source.projectNodeId : null,
-          telegramMessageId:
-            event.source.kind === 'telegram' ? event.source.messageId : null,
-          telegramChatId:
-            event.source.kind === 'telegram' ? event.source.chatId : null,
-          telegramUserId:
-            event.source.kind === 'telegram' ? event.source.userId : null,
+          installationId: event.source.installationId,
+          repositoryId: event.source.repositoryId,
+          projectNodeId: event.source.projectNodeId,
           payloadSha256: event.payloadSha256,
           verification: event.verification,
           sanitizedPayload: event.projection,

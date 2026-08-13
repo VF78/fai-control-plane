@@ -9,16 +9,10 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {createActorContextIssuer, type DeliveryProtocolDefinition} from '@fai-control-plane/domain';
 import {createCanonicalCommandService} from '../../application/src/index';
 import {
-  actorExternalIdentities,
   actors,
   agentProfiles,
-  conversationChannelConfigurations,
-  conversationBindings,
-  conversationMessages,
-  conversationParticipants,
   createDatabase,
   createPostgresUnitOfWork,
-  createPostgresConversationStore,
   createPostgresDeliveryJourneyStore,
   createPostgresGovernedQaStore,
   deliveryJourneys,
@@ -45,8 +39,6 @@ const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 const databaseName = `fai_launch_contour_${randomUUID().replaceAll('-', '')}`;
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
-const keyedRef = (value: string) =>
-  `tgid:v1:${createHash('sha256').update(value).digest('hex')}`;
 const requestHash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
 
@@ -196,73 +188,6 @@ describePostgres('test-operational launch contour', () => {
       {provider: 'github', repositoryOwner: 'VF78', repositoryName: 'ascon'},
       {provider: 'github', repositoryOwner: 'VF78', repositoryName: 'MSA'}
     ]);
-  });
-
-  it('accepts only the configured MSA internal chat and resolves the three launch participants', async () => {
-    const projectRows = await db.select().from(projects);
-    const msa = projectRows.find(({slug}) => slug === 'msa')!;
-    const ascon = projectRows.find(({slug}) => slug === 'ascon')!;
-    const [workspace] = await db.select().from(workspaces);
-    if (workspace === undefined) throw new Error('workspace missing');
-    const store = createPostgresConversationStore(db);
-    const activation = new Date('2026-07-30T10:00:00.000Z');
-    const bindingRef = keyedRef('synthetic-msa-internal');
-    const channelId = randomUUID();
-    await db.insert(conversationChannelConfigurations).values({
-      id: channelId,
-      projectId: msa.id,
-      conversationClass: 'internal',
-      desiredState: 'active',
-      provider: 'telegram',
-      configurationRef: 'telegram:msa:internal'
-    });
-    await store.reconcileBindings('telegram', [msa.id, ascon.id], [{
-      configurationId: channelId,
-      projectId: msa.id,
-      conversationClass: 'internal',
-      provider: 'telegram',
-      configurationRef: 'telegram:msa:internal',
-      externalRef: bindingRef,
-      activatedAt: activation
-    }]);
-    await store.reconcileIdentities(workspace.id, 'telegram', [
-      {actorExternalSubject: 'github:user:222', externalSubject: keyedRef('vladimir')},
-      {actorExternalSubject: 'github:user:111', externalSubject: keyedRef('vitaliy')},
-      {actorExternalSubject: 'agent:hermes:v1', externalSubject: keyedRef('hermes')}
-    ]);
-    const observation = (actor: string, sequence: number, sentAt: Date) => ({
-      provider: 'telegram',
-      externalBindingRef: bindingRef,
-      deliveryRef: keyedRef(`delivery-${sequence}`),
-      messageRef: keyedRef(`message-${sequence}`),
-      authorExternalSubject: keyedRef(actor),
-      authorDisplayName: actor,
-      sentAt,
-      replyToMessageRef: null,
-      threadRef: null,
-      text: `synthetic ${actor}`,
-      attachments: []
-    } as const);
-    await expect(store.ingest(observation(
-      'vladimir', 0, new Date(activation.getTime() - 1)
-    ))).resolves.toBe('before_activation');
-    for (const [index, actor] of ['vladimir', 'vitaliy', 'hermes'].entries()) {
-      await expect(store.ingest(observation(
-        actor, index + 1, new Date(activation.getTime() + index + 1)
-      ))).resolves.toBe('accepted');
-    }
-    expect(await db.select().from(conversationBindings)).toMatchObject([{
-      projectId: msa.id,
-      conversationClass: 'internal',
-      provider: 'telegram',
-      active: true
-    }]);
-    expect(await db.select().from(conversationMessages)).toHaveLength(3);
-    expect(await db.select().from(conversationParticipants)).toHaveLength(3);
-    expect((await db.select().from(conversationParticipants))
-      .every(({actorId}) => actorId !== null)).toBe(true);
-    expect(await db.select().from(actorExternalIdentities)
-      .where(eq(actorExternalIdentities.provider, 'telegram'))).toHaveLength(3);
   });
 
   it('persists only component-exact runtime observation TTLs through the canonical command', async () => {

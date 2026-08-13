@@ -5,6 +5,7 @@ export {
 } from './ascon-next-action.ts';
 import type {TrackerNextActionDecision} from './ascon-next-action.ts';
 export * from './agent-role-request.ts';
+export * from './messenger.ts';
 export * from './instruction-versioning.ts';
 export * from './delivery-protocol.ts';
 export * from './delivery-journey.ts';
@@ -18,12 +19,7 @@ export * from './runner-activation.ts';
 import type {
   ActorExternalIdentity,
   ProjectMembership,
-  ProjectMembershipRole,
-  ResourceAccessGrant,
-  ProjectEnvironment,
-  ProjectEnvironmentKind,
-  AccessLevel,
-  AccessResourceType
+  ProjectMembershipRole
 } from './access.ts';
 import type {RuntimeRegistration} from './runtime-registration.ts';
 import type {DeploymentEnvironment, DeploymentObservation, DeploymentReference,
@@ -42,9 +38,6 @@ export const OPERATOR_RECOVERED_EXPIRED_LEASE = 'operator_recovered_expired_leas
 
 export const approvalStatuses = ['pending', 'approved', 'rejected', 'expired'] as const;
 export type ApprovalStatus = (typeof approvalStatuses)[number];
-
-export const accessRequestStatuses = ['pending', 'granted', 'rejected', 'expired'] as const;
-export type AccessRequestStatus = (typeof accessRequestStatuses)[number];
 
 export const actionCategories = [
   'read',
@@ -335,25 +328,6 @@ export type ApprovalReceipt = Readonly<{
   decidedByActorId?: string;
   decidedAt?: string;
 }>;
-export type AccessRequest = Readonly<{
-  id: string;
-  workspaceId: string;
-  requesterActorId: string;
-  targetSurface: PolicySurface;
-  requestedScope: readonly string[];
-  projectId?: string | null;
-  subjectActorId?: string | null;
-  resourceType?: AccessResourceType | null;
-  resourceId?: string | null;
-  requestedLevel?: import('./access.ts').AccessLevel | null;
-  credentialRefId?: string | null;
-  expiresAt?: string | null;
-  decidedByActorId?: string | null;
-  decidedAt?: string | null;
-  status: AccessRequestStatus;
-  version: number;
-}>;
-
 type TransitionMap<T extends string> = Readonly<Record<T, readonly T[]>>;
 
 const workItemTransitions: TransitionMap<WorkItemStatus> = {
@@ -377,13 +351,6 @@ const approvalTransitions: TransitionMap<ApprovalStatus> = {
   rejected: [],
   expired: []
 };
-const accessRequestTransitions: TransitionMap<AccessRequestStatus> = {
-  pending: ['granted', 'rejected', 'expired'],
-  granted: [],
-  rejected: [],
-  expired: []
-};
-
 const canTransition = <T extends string>(
   map: TransitionMap<T>,
   from: T,
@@ -426,14 +393,6 @@ export const transitionApproval = (
   canTransition(approvalTransitions, approval.status, status)
     ? succeeded({...approval, status, version: approval.version + 1})
     : failed('INVALID_TRANSITION', `Approval cannot transition from ${approval.status} to ${status}.`);
-
-export const transitionAccessRequest = (
-  request: AccessRequest,
-  status: AccessRequestStatus
-): CommandResult<AccessRequest> =>
-  canTransition(accessRequestTransitions, request.status, status)
-    ? succeeded({...request, status, version: request.version + 1})
-    : failed('INVALID_TRANSITION', `Access request cannot transition from ${request.status} to ${status}.`);
 
 export type Capability = `${ActionCategory}:${PolicySurface}:${Environment}`;
 const trustedActorBrand = Symbol('trustedActor');
@@ -868,25 +827,6 @@ export type DecideApprovalCommand = CanonicalCommandEnvelope<
     expectedPolicyVersion: number;
   }>
 >;
-export type RequestAccessCommand = CanonicalCommandEnvelope<
-  'access_request.request',
-  Readonly<{requestId: string; targetSurface: PolicySurface; requestedScope: readonly string[]}>
->;
-export type RequestEnvironmentAccessCommand = CanonicalCommandEnvelope<
-  'environment_access.request',
-  Readonly<{
-    requestId: string;
-    projectId: string;
-    subjectActorId: string;
-    environmentId: string;
-    credentialRefId: string;
-    expiresAt: string;
-  }>
->;
-export type DecideAccessRequestCommand = CanonicalCommandEnvelope<
-  'access_request.decide',
-  Readonly<{requestId: string; status: Exclude<AccessRequestStatus, 'pending'>; expectedVersion: number}>
->;
 export type SetProjectMembershipCommand = CanonicalCommandEnvelope<
   'project_membership.set',
   Readonly<{
@@ -959,49 +899,6 @@ export type RetireActorCommand = CanonicalCommandEnvelope<
   'actor.retire',
   Readonly<{agentId: string}>
 >;
-export type SetResourceAccessGrantCommand = CanonicalCommandEnvelope<
-  'resource_access_grant.set',
-  Readonly<{
-    grantId: string;
-    projectId: string;
-    subjectActorId: string;
-    resourceType: AccessResourceType;
-    resourceId: string;
-    desiredLevel: AccessLevel;
-    credentialRefId?: string | null;
-    approvalRequestId?: string | null;
-    expiresAt?: string | null;
-    expectedVersion: number | null;
-  }>
->;
-export type SetProjectEnvironmentCommand = CanonicalCommandEnvelope<
-  'project_environment.set',
-  Readonly<{
-    environmentId: string;
-    projectId: string;
-    kind: ProjectEnvironmentKind;
-    provider: string;
-    endpoint: string;
-    port: number;
-    purpose: string;
-    adapterKey: string;
-    adapterCredentialRefId: string;
-    reconcilerActorId: string;
-    enabled: boolean;
-    expectedVersion: number | null;
-  }>
->;
-export type ObserveResourceAccessGrantCommand = CanonicalCommandEnvelope<
-  'resource_access_grant.observe',
-  Readonly<{
-    grantId: string;
-    provider: string;
-    externalResourceRef: string;
-    confirmedLevel: AccessLevel;
-    observedAt: string;
-    expectedVersion: number;
-  }>
->;
 export type CreateRuntimeRegistrationCommand = CanonicalCommandEnvelope<
   'runtime_registration.create',
   Readonly<{
@@ -1073,17 +970,11 @@ export type CanonicalCommand =
   | TransitionAgentRunCommand
   | RequestApprovalCommand
   | DecideApprovalCommand
-  | RequestAccessCommand
-  | RequestEnvironmentAccessCommand
-  | DecideAccessRequestCommand
   | SetProjectMembershipCommand
   | CreateProjectCommand
   | OnboardActorCommand
   | BindActorExternalIdentityCommand
   | RetireActorCommand
-  | SetResourceAccessGrantCommand
-  | ObserveResourceAccessGrantCommand
-  | SetProjectEnvironmentCommand
   | CreateRuntimeRegistrationCommand
   | UpdateRuntimeRegistrationCommand
   | DisableRuntimeRegistrationCommand
@@ -1106,32 +997,21 @@ export type GitHubIncomingEventSource = Readonly<{
   projectNodeId: string;
 }>;
 
-export type TelegramIncomingEventSource = Readonly<{
-  kind: 'telegram';
-  messageId: string;
-  chatId: string;
-  userId: string;
-}>;
-
-export type IncomingEventSource =
-  | GitHubIncomingEventSource
-  | TelegramIncomingEventSource;
-
 export type IncomingEvent = Readonly<{
   eventId: string;
   workspaceId: string;
   projectId: string;
-  provider: string;
+  provider: 'github';
   deliveryId: string;
-  eventType: string;
+  eventType: 'issues' | 'pull_request' | 'check_run';
   action: string;
   receivedAt: string;
   payloadSha256: string;
   verification: Readonly<{
     outcome: 'verified';
-    method: 'hmac-sha256' | 'shared-token';
+    method: 'hmac-sha256';
   }>;
-  source: IncomingEventSource;
+  source: GitHubIncomingEventSource;
   projection: Readonly<{[key: string]: CanonicalJson}>;
 }>;
 
@@ -2618,12 +2498,6 @@ export type ApprovalUpdateMutation = Readonly<{
   expectedPersistedVersion: number;
   aggregate: Approval;
 }>;
-export type AccessRequestMutation = Readonly<{
-  aggregateType: 'access_request';
-  aggregateId: string;
-  expectedPersistedVersion: number | null;
-  aggregate: AccessRequest;
-}>;
 export type ProjectMembershipMutation = Readonly<{
   aggregateType: 'project_membership';
   aggregateId: string;
@@ -2699,18 +2573,6 @@ export type ActorRetirementMutation = Readonly<{
   expectedPersistedVersion: 0;
   aggregate: RetirableAgent;
 }>;
-export type ResourceAccessGrantMutation = Readonly<{
-  aggregateType: 'resource_access_grant';
-  aggregateId: string;
-  expectedPersistedVersion: number | null;
-  aggregate: ResourceAccessGrant;
-}>;
-export type ProjectEnvironmentMutation = Readonly<{
-  aggregateType: 'project_environment';
-  aggregateId: string;
-  expectedPersistedVersion: number | null;
-  aggregate: ProjectEnvironment;
-}>;
 export type RuntimeRegistrationMutation = Readonly<{
   aggregateType: 'runtime_registration';
   aggregateId: string;
@@ -2749,14 +2611,11 @@ export type CanonicalMutation =
   | AgentRunMutation
   | ApprovalInsertMutation
   | ApprovalUpdateMutation
-  | AccessRequestMutation
   | ProjectMembershipMutation
   | ProjectSetupMutation
   | ActorOnboardingMutation
   | ActorExternalIdentityMutation
   | ActorRetirementMutation
-  | ResourceAccessGrantMutation
-  | ProjectEnvironmentMutation
   | RuntimeRegistrationMutation
   | RuntimeAvailabilityObservationMutation
   | RuntimeRecoveryPolicyMutation;
@@ -2849,10 +2708,6 @@ export interface CanonicalCommandTransaction {
     agentRunId: string
   ): Promise<AgentRunView | null>;
   loadApproval(claimToken: ReceiptClaimToken, approvalId: string): Promise<Approval | null>;
-  loadAccessRequest(
-    claimToken: ReceiptClaimToken,
-    accessRequestId: string
-  ): Promise<AccessRequest | null>;
   loadProjectMembership(
     claimToken: ReceiptClaimToken,
     membershipId: string
@@ -2887,39 +2742,6 @@ export interface CanonicalCommandTransaction {
     claimToken: ReceiptClaimToken,
     agentId: string
   ): Promise<RetirableAgent | null>;
-  loadResourceAccessGrant(
-    claimToken: ReceiptClaimToken,
-    grantId: string
-  ): Promise<ResourceAccessGrant | null>;
-  loadProjectEnvironment?(
-    claimToken: ReceiptClaimToken,
-    environmentId: string
-  ): Promise<ProjectEnvironment | null>;
-  loadProjectEnvironmentContext?(
-    claimToken: ReceiptClaimToken,
-    input: Readonly<{projectId: string; adapterCredentialRefId: string; reconcilerActorId: string}>
-  ): Promise<Readonly<{
-    projectExists: boolean;
-    credentialRefValid: boolean;
-    reconcilerActorValid: boolean;
-  }> | null>;
-  loadEnvironmentAccessContext?(
-    claimToken: ReceiptClaimToken,
-    input: Readonly<{
-      projectId: string;
-      subjectActorId: string;
-      environmentId: string;
-      credentialRefId: string;
-      approvalRequestId: string | null;
-    }>
-  ): Promise<Readonly<{
-    environmentKind: ProjectEnvironmentKind;
-    environmentEnabled: boolean;
-    subjectType: 'human' | 'agent' | null;
-    subjectEligible: boolean;
-    credentialRefValid: boolean;
-    approval: AccessRequest | null;
-  }> | null>;
   loadRuntimeRegistration(
     claimToken: ReceiptClaimToken,
     registrationId: string

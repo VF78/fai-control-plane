@@ -2,7 +2,7 @@ import Link from 'next/link';
 import type {CSSProperties, ReactNode} from 'react';
 import {
   AlertTriangle, ArrowRight, Bot, ChevronLeft, ChevronRight, CircleDot, ClipboardList, FileCheck2, History,
-  FolderKanban, GitPullRequest, LayoutDashboard, Link2, ListChecks,
+  FolderKanban, GitPullRequest, LayoutDashboard, ListChecks,
   ExternalLink, Menu, ServerCog, Settings2, ShieldAlert, ShieldCheck, UsersRound, Workflow
 } from 'lucide-react';
 import {DeliveryProtocolEditor} from './delivery-controls';
@@ -11,14 +11,13 @@ import {type OperatorScreenRef, type OperatorScopeRef} from '@fai/operator-contr
 import {operatorTokens} from '@fai/operator-tokens';
 import type {
   AccessData, HealthData, OperatorLoad, OperatorProjectSlug, PortfolioData,
-  ConversationsData, ProjectData, RunsData
+  ProjectData, RunsData
 } from './operator-data';
-import {ProjectShareControls} from './project-share-controls';
 import {RuntimeRegistrationControls} from './runtime-registration-controls';
 import {AgentRetirementControls} from './agent-retirement-controls';
 
 export type WorkspaceRoute = Readonly<{
-  screen: 'dashboard' | 'projects' | 'global_tasks' | 'global_chats' | 'people' | 'setup' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'chats' | 'access' | 'agents' | 'agent';
+  screen: 'dashboard' | 'projects' | 'global_tasks' | 'people' | 'setup' | 'overview' | 'tasks' | 'task' | 'protocol' | 'runs' | 'run' | 'access' | 'agents' | 'agent';
   project: OperatorProjectSlug | null;
   globalProject?: 'all' | OperatorProjectSlug;
   taskFilters?: Readonly<{
@@ -42,7 +41,6 @@ export type WorkspaceData = Readonly<{
   access: OperatorLoad<AccessData>;
   health: OperatorLoad<HealthData> | null;
   projectIndex: readonly ProjectData[];
-  conversations?: OperatorLoad<ConversationsData> | null;
   csrfToken?: string | null;
   operatorActorId?: string | null;
 }>;
@@ -50,7 +48,7 @@ export type WorkspaceData = Readonly<{
 // Keep the internal component annotations small while public route contracts use WorkspaceRoute.
 type WorkspaceUiRoute = WorkspaceRoute;
 
-type ProjectTab = 'overview' | 'tasks' | 'protocol' | 'runs' | 'chats' | 'access';
+type ProjectTab = 'overview' | 'tasks' | 'protocol' | 'runs' | 'access';
 
 const ready = <T,>(load: OperatorLoad<T> | null): T | null => load?.state === 'ready' ? load.data : null;
 const date = (value: Date | null | undefined) => value === null || value === undefined ? 'Не зафиксировано' : new Intl.DateTimeFormat('ru-RU', {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}).format(value);
@@ -148,7 +146,6 @@ const selectedProject = (
 };
 const projectAreaUrl = (route: WorkspaceUiRoute, project: OperatorProjectSlug): string => {
   if (route.screen === 'global_tasks' || route.screen === 'tasks' || route.screen === 'task') return projectUrl(project, 'tasks', route.scope);
-  if (route.screen === 'global_chats' || route.screen === 'chats') return projectUrl(project, 'chats', route.scope);
   if (route.screen === 'protocol') return projectUrl(project, 'protocol', route.scope);
   if (route.screen === 'runs' || route.screen === 'run') return projectUrl(project, 'runs', route.scope);
   if (route.screen === 'people' || route.screen === 'access') return projectUrl(project, 'access', route.scope);
@@ -164,8 +161,7 @@ function WorkspaceShellHeader({route, projects}: {
   const nav = project === null ? [] : [
     {label: 'Обзор', icon: LayoutDashboard, href: projectUrl(project, 'overview', route.scope), active: route.screen === 'dashboard' || route.screen === 'overview'},
     {label: 'Задачи', icon: ListChecks, href: projectUrl(project, 'tasks', route.scope), active: route.screen === 'global_tasks' || route.screen === 'tasks' || route.screen === 'task'},
-    {label: 'Процесс', icon: Workflow, href: projectUrl(project, 'protocol', route.scope), active: route.screen === 'protocol' || route.screen === 'runs' || route.screen === 'run'},
-    {label: 'Чаты', icon: UsersRound, href: projectUrl(project, 'chats', route.scope), active: route.screen === 'global_chats' || route.screen === 'chats'}
+    {label: 'Процесс', icon: Workflow, href: projectUrl(project, 'protocol', route.scope), active: route.screen === 'protocol' || route.screen === 'runs' || route.screen === 'run'}
   ];
   const control = project === null ? [] : [
     {label: 'Агенты и системы', icon: Bot, href: `/agents?project=${project}${scopeQuery(route.scope).replace('?', '&')}`, active: route.screen === 'agents' || route.screen === 'agent'}
@@ -216,7 +212,7 @@ const projectSelection = (route: WorkspaceUiRoute, projects: readonly WorkspaceP
   const selected = selectedGlobalProject(route);
   return selected === null ? projects : projects.filter((project) => project.slug === selected);
 };
-function ProjectChooser({route, projects, title, detail, area}: {route: WorkspaceUiRoute; projects: readonly WorkspaceProjectRef[]; title: string; detail: string; area: 'overview' | 'tasks' | 'chats' | 'agents'}) {
+function ProjectChooser({route, projects, title, detail, area}: {route: WorkspaceUiRoute; projects: readonly WorkspaceProjectRef[]; title: string; detail: string; area: 'overview' | 'tasks' | 'agents'}) {
   const choices = projectSelection(route, projects);
   const href = (project: WorkspaceProjectRef) => area === 'agents'
     ? `/agents?project=${project.slug}${scopeQuery(route.scope).replace('?', '&')}`
@@ -443,192 +439,30 @@ function RunDetail({route, project, runs, csrfToken, operatorActorId}: {route: W
           : run.receipt !== null ? 'Продолжить по протоколу из карточки задачи.' : 'Действия заблокированы до сохранённого отчёта.';
   return <><ProjectHeader route={route} project={project} title={run.workItem ?? 'Отчёт запуска'}/><div className="fcp-detail-layout"><main className="fcp-detail-main"><div className="fcp-detail-status"><Status value={run.status}/><span className="fcp-muted">{run.agent ?? 'Агент не определён'}</span></div>{route.handoffResult === undefined || route.handoffResult === null ? null : <p className={`fcp-command-notice ${route.handoffResult === 'accepted' ? 'success' : 'error'}`}>{route.handoffResult === 'accepted' ? 'Результат принят Product Owner; задача переведена на разрешённый следующий этап, исполнение проекта приостановлено.' : `Результат не принят: ${route.handoffResult.replaceAll('_', ' ')}.`}</p>}<section className="fcp-section"><div className="fcp-section-head"><h2>Хронология запуска</h2><FileCheck2 aria-hidden="true" size={17}/></div><ol className="fcp-timeline">{events.map((event) => <li key={event.label}><span aria-hidden="true" className={event.value === null ? 'missing' : ''}/><div><strong>{event.label}</strong><small>{date(event.value)}</small></div></li>)}</ol></section><section className="fcp-section"><div className="fcp-section-head"><h2>Проверки и подтверждения</h2><GitPullRequest aria-hidden="true" size={17}/></div><p className="fcp-empty-line">{run.artifacts.length === 0 ? 'Артефакты не зафиксированы.' : `Зафиксировано артефактов: ${run.artifacts.length}.`}</p></section><section className="fcp-section"><div className="fcp-section-head"><h2>Следующее действие</h2><ChevronRight aria-hidden="true" size={17}/></div><p className="fcp-empty-line">{nextAction}</p><RunActionControls run={run} csrfToken={csrfToken} operatorActorId={operatorActorId}/></section></main><aside className="fcp-meta"><h2>Сводка отчёта</h2><DetailFacts items={[{label: 'Задача', value: run.workItem ?? 'Не определена'}, {label: 'Агент', value: run.agent ?? 'Не определён'}, {label: 'Подтверждение', value: approval === null ? 'Не зафиксировано' : statusLabel(approval.status)}, {label: 'Среда', value: approval?.environment ?? 'Не определена'}, {label: 'Результат', value: statusLabel(run.receipt?.terminal ?? run.status)}, {label: 'Зафиксировано', value: date(run.completedAt ?? run.startedAt)}]}/><details><summary>Технические сведения</summary><p>Профиль исполнения: {run.runtimeProfile}</p></details></aside></div></>;
 }
-const chatAccessLabel = (level: 'none' | 'read' | 'write' | 'admin' | null) =>
-  level === null ? 'Не наблюдался' : ({none: 'Нет', read: 'Чтение', write: 'Запись', admin: 'Администратор'}[level]);
-const chatConfirmationLabel = (state: ConversationsData['projects'][number]['channels'][number]['access'][number]['confirmation']) => ({
-  confirmed: 'Подтверждено', mismatch: 'Есть расхождение', unobserved: 'Ожидает наблюдения', not_requested: 'Не задано'
-}[state]);
-function ChatChannelConfiguration({projectId, channel, csrfToken}: {
-  projectId: string;
-  channel: ConversationsData['projects'][number]['channels'][number];
-  csrfToken: string;
-}) {
-  const configurationId = channel.configuration?.id ?? crypto.randomUUID();
-  const expectedVersion = channel.configuration?.version ?? 0;
-  const nextAction = channel.configuration?.desiredState === 'active' ? 'deactivate' : 'activate';
-  return <details className="fcp-system-details"><summary>Настройка канала</summary><form action="/api/conversations/channel" className="fcp-profile-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="projectId" type="hidden" value={projectId}/><input name="channelId" type="hidden" value={configurationId}/><input name="conversationClass" type="hidden" value={channel.conversationClass}/><input name="expectedVersion" type="hidden" value={expectedVersion}/><input name="action" type="hidden" value={nextAction}/><button className="fcp-primary-button" type="submit">{nextAction === 'activate' ? 'Подключить Telegram' : 'Отключить наблюдение'}</button><small>Control Plane хранит только намерение и подтверждённые наблюдения. Идентификатор Telegram задаётся в защищённой конфигурации окружения.</small></form><form action="/api/conversations/channel" className="fcp-profile-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="projectId" type="hidden" value={projectId}/><input name="channelId" type="hidden" value={configurationId}/><input name="conversationClass" type="hidden" value={channel.conversationClass}/><input name="expectedVersion" type="hidden" value={expectedVersion}/><input name="action" type="hidden" value="not_used"/><button type="submit">Чат не используется</button></form></details>;
-}
-function ConversationAccess({projectId, channel, csrfToken, canManage}: {
-  projectId: string;
-  channel: ConversationsData['projects'][number]['channels'][number];
-  csrfToken: string | null;
-  canManage: boolean;
-}) {
-  const configuration = channel.configuration ?? null;
-  if (configuration === null || configuration.desiredState === 'not_used') return null;
-  return <aside><h3>Доступ</h3>{channel.access.length === 0 ? <p>Участники проекта не зафиксированы.</p> : <ul>{channel.access.map((access) => <li key={access.actorId}><strong>{access.displayName}</strong><span>{rolesLabel(access.roles)} · желаемый: {chatAccessLabel(access.desiredLevel)} · факт: {chatAccessLabel(access.observedLevel)} · {chatConfirmationLabel(access.confirmation)}</span>{canManage && csrfToken !== null ? <form action="/api/conversations/access" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="projectId" type="hidden" value={projectId}/><input name="channelId" type="hidden" value={configuration.id}/><input name="conversationClass" type="hidden" value={channel.conversationClass}/><input name="actorId" type="hidden" value={access.actorId}/><input name="grantId" type="hidden" value={access.grantId ?? crypto.randomUUID()}/><input name="expectedVersion" type="hidden" value={access.grantVersion ?? 0}/><label><span className="fcp-sr-only">Желаемый доступ для {access.displayName}</span><select defaultValue={access.desiredLevel ?? 'none'} name="desiredLevel"><option value="none">Нет доступа</option><option value="read">Чтение</option><option value="write">Запись</option><option value="admin">Администратор</option></select></label><button type="submit">Сохранить</button></form> : null}</li>)}</ul>}<p>Изменение участника выполняется в Telegram. Control Plane подтвердит результат только после нового наблюдения.</p><a href="https://web.telegram.org/" target="_blank" rel="noreferrer">Открыть Telegram <ExternalLink aria-hidden="true" size={12}/></a></aside>;
-}
-function ConversationChannel({projectId, channel, csrfToken, canManage}: {
-  projectId: string;
-  channel: ConversationsData['projects'][number]['channels'][number];
-  csrfToken: string | null;
-  canManage: boolean;
-}) {
-  const label = channel.conversationClass === 'internal' ? 'Внутренний чат' : 'Чат с клиентом';
-  const stateLabel = channel.state === 'not_configured' ? 'Не настроено'
-    : channel.state === 'not_used' ? 'Не используется'
-      : channel.state === 'inactive' ? 'Наблюдение отключено'
-        : channel.state === 'waiting_observation' ? 'Ожидает подтверждения Telegram'
-          : channel.state === 'empty' ? 'Сообщений пока нет'
-            : channel.state === 'degraded' ? 'Синхронизация нарушена' : 'Синхронизировано';
-  const configured = channel.configuration != null && channel.configuration.desiredState !== 'not_used';
-  return <section className="fcp-conversation"><header><div><h2>{label}</h2><span>{stateLabel} · обновлено {date(channel.freshnessAt)}</span></div><Status value={channel.state === 'degraded' ? 'failed' : channel.state === 'ready' ? 'healthy' : 'unknown'}/></header>{channel.failure === null ? null : <p className="fcp-conversation-failure">Ошибка синхронизации: {channel.failure.code} · {date(channel.failure.at)} · событий: {channel.failure.count}</p>}{!configured ? <div className="fcp-conversation-empty"><p className="fcp-empty-line">{channel.state === 'not_used' ? 'Для этого проекта такой чат явно не нужен.' : 'Канал ещё не настроен.'}</p>{canManage && csrfToken !== null ? <ChatChannelConfiguration projectId={projectId} channel={channel} csrfToken={csrfToken}/> : null}</div> : <><div className="fcp-conversation-body"><ConversationAccess projectId={projectId} channel={channel} csrfToken={csrfToken} canManage={canManage}/><ol className="fcp-message-list">{channel.messages.length === 0 ? <li className="fcp-empty-line">После подключения новых сообщений не зафиксировано.</li> : channel.messages.map((message) => <li key={message.id}><header><strong>{message.author}</strong><time>{date(message.sentAt)}</time></header>{message.text === null ? null : <p>{message.text}</p>}<footer>{message.reply ? <span>Ответ</span> : null}{message.threaded ? <span>Ветка</span> : null}{message.attachmentSummary === null ? null : <span>Вложения: {message.attachmentSummary}</span>}</footer></li>)}</ol></div><details className="fcp-system-details"><summary>Наблюдаемые участники Telegram</summary>{channel.participants.length === 0 ? <p>Наблюдения участников ещё не зафиксированы.</p> : <ul>{channel.participants.map((participant) => <li key={participant.id}><strong>{participant.displayName}</strong><span>{participant.resolution === 'resolved' ? 'Личность подтверждена' : 'Не сопоставлен'} · факт: {chatAccessLabel(participant.observedLevel)} · {date(participant.observedAt)}</span></li>)}</ul>}</details>{canManage && csrfToken !== null ? <ChatChannelConfiguration projectId={projectId} channel={channel} csrfToken={csrfToken}/> : null}</>}</section>;
-}
-function Conversations({projects, csrfToken, canManage}: {projects: readonly ConversationsData['projects'][number][]; csrfToken: string | null; canManage: boolean}) {
-  return <div className="fcp-conversation-projects">{projects.map((project) => <section key={project.id}><h2 className="fcp-conversation-project-name">{project.name}</h2>{project.channels.every(({state}) => state === 'not_used') ? <Blank title="Чаты не используются">Для этого проекта отсутствие чатов зафиксировано как осознанное решение.</Blank> : <div className="fcp-conversation-grid">{project.channels.map((channel) => <ConversationChannel projectId={project.id} channel={channel} csrfToken={csrfToken} canManage={canManage} key={channel.conversationClass}/>)}</div>}</section>)}</div>;
-}
-function Chats({route, project, conversations, csrfToken, canManage}: {route: WorkspaceUiRoute; project: ProjectData; conversations: ConversationsData | null; csrfToken: string | null; canManage: boolean}) {
-  const scoped = conversations?.projects.find((item) => item.id === project.project.id);
-  return <><ProjectHeader route={route} project={project}/><div className="fcp-section-head fcp-page-actions"><span>Сообщения только для чтения · желаемый доступ отдельно от факта Telegram</span></div>{scoped === undefined ? <Blank title="Чаты недоступны">Не удалось загрузить подтверждённые данные каналов.</Blank> : <Conversations projects={[scoped]} csrfToken={csrfToken} canManage={canManage}/>}</>;
-}
 const roleLabel = (role: string) => ({project_owner: 'Владелец продукта', contributor: 'Разработчик', agent: 'ИИ-агент', workspace_admin: 'Администратор'}[role] ?? role.replaceAll('_', ' '));
 const rolesLabel = (roles: readonly string[]) => roles.map(roleLabel).join(' · ');
-const resourceLabel = (resource: string) => ({repository: 'Репозиторий', tracker: 'Проект / трекер', internal_chat: 'Внутренний чат', client_chat: 'Чат с клиентом'}[resource] ?? resource.replaceAll('_', ' '));
-const grantConfirmationState = (grant: AccessData['resourceGrants'][number]) => {
-  if (grant.observationState === 'unsupported') return 'Не поддерживается';
-  if (grant.observationState === 'unobserved') return 'Не подтверждено провайдером';
-  const observed = [grant.observedProvider, grant.observedLevel, grant.observedAt];
-  if (observed.every((value) => value !== null)) {
-    return grant.observedLevel === grant.desiredLevel ? 'Подтверждено' : 'Требует сверки';
-  }
-  if (observed.every((value) => value === null)) return 'Не подтверждено провайдером';
-  return 'Неполные данные';
-};
-function ResourceGrant({grant, membership, csrfToken}: {
-  grant: AccessData['resourceGrants'][number];
-  membership: AccessData['memberships'][number];
-  csrfToken: string | null;
-}) {
-  const confirmation = grantConfirmationState(grant);
-  const provider = grant.observedProvider ?? 'provider';
-  return <article><div><strong>{resourceLabel(grant.resourceType)}</strong><small>Требуемый уровень: {grant.desiredLevel} · версия {grant.version}</small></div><dl><div><dt>Роль в проекте</dt><dd>{membership.active ? rolesLabel(membership.roles) : 'Участие неактивно'}</dd></div><div><dt>Факт провайдера</dt><dd>{grant.observedLevel === null ? 'Не зафиксирован' : `${grant.observedLevel} · ${grant.observedProvider ?? 'провайдер неизвестен'}`}</dd></div><div><dt>Подтверждение</dt><dd>{confirmation}</dd></div><div><dt>Изменение</dt><dd>{grant.providerAccessUrl == null ? 'Не настроено' : <a href={grant.providerAccessUrl} target="_blank" rel="noreferrer" aria-label={`Управлять доступом ${resourceLabel(grant.resourceType)} в ${provider}`}>Открыть у провайдера <ExternalLink aria-hidden="true" size={13}/></a>}</dd></div></dl>{grant.remediation === null ? null : <p className="fcp-empty-line">{grant.remediation}</p>}{membership.canManage && csrfToken !== null ? <form action={`/api/access/grants/${grant.id}`} className="fcp-profile-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="expectedVersion" type="hidden" value={grant.version}/><label>Желаемый доступ<select defaultValue={grant.desiredLevel} name="desiredLevel"><option value="none">Нет</option><option value="read">Чтение</option><option value="write">Запись</option><option value="admin">Администратор</option></select></label><button className="fcp-primary-button" type="submit">Сохранить намерение</button><small>После сохранения Control Plane покажет расхождение до применения у провайдера.</small></form> : null}<small className="fcp-access-observed">{grant.observedAt === null ? 'Проверка ещё не зафиксирована' : `Проверено ${date(grant.observedAt)}`}</small></article>;
-}
-const providerAccessConfirmed = (
-  access: AccessData,
-  membership: AccessData['memberships'][number]
-) => access.resourceGrants.some((grant) =>
-  grant.projectId === membership.projectId
-  && grant.actorId === membership.actorId
-  && grant.observedLevel !== null
-  && grant.observedAt !== null);
 const accessState = (
-  access: AccessData,
   membership: AccessData['memberships'][number],
   actor: AccessData['actors'][number]
-) => !membership.active || actor.disabledAt !== null
-  ? 'blocked'
-  : providerAccessConfirmed(access, membership) ? 'ready' : 'unknown';
-const accessResources = [
-  {key: 'repository', label: 'Репозиторий'},
-  {key: 'tracker', label: 'Проект / трекер'},
-  {key: 'internal_chat', label: 'Внутренний чат'},
-  {key: 'client_chat', label: 'Чат с клиентом'},
-  {key: 'control_plane', label: 'Control Panel'},
-  {key: 'runtime', label: 'Runtime'}
-] as const;
-function AccessMatrix({project, access, memberships, actors}: {project: ProjectData; access: AccessData; memberships: readonly AccessData['memberships'][number][]; actors: readonly AccessData['actors'][number][]}) {
-  const cell = (actor: AccessData['actors'][number], membership: AccessData['memberships'][number], resource: typeof accessResources[number]) => {
-    if (!membership.active) return {label: 'Роль отключена', tone: 'missing'};
-    if (resource.key === 'control_plane') return {label: membership.active ? 'Только роль' : 'Не настроено', tone: membership.active ? 'role' : 'missing'};
-    if (resource.key === 'runtime') {
-      if (actor.type !== 'agent') return {label: 'Не применяется', tone: 'na'};
-      const activeRuntime = access.agentSystems.find((item) => item.actorId === actor.id)?.profiles.some((profile) => profile.enabled && profile.registrations.some((registration) => registration.projectId === project.project.id && registration.enabled)) ?? false;
-      return {label: activeRuntime ? 'Подтверждено' : 'Не настроено', tone: activeRuntime ? 'confirmed' : 'missing'};
-    }
-    const grant = access.resourceGrants.find((item) => item.projectId === project.project.id && item.actorId === actor.id && item.resourceType === resource.key);
-    if (grant === undefined) return {label: 'Не настроено', tone: 'missing'};
-    const confirmed = grant.observedLevel !== null && grant.observedAt !== null && grant.observedLevel === grant.desiredLevel;
-    return {label: confirmed ? 'Подтверждено' : 'Только роль', tone: confirmed ? 'confirmed' : 'role'};
-  };
-  return <section className="fcp-access-matrix-section"><div className="fcp-section-head"><div><h2>Карта доступов проекта</h2><span>Роль показывает намерение, «Подтверждено» — факт от подключённого провайдера</span></div></div><div className="fcp-access-matrix-scroll"><table className="fcp-access-matrix"><thead><tr><th>Участник</th>{accessResources.map((resource) => <th key={resource.key}>{resource.label}</th>)}</tr></thead><tbody>{actors.map((actor) => { const membership = memberships.find((item) => item.actorId === actor.id)!; return <tr key={actor.id}><th><strong>{actor.displayName}</strong><small>{rolesLabel(membership.roles)}</small></th>{accessResources.map((resource) => { const state = cell(actor, membership, resource); return <td key={resource.key}><span className={`fcp-access-cell ${state.tone}`}>{state.label}</span></td>; })}</tr>; })}</tbody></table></div><div className="fcp-access-legend"><span><i className="confirmed"/>Подтверждено провайдером</span><span><i className="role"/>Роль задана, факт не подтверждён</span><span><i className="missing"/>Не настроено</span></div></section>;
-}
-function EnvironmentAccess({project, access, csrfToken}: {project: ProjectData; access: AccessData; csrfToken: string | null}) {
-  const environments = (access.environments ?? []).filter((item) => item.projectId === project.project.id);
-  const eligibleMembers = access.memberships.filter((item) => item.projectId === project.project.id && item.active)
-    .filter((item) => item.roles.includes('contributor') || item.roles.length === 1 && item.roles[0] === 'agent');
-  const canManage = access.memberships.some((item) => item.projectId === project.project.id && item.canManage);
-  const adminRefs = (access.secretRefs ?? []).filter((ref) => ref.scope.includes('environment_access:admin'));
-  const principalRefs = (access.secretRefs ?? []).filter((ref) => ref.scope.includes('ssh:principal'));
-  const reconcilers = access.environmentReconcilers ?? [];
-  const label = (kind: 'development' | 'production') => kind === 'development' ? 'Среда разработки' : 'Продакшен';
-  const card = (kind: 'development' | 'production') => {
-    const environment = environments.find((item) => item.kind === kind) ?? null;
-    const members = kind === 'production' ? eligibleMembers.filter((member) =>
-      access.actors.find((actor) => actor.id === member.actorId)?.type === 'human') : eligibleMembers;
-    const grants = environment === null ? [] : access.resourceGrants.filter((item) =>
-      item.projectId === project.project.id && item.resourceType === 'environment' && item.resourceId === environment.id &&
-      access.memberships.some((member) => member.actorId === item.actorId) &&
-      // A grant resource is the canonical environment id; the projection intentionally exposes no provider locator.
-      item.resourceType === 'environment');
-    const requests = environment === null ? [] : access.requests.filter((item) =>
-      item.projectId === project.project.id && item.resourceId === environment.id);
-    return <article className="fcp-environment-card" key={kind}>
-      <header><div><ServerCog aria-hidden="true" size={18}/><div><strong>{label(kind)}</strong><small>{environment === null ? 'Не настроена' : environment.purpose}</small></div></div><Status value={environment === null || !environment.enabled ? 'unknown' : environment.adapterConfigured ? 'ready' : 'blocked'}/></header>
-      {environment === null ? <p className="fcp-empty-line">Каноническая среда проекта не настроена.</p> : <dl><div><dt>Подключение</dt><dd>{environment.endpoint}:{environment.port}</dd></div><div><dt>Провайдер</dt><dd>{environment.provider}</dd></div><div><dt>Reconciler</dt><dd>{environment.adapterConfigured ? environment.reconcilerName : `${environment.reconcilerName} · adapter недоступен`}</dd></div><div><dt>Версия</dt><dd>{environment.version}</dd></div></dl>}
-      {!canManage || csrfToken === null ? null : <details><summary>{environment === null ? 'Настроить среду' : 'Изменить настройки'}</summary>{adminRefs.length === 0 || reconcilers.length === 0 ? <p className="fcp-empty-line">Нужны host-owned reference environment_access:admin и активный system reconciler.</p> : <form action="/api/access/environments" className="fcp-profile-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="action" type="hidden" value="configure"/><input name="environmentId" type="hidden" value={environment?.id ?? ''}/><input name="projectId" type="hidden" value={project.project.id}/><input name="kind" type="hidden" value={kind}/><input name="expectedVersion" type="hidden" value={environment?.version ?? ''}/><label>Назначение<input defaultValue={environment?.purpose ?? label(kind)} maxLength={240} name="purpose" required/></label><label>Endpoint<input defaultValue={environment?.endpoint ?? ''} maxLength={255} name="endpoint" required/></label><label>SSH порт<input defaultValue={environment?.port ?? 22} max={65535} min={1} name="port" type="number" required/></label><label>Провайдер<input defaultValue={environment?.provider ?? 'ssh'} maxLength={64} name="provider" required/></label><label>Adapter key<input defaultValue={environment?.adapterKey ?? 'ssh'} maxLength={64} name="adapterKey" required/></label><label>Host-owned credential<select name="adapterCredentialRefId" required><option value="">Выберите reference</option>{adminRefs.map((ref) => <option key={ref.id} value={ref.id}>{ref.provider} · environment access admin</option>)}</select></label><label>Доверенный reconciler<select defaultValue={environment?.reconcilerActorId ?? ''} name="reconcilerActorId" required><option value="">Выберите system actor</option>{reconcilers.map((actor) => <option key={actor.id} value={actor.id}>{actor.displayName}</option>)}</select></label><label>Состояние<select defaultValue={String(environment?.enabled ?? false)} name="enabled"><option value="false">Отключена</option><option value="true">Включена</option></select></label><button className="fcp-primary-button" type="submit">Сохранить среду</button><small>Приватные ключи, capabilities и SSH config не передаются через форму.</small></form>}</details>}
-      {environment === null ? null : <section><h3>SSH-доступ</h3>{members.length === 0 ? <p className="fcp-empty-line">{kind === 'production' ? 'Нет активных Developers. Обычные ИИ-агенты не получают production SSH.' : 'Нет активных Developers или ИИ-агентов.'}</p> : members.map((member) => {
-        const actor = access.actors.find((item) => item.id === member.actorId);
-        const grant = grants.find((item) => item.actorId === member.actorId && item.resourceType === 'environment');
-        const actorRequests = requests.filter((item) => item.subjectActorId === member.actorId);
-        const approved = actorRequests.find((item) => item.status === 'granted' && item.expiresAt !== null && item.expiresAt.getTime() > Date.now()) ?? null;
-        const expired = grant?.expiresAt !== null && grant?.expiresAt !== undefined && grant.expiresAt.getTime() <= Date.now();
-        return <div className="fcp-environment-principal" key={member.actorId}><div><strong>{actor?.displayName ?? 'Участник'}</strong><small>{actor?.type === 'agent' ? 'ИИ-агент' : 'Developer'} · desired {grant?.desiredLevel ?? 'none'} · observed {grant?.observedLevel ?? 'не подтверждён'}{expired ? ' · срок истёк, требуется revoke/observe' : grant?.expiresAt === null || grant?.expiresAt === undefined ? '' : ` · до ${date(grant.expiresAt)}`}</small></div>{!canManage || csrfToken === null || principalRefs.length === 0 ? null : kind === 'production' && approved === null ? <form action="/api/access/environments" className="fcp-inline-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="action" type="hidden" value="request"/><input name="projectId" type="hidden" value={project.project.id}/><input name="subjectActorId" type="hidden" value={member.actorId}/><input name="environmentId" type="hidden" value={environment.id}/><select aria-label="Публичный SSH reference" name="credentialRefId" required><option value="">SSH reference</option>{principalRefs.map((ref) => <option key={ref.id} value={ref.id}>{ref.provider} · principal</option>)}</select><input aria-label="Срок доступа" name="expiresAt" type="datetime-local" required/><button type="submit">Запросить</button></form> : <form action="/api/access/environments" className="fcp-inline-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="action" type="hidden" value="grant"/><input name="grantId" type="hidden" value={grant?.id ?? ''}/><input name="projectId" type="hidden" value={project.project.id}/><input name="subjectActorId" type="hidden" value={member.actorId}/><input name="environmentId" type="hidden" value={environment.id}/><input name="approvalRequestId" type="hidden" value={kind === 'production' ? approved?.id ?? '' : ''}/><input name="expectedVersion" type="hidden" value={grant?.version ?? ''}/><select aria-label="Публичный SSH reference" name="credentialRefId" required><option value="">SSH reference</option>{principalRefs.map((ref) => <option key={ref.id} value={ref.id}>{ref.provider} · principal</option>)}</select><input aria-label="Срок доступа" defaultValue={approved?.expiresAt === null || approved?.expiresAt === undefined ? undefined : approved.expiresAt.toISOString().slice(0, 16)} name="expiresAt" type="datetime-local" required/><input name="desiredLevel" type="hidden" value="write"/><button type="submit">Зафиксировать доступ</button></form>}{grant === undefined || grant.desiredLevel === 'none' || !canManage || csrfToken === null ? null : <form action="/api/access/environments" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="action" type="hidden" value="grant"/><input name="grantId" type="hidden" value={grant.id}/><input name="projectId" type="hidden" value={project.project.id}/><input name="subjectActorId" type="hidden" value={member.actorId}/><input name="environmentId" type="hidden" value={environment.id}/><input name="credentialRefId" type="hidden" value=""/><input name="approvalRequestId" type="hidden" value=""/><input name="expiresAt" type="hidden" value=""/><input name="desiredLevel" type="hidden" value="none"/><input name="expectedVersion" type="hidden" value={grant.version}/><button className="fcp-quiet-button" type="submit">Отозвать</button></form>}</div>;
-      })}{kind !== 'production' ? null : requests.filter((item) => item.status === 'pending').map((request) => <div className="fcp-environment-request" key={request.id}><span>Запрос · {access.actors.find((actor) => actor.id === request.subjectActorId)?.displayName ?? 'участник'} · до {date(request.expiresAt)}</span>{!canManage || csrfToken === null ? null : <form action="/api/access/environments" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="action" type="hidden" value="decide"/><input name="requestId" type="hidden" value={request.id}/><input name="expectedVersion" type="hidden" value={request.version}/><button name="status" value="granted">Одобрить</button><button name="status" value="rejected">Отклонить</button></form>}</div>)}</section>}
-    </article>;
-  };
-  return <section className="fcp-environments"><div className="fcp-section-head"><div><h2>Среды и SSH-доступ</h2><span>Desired, approval и observed — отдельные факты</span></div></div><div>{card('development')}{card('production')}</div></section>;
-}
+) => !membership.active || actor.disabledAt !== null ? 'blocked' : 'ready';
 function Access({route, project, access, csrfToken}: {route: WorkspaceUiRoute; project: ProjectData; access: AccessData | null; csrfToken: string | null}) {
-  if (access === null) return <><ProjectHeader route={route} project={project}/><Blank title="Доступы недоступны">Не удалось загрузить подтверждённые данные ролей и доступов.</Blank></>;
+  if (access === null) return <><ProjectHeader route={route} project={project}/><Blank title="Данные участников недоступны">Не удалось загрузить роли и внешние учётные записи.</Blank></>;
   const memberships = access.memberships.filter((item) => item.projectId === project.project.id);
-  const actors = memberships.flatMap((item) => access.actors.find((actor) => actor.id === item.actorId) ?? []);
-  const activeMemberships = memberships.filter((item) => item.active);
-  const activeActorIds = new Set(activeMemberships.map((item) => item.actorId));
-  const activeActors = actors.filter((actor) => activeActorIds.has(actor.id));
-  const inactiveActors = actors.filter((actor) => !activeActorIds.has(actor.id));
-  const selected = actors.find((actor) => actor.id === route.accessActorId) ?? activeActors[0] ?? inactiveActors[0] ?? null;
+  const actors = memberships.flatMap((membership) => {
+    const actor = access.actors.find((candidate) => candidate.id === membership.actorId);
+    return actor === undefined ? [] : [actor];
+  });
+  const selected = actors.find((actor) => actor.id === route.accessActorId) ?? actors[0] ?? null;
   const membership = selected === null ? null : memberships.find((item) => item.actorId === selected.id) ?? null;
-  const identities = selected === null ? [] : access.externalIdentities.filter((item) => item.actorId === selected.id);
-  const grants = selected === null ? [] : access.resourceGrants.filter((item) => item.projectId === project.project.id && item.actorId === selected.id);
-  const profiles = selected === null ? [] : access.agentSystems.find((item) => item.actorId === selected.id)?.profiles ?? [];
   const actorUrl = (actorId: string) => `/projects/${project.project.slug}/access/${actorId}${scopeQuery(route.scope)}`;
-  const actorRow = (actor: AccessData['actors'][number]) => { const row = memberships.find((item) => item.actorId === actor.id)!; return <Link className="fcp-access-person" href={actorUrl(actor.id)} key={actor.id} aria-current={selected?.id === actor.id ? 'page' : undefined}><UsersRound aria-hidden="true" size={17}/><div><strong>{actor.displayName}</strong><small>{row.active ? rolesLabel(row.roles) : `${rolesLabel(row.roles)} · роль отключена`} · {actor.type === 'agent' ? 'ИИ-агент' : 'человек'}</small></div><Status value={accessState(access, row, actor)}/><ChevronRight aria-hidden="true" size={16}/></Link>; };
-  return <><ProjectHeader route={route} project={project}/><EnvironmentAccess access={access} csrfToken={csrfToken} project={project}/><AccessMatrix access={access} actors={activeActors} memberships={activeMemberships} project={project}/><div className={`fcp-access-layout${route.accessActorId === undefined || route.accessActorId === null ? '' : ' has-selection'}`}>
-    <aside className="fcp-access-master"><div className="fcp-section-head"><div><h2>Участники</h2><span>Откройте строку для объяснения доступа</span></div></div>{activeActors.length === 0 ? <p className="fcp-empty-line">Активные участники проекта не зафиксированы.</p> : <div className="fcp-list">{activeActors.map(actorRow)}</div>}{inactiveActors.length === 0 ? null : <details className="fcp-system-details"><summary>Отключённые роли · {inactiveActors.length}</summary><div className="fcp-list">{inactiveActors.map(actorRow)}</div></details>}</aside>
-    <main className="fcp-access-detail"><Link className="fcp-access-back" href={projectUrl(project.project.slug, 'access', route.scope)}><ChevronLeft aria-hidden="true" size={16}/>Участники</Link>{selected === null || membership === null ? <Blank title="Выберите участника">Нажмите на участника слева, чтобы увидеть происхождение его доступа.</Blank> : <>
-      <div className="fcp-page-title fcp-access-title"><div><h1>{selected.displayName}</h1><p>Объяснение из роли, явных разрешений и наблюдений подключённого провайдера.</p></div><Status value={accessState(access, membership, selected)}/></div>
-      <section className="fcp-section"><div className="fcp-section-head"><h2>Почему участник видит проект</h2><ShieldCheck aria-hidden="true" size={17}/></div><Summary items={[{label: 'Роль', value: membership.active ? rolesLabel(membership.roles) : 'Неактивна'}, {label: 'Участник', value: selected.disabledAt === null ? 'Включён' : 'Отключён'}, {label: 'Внешняя личность', value: identities.length === 0 ? 'Не зафиксирована' : `активных: ${identities.filter((item) => item.active).length}`}, {label: 'Явные разрешения', value: grants.length}]}/></section>
-      <section className="fcp-section"><div className="fcp-section-head"><h2>Роль в проекте</h2><span>Роль Control Plane · версия {membership.version}</span></div>{membership.canManage && csrfToken !== null ? <form action={`/api/access/memberships/${membership.id}`} className="fcp-profile-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="expectedVersion" type="hidden" value={membership.version}/><fieldset><legend>Роли проекта</legend>{selected.type === 'agent' ? <label><input defaultChecked name="roleAgent" type="checkbox" value="true"/>ИИ-агент</label> : <><label><input defaultChecked={membership.roles.includes('contributor')} name="roleContributor" type="checkbox" value="true"/>Разработчик</label><label><input defaultChecked={membership.roles.includes('project_owner')} name="roleProjectOwner" type="checkbox" value="true"/>Product Owner</label><label><input defaultChecked={membership.roles.includes('reviewer')} name="roleReviewer" type="checkbox" value="true"/>Ревьюер</label><label><input defaultChecked={membership.roles.includes('client_viewer')} name="roleClientViewer" type="checkbox" value="true"/>Представитель клиента</label><label><input defaultChecked={membership.roles.includes('workspace_owner')} name="roleWorkspaceOwner" type="checkbox" value="true"/>Владелец рабочей области</label></>}</fieldset><label>Состояние<select defaultValue={String(membership.active)} name="active"><option value="true">Активна</option><option value="false">Отключена</option></select></label><button className="fcp-primary-button" type="submit">Сохранить роль</button></form> : <p className="fcp-empty-line">Для изменения роли нужны права владельца проекта и авторизованная сессия.</p>}</section>
-      <section className="fcp-section"><div className="fcp-section-head"><h2>Доступ к ресурсам</h2><span>Требуемый и подтверждённый уровень</span></div>{grants.length === 0 ? <p className="fcp-empty-line">Явные разрешения не зафиксированы. Роль есть, доступ провайдера не настроен.</p> : <div className="fcp-access-grants">{grants.map((grant) => <ResourceGrant csrfToken={csrfToken} grant={grant} key={grant.id} membership={membership}/>)}</div>}</section>
-      <section className="fcp-section"><div className="fcp-section-head"><h2>Внешние учётные записи</h2><span>Только подтверждённые привязки</span></div>{identities.length === 0 ? <p className="fcp-empty-line">Привязка к учётной записи провайдера не зафиксирована.</p> : <div className="fcp-identity-list">{identities.map((identity) => <span key={identity.provider}>{identity.provider} · {identity.active ? 'активна' : 'неактивна'}</span>)}</div>}</section>
-      {selected.type !== 'agent' ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Привязки агента</h2><Bot aria-hidden="true" size={17}/></div>{profiles.length === 0 ? <p className="fcp-empty-line">Профиль runtime для агента не зафиксирован.</p> : <div className="fcp-access-grants">{profiles.map((profile) => <article key={profile.id}><div><strong>{profile.runtimeId} · {profile.runtimeProfile}</strong><small>{profile.enabled ? 'Профиль включён' : 'Профиль отключён'} · {profile.registrations.length} привязок к проектам</small></div><dl><div><dt>Текущая работа</dt><dd>{profile.latestRun === null ? 'Не зафиксировано' : profile.latestRun.status}</dd></div><div><dt>Последний результат</dt><dd>{profile.latestRun?.receipt === null || profile.latestRun?.receipt === undefined ? 'Не зафиксировано' : profile.latestRun.receipt.terminal}</dd></div><div><dt>Работоспособность runtime</dt><dd>Нет наблюдений</dd></div></dl></article>)}</div>}</section>}
-    </>}</main>
-  </div></>;
-}
-function AccessOperations({project, access, csrfToken}: {project: ProjectData; access: AccessData | null; csrfToken: string | null}) {
-  if (access === null) return null;
-  const shareProject = access.sharing.projects.find((item) => item.slug === project.project.slug);
-  const projectShares = access.sharing.grants.filter((grant) => grant.projectSlug === project.project.slug);
-  return <section className="fcp-access-operations" aria-label="Governed access operations">
-    <details className="fcp-access-operation">
-      <summary><Link2 aria-hidden="true" size={18}/><span><strong>Доступ клиента</strong><small>Ограниченные по сроку ссылки на задачи</small></span><b>{projectShares.filter((grant) => grant.active).length}</b><ChevronRight aria-hidden="true" size={16}/></summary>
-      <div>{shareProject === undefined ? <p className="fcp-empty-line">Публичный доступ для проекта не настроен.</p> : <ProjectShareControls csrfToken={csrfToken} enabled={access.sharing.enabled} grants={projectShares} projects={[shareProject]} project={shareProject}/>}</div>
-    </details>
-    <details className="fcp-access-operation">
-      <summary><ClipboardList aria-hidden="true" size={18}/><span><strong>Запросы доступа</strong><small>Управляемые заявки рабочей области</small></span><b>{access.requests.length}</b><ChevronRight aria-hidden="true" size={16}/></summary>
-      <div>{access.requests.length === 0 ? <p className="fcp-empty-line">Запросы доступа не зафиксированы.</p> : <div className="fcp-access-request-list">{access.requests.map((request) => <article key={request.id}><div><strong>{request.requester}</strong><small>{resourceLabel(request.targetSurface)} · {request.requestedScope.length === 0 ? 'Область не зафиксирована' : request.requestedScope.join(', ')}</small></div><Status value={request.status}/><time>{request.expiresAt === null ? 'Срок не задан' : `Истекает ${date(request.expiresAt)}`}</time></article>)}</div>}</div>
-    </details>
-  </section>;
+  const actorRow = (actor: AccessData['actors'][number]) => {
+    const row = memberships.find((item) => item.actorId === actor.id)!;
+    return <Link className="fcp-access-person" href={actorUrl(actor.id)} key={actor.id} aria-current={selected?.id === actor.id ? 'page' : undefined}><UsersRound aria-hidden="true" size={17}/><div><strong>{actor.displayName}</strong><small>{row.active ? rolesLabel(row.roles) : `${rolesLabel(row.roles)} · роль отключена`} · {actor.type === 'agent' ? 'ИИ-агент' : 'человек'}</small></div><Status value={accessState(row, actor)}/><ChevronRight aria-hidden="true" size={16}/></Link>;
+  };
+  if (selected === null || membership === null) return <><ProjectHeader route={route} project={project}/><Blank title="Участники не зафиксированы">В проекте нет сохранённых ролей участников.</Blank></>;
+  const identities = access.externalIdentities.filter((item) => item.actorId === selected.id);
+  const profiles = access.agentSystems.find((item) => item.actorId === selected.id)?.profiles ?? [];
+  return <><ProjectHeader route={route} project={project}/><div className={`fcp-access-layout${route.accessActorId === undefined || route.accessActorId === null ? '' : ' has-selection'}`}><aside className="fcp-access-master"><div className="fcp-section-head"><h2>Участники проекта</h2><span>{actors.length}</span></div>{actors.map(actorRow)}</aside><main className="fcp-access-detail"><div className="fcp-page-title fcp-access-title"><div><h1>{selected.displayName}</h1><p>Роль в проекте и внешние учётные записи.</p></div><Status value={accessState(membership, selected)}/></div><section className="fcp-section"><div className="fcp-section-head"><h2>Почему участник видит проект</h2><ShieldCheck aria-hidden="true" size={17}/></div><Summary items={[{label: 'Роль', value: membership.active ? rolesLabel(membership.roles) : 'Неактивна'}, {label: 'Участник', value: selected.disabledAt === null ? 'Включён' : 'Отключён'}, {label: 'Внешняя личность', value: identities.length === 0 ? 'Не зафиксирована' : `активных: ${identities.filter((item) => item.active).length}`}]}/></section><section className="fcp-section"><div className="fcp-section-head"><h2>Роль в проекте</h2><span>Версия {membership.version}</span></div>{membership.canManage && csrfToken !== null ? <form action={`/api/access/memberships/${membership.id}`} className="fcp-profile-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="expectedVersion" type="hidden" value={membership.version}/><fieldset><legend>Роли проекта</legend>{selected.type === 'agent' ? <label><input defaultChecked name="roleAgent" type="checkbox" value="true"/>ИИ-агент</label> : <><label><input defaultChecked={membership.roles.includes('contributor')} name="roleContributor" type="checkbox" value="true"/>Разработчик</label><label><input defaultChecked={membership.roles.includes('project_owner')} name="roleProjectOwner" type="checkbox" value="true"/>Product Owner</label><label><input defaultChecked={membership.roles.includes('reviewer')} name="roleReviewer" type="checkbox" value="true"/>Ревьюер</label><label><input defaultChecked={membership.roles.includes('client_viewer')} name="roleClientViewer" type="checkbox" value="true"/>Представитель клиента</label><label><input defaultChecked={membership.roles.includes('workspace_owner')} name="roleWorkspaceOwner" type="checkbox" value="true"/>Владелец рабочей области</label></>}</fieldset><label>Состояние<select defaultValue={String(membership.active)} name="active"><option value="true">Активна</option><option value="false">Отключена</option></select></label><button className="fcp-primary-button" type="submit">Сохранить роль</button></form> : <p className="fcp-empty-line">Для изменения роли нужны права владельца проекта и авторизованная сессия.</p>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Внешние учётные записи</h2><span>Сохранённые привязки идентичности</span></div>{identities.length === 0 ? <p className="fcp-empty-line">Привязка к учётной записи провайдера не зафиксирована.</p> : <div className="fcp-identity-list">{identities.map((identity) => <span key={identity.provider}>{identity.provider} · {identity.active ? 'активна' : 'неактивна'}</span>)}</div>}</section>{selected.type !== 'agent' ? null : <section className="fcp-section"><div className="fcp-section-head"><h2>Привязки агента</h2><Bot aria-hidden="true" size={17}/></div>{profiles.length === 0 ? <p className="fcp-empty-line">Профиль runtime для агента не зафиксирован.</p> : <div className="fcp-list">{profiles.map((profile) => <article key={profile.id}><div><strong>{profile.runtimeId} · {profile.runtimeProfile}</strong><small>{profile.enabled ? 'Профиль включён' : 'Профиль отключён'} · {profile.registrations.length} привязок к проектам</small></div></article>)}</div>}</section>}</main></div></>;
 }
 function SystemsSummary({health}: {health: HealthData | null}) {
   if (health === null) return <Blank title="Системные данные недоступны">Не удалось загрузить сохранённые эксплуатационные факты.</Blank>;
@@ -732,20 +566,15 @@ function AgentDetail({route, access, csrfToken}: {route: WorkspaceUiRoute; acces
 function GlobalTasks({route, projects}: {route: WorkspaceUiRoute; projects: readonly WorkspaceProjectRef[]}) {
   return <ProjectChooser route={route} projects={projects} title="Задачи проекта" detail="Доски задач доступны внутри проекта — общая смешанная очередь не поддерживается." area="tasks"/>;
 }
-function GlobalChats({route, projects}: {route: WorkspaceUiRoute; projects: readonly WorkspaceProjectRef[]}) {
-  return <ProjectChooser route={route} projects={projects} title="Чаты проекта" detail="Таймлайны доступны отдельно внутри проекта." area="chats"/>;
-}
 function People({route, access, csrfToken}: {route: WorkspaceUiRoute; access: AccessData | null; csrfToken: string | null}) {
-  if (access === null) return <><div className="fcp-page-title"><div><h1>Люди и доступы</h1><p>Роли, внешние учётные записи и действующие права.</p></div><Scope route={route}/></div><Blank title="Доступы недоступны">Не удалось загрузить подтверждённые данные ролей и доступов.</Blank></>;
-  const membershipRows = access.memberships.filter(({active}) => active).flatMap((membership) => {
+  if (access === null) return <Blank title="Участники недоступны">Не удалось загрузить роли и внешние учётные записи.</Blank>;
+  const membershipRows = access.memberships.filter((membership) => membership.active).flatMap((membership) => {
     const actor = access.actors.find((candidate) => candidate.id === membership.actorId);
-    if (actor === undefined) return [];
-    return [{membership, actor}];
+    return actor === undefined ? [] : [{membership, actor}];
   });
+  const manageableProjects = [...new Map(access.memberships.filter((item) => item.canManage).map((item) => [item.projectId, item])).values()];
   const instructionBaselines = access.instructionBaselines ?? [];
-  const manageableProjects = [...new Map(access.memberships.filter((membership) => membership.canManage)
-    .map((membership) => [membership.projectId, membership] as const)).values()];
-  return <><div className="fcp-page-title"><div><h1>Люди и доступы</h1><p>Текущие роли, требуемые права и подтверждение подключённых провайдеров.</p></div><Scope route={route}/></div><section className="fcp-section"><div className="fcp-section-head"><h2>Участники проектов</h2><span>Роль не подтверждает внешний доступ</span></div>{membershipRows.length === 0 ? <p className="fcp-empty-line">Активные участники проектов не зафиксированы.</p> : <div className="fcp-list">{membershipRows.map(({membership, actor}) => { const confirmed = providerAccessConfirmed(access, membership); return <Link className="fcp-row fcp-people-row" href={`/projects/${membership.projectSlug}/access/${actor.id}${scopeQuery(route.scope)}`} key={`${membership.projectId}:${actor.id}`}><UsersRound aria-hidden="true" size={18}/><div><strong>{actor.displayName}</strong><small>{membership.project} · {rolesLabel(membership.roles)}{membership.roles.length === 1 && membership.roles[0] === 'agent' ? '' : ` · ${actor.type === 'human' ? 'человек' : 'система'}`}</small></div><Status value={accessState(access, membership, actor)}/><span>{actor.disabledAt !== null ? 'Участник отключён' : confirmed ? 'Доступ подтверждён провайдером' : 'Роль зафиксирована'}</span><ChevronRight aria-hidden="true" size={16}/></Link>; })}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Состояние доступов</h2><span>Фактические права остаются специфичными для провайдера</span></div><Summary items={[{label: 'Люди и агенты', value: access.actors.length}, {label: 'Активные роли', value: access.memberships.filter((membership) => membership.active).length}, {label: 'Внешние учётные записи', value: access.externalIdentities.filter((identity) => identity.active).length}, {label: 'Подтверждённые права', value: access.resourceGrants.filter((grant) => grant.observedLevel !== null && grant.observedAt !== null).length}]}/></section><section className="fcp-section"><div className="fcp-section-head"><div><h2>Управление · расширенные настройки</h2><span>Добавление участника и утверждённые версии инструкций</span></div></div><details className="fcp-system-details"><summary>Добавить человека</summary>{csrfToken === null || manageableProjects.length === 0 ? <p>Для добавления нужны права владельца проекта и авторизованная сессия.</p> : <form action="/api/access/onboarding" className="fcp-profile-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="idempotencyKey" type="hidden" value={crypto.randomUUID()}/><input name="actorType" type="hidden" value="human"/><label>Проект<select name="projectId" required>{manageableProjects.map((project) => <option key={project.projectId} value={project.projectId}>{project.project}</option>)}</select></label><label>Имя<input maxLength={120} name="displayName" required/></label><label>Роль в рабочей области<select name="actorRole"><option value="developer">Разработчик</option><option value="delivery_lead">Руководитель delivery</option></select></label><fieldset><legend>Роли в проекте</legend><label><input name="roleContributor" type="checkbox" value="true"/>Разработчик</label><label><input name="roleProjectOwner" type="checkbox" value="true"/>Product Owner</label><label><input name="roleReviewer" type="checkbox" value="true"/>Ревьюер</label><label><input name="roleClientViewer" type="checkbox" value="true"/>Представитель клиента</label></fieldset><button className="fcp-primary-button" type="submit">Добавить человека</button><small>Создаётся участник и одна проектная роль. Внешняя учётная запись не создаётся.</small></form>}</details>{instructionBaselines.length === 0 ? <p className="fcp-empty-line">Базовая инструкция рабочей области не зафиксирована.</p> : instructionBaselines.map((baseline) => <InstructionHistory key={baseline.workspaceId} title="Базовая инструкция рабочей области" scope="workspace" targetId="" csrfToken={csrfToken} current={baseline.current} previous={baseline.previous}/>)}</section></>;
+  return <><div className="fcp-page-title"><div><h1>Люди и роли</h1><p>Проектное участие и внешние учётные записи.</p></div><Scope route={route}/></div><section className="fcp-section"><div className="fcp-section-head"><h2>Участники проектов</h2><span>Канонические роли Control Plane</span></div>{membershipRows.length === 0 ? <p className="fcp-empty-line">Участники проектов не зафиксированы.</p> : <div className="fcp-list">{membershipRows.map(({membership, actor}) => <Link className="fcp-row fcp-people-row" href={`/projects/${membership.projectSlug}/access/${actor.id}${scopeQuery(route.scope)}`} key={`${membership.projectId}:${actor.id}`}><UsersRound aria-hidden="true" size={18}/><div><strong>{actor.displayName}</strong><small>{membership.project} · {rolesLabel(membership.roles)}</small></div><Status value={accessState(membership, actor)}/><span>{actor.disabledAt !== null ? 'Участник отключён' : membership.active ? 'Роль активна' : 'Роль отключена'}</span><ChevronRight aria-hidden="true" size={16}/></Link>)}</div>}</section><section className="fcp-section"><div className="fcp-section-head"><h2>Состояние участников</h2><span>Без управления правами внешних провайдеров</span></div><Summary items={[{label: 'Люди и агенты', value: access.actors.length}, {label: 'Активные роли', value: access.memberships.filter((membership) => membership.active).length}, {label: 'Внешние учётные записи', value: access.externalIdentities.filter((identity) => identity.active).length}]}/></section><section className="fcp-section"><div className="fcp-section-head"><div><h2>Управление · расширенные настройки</h2><span>Добавление участника и утверждённые версии инструкций</span></div></div><details className="fcp-system-details"><summary>Добавить человека</summary>{csrfToken === null || manageableProjects.length === 0 ? <p>Для добавления нужны права владельца проекта и авторизованная сессия.</p> : <form action="/api/access/onboarding" className="fcp-profile-form" method="post"><input name="_csrf" type="hidden" value={csrfToken}/><input name="idempotencyKey" type="hidden" value={crypto.randomUUID()}/><input name="actorType" type="hidden" value="human"/><label>Проект<select name="projectId" required>{manageableProjects.map((project) => <option key={project.projectId} value={project.projectId}>{project.project}</option>)}</select></label><label>Имя<input maxLength={120} name="displayName" required/></label><label>Роль в рабочей области<select name="actorRole"><option value="developer">Разработчик</option><option value="delivery_lead">Руководитель delivery</option></select></label><fieldset><legend>Роли в проекте</legend><label><input name="roleContributor" type="checkbox" value="true"/>Разработчик</label><label><input name="roleProjectOwner" type="checkbox" value="true"/>Product Owner</label><label><input name="roleReviewer" type="checkbox" value="true"/>Ревьюер</label><label><input name="roleClientViewer" type="checkbox" value="true"/>Представитель клиента</label></fieldset><button className="fcp-primary-button" type="submit">Добавить человека</button><small>Создаётся участник и одна проектная роль. Внешняя учётная запись не создаётся.</small></form>}</details>{instructionBaselines.length === 0 ? <p className="fcp-empty-line">Базовая инструкция рабочей области не зафиксирована.</p> : instructionBaselines.map((baseline) => <InstructionHistory key={baseline.workspaceId} title="Базовая инструкция рабочей области" scope="workspace" targetId="" csrfToken={csrfToken} current={baseline.current} previous={baseline.previous}/>)}</section></>;
 }
 function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const project = ready(data.project);
@@ -756,11 +585,6 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
     item.projectId === project.project.id && item.actorId === data.operatorActorId && item.active);
   const executionOperator = access?.actors.find((item) =>
     item.id === data.operatorActorId && item.type === 'human' && item.disabledAt === null);
-  const canManageExecution = executionMembership?.roles.includes('project_owner') === true ||
-    executionMembership?.roles.includes('workspace_owner') === true || executionOperator?.role === 'workspace_admin' ||
-    executionOperator?.role === 'delivery_lead';
-  const hasExecutionWriteCapability =
-    executionOperator?.capabilities['write:control_plane:development'] === true;
   switch (route.screen) {
     case 'setup': {
       const membership = access?.memberships.find((item) => item.projectId === project.project.id && item.actorId === data.operatorActorId && item.active);
@@ -775,15 +599,13 @@ function ProjectScreen({route, data}: {route: WorkspaceRoute; data: WorkspaceDat
     case 'protocol': return <Protocol route={route} project={project} access={access} csrfToken={data.csrfToken ?? null}/>;
     case 'runs': return <Runs route={route} project={project} runs={runs}/>;
     case 'run': return <RunDetail route={route} project={project} runs={runs} csrfToken={data.csrfToken ?? null} operatorActorId={data.operatorActorId ?? null}/>;
-    case 'chats': return <Chats route={route} project={project} conversations={ready(data.conversations ?? null)} csrfToken={data.csrfToken ?? null} canManage={canManageExecution === true && hasExecutionWriteCapability}/>;
-    case 'access': return <><Access route={route} project={project} access={access} csrfToken={data.csrfToken ?? null}/><AccessOperations project={project} access={access} csrfToken={data.csrfToken ?? null}/></>;
+    case 'access': return <Access route={route} project={project} access={access} csrfToken={data.csrfToken ?? null}/>;
     default: return null;
   }
 }
 export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: WorkspaceData}) {
   const access = ready(data.access);
   const health = ready(data.health);
-  const conversations = ready(data.conversations ?? null);
   const observedProjects = [
     ...(ready(data.portfolio)?.projects.map(({name, slug, health}) => ({name, slug, health})) ?? []),
     ...(data.project?.state === 'ready' && data.project.data !== null ? [{name: data.project.data.project.name, slug: data.project.data.project.slug, health: data.project.data.snapshot?.health ?? 'unknown'}] : []),
@@ -812,19 +634,16 @@ export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: Work
     audit: health.audit.filter((item) => withinProjectScope(item.projectSlug)),
     costLedger: operatorScoped ? [] : health.costLedger
   };
-  const scopedConversations = conversations === null ? null : {...conversations, projects: conversations.projects.filter((item) => withinProjectScope(item.slug))};
   const scopedAccess = access === null ? null : (() => {
     const memberships = access.memberships.filter((membership) => withinProjectScope(membership.projectSlug));
     const actorIds = operatorScoped || selectedProject !== null
       ? new Set(memberships.map((membership) => membership.actorId))
       : new Set(access.actors.map((actor) => actor.id));
-    const sharing = access.sharing ?? {enabled: false, projects: [], grants: []};
     return {
       ...access,
       actors: access.actors.filter((actor) => actorIds.has(actor.id)),
       memberships,
       externalIdentities: (access.externalIdentities ?? []).filter((identity) => actorIds.has(identity.actorId)),
-      resourceGrants: (access.resourceGrants ?? []).filter((grant) => withinProjectScope(grant.projectSlug) && actorIds.has(grant.actorId)),
       agentSystems: (access.agentSystems ?? [])
         .filter((system) => actorIds.has(system.actorId))
         .map((system) => ({
@@ -838,27 +657,22 @@ export function WorkspaceShell({route, data}: {route: WorkspaceRoute; data: Work
               lastReceipt: profile.fleet.lastReceipt !== null && withinProjectScope(profile.fleet.lastReceipt.projectSlug) ? profile.fleet.lastReceipt : null
             }
           }))
-        })),
-      requests: operatorScoped ? [] : access.requests ?? [],
-      secretRefs: operatorScoped ? [] : access.secretRefs ?? [],
-      sharing: {...sharing, projects: sharing.projects.filter((project) => withinProjectScope(project.slug)), grants: sharing.grants.filter((grant) => withinProjectScope(grant.projectSlug))}
+        }))
     };
   })();
   const tokenStyle = {'--fcp-bg': operatorTokens.color.canvas, '--fcp-canvas': operatorTokens.color.surface, '--fcp-ink': operatorTokens.color.ink, '--fcp-muted': operatorTokens.color.muted, '--fcp-rule': operatorTokens.color.border, '--fcp-blue': operatorTokens.color.focus, '--fcp-red': operatorTokens.color.danger, '--fcp-amber': operatorTokens.color.warning, '--fcp-green': operatorTokens.color.success, '--fcp-target': `${operatorTokens.target.minimum}px`} as CSSProperties;
   const scopedData = {
     ...data,
     ...(scopedAccess === null ? {} : {access: {state: 'ready' as const, data: scopedAccess}}),
-    ...(scopedHealth === null ? {} : {health: {state: 'ready' as const, data: scopedHealth}}),
-    ...(scopedConversations === null ? {} : {conversations: {state: 'ready' as const, data: scopedConversations}})
+    ...(scopedHealth === null ? {} : {health: {state: 'ready' as const, data: scopedHealth}})
   };
   const content = !routeAllowed ? <Blank title="Проект недоступен">У текущего пользователя нет активного участия в этом проекте.</Blank>
     : route.screen === 'dashboard' ? <Dashboard route={route} projects={(data.projectIndex ?? []).filter((item) => authorizedSlugs.has(item.project.slug))} portfolio={ready(data.portfolio)}/>
       : route.screen === 'projects' ? <Projects route={route} projects={(data.projectIndex ?? []).filter((item) => authorizedSlugs.has(item.project.slug))} access={scopedAccess} csrfToken={data.csrfToken ?? null} operatorActorId={data.operatorActorId ?? null}/>
         : route.screen === 'global_tasks' ? <GlobalTasks route={route} projects={projectSelection(route, visibleProjects)}/>
-          : route.screen === 'global_chats' ? <GlobalChats route={route} projects={projectSelection(route, visibleProjects)}/>
-            : route.screen === 'people' ? <People route={route} access={scopedAccess} csrfToken={data.csrfToken ?? null}/>
-              : route.screen === 'agents' ? <Agents route={route} access={scopedAccess} health={scopedHealth} projects={visibleProjects} csrfToken={data.csrfToken ?? null}/>
-                : route.screen === 'agent' ? <AgentDetail route={route} access={scopedAccess} csrfToken={data.csrfToken ?? null}/>
-                  : <ProjectScreen route={route} data={scopedData}/>;
+          : route.screen === 'people' ? <People route={route} access={scopedAccess} csrfToken={data.csrfToken ?? null}/>
+            : route.screen === 'agents' ? <Agents route={route} access={scopedAccess} health={scopedHealth} projects={visibleProjects} csrfToken={data.csrfToken ?? null}/>
+              : route.screen === 'agent' ? <AgentDetail route={route} access={scopedAccess} csrfToken={data.csrfToken ?? null}/>
+                : <ProjectScreen route={route} data={scopedData}/>;
   return <div className="fcp-workspace" style={tokenStyle}><div className="fcp-shell-layout"><WorkspaceShellHeader route={route} projects={visibleProjects}/><main className="fcp-main">{content}</main></div></div>;
 }

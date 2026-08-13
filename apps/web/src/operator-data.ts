@@ -7,7 +7,6 @@ import {
 } from '@fai-control-plane/application';
 import {projectPlanScheduleReadiness, type ProjectPlanScheduleReadiness} from '@fai-control-plane/domain';
 import {
-  accessRequests,
   actorExternalIdentities,
   actors,
   agentProfiles,
@@ -29,8 +28,6 @@ import {
   healthcheckStaleAfterMs,
   milestones,
   outboxEvents,
-  projectShareGrants,
-  projectShareWorkItems,
   projectScopeBaselineVersions,
   projectScopeOutcomeObservations,
   projectScopeOutcomes,
@@ -44,9 +41,7 @@ import {
   qaTaskPackets,
   projectExecutionDispatches,
   projectExecutions,
-  projectEnvironments,
   projectSourceArtifacts,
-  resourceAccessGrants,
   runtimeAvailabilityObservations,
   runtimeRecoveryPolicies,
   runtimeRegistrations,
@@ -55,7 +50,6 @@ import {
   riskSignals,
   resolveWorkItemResponsibility,
   scheduledJobs,
-  secretRefs,
   taskPackets,
   trackerBindings,
   trackerSnapshotOperations,
@@ -65,7 +59,6 @@ import {
   workItemScopeOutcomes,
   workItems,
   ledgerRoi,
-  loadConversationRows,
   loadFailedNotificationDeliveryFacts,
   loadProjectExecutionProjection,
   parseLedgerRecord,
@@ -77,16 +70,11 @@ import {
 } from '@fai-control-plane/db';
 import {
   CURRENT_POLICY_VERSION,
-  actionCategories,
-  actorTypes,
   canonicalJson,
   deriveRuntimeAvailability,
   deriveRuntimeRecoveryCandidate,
   effectiveInstructions,
-  environments,
   policyDecisionFor,
-  policyMatrix,
-  policySurfaces,
   validateDeliveryProtocolDefinition,
   hashDeliveryProtocolDefinition,
   validateProjectPlanDefinition,
@@ -132,56 +120,6 @@ type Project = Readonly<{
 }>;
 
 export const workItemStatuses = ['backlog', 'ready', 'in_dev', 'qa', 'acceptance', 'done'] as const;
-
-export type ConversationsData = Readonly<{
-  projects: readonly Readonly<{
-    id: string;
-    name: string;
-    slug: OperatorProjectSlug;
-    channels: readonly Readonly<{
-      conversationClass: 'internal' | 'client';
-      state: 'not_configured' | 'not_used' | 'inactive' | 'waiting_observation' |
-        'empty' | 'ready' | 'degraded';
-      configuration: Readonly<{
-        id: string;
-        desiredState: 'active' | 'inactive' | 'not_used';
-        provider: string | null;
-        version: number;
-      }> | null;
-      freshnessAt: Date | null;
-      failure: Readonly<{code: string; at: Date; count: number}> | null;
-      access: readonly Readonly<{
-        actorId: string;
-        displayName: string;
-        roles: readonly string[];
-        grantId: string | null;
-        grantVersion: number | null;
-        desiredLevel: 'none' | 'read' | 'write' | 'admin' | null;
-        observedLevel: 'none' | 'read' | 'write' | 'admin' | null;
-        observedAt: Date | null;
-        confirmation: 'confirmed' | 'mismatch' | 'unobserved' | 'not_requested';
-      }>[];
-      participants: readonly Readonly<{
-        id: string;
-        displayName: string;
-        resolution: 'resolved' | 'unresolved';
-        observedLevel: 'none' | 'read' | 'write' | 'admin' | null;
-        observedAt: Date | null;
-        lastObservedAt: Date;
-      }>[];
-      messages: readonly Readonly<{
-        id: string;
-        participantId: string;
-        author: string;
-        sentAt: Date;
-        text: string | null;
-        attachmentSummary: string | null;
-        reply: boolean;
-        threaded: boolean;
-      }>[];
-    }>[];
-  }>[];
-}>;
 
 export type AgentRunQueuePolicyPreview = Readonly<{
   actorType: 'human';
@@ -275,149 +213,6 @@ const scopedProjects = async (
   return rows.flatMap((project): Project[] => isOperatorProjectSlug(project.slug) &&
     (authorized === null || authorized.get(project.id) === project.slug) ? [project] : []);
 };
-
-export const loadConversationsData = (
-  scopes?: readonly AuthorizedProjectScope[]
-): Promise<OperatorLoad<ConversationsData>> => readDatabase(async (db) => {
-  const configuredProjects = await scopedProjects(db, scopes);
-  const projectIds = configuredProjects.map(({id}) => id);
-  const rows = await loadConversationRows(db, projectIds);
-  const configurationIds = rows.configurations.map(({id}) => id);
-  const [resolvedActors, memberships, grants] = projectIds.length === 0
-    ? [[], [], []]
-    : await Promise.all([
-      db.select({id: actors.id, displayName: actors.displayName, disabledAt: actors.disabledAt})
-        .from(actors).where(isNull(actors.disabledAt)),
-      db.select({
-        projectId: projectMemberships.projectId,
-        actorId: projectMemberships.actorId,
-        roles: projectMemberships.roles,
-        active: projectMemberships.active
-      }).from(projectMemberships).where(and(
-        inArray(projectMemberships.projectId, projectIds),
-        eq(projectMemberships.active, true)
-      )),
-      configurationIds.length === 0 ? Promise.resolve([]) : db.select({
-        id: resourceAccessGrants.id,
-        projectId: resourceAccessGrants.projectId,
-        actorId: resourceAccessGrants.actorId,
-        resourceType: resourceAccessGrants.resourceType,
-        resourceId: resourceAccessGrants.resourceId,
-        desiredLevel: resourceAccessGrants.desiredLevel,
-        version: resourceAccessGrants.version
-      }).from(resourceAccessGrants).where(and(
-        inArray(resourceAccessGrants.projectId, projectIds),
-        inArray(resourceAccessGrants.resourceId, configurationIds),
-        or(
-          eq(resourceAccessGrants.resourceType, 'internal_chat'),
-          eq(resourceAccessGrants.resourceType, 'client_chat')
-        )
-      ))
-    ]);
-  const actorById = new Map(resolvedActors.map((actor) => [actor.id, actor]));
-  return {
-    projects: configuredProjects.map((project) => ({
-      id: project.id,
-      name: project.name,
-      slug: project.slug,
-      channels: (['internal', 'client'] as const).map((conversationClass) => {
-        const configuration = rows.configurations.find((candidate) =>
-          candidate.projectId === project.id && candidate.conversationClass === conversationClass);
-        const binding = rows.bindings.find((candidate) =>
-          candidate.projectId === project.id &&
-          candidate.conversationClass === conversationClass);
-        const channelParticipants = binding === undefined ? [] : rows.participants
-          .filter(({bindingId}) => bindingId === binding.id);
-        const channelMessages = binding === undefined ? [] : rows.messages
-          .filter(({bindingId}) => bindingId === binding.id);
-        const participantViews = channelParticipants.map((participant) => {
-          const actor = participant.actorId === null ? undefined : actorById.get(participant.actorId);
-          const resolved = actor !== undefined;
-          return {
-            id: participant.id,
-            displayName: resolved ? actor.displayName : participant.displayName,
-            resolution: resolved ? 'resolved' as const : 'unresolved' as const,
-            observedLevel: participant.observedLevel,
-            observedAt: participant.observedAt,
-            lastObservedAt: participant.lastObservedAt
-          };
-        });
-        const participantViewById = new Map(participantViews.map((participant) => [participant.id, participant]));
-        const messages = channelMessages.map((message) => {
-          const attachmentCounts = new Map<string, number>();
-          for (const item of message.attachments) {
-            attachmentCounts.set(item.kind, (attachmentCounts.get(item.kind) ?? 0) + 1);
-          }
-          return {
-            id: message.id,
-            participantId: message.participantId,
-            author: participantViewById.get(message.participantId)?.displayName ?? 'Unresolved',
-            sentAt: message.sentAt,
-            text: message.text,
-            attachmentSummary: attachmentCounts.size === 0 ? null :
-              [...attachmentCounts].map(([kind, count]) => `${count} ${kind}`).join(', '),
-            reply: message.replyToMessageRef !== null,
-            threaded: message.threadRef !== null
-          };
-        });
-        const access = memberships.filter((membership) => membership.projectId === project.id)
-          .flatMap((membership) => {
-            const actor = actorById.get(membership.actorId);
-            if (actor === undefined) return [];
-            const resourceType = conversationClass === 'internal' ? 'internal_chat' : 'client_chat';
-            const grant = configuration === undefined ? undefined : grants.find((candidate) =>
-              candidate.projectId === project.id && candidate.actorId === actor.id &&
-              candidate.resourceType === resourceType && candidate.resourceId === configuration.id);
-            const observed = participantViews.find((participant) =>
-              channelParticipants.find((candidate) => candidate.id === participant.id)?.actorId === actor.id);
-            const desiredLevel = grant?.desiredLevel ?? null;
-            const observedLevel = observed?.observedLevel ?? null;
-            const ranks = {none: 0, read: 1, write: 2, admin: 3} as const;
-            const confirmation = desiredLevel === null || desiredLevel === 'none'
-              ? 'not_requested' as const
-              : observedLevel === null ? 'unobserved' as const
-                : ranks[observedLevel] >= ranks[desiredLevel] ? 'confirmed' as const : 'mismatch' as const;
-            return [{
-              actorId: actor.id,
-              displayName: actor.displayName,
-              roles: membership.roles,
-              grantId: grant?.id ?? null,
-              grantVersion: grant?.version ?? null,
-              desiredLevel,
-              observedLevel,
-              observedAt: observed?.observedAt ?? null,
-              confirmation
-            }];
-          });
-        const state = configuration === undefined ? 'not_configured' as const
-          : configuration.desiredState === 'not_used' ? 'not_used' as const
-            : configuration.desiredState === 'inactive' ? 'inactive' as const
-              : binding === undefined ? 'waiting_observation' as const
-                : binding.lastFailureAt !== null ? 'degraded' as const
-                  : messages.length === 0 ? 'empty' as const : 'ready' as const;
-        return {
-          conversationClass,
-          state,
-          configuration: configuration === undefined ? null : {
-            id: configuration.id,
-            desiredState: configuration.desiredState,
-            provider: configuration.provider,
-            version: configuration.version
-          },
-          freshnessAt: binding?.lastObservedAt ?? null,
-          failure: binding?.lastFailureAt == null || binding.lastFailureCode === null ? null : {
-            code: binding.lastFailureCode,
-            at: binding.lastFailureAt,
-            count: binding.failureCount
-          },
-          access,
-          participants: participantViews,
-          messages
-        };
-      })
-    }))
-  };
-});
 
 const safeExternalUrlValue = (candidate: unknown): string | null => {
   if (typeof candidate !== 'string' || candidate.length > 2048) return null;
@@ -1715,11 +1510,8 @@ export type AccessData = Readonly<{
     previous: Readonly<{id: string; version: number; instructions: string; createdAt: Date; rollbackOfVersionId: string | null}> | null;
   }>[];
   actors: readonly Readonly<{id: string; displayName: string; type: 'human' | 'agent' | 'system'; role: string; disabledAt: Date | null; capabilities: Record<string, boolean>}>[];
-  environmentReconcilers?: readonly Readonly<{id: string; displayName: string}>[];
   memberships: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; roles: readonly string[]; active: boolean; version: number; canManage: boolean}>[];
   externalIdentities: readonly Readonly<{actorId: string; provider: string; active: boolean}>[];
-  resourceGrants: readonly Readonly<{id: string; projectId: string; project: string; projectSlug: OperatorProjectSlug; actorId: string; resourceType: string; resourceId: string; desiredLevel: string; credentialConfigured: boolean; approvalRequestId: string | null; expiresAt: Date | null; observedProvider: string | null; observedLevel: string | null; observedAt: Date | null; observationState: 'confirmed' | 'unobserved' | 'unsupported'; remediation: string | null; providerAccessUrl: string | null; version: number}>[];
-  environments: readonly Readonly<{id: string; projectId: string; kind: 'development' | 'production'; provider: string; endpoint: string; port: number; purpose: string; adapterKey: string; adapterConfigured: boolean; reconcilerActorId: string; reconcilerName: string; enabled: boolean; version: number}>[];
   agentSystems: readonly Readonly<{
     actorId: string;
     profiles: readonly Readonly<{
@@ -1772,32 +1564,6 @@ export type AccessData = Readonly<{
       }>;
     }>[];
   }>[];
-  requests: readonly Readonly<{id: string; requester: string; targetSurface: string; requestedScope: readonly string[]; status: string; projectId: string | null; subjectActorId: string | null; resourceId: string | null; requestedLevel: string | null; expiresAt: Date | null; decidedAt: Date | null; version: number}>[];
-  secretRefs: readonly Readonly<{id: string; provider: string; scope: readonly string[]; lastRotatedAt: Date | null}>[];
-  policy: readonly Readonly<{actorType: string; allow: number; ask: number; deny: number}>[];
-  sharing: Readonly<{
-    enabled: boolean;
-    projects: readonly Readonly<{
-      name: string;
-      slug: OperatorProjectSlug;
-      workItems: readonly Readonly<{
-        id: string;
-        title: string;
-        status: (typeof workItemStatuses)[number];
-      }>[];
-    }>[];
-    grants: readonly Readonly<{
-      shareId: string;
-      project: string;
-      projectSlug: OperatorProjectSlug;
-      createdAt: Date;
-      expiresAt: Date;
-      revokedAt: Date | null;
-      accessCount: number;
-      scopedItemCount: number;
-      active: boolean;
-    }>[];
-  }>;
 }>;
 
 export const deriveRuntimeAvailabilityAlerts = (
@@ -1858,14 +1624,6 @@ export const deriveRuntimeAvailabilityAlerts = (
   });
 };
 
-const policySummary = () => actorTypes.map((actorType) => {
-  const count = {allow: 0, ask: 0, deny: 0};
-  for (const actionCategory of actionCategories) for (const surface of policySurfaces) {
-    for (const environment of environments) count[policyMatrix[actorType][actionCategory][surface][environment]] += 1;
-  }
-  return {actorType, ...count};
-});
-
 export {CURRENT_POLICY_VERSION};
 
 type FleetRunFact = Readonly<{
@@ -1910,7 +1668,6 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
   const configuredProjects = configuredWorkspaceId === undefined ? [] :
     await scopedProjects(db, undefined, configuredWorkspaceId);
   const workspaceIds = [...new Set(configuredProjects.map(({workspaceId}) => workspaceId))];
-  const sharingEnabled = process.env.PUBLIC_SHARING_ENABLED === 'true';
   if (workspaceIds.length === 0) {
     return {
       canRetireAgents: false,
@@ -1918,42 +1675,13 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       actors: [],
       memberships: [],
       externalIdentities: [],
-      resourceGrants: [],
-      environments: [],
-      agentSystems: [],
-      requests: [],
-      secretRefs: [],
-      policy: policySummary(),
-      sharing: {enabled: sharingEnabled, projects: [], grants: []}
+      agentSystems: []
     };
   }
   const projectIds = configuredProjects.map(({id}) => id);
-  const [persistedActors, requests, persistedSecretRefs, shareItems, grants, persistedProfiles, registrations, availabilityObservations, recoveryPolicies, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities, resourceGrants, persistedEnvironments, accessBindings] = await Promise.all([
+  const [persistedActors, persistedProfiles, registrations, availabilityObservations, recoveryPolicies, workspaceInstructions, profileInstructions, profileRuns, memberships, externalIdentities] = await Promise.all([
     db.select({id: actors.id, displayName: actors.displayName, type: actors.type, role: actors.role, disabledAt: actors.disabledAt, capabilities: actors.capabilities})
       .from(actors).where(inArray(actors.workspaceId, workspaceIds)).orderBy(actors.displayName),
-    db.select({id: accessRequests.id, requester: actors.displayName, targetSurface: accessRequests.targetSurface, requestedScope: accessRequests.requestedScope, status: accessRequests.status, projectId: accessRequests.projectId, subjectActorId: accessRequests.subjectActorId, resourceId: accessRequests.resourceId, requestedLevel: accessRequests.requestedLevel, expiresAt: accessRequests.expiresAt, decidedAt: accessRequests.decidedAt, version: accessRequests.version})
-      .from(accessRequests).leftJoin(actors, eq(accessRequests.requesterActorId, actors.id)).where(inArray(accessRequests.workspaceId, workspaceIds)).orderBy(desc(accessRequests.updatedAt), accessRequests.id),
-    db.select({id: secretRefs.id, provider: secretRefs.provider, scope: secretRefs.scope, lastRotatedAt: secretRefs.lastRotatedAt})
-      .from(secretRefs).where(inArray(secretRefs.workspaceId, workspaceIds)).orderBy(secretRefs.provider, secretRefs.id),
-    db.select({
-      id: workItems.id,
-      projectId: workItems.projectId,
-      title: workItems.title,
-      status: workItems.status
-    }).from(workItems).where(and(
-      inArray(workItems.projectId, projectIds),
-      isNull(workItems.deletedAt)
-    )).orderBy(workItems.status, workItems.title, workItems.id),
-    db.select({
-      shareId: projectShareGrants.id,
-      projectId: projectShareGrants.projectId,
-      createdAt: projectShareGrants.createdAt,
-      expiresAt: projectShareGrants.expiresAt,
-      revokedAt: projectShareGrants.revokedAt,
-      accessCount: projectShareGrants.accessCount
-    }).from(projectShareGrants)
-      .where(inArray(projectShareGrants.projectId, projectIds))
-      .orderBy(desc(projectShareGrants.createdAt), projectShareGrants.id),
     db.select({
       id: agentProfiles.id, actorId: agentProfiles.actorId, workspaceId: agentProfiles.workspaceId,
       runtimeId: agentProfiles.runtimeId, runtimeProfile: agentProfiles.runtimeProfile,
@@ -2024,48 +1752,10 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       .from(actorExternalIdentities).innerJoin(actors, eq(actors.id, actorExternalIdentities.actorId))
       .where(inArray(actors.workspaceId, workspaceIds))
       .orderBy(actorExternalIdentities.actorId, actorExternalIdentities.provider),
-    db.select({id: resourceAccessGrants.id, projectId: resourceAccessGrants.projectId, actorId: resourceAccessGrants.actorId, resourceType: resourceAccessGrants.resourceType, resourceId: resourceAccessGrants.resourceId, desiredLevel: resourceAccessGrants.desiredLevel, credentialRefId: resourceAccessGrants.credentialRefId, approvalRequestId: resourceAccessGrants.approvalRequestId, expiresAt: resourceAccessGrants.expiresAt, observedProvider: resourceAccessGrants.observedProvider, observedExternalResourceRef: resourceAccessGrants.observedExternalResourceRef, observedLevel: resourceAccessGrants.observedLevel, observedAt: resourceAccessGrants.observedAt, version: resourceAccessGrants.version})
-      .from(resourceAccessGrants).where(inArray(resourceAccessGrants.projectId, projectIds))
-      .orderBy(resourceAccessGrants.projectId, resourceAccessGrants.actorId, resourceAccessGrants.resourceType),
-    db.select({id: projectEnvironments.id, projectId: projectEnvironments.projectId,
-      kind: projectEnvironments.kind, provider: projectEnvironments.provider,
-      endpoint: projectEnvironments.endpoint, port: projectEnvironments.port,
-      purpose: projectEnvironments.purpose, adapterKey: projectEnvironments.adapterKey,
-      reconcilerActorId: projectEnvironments.reconcilerActorId,
-      enabled: projectEnvironments.enabled, version: projectEnvironments.version})
-      .from(projectEnvironments).where(inArray(projectEnvironments.projectId, projectIds))
-      .orderBy(projectEnvironments.projectId, projectEnvironments.kind),
-    db.select({projectId: projectTrackerRepositoryScopes.projectId})
-      .from(projectTrackerRepositoryScopes)
-      .innerJoin(trackerBindings, and(
-        eq(trackerBindings.projectId, projectTrackerRepositoryScopes.projectId),
-        eq(trackerBindings.provider, projectTrackerRepositoryScopes.provider),
-        eq(trackerBindings.surface, 'repository'),
-        eq(trackerBindings.entityType, 'project'),
-        eq(trackerBindings.externalId, projectTrackerRepositoryScopes.repositoryExternalId)
-      ))
-      .where(and(
-        inArray(projectTrackerRepositoryScopes.projectId, projectIds),
-        eq(projectTrackerRepositoryScopes.provider, 'github')
-      ))
   ]);
-  const grantIds = grants.map(({shareId}) => shareId);
-  const scopeRows = grantIds.length === 0
-    ? []
-    : await db.select({shareId: projectShareWorkItems.grantId})
-        .from(projectShareWorkItems)
-        .where(inArray(projectShareWorkItems.grantId, grantIds));
-  const scopedItemCounts = new Map<string, number>();
-  for (const row of scopeRows) {
-    scopedItemCounts.set(
-      row.shareId,
-      (scopedItemCounts.get(row.shareId) ?? 0) + 1
-    );
-  }
   const projectById = new Map(
     configuredProjects.map((project) => [project.id, project])
   );
-  const githubProjectV2ProjectIds = new Set(accessBindings.map(({projectId}) => projectId));
   const latestWorkspaceInstruction = new Map<string, (typeof workspaceInstructions)[number]>();
   for (const instruction of workspaceInstructions) if (!latestWorkspaceInstruction.has(instruction.workspaceId)) latestWorkspaceInstruction.set(instruction.workspaceId, instruction);
   const latestProfileInstruction = new Map<string, (typeof profileInstructions)[number]>();
@@ -2231,9 +1921,6 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
       previous: workspaceInstructionHistory.get(workspaceId)?.[1] ?? null
     })),
     actors: persistedActors,
-    environmentReconcilers: persistedActors.flatMap((actor) => actor.type === 'system' &&
-      actor.disabledAt === null && actor.capabilities['write:runtime_observation:development'] === true
-      ? [{id: actor.id, displayName: actor.displayName}] : []),
     memberships: memberships.flatMap((membership) => {
       const project = projectById.get(membership.projectId);
       return project === undefined ? [] : [{
@@ -2246,70 +1933,7 @@ export const loadAccessData = (operatorActorId?: string): Promise<OperatorLoad<A
     }),
     // Provider subjects are deliberately omitted: they are locators, not operator-facing access facts.
     externalIdentities,
-    resourceGrants: resourceGrants.flatMap((grant) => {
-      const project = projectById.get(grant.projectId);
-      const {credentialRefId, ...publicGrant} = grant;
-      const confirmed = grant.observedProvider !== null && grant.observedLevel === grant.desiredLevel &&
-        grant.observedAt !== null;
-      const observationState = confirmed
-        ? 'confirmed' as const
-        : grant.resourceType === 'tracker' && githubProjectV2ProjectIds.has(grant.projectId)
-          ? 'unsupported' as const
-          : 'unobserved' as const;
-      const remediation = observationState === 'confirmed'
-        ? null
-        : observationState === 'unsupported'
-          ? 'GitHub Project V2 не поддерживает проверку прав участников через этот адаптер. Проверьте доступ в GitHub.'
-          : grant.resourceType === 'environment' && grant.desiredLevel === 'none'
-            ? 'Отзыв SSH-доступа ожидает подтверждения доверенного reconciler.'
-            : 'Факт провайдера ещё не зафиксирован. Проверьте привязку ресурса и дождитесь синхронизации.';
-      return project === undefined ? [] : [{
-        ...publicGrant,
-        credentialConfigured: credentialRefId !== null,
-        project: project.name,
-        projectSlug: project.slug,
-        observationState,
-        remediation,
-        // A provider locator is never shown. It becomes a link only when the
-        // provider-confirmed observation itself carries a safe HTTPS URL.
-        providerAccessUrl: grant.observedProvider === null
-          ? null
-          : safeExternalUrlValue(grant.observedExternalResourceRef)
-      }];
-    }),
-    environments: persistedEnvironments.map((environment) => ({
-      ...environment,
-      reconcilerName: persistedActors.find((actor) => actor.id === environment.reconcilerActorId)?.displayName ?? 'Не найден',
-      adapterConfigured: process.env.ENVIRONMENT_ACCESS_RECONCILER_ENABLED === 'true' &&
-        process.env.ENVIRONMENT_ACCESS_ADAPTER_KEY === environment.adapterKey
-    })),
-    agentSystems,
-    requests: requests.map((request) => ({...request, requester: request.requester ?? 'No recorded requester'})),
-    secretRefs: persistedSecretRefs,
-    policy: policySummary(),
-    sharing: {
-      enabled: sharingEnabled,
-      projects: configuredProjects.map((project) => ({
-        name: project.name,
-        slug: project.slug,
-        workItems: shareItems.filter((item) => item.projectId === project.id)
-          .map(({id, title, status}) => ({id, title, status}))
-      })),
-      grants: grants.flatMap((grant) => {
-        const project = projectById.get(grant.projectId);
-        return project === undefined ? [] : [{
-          shareId: grant.shareId,
-          project: project.name,
-          projectSlug: project.slug,
-          createdAt: grant.createdAt,
-          expiresAt: grant.expiresAt,
-          revokedAt: grant.revokedAt,
-          accessCount: grant.accessCount,
-          scopedItemCount: scopedItemCounts.get(grant.shareId) ?? 0,
-          active: grant.revokedAt === null && grant.expiresAt.getTime() > Date.now()
-        }];
-      })
-    }
+    agentSystems
   };
 });
 

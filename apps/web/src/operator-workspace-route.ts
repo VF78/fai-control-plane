@@ -33,7 +33,6 @@ export function workspaceRoute(path: readonly string[], query: WorkspaceQuery): 
   if (path.length === 1 && path[0] === 'dashboard') return {screen: 'dashboard', project: null, taskId: null, runId: null, agentId: null, scope};
   if (path.length === 1 && path[0] === 'projects') return {screen: 'projects', project: null, taskId: null, runId: null, agentId: null, scope};
   if (path.length === 1 && path[0] === 'tasks' && (filter === null || filter === 'all' || isOperatorProjectSlug(filter))) return {screen: 'global_tasks', project: null, globalProject: filter ?? 'all', taskFilters, taskId: null, runId: null, agentId: null, scope};
-  if (path.length === 1 && path[0] === 'chats' && (filter === null || filter === 'all' || isOperatorProjectSlug(filter))) return {screen: 'global_chats', project: null, globalProject: filter ?? 'all', taskId: null, runId: null, agentId: null, scope};
   if (path.length === 1 && path[0] === 'people') return {screen: 'people', project: null, taskId: null, runId: null, agentId: null, scope};
   if (path.length === 1 && path[0] === 'agents' && (filter === null || isOperatorProjectSlug(filter))) return {screen: 'agents', project: null, globalProject: filter ?? 'all', taskId: null, runId: null, agentId: null, scope};
   if (path.length === 2 && path[0] === 'agents' && exact(path[1]) !== null) return {screen: 'agent', project: null, taskId: null, runId: null, agentId: path[1]!, scope};
@@ -47,7 +46,6 @@ export function workspaceRoute(path: readonly string[], query: WorkspaceQuery): 
   if (tab === 'protocol' && path.length === 3) return {screen: 'protocol', project: slug, taskId: null, runId: null, agentId: null, scope};
   if (tab === 'runs' && path.length === 3) return {screen: 'runs', project: slug, taskId: null, runId: null, agentId: null, scope};
   if (tab === 'runs' && path.length === 4 && exact(path[3]) !== null) return {screen: 'run', project: slug, taskId: null, runId: path[3]!, agentId: null, handoffResult: handoffResult ?? null, scope};
-  if (tab === 'chats' && path.length === 3) return {screen: 'chats', project: slug, taskId: null, runId: null, agentId: null, scope};
   if (tab === 'access' && path.length === 3) return {screen: 'access', project: slug, taskId: null, runId: null, agentId: null, scope};
   if (tab === 'access' && path.length === 4 && exact(path[3]) !== null) return {screen: 'access', project: slug, taskId: null, runId: null, agentId: null, accessActorId: path[3]!, scope};
   return null;

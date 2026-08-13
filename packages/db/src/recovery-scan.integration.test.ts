@@ -35,7 +35,6 @@ const ids = {
   secret: randomUUID(),
   expired: randomUUID(),
   exhausted: randomUUID(),
-  telegramExpired: randomUUID(),
   active: randomUUID(),
   actor: randomUUID(),
   profile: randomUUID(),
@@ -165,21 +164,17 @@ describePostgres('PostgreSQL recovery scan producer', () => {
     await testPool.query(
       `INSERT INTO incoming_events (
          id, project_id, provider, delivery_id, event_type, verification,
-         installation_id, repository_id, project_node_id,
-         telegram_message_id, telegram_chat_id, telegram_user_id, payload_sha256,
+         installation_id, repository_id, project_node_id, payload_sha256,
          sanitized_payload, status, attempt_count, processing_token, processing_lease_expires_at
        ) VALUES
-         ($1, $2, 'github', 'expired', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', NULL, NULL, NULL, repeat('a', 64), '{}', 'processing', 1, gen_random_uuid(), $3),
-         ($4, $2, 'github', 'exhausted', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', NULL, NULL, NULL, repeat('d', 64), '{}', 'processing', 5, gen_random_uuid(), $5),
-         ($6, $2, 'telegram', 'telegram-expired', 'chat_command', '{"outcome":"verified","method":"shared-token"}', NULL, NULL, NULL, 'tgid:v1:' || repeat('a', 64), 'tgid:v1:' || repeat('b', 64), 'tgid:v1:' || repeat('c', 64), repeat('b', 64), '{}', 'processing', 1, gen_random_uuid(), $7),
-         ($8, $2, 'github', 'active', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', NULL, NULL, NULL, repeat('c', 64), '{}', 'processing', 1, gen_random_uuid(), $9)`,
+         ($1, $2, 'github', 'expired', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', repeat('a', 64), '{}', 'processing', 1, gen_random_uuid(), $3),
+         ($4, $2, 'github', 'exhausted', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', repeat('d', 64), '{}', 'processing', 5, gen_random_uuid(), $5),
+         ($6, $2, 'github', 'active', 'issues', '{"outcome":"verified","method":"hmac-sha256"}', '1', '2', 'PVT_project', repeat('c', 64), '{}', 'processing', 1, gen_random_uuid(), $7)`,
       [
         ids.expired,
         ids.project,
         new Date(now.getTime() - 1_000),
         ids.exhausted,
-        new Date(now.getTime() - 1_000),
-        ids.telegramExpired,
         new Date(now.getTime() - 1_000),
         ids.active,
         new Date(now.getTime() + 60_000)
@@ -216,7 +211,7 @@ describePostgres('PostgreSQL recovery scan producer', () => {
       eq(incomingEvents.projectId, ids.project),
       eq(incomingEvents.status, 'processing')
     ));
-    expect([...sent].sort()).toEqual([ids.expired, ids.telegramExpired].sort());
+    expect(sent).toEqual([ids.expired]);
     expect(rows).toEqual([expect.objectContaining({
       id: ids.active,
       status: 'processing',
@@ -224,12 +219,6 @@ describePostgres('PostgreSQL recovery scan producer', () => {
       processingLeaseExpiresAt: new Date(now.getTime() + 60_000)
     })]);
     expect(await db.select().from(incomingEvents).where(eq(incomingEvents.id, ids.expired)))
-      .toEqual([expect.objectContaining({
-        status: 'pending',
-        processingToken: null,
-        processingLeaseExpiresAt: null
-      })]);
-    expect(await db.select().from(incomingEvents).where(eq(incomingEvents.id, ids.telegramExpired)))
       .toEqual([expect.objectContaining({
         status: 'pending',
         processingToken: null,

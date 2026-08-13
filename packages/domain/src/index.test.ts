@@ -1,6 +1,5 @@
 import {describe, expect, expectTypeOf, it} from 'vitest';
 import {
-  accessRequestStatuses,
   actionCategories,
   agentRunStatuses,
   approvalStatuses,
@@ -14,12 +13,9 @@ import {
   policySurfaces,
   providerEvidenceStates,
   setWorkItemBlocked,
-  transitionAccessRequest,
   transitionAgentRun,
   transitionApproval,
   transitionWorkItem,
-  type AccessRequestStatus,
-  type AccessRequest,
   type AgentRun,
   type AgentRunView,
   type Approval,
@@ -123,16 +119,6 @@ const approval = (status: ApprovalStatus): Approval => ({
   version: 4
 });
 
-const accessRequest = (status: AccessRequestStatus): AccessRequest => ({
-  id: 'access',
-  workspaceId: 'workspace',
-  requesterActorId: 'requester',
-  targetSurface: 'repository',
-  requestedScope: ['contents:read'],
-  status,
-  version: 4
-});
-
 const statusCases = <T extends string>(statuses: readonly T[], allowed: readonly `${T}:${T}`[]) =>
   statuses.flatMap((from) => statuses.map((to) => [
     from,
@@ -193,13 +179,6 @@ describe('aggregate transitions', () => {
     if (legal && result.ok) expect(result.value.version).toBe(5);
   });
 
-  it.each(statusCases<AccessRequestStatus>(accessRequestStatuses, [
-    'pending:granted', 'pending:rejected', 'pending:expired'
-  ]))('access request %s -> %s is %s', (from, to, legal) => {
-    const result = transitionAccessRequest(accessRequest(from), to);
-    expect(result.ok).toBe(legal);
-    if (legal && result.ok) expect(result.value.version).toBe(5);
-  });
 });
 
 describe('trusted actors and policy', () => {
