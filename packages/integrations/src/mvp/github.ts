@@ -69,11 +69,14 @@ export const verifyGitHubWebhook = async (input: Readonly<{
   return {deliveryId, eventType, payloadHash: createHash('sha256').update(input.body).digest('hex')};
 };
 
-const projectQuery = `query MvpProject($owner: String!, $number: Int!) {
+const projectQuery = `query MvpProject($owner: String!, $number: Int!, $after: String) {
   user(login: $owner) { projectV2(number: $number) {
-    id url updatedAt items(first: 100) { nodes {
+    id url updatedAt items(first: 100, after: $after) { nodes {
       id updatedAt
       statusValue: fieldValueByName(name: "Status") {
+        ... on ProjectV2ItemFieldSingleSelectValue { optionId name }
+      }
+      blockedValue: fieldValueByName(name: "Blocked") {
         ... on ProjectV2ItemFieldSingleSelectValue { optionId name }
       }
       targetDateValue: fieldValueByName(name: "Target date") {
@@ -102,18 +105,32 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
     void cursor; // Full bounded repair read; provider version, not pagination, deduplicates snapshots.
     const token = (await input.secrets.resolve(input.binding.credentialRef, credentialPurpose)).value;
     if (!bounded(token, 65_536)) throw new Error('github_credential_invalid');
-    const response = await request('https://api.github.com/graphql', {
-      method: 'POST', headers: apiHeaders(token),
-      body: JSON.stringify({query: projectQuery, variables: {owner: input.binding.owner, number: input.binding.projectNumber}}),
-      signal: AbortSignal.timeout(10_000)
-    });
-    if (!response.ok) throw new Error('github_read_failed');
-    const root = object(await response.json());
-    const project = object(object(object(root?.data)?.user)?.projectV2);
-    const itemsNode = object(project?.items);
-    if (project?.url !== input.binding.projectUrl || !bounded(project.updatedAt, 64) || !Array.isArray(itemsNode?.nodes)) {
-      throw new Error('github_response_invalid');
+    const itemNodes: unknown[] = [];
+    let after: string | null = null;
+    let projectVersion: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const response = await request('https://api.github.com/graphql', {
+        method: 'POST', headers: apiHeaders(token),
+        body: JSON.stringify({query: projectQuery, variables: {
+          owner: input.binding.owner, number: input.binding.projectNumber, after
+        }}), signal: AbortSignal.timeout(10_000)
+      });
+      if (!response.ok) throw new Error('github_read_failed');
+      const root = object(await response.json());
+      const project = object(object(object(root?.data)?.user)?.projectV2);
+      const itemsNode = object(project?.items);
+      if (project?.url !== input.binding.projectUrl || !bounded(project.updatedAt, 64) || !Array.isArray(itemsNode?.nodes)) {
+        throw new Error('github_response_invalid');
+      }
+      if (projectVersion !== null && projectVersion !== project.updatedAt) throw new Error('github_snapshot_changed');
+      projectVersion = project.updatedAt;
+      itemNodes.push(...itemsNode.nodes);
+      const pageInfo = object(itemsNode.pageInfo);
+      if (pageInfo?.hasNextPage !== true) break;
+      if (!bounded(pageInfo.endCursor, 512) || page === 9) throw new Error('github_project_over_limit');
+      after = pageInfo.endCursor;
     }
+    if (projectVersion === null) throw new Error('github_response_invalid');
     const observedAt = new Date().toISOString();
     const linkedIssueIds = (value: unknown): readonly string[] => {
       const connection = object(value);
@@ -130,10 +147,11 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
       if (new Set(ids).size !== ids.length) throw new Error('github_response_invalid');
       return ids.sort((left, right) => Number(left) - Number(right));
     };
-    const items: TrackerItemFact[] = itemsNode.nodes.map((entry) => {
+    const items: TrackerItemFact[] = itemNodes.map((entry) => {
       const item = object(entry);
       const content = object(item?.content);
       const status = object(item?.statusValue);
+      const blockedValue = object(item?.blockedValue);
       const targetDateValue = object(item?.targetDateValue);
       const assignees = object(content?.assignees);
       const issueNumber = positiveInteger(content?.number);
@@ -150,6 +168,8 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
         : bounded(targetDateValue.date, 10) && /^\d{4}-\d{2}-\d{2}$/.test(targetDateValue.date)
           ? targetDateValue.date
           : (() => { throw new Error('github_response_invalid'); })();
+      const blocked = blockedValue === null ? null : blockedValue.name === 'Yes' ? true
+        : blockedValue.name === 'No' ? false : (() => { throw new Error('github_response_invalid'); })();
       const parent = content.parent === null ? null : object(content.parent);
       if (parent !== null && object(parent.repository)?.nameWithOwner !==
         `${input.binding.owner}/${input.binding.repository}`) throw new Error('github_response_invalid');
@@ -160,6 +180,7 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
         version: `github:updated-at:${item.updatedAt as string}`,
         statusOptionId: bounded(status?.optionId, 512) ? status.optionId : null,
         statusOptionName: bounded(status?.name, 512) ? status.name : null,
+        blocked,
         targetDate,
         parentIssueId: parent === null ? null : String(positiveInteger(parent.databaseId)),
         subIssueIds: linkedIssueIds(content.subIssues),
@@ -171,10 +192,8 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
         }), observedAt
       };
     });
-    const pageInfo = object(itemsNode.pageInfo);
-    if (pageInfo?.hasNextPage === true) throw new Error('github_project_over_limit');
     const snapshot: TrackerSnapshot = {
-      bindingId, externalVersion: `github:updated-at:${project.updatedAt as string}`,
+      bindingId, externalVersion: `github:updated-at:${projectVersion}`,
       cursor: null,
       observedAt, sourceUrl: input.binding.projectUrl, items
     };

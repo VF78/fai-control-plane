@@ -72,6 +72,16 @@ export type ProjectTaskView = ProjectRow & Readonly<{
   tasks: readonly TrackerSnapshot['items'][number][];
 }>;
 
+export type ProjectSourceView = Readonly<{
+  id: string; projectId: string; kind: string; name: string; mediaType: string;
+  sha256: string; sourceUrl: string | null; provenance: string; createdAt: string;
+}>;
+
+export type ApprovalEvidenceView = Readonly<{
+  id: string; projectId: string; kind: string; decision: 'approved' | 'rejected';
+  targetReference: string; targetUrl: string; targetVersion: string; decidedAt: string;
+}>;
+
 export const listProjects = async (database: Database, actorId: string): Promise<readonly ProjectRow[]> => {
   const result = await database.query<ProjectRow>(
     `select p.id, p.workspace_id as "workspaceId", p.slug, p.name, p.repository_url as "repositoryUrl"
@@ -133,6 +143,32 @@ export const listProjectTaskViews = async (
   });
 };
 
+export const listProjectSourceViews = async (
+  database: Database,
+  actorId: string
+): Promise<readonly ProjectSourceView[]> => {
+  const result = await database.query<Omit<ProjectSourceView, 'createdAt'> & {createdAt: Date}>(
+    `select s.id,s.project_id as "projectId",s.kind,s.name,s.media_type as "mediaType",s.sha256,
+       s.source_url as "sourceUrl",s.provenance,s.created_at as "createdAt"
+     from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
+     where m.actor_id=$1 and m.active=true order by s.created_at desc`, [actorId]
+  );
+  return result.rows.map((row) => ({...row, createdAt: row.createdAt.toISOString()}));
+};
+
+export const listApprovalEvidenceViews = async (
+  database: Database,
+  actorId: string
+): Promise<readonly ApprovalEvidenceView[]> => {
+  const result = await database.query<Omit<ApprovalEvidenceView, 'decidedAt'> & {decidedAt: Date}>(
+    `select a.id,a.project_id as "projectId",a.kind,a.decision,a.target_reference as "targetReference",
+       a.target_url as "targetUrl",a.target_version as "targetVersion",a.decided_at as "decidedAt"
+     from approval_evidence a join project_memberships m on m.project_id=a.project_id
+     where m.actor_id=$1 and m.active=true order by a.decided_at desc`, [actorId]
+  );
+  return result.rows.map((row) => ({...row, decidedAt: row.decidedAt.toISOString()}));
+};
+
 export const findActorByExternalIdentity = async (
   database: Database,
   provider: string,
@@ -159,10 +195,10 @@ export const createSession = async (
 };
 
 export const actorForSession = async (database: Database, tokenHash: string): Promise<Readonly<{
-  actorId: string; workspaceId: string;
+  actorId: string; workspaceId: string; displayName: string;
 }> | null> => {
-  const result = await database.query<{actorId: string; workspaceId: string}>(
-    `select a.id as "actorId", a.workspace_id as "workspaceId"
+  const result = await database.query<{actorId: string; workspaceId: string; displayName: string}>(
+    `select a.id as "actorId", a.workspace_id as "workspaceId", a.display_name as "displayName"
      from operator_sessions s join actors a on a.id = s.actor_id
      where s.token_hash = $1 and s.revoked_at is null and s.expires_at > now() and a.enabled = true`, [tokenHash]
   );

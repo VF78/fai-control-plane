@@ -6,6 +6,8 @@ import {
   appendIncomingEvent,
   createDatabase,
   createStores,
+  listApprovalEvidenceViews,
+  listProjectSourceViews,
   listProjectTaskViews
 } from './runtime.ts';
 
@@ -39,7 +41,7 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
 
     const item: TrackerItemFact = {itemId, projectId, issueId: '901', title: 'E2E task',
       url: 'https://github.com/VF78/ascon/issues/901', version: `github:updated-at:${observedAt}`,
-      statusOptionId: 'backlog-option', statusOptionName: 'Backlog', targetDate: '2026-08-31',
+      statusOptionId: 'backlog-option', statusOptionName: 'Backlog', blocked: false, targetDate: '2026-08-31',
       parentIssueId: null, subIssueIds: [], dependencyIssueIds: ['900'], assigneeIds: [], observedAt};
     const snapshot = {bindingId, externalVersion: `github:updated-at:${observedAt}`, cursor: null,
       observedAt, sourceUrl: 'https://github.com/users/VF78/projects/1', items: [item]} as const;
@@ -80,5 +82,26 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
     const project = views.find((view) => view.id === projectId);
     expect(project?.tracker).toMatchObject({freshness: 'error', errorCode: 'github_read_failed'});
     expect(project?.tasks).toContainEqual(expect.objectContaining({itemId, title: 'E2E task'}));
+
+    const actorId = process.env.BOOTSTRAP_OWNER_ACTOR_ID!;
+    const evidenceKey = `e2e-evidence-${randomUUID()}`;
+    await database!.query(
+      `insert into project_source_artifacts
+       (project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
+       values ($1,$2,'document','E2E source','text/plain',$3,'bounded','https://example.test/source','e2e')`,
+      [projectId, actorId, randomUUID().replaceAll('-', '').padEnd(64, '0')]
+    );
+    await database!.query(
+      `insert into approval_evidence
+       (project_id,actor_id,kind,decision,target_reference,target_url,target_version,idempotency_key,decided_at)
+       values ($1,$2,'internal_operation','approved','e2e-target','https://example.test/target','v1',$3,$4)`,
+      [projectId, actorId, evidenceKey, observedAt]
+    );
+    await expect(listProjectSourceViews(database!, actorId)).resolves.toContainEqual(
+      expect.objectContaining({projectId, name: 'E2E source', provenance: 'e2e'})
+    );
+    await expect(listApprovalEvidenceViews(database!, actorId)).resolves.toContainEqual(
+      expect.objectContaining({projectId, targetReference: 'e2e-target', decision: 'approved'})
+    );
   });
 });
