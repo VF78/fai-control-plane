@@ -32,7 +32,7 @@ export const secretResolver: SecretResolverPort = {async resolve(reference: Opaq
   return {value: await readSecretFile(reference.locator)};
 }};
 
-export const requireSession = async (): Promise<Readonly<{actorId: string; workspaceId: string}>> => {
+export const requireSession = async (): Promise<Readonly<{actorId: string; workspaceId: string; displayName: string}>> => {
   const token = (await cookies()).get(sessionCookie)?.value;
   if (token === undefined) throw new Error('authentication_required');
   const session = await actorForSession(getDatabase(), hash(token));

@@ -20,6 +20,7 @@ export type TrackerItemFact = Readonly<{
   version: string;
   statusOptionId: string | null;
   statusOptionName: string | null;
+  blocked: boolean | null;
   targetDate: string | null;
   parentIssueId: string | null;
   subIssueIds: readonly string[];
@@ -85,11 +86,12 @@ export const isUuid = (value: unknown): value is string => singleLine(value, 36)
 export const validateTrackerSnapshot = (value: TrackerSnapshot): boolean =>
   isBoundedId(value.bindingId) && isBoundedId(value.externalVersion) && isInstant(value.observedAt) &&
   isHttpsUrl(value.sourceUrl) && (value.cursor === null || isBoundedId(value.cursor)) &&
-  value.items.length <= 100 && value.items.every((item) =>
+  value.items.length <= 1_000 && value.items.every((item) =>
     isBoundedId(item.itemId) && isBoundedId(item.projectId) && isBoundedId(item.issueId) &&
     singleLine(item.title, 512) && isHttpsUrl(item.url) && isBoundedId(item.version) &&
     (item.statusOptionId === null || isBoundedId(item.statusOptionId)) &&
     (item.statusOptionName === null || singleLine(item.statusOptionName, 512)) &&
+    (item.blocked === null || typeof item.blocked === 'boolean') &&
     (item.targetDate === null || /^\d{4}-\d{2}-\d{2}$/.test(item.targetDate)) &&
     (item.parentIssueId === null || isBoundedId(item.parentIssueId)) &&
     item.subIssueIds.length <= 100 && item.subIssueIds.every(isBoundedId) &&

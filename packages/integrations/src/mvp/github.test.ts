@@ -27,7 +27,8 @@ describe('MVP GitHub adapter', () => {
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({data: {user: {projectV2: {
       id: 'PVT_1', url: 'https://github.com/users/acme/projects/1', updatedAt: '2026-08-13T00:00:00Z',
       items: {nodes: [{id: 'PVTI_1', updatedAt: '2026-08-13T00:00:00Z',
-        statusValue: {optionId: 'status', name: 'Ready'}, targetDateValue: {date: '2026-08-31'},
+        statusValue: {optionId: 'status', name: 'Ready'}, blockedValue: {optionId: 'not-blocked', name: 'No'},
+        targetDateValue: {date: '2026-08-31'},
         content: {id: 'I_1', databaseId: 42, number: 42, title: 'Deliver feature',
           repository: {nameWithOwner: 'acme/repo'},
           url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: [{id: 'U_1'}]},
@@ -44,7 +45,7 @@ describe('MVP GitHub adapter', () => {
     await expect(adapter.readSnapshot('binding', null)).resolves.toMatchObject({
       bindingId: 'binding', externalVersion: 'github:updated-at:2026-08-13T00:00:00Z', cursor: null,
       items: [{itemId: 'PVTI_1', projectId: 'project', issueId: '42', title: 'Deliver feature',
-        statusOptionName: 'Ready', targetDate: '2026-08-31', parentIssueId: '40',
+        statusOptionName: 'Ready', blocked: false, targetDate: '2026-08-31', parentIssueId: '40',
         subIssueIds: ['43'], dependencyIssueIds: ['41']}]
     });
     expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({authorization: 'Bearer token'});
@@ -59,6 +60,26 @@ describe('MVP GitHub adapter', () => {
       projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
       secrets: secrets('token'), fetch});
     await expect(adapter.readSnapshot('binding', 'previous-provider-marker')).resolves.toMatchObject({cursor: null});
+  });
+
+  it('reads every Project page into one version-consistent snapshot', async () => {
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const after = (JSON.parse(String(init?.body)) as {variables: {after: string | null}}).variables.after;
+      return new Response(JSON.stringify({data: {user: {projectV2: {
+        id: 'PVT_1', url: 'https://github.com/users/acme/projects/1', updatedAt: '2026-08-13T00:00:00Z',
+        items: {nodes: [], pageInfo: after === null
+          ? {endCursor: 'next-page', hasNextPage: true}
+          : {endCursor: 'complete', hasNextPage: false}}
+      }}}}), {status: 200});
+    });
+    const adapter = createGitHubTrackerReadAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
+      projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
+      secrets: secrets('token'), fetch});
+    await expect(adapter.readSnapshot('binding', null)).resolves.toMatchObject({
+      externalVersion: 'github:updated-at:2026-08-13T00:00:00Z', items: []
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({variables: {after: 'next-page'}});
   });
 
   it('denies repository reads outside the bound repository', async () => {
