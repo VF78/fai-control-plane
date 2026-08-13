@@ -62,6 +62,16 @@ export type ProjectRow = Readonly<{
   id: string; workspaceId: string; slug: string; name: string; repositoryUrl: string;
 }>;
 
+export type ProjectTaskView = ProjectRow & Readonly<{
+  tracker: Readonly<{
+    sourceUrl: string | null;
+    observedAt: string | null;
+    freshness: 'fresh' | 'stale' | 'error' | 'unavailable';
+    errorCode: string | null;
+  }>;
+  tasks: readonly TrackerSnapshot['items'][number][];
+}>;
+
 export const listProjects = async (database: Database, actorId: string): Promise<readonly ProjectRow[]> => {
   const result = await database.query<ProjectRow>(
     `select p.id, p.workspace_id as "workspaceId", p.slug, p.name, p.repository_url as "repositoryUrl"
@@ -69,6 +79,58 @@ export const listProjects = async (database: Database, actorId: string): Promise
      where m.actor_id = $1 and m.active = true order by p.name`, [actorId]
   );
   return result.rows;
+};
+
+export const listProjectTaskViews = async (
+  database: Database,
+  actorId: string,
+  now = new Date()
+): Promise<readonly ProjectTaskView[]> => {
+  type Row = ProjectRow & Readonly<{
+    bindingId: string | null;
+    externalVersion: string | null;
+    cursor: string | null;
+    sourceUrl: string | null;
+    facts: Readonly<{items?: TrackerSnapshot['items']}> | null;
+    observedAt: Date | null;
+    attemptAt: Date | null;
+    attemptErrorCode: string | null;
+  }>;
+  const result = await database.query<Row>(
+    `select p.id,p.workspace_id as "workspaceId",p.slug,p.name,p.repository_url as "repositoryUrl",
+       b.id as "bindingId",ok.external_version as "externalVersion",ok.cursor,ok.source_url as "sourceUrl",
+       ok.facts,ok.observed_at as "observedAt",attempt.observed_at as "attemptAt",
+       attempt.error_code as "attemptErrorCode"
+     from projects p join project_memberships m on m.project_id=p.id and m.actor_id=$1 and m.active=true
+     left join tracker_bindings b on b.project_id=p.id and b.enabled=true
+     left join lateral (select external_version,cursor,source_url,facts,observed_at from tracker_snapshots
+       where binding_id=b.id and error_code is null order by observed_at desc,created_at desc limit 1) ok on true
+     left join lateral (select observed_at,error_code from tracker_snapshots
+       where binding_id=b.id order by observed_at desc,created_at desc limit 1) attempt on true
+     order by p.name`, [actorId]
+  );
+  return result.rows.map((row) => {
+    let tasks: readonly TrackerSnapshot['items'][number][] = [];
+    let projectionError: string | null = null;
+    const observedAt = row.observedAt?.toISOString() ?? null;
+    if (row.bindingId !== null && row.externalVersion !== null && row.sourceUrl !== null && observedAt !== null) {
+      const snapshot: TrackerSnapshot = {bindingId: row.bindingId, externalVersion: row.externalVersion,
+        cursor: row.cursor, sourceUrl: row.sourceUrl, observedAt, items: row.facts?.items ?? []};
+      if (validateTrackerSnapshot(snapshot)) tasks = snapshot.items;
+      else projectionError = 'tracker_snapshot_invalid';
+    }
+    const providerError = row.attemptErrorCode !== null &&
+      (row.observedAt === null || (row.attemptAt?.getTime() ?? 0) >= row.observedAt.getTime())
+      ? row.attemptErrorCode
+      : null;
+    const errorCode = projectionError ?? providerError;
+    const freshness = errorCode !== null ? 'error' as const
+      : observedAt === null ? 'unavailable' as const
+      : now.getTime() - row.observedAt!.getTime() > 10 * 60_000 ? 'stale' as const
+      : 'fresh' as const;
+    return {id: row.id, workspaceId: row.workspaceId, slug: row.slug, name: row.name,
+      repositoryUrl: row.repositoryUrl, tracker: {sourceUrl: row.sourceUrl, observedAt, freshness, errorCode}, tasks};
+  });
 };
 
 export const findActorByExternalIdentity = async (
@@ -213,23 +275,44 @@ export const createStores = (database: Database, workspaceId: string): Readonly<
       );
     }
   },
-  snapshots: {async replace(snapshot: TrackerSnapshot) {
-    if (!validateTrackerSnapshot(snapshot)) throw new Error('tracker_snapshot_invalid');
-    const client = await database.connect();
-    try {
-      await client.query('begin');
-      await client.query('select 1 from tracker_bindings where id=$1 for update', [snapshot.bindingId]);
-      await client.query(
-        `insert into tracker_snapshots(binding_id,external_version,cursor,source_url,facts,observed_at)
-         values($1,$2,$3,$4,$5,$6) on conflict(binding_id,external_version) do nothing`,
-        [snapshot.bindingId, snapshot.externalVersion, snapshot.cursor, snapshot.sourceUrl,
-          JSON.stringify({items: snapshot.items}), snapshot.observedAt]
+  snapshots: {
+    async replace(snapshot: TrackerSnapshot) {
+      if (!validateTrackerSnapshot(snapshot)) throw new Error('tracker_snapshot_invalid');
+      const client = await database.connect();
+      try {
+        await client.query('begin');
+        await client.query('select 1 from tracker_bindings where id=$1 for update', [snapshot.bindingId]);
+        await client.query(
+          `insert into tracker_snapshots(binding_id,external_version,cursor,source_url,facts,observed_at)
+           values($1,$2,$3,$4,$5,$6) on conflict(binding_id,external_version) do nothing`,
+          [snapshot.bindingId, snapshot.externalVersion, snapshot.cursor, snapshot.sourceUrl,
+            JSON.stringify({items: snapshot.items}), snapshot.observedAt]
+        );
+        await client.query('update tracker_bindings set cursor=$2 where id=$1', [snapshot.bindingId, snapshot.cursor]);
+        await client.query('commit');
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async recordFailure(input) {
+      if (!Number.isFinite(Date.parse(input.observedAt)) || !/^[a-z0-9_]{1,100}$/.test(input.errorCode)) {
+        throw new Error('tracker_failure_invalid');
+      }
+      const version = `error:${input.observedAt}:${input.errorCode}`;
+      const result = await database.query(
+        `insert into tracker_snapshots(binding_id,external_version,cursor,source_url,facts,observed_at,error_code)
+         select id,$2,cursor,project_url,'{"items":[]}'::jsonb,$3,$4 from tracker_bindings where id=$1
+         on conflict(binding_id,external_version) do nothing`,
+        [input.bindingId, version, input.observedAt, input.errorCode]
       );
-      await client.query('update tracker_bindings set cursor=$2 where id=$1', [snapshot.bindingId, snapshot.cursor]);
-      await client.query('commit');
-    } catch (error) { await client.query('rollback'); throw error; }
-    finally { client.release(); }
-  }},
+      if (result.rowCount !== 1) {
+        const existing = await database.query(
+          'select 1 from tracker_snapshots where binding_id=$1 and external_version=$2',
+          [input.bindingId, version]
+        );
+        if (existing.rowCount !== 1) throw new Error('tracker_binding_missing');
+      }
+    }
+  },
   outbox: {
     async enqueue(value: OutboxRecord) {
       const result = await database.query(

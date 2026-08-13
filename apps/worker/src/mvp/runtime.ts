@@ -175,7 +175,7 @@ export const createWorker = (database: Database = createDatabase()) => {
           compose: {agentRequest, notification}}});
     },
     async retry() {
-      await deliverPending({limit: 20, ports: {agent, internalMessenger: telegram.delivery,
+      return deliverPending({limit: 20, ports: {agent, internalMessenger: telegram.delivery,
         clientMessenger, outbox: stores.outbox, now: () => new Date()}});
     },
     close: () => database.end()

@@ -16,7 +16,9 @@ describe('MVP delivery retry', () => {
       outbox: {enqueue: vi.fn(), claim: vi.fn(async () => [outbox()]), complete, retry: vi.fn()},
       now: () => new Date('2026-08-13T00:00:00.000Z')
     };
-    await expect(deliverPending({limit: 10, ports})).resolves.toEqual({delivered: 1, retried: 0});
+    await expect(deliverPending({limit: 10, ports})).resolves.toEqual({
+      delivered: 1, retried: 0, agentDelivered: 0, agentRetried: 0
+    });
     expect(complete).toHaveBeenCalledWith('outbox-1', 'sent-1', '2026-08-13T00:00:00.000Z');
   });
 
@@ -28,7 +30,9 @@ describe('MVP delivery retry', () => {
       outbox: {enqueue: vi.fn(), claim: vi.fn(async () => [outbox()]), complete: vi.fn(), retry},
       now: () => new Date('2026-08-13T00:00:00.000Z')
     };
-    await expect(deliverPending({limit: 10, ports})).resolves.toEqual({delivered: 0, retried: 1});
+    await expect(deliverPending({limit: 10, ports})).resolves.toEqual({
+      delivered: 0, retried: 1, agentDelivered: 0, agentRetried: 0
+    });
     expect(retry).toHaveBeenCalledWith('outbox-1', '2026-08-13T00:00:01.000Z', 'delivery_failed');
   });
 });
