@@ -18,6 +18,11 @@ export type ReceiptStore = Readonly<{
 
 export type SnapshotStore = Readonly<{
   replace(snapshot: TrackerSnapshot): Promise<void>;
+  recordFailure(input: Readonly<{
+    bindingId: string;
+    observedAt: string;
+    errorCode: string;
+  }>): Promise<void>;
 }>;
 
 export type PublishedApprovalTargetPort = Readonly<{

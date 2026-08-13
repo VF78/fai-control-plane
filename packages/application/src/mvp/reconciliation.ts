@@ -36,7 +36,27 @@ export const reconcileTracker = async (input: Readonly<{
   statusMap: StatusMap;
   ports: ReconciliationPorts;
 }>): Promise<ReconciliationResult> => {
-  const snapshot: TrackerSnapshot = await input.ports.tracker.readSnapshot(input.bindingId, input.cursor);
+  let snapshot: TrackerSnapshot;
+  try {
+    snapshot = await input.ports.tracker.readSnapshot(input.bindingId, input.cursor);
+  } catch (error) {
+    const errorCode = error instanceof Error && /^[a-z0-9_]{1,100}$/.test(error.message)
+      ? error.message
+      : 'tracker_read_failed';
+    const observedAt = new Date().toISOString();
+    await input.ports.snapshots.recordFailure({bindingId: input.bindingId, observedAt, errorCode});
+    await input.ports.audit.append({
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      actorId: null,
+      action: 'tracker.snapshot_failed',
+      targetReference: input.bindingId,
+      correlationId: `reconcile:${input.bindingId}:${observedAt}`,
+      occurredAt: observedAt,
+      details: {errorCode}
+    });
+    throw error;
+  }
   if (snapshot.bindingId !== input.bindingId) throw new Error('tracker_binding_mismatch');
   if (snapshot.items.some((item) => item.projectId !== input.projectId)) throw new Error('tracker_project_mismatch');
   await input.ports.snapshots.replace(snapshot);

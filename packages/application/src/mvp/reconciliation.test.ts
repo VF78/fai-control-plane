@@ -30,11 +30,12 @@ const compose = {
 describe('MVP tracker reconciliation', () => {
   it('stores facts and queues only actionable intent', async () => {
     const replace = vi.fn(async () => undefined);
+    const recordFailure = vi.fn(async () => undefined);
     const enqueue = vi.fn(async (_record: unknown) => 'enqueued' as const);
     const append = vi.fn(async () => undefined);
     await expect(reconcileTracker({
       bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null, statusMap,
-      ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {replace}, compose,
+      ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {replace, recordFailure}, compose,
         outbox: {enqueue, claim: async () => [], complete: async () => undefined, retry: async () => undefined},
         audit: {append}}
     })).resolves.toEqual({observedItems: 2, queuedActions: 1, cursor: 'cursor-2'});
@@ -51,7 +52,7 @@ describe('MVP tracker reconciliation', () => {
     const replace = vi.fn(async () => undefined);
     await expect(reconcileTracker({
       bindingId: 'binding', workspaceId: 'workspace', projectId: 'other', cursor: null, statusMap,
-      ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {replace}, compose,
+      ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {replace, recordFailure: async () => undefined}, compose,
         outbox: {enqueue: async () => 'enqueued', claim: async () => [], complete: async () => undefined, retry: async () => undefined},
         audit: {append: async () => undefined}}
     })).rejects.toThrow('tracker_project_mismatch');
@@ -61,10 +62,30 @@ describe('MVP tracker reconciliation', () => {
   it('does not inflate counts on duplicate delivery intent', async () => {
     const result = await reconcileTracker({
       bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null, statusMap,
-      ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {replace: async () => undefined}, compose,
+      ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {
+        replace: async () => undefined, recordFailure: async () => undefined
+      }, compose,
         outbox: {enqueue: async () => 'duplicate', claim: async () => [], complete: async () => undefined, retry: async () => undefined},
         audit: {append: async () => undefined}}
     });
     expect(result.queuedActions).toBe(0);
+  });
+
+  it('records one bounded failed attempt and rethrows the provider failure', async () => {
+    const recordFailure = vi.fn(async () => undefined);
+    const append = vi.fn(async () => undefined);
+    await expect(reconcileTracker({
+      bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null, statusMap,
+      ports: {tracker: {readSnapshot: async () => { throw new Error('github_read_failed'); }}, snapshots: {
+        replace: async () => undefined, recordFailure
+      }, compose, outbox: {enqueue: async () => 'enqueued', claim: async () => [],
+        complete: async () => undefined, retry: async () => undefined}, audit: {append}}
+    })).rejects.toThrow('github_read_failed');
+    expect(recordFailure).toHaveBeenCalledWith(expect.objectContaining({
+      bindingId: 'binding', errorCode: 'github_read_failed'
+    }));
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'tracker.snapshot_failed', details: {errorCode: 'github_read_failed'}
+    }));
   });
 });
