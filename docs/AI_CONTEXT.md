@@ -77,3 +77,11 @@ Nothing in a merged PR authorizes deployment. The current deployment script
 fails closed. Issue #174 must replace the blocked runbook and script with a
 minimal verified MVP release path, followed by Vladimir's approval of the exact
 commit and production diff.
+
+The canonical VPS is `root@46.225.163.123`; the replaceable Control Plane public
+endpoint is `https://app.f-ai.studio/`. The same host's f(AI) Studio marketing
+site, MSA test environment, MSA-specific Hermes deployment and Amnezia VPN are
+protected neighbouring services and must not be changed or disrupted. The
+existing Hermes is MSA-only; ASCON needs a separate project-isolated Hermes
+endpoint, state/work directory and credential. The MVP uses an independent
+directory, Compose project and fresh PostgreSQL volume.

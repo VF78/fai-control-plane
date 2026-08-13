@@ -147,8 +147,23 @@ diagram in `#159`.
 
 ## Production
 
-- The internal alpha is deployed separately at `app.f-ai.studio`; local
-  development and production authorization remain separate.
+- Canonical production SSH endpoint: `root@46.225.163.123`. The public Control
+  Plane endpoint is `https://app.f-ai.studio/`; Vladimir permits replacing
+  that application with the approved MVP version, but this is not standing
+  authorization to deploy an unapproved commit.
+- The same VPS also runs the protected f(AI) Studio marketing site, the MSA
+  project test environment, the MSA-specific Hermes deployment and Amnezia
+  VPN. Treat all four as immutable neighbouring services: do not stop,
+  reconfigure, upgrade, expose, delete or reuse their ports, files, volumes,
+  databases, credentials or network rules. The existing Hermes belongs only to
+  MSA and must never be rebound or reused for ASCON.
+- ASCON requires a separate project-isolated Hermes deployment with its own
+  endpoint, state/work directory and credential. Creating or activating it is
+  part of the exact issue #174 production approval, not an implied host action.
+- A Control Plane release must use its own directory, Compose project and fresh
+  PostgreSQL volume. Replacing `app.f-ai.studio` authorizes only the explicitly
+  approved Control Plane service/proxy diff; it never authorizes host-wide
+  cleanup or changes to the protected neighbouring services.
 - Read `docs/ops/PRODUCTION_RUNBOOK.md` before any production planning. Deploy
   only through `scripts/deploy-prod.sh` after explicit approval of the exact
   commit.
