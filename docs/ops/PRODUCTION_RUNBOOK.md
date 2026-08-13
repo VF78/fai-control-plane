@@ -92,9 +92,19 @@ PostgreSQL dump and artifact archive, then resets the checkout and starts the
 previous application image without rerunning migrations. A validation, restore,
 checkout, or previous-service restart failure terminates in an explicit
 `RECOVERY REQUIRED` state and does not attempt to start a partial recovery.
-Backup files remain in
-`/srv/fai-control-plane/backups` for the separately approved retention and
-off-host recovery process.
+Backup files remain in `/srv/fai-control-plane/backups`. Before the destructive
+`0060` legacy conversation/share cleanup or `0061` environment-access IAM
+cleanup, the PostgreSQL custom dump must be encrypted, its manifest verified
+before migration, and the encrypted backup retained for 30 days. The same gate
+applies to every later destructive cleanup migration. Do not export a second
+chat transcript: provider history remains authoritative. After 30 days,
+deletion of that backup is a separate approved host action.
+
+`scripts/deploy-prod.sh` currently fails closed before changing the checkout,
+stopping writers or running migrations when the target diff adds destructive
+SQL. Do not bypass this guard. A destructive release remains blocked until an
+exact encrypted backup, verification and restore mechanism is implemented,
+tested and separately approved.
 
 Stop and investigate rather than bypassing the script if the checkout is dirty,
 the hash differs from `origin/main`, an environment path is unavailable, the

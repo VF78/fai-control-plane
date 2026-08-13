@@ -109,9 +109,8 @@ prior_app_ready() {
 
 required_path_keys=(
   POSTGRES_PASSWORD_HOST_FILE DATABASE_URL_HOST_FILE GITHUB_PROJECTS_OAUTH_TOKEN_HOST_FILE
-  GITHUB_APP_PRIVATE_KEY_HOST_FILE GITHUB_WEBHOOK_SECRET_HOST_FILE TELEGRAM_WEBHOOK_SECRET_HOST_FILE
-  TELEGRAM_IDENTITY_SECRET_HOST_FILE TELEGRAM_BOT_TOKEN_HOST_FILE GITHUB_LOGIN_CLIENT_SECRET_HOST_FILE
-  AUTH_SESSION_SECRET_HOST_FILE LOCAL_RUNNER_TOKEN_HOST_FILE SHARE_SIGNING_KEY_HOST_FILE
+  GITHUB_APP_PRIVATE_KEY_HOST_FILE GITHUB_WEBHOOK_SECRET_HOST_FILE GITHUB_LOGIN_CLIENT_SECRET_HOST_FILE
+  AUTH_SESSION_SECRET_HOST_FILE LOCAL_RUNNER_TOKEN_HOST_FILE
 )
 
 validate_environment() {
@@ -376,6 +375,10 @@ git fetch --quiet origin main
 [[ "$(git rev-parse origin/main)" == "$TARGET" ]] || die 'production origin/main differs from requested commit'
 git merge-base --is-ancestor "$checkout_commit" "$TARGET" || die 'requested commit is not a fast-forward from the production checkout'
 git merge-base --is-ancestor "$previous_commit" "$TARGET" || die 'requested commit is not a fast-forward from the active image'
+if git diff --unified=0 "$previous_commit" "$TARGET" -- packages/db/drizzle | \
+  grep -Eq '^\+[[:space:]]*(DELETE[[:space:]]+FROM|TRUNCATE|DROP[[:space:]]+(TABLE|TYPE|SCHEMA|INDEX|COLUMN))'; then
+  die 'destructive migration blocked: deploy-prod has no approved encrypted backup/restore implementation'
+fi
 git merge --ff-only "$TARGET" >/dev/null
 
 compose_target build web worker
