@@ -6,6 +6,7 @@ export type ConversationAction =
   | Readonly<{type: 'project_facts.read'}>
   | Readonly<{type: 'issue.create'; title: string; statement: string}>
   | Readonly<{type: 'issue.clarify'; referenceId: string; expectedVersion: string; statement: string}>
+  | Readonly<{type: 'source.add'; name: string; content: string}>
   | Readonly<{type: 'approval.decide'; approvalId: string; kind: 'plan' | 'internal_operation' | 'production' | 'acceptance' | 'client_uat'; targetReference: string; decision: 'approved' | 'rejected'}>
   | Readonly<{type: 'agent.submit'; request: AgentRoleRequest}>;
 
@@ -31,7 +32,10 @@ export const validateConversationEnvelope = (input: ConversationEnvelope): boole
     case 'issue.create': return text(input.action.title, 160) && text(input.action.statement, 4_000);
     case 'issue.clarify': return isBoundedId(input.action.referenceId) &&
       isBoundedId(input.action.expectedVersion) && text(input.action.statement, 4_000);
-    case 'approval.decide': return isBoundedId(input.action.approvalId) && isBoundedId(input.action.targetReference);
+    case 'source.add': return text(input.action.name, 200) && text(input.action.content, 4_000);
+    case 'approval.decide': return isBoundedId(input.action.approvalId) && isBoundedId(input.action.targetReference) &&
+      approvalKinds.includes(input.action.kind) &&
+      (input.action.decision === 'approved' || input.action.decision === 'rejected');
     case 'agent.submit': return validateAgentRoleRequest(input.action.request);
   }
 };
@@ -49,6 +53,11 @@ export const parseConversationCommand = (value: string): ConversationAction | nu
     const [head, ...statement] = value.slice(9).split(' | '); const [referenceId, expectedVersion] = head?.split(' ') ?? [];
     return isBoundedId(referenceId) && isBoundedId(expectedVersion) && text(statement.join(' | '), 4_000)
       ? {type: 'issue.clarify', referenceId, expectedVersion, statement: statement.join(' | ')} : null;
+  }
+  if (value.startsWith('/source ')) {
+    const [name, ...content] = value.slice(8).split(' | ');
+    return text(name, 200) && text(content.join(' | '), 4_000)
+      ? {type: 'source.add', name, content: content.join(' | ')} : null;
   }
   if (value.startsWith('/approve ')) {
     const [kind, approvalId, targetReference, decision] = value.slice(9).split(' ');
@@ -73,6 +82,8 @@ export const parseConversationEnvelope = (value: unknown): ConversationEnvelope 
   else if (action.type === 'issue.create') parsedAction = {type: 'issue.create', title: String(action.title ?? ''), statement: String(action.statement ?? '')};
   else if (action.type === 'issue.clarify') parsedAction = {type: 'issue.clarify', referenceId: String(action.referenceId ?? ''),
     expectedVersion: String(action.expectedVersion ?? ''), statement: String(action.statement ?? '')};
+  else if (action.type === 'source.add') parsedAction = {type: 'source.add', name: String(action.name ?? ''),
+    content: String(action.content ?? '')};
   else if (action.type === 'approval.decide') parsedAction = {type: 'approval.decide', approvalId: String(action.approvalId ?? ''),
     kind: action.kind as ApprovalKind, targetReference: String(action.targetReference ?? ''),
     decision: action.decision as ApprovalDecision};

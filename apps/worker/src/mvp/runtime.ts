@@ -1,6 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import {
   createDatabase,
+  addSourceArtifact,
   appendIncomingEvent,
   completeIncomingEvent,
   createApprovalPersistence,
@@ -106,6 +107,15 @@ export const createWorker = (database: Database = createDatabase()) => {
       return {referenceId: result.rows[0].id};
     }},
     tracker: trackerMutation,
+    sources: {async add(command: Readonly<{projectId: string; actorId: string; name: string; content: string;
+      messageReference: string}>) {
+      if (command.projectId !== projectId) throw new Error('project_denied');
+      const id = await addSourceArtifact(database, {projectId, actorId: command.actorId, kind: 'messenger_context',
+        name: command.name, mediaType: 'text/plain', contentText: command.content, sourceUrl: null,
+        sha256: createHash('sha256').update(command.content).digest('hex'),
+        provenance: `messenger:${command.messageReference}`});
+      return {referenceId: id};
+    }},
     approvals: {async decide(command: Readonly<{projectId: string; actorId: string; approvalId: string;
       kind: 'plan'|'internal_operation'|'production'|'acceptance'|'client_uat'; targetReference: string;
       decision: 'approved'|'rejected'; idempotencyKey: string}>) {
