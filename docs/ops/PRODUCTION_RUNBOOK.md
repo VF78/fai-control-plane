@@ -32,6 +32,21 @@ ASCON requires a separate project-isolated Hermes deployment with a distinct
 literal HTTPS endpoint, state/work directory and credential. Its exact host
 diff and activation require approval under issue #174.
 
+## ASCON Telegram binding
+
+- bot username: `@f_AI_Control_Bot`;
+- internal group chat ID: `-5540760630`;
+- Vladimir Telegram user ID: `96211907`;
+- Vitaliy Telegram user ID: `355724486`.
+
+The bot token is stored only in the macOS login Keychain under service
+`fai-control-plane/ascon/telegram-bot-token`, account
+`@f_AI_Control_Bot`. Never print or copy its value into Git, GitHub, Project,
+logs or shell configuration. During an approved deployment, copy it directly
+into the host-owned mode-0600 file
+`/etc/fai-control-plane-mvp/secrets/telegram-bot-token` without exposing the
+value.
+
 The MVP must use a new independent host directory, Compose project and
 PostgreSQL volume. The legacy database, commit and credentials remain unchanged
 as the rollback boundary. The files under `infra/production/` are retained only
