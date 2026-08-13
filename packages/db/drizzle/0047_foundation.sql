@@ -1,2 +1,0 @@
-ALTER TABLE "project_source_artifacts" ADD COLUMN "source_file" jsonb;--> statement-breakpoint
-ALTER TABLE "project_source_artifacts" ADD CONSTRAINT "project_source_artifacts_source_file_object" CHECK ("project_source_artifacts"."source_file" is null or jsonb_typeof("project_source_artifacts"."source_file") = 'object');

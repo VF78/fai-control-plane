@@ -1,4 +1,0 @@
-ALTER TABLE "work_items" DROP CONSTRAINT "work_items_plan_source_complete";--> statement-breakpoint
-ALTER TABLE "work_items" ADD COLUMN "responsibility" jsonb;--> statement-breakpoint
-ALTER TABLE "work_items" ADD CONSTRAINT "work_items_responsibility_object" CHECK ("work_items"."responsibility" is null or jsonb_typeof("work_items"."responsibility") = 'object');--> statement-breakpoint
-ALTER TABLE "work_items" ADD CONSTRAINT "work_items_plan_source_complete" CHECK (("work_items"."source_plan_version_id" is null and "work_items"."source_task_key" is null and "work_items"."responsibility" is null and "work_items"."acceptance_evidence" is null) or ("work_items"."source_plan_version_id" is not null and "work_items"."source_task_key" is not null and "work_items"."acceptance_evidence" is not null));

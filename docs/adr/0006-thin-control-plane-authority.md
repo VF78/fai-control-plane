@@ -62,8 +62,11 @@ workflow.
 
 ### Acceptance contour
 
-ASCON is the first real acceptance contour. MSA and Telegram conversations are
-not launch dependencies. The required path is:
+ASCON is the first real acceptance contour. Its internal project chat is
+Telegram and its client chat is the existing Bitrix24 conversation. Both use a
+provider-neutral messenger boundary; issue #174 supplies the provider adapters,
+identity bindings and activation. Matrix/Element for MSA later uses the same
+boundary. The required path is:
 
 `three approved source documents -> Hermes manager plan in GitHub Project ->
 PO plan approval -> human or Hermes development -> Hermes QA -> PO deployment
@@ -77,10 +80,10 @@ systemd unit and script as `delete now`, `keep as read mirror`, `keep for
 documents/approval/audit`, or `defer disabled`. Vladimir must approve that map
 and the target component diagram before product implementation begins.
 
-Issue #162 removes contradicting reachable code rather than leaving it as a
-competing disabled architecture. Applied historical migrations are never
-rewritten; deletion happens only after runtime consumers are removed and data
-retention requirements are resolved.
+Issue #162 builds a fresh 16-table MVP database and removes contradicting
+reachable code rather than leaving a competing disabled architecture. It does
+not read, migrate or delete the legacy database. The legacy commit and database
+remain the rollback boundary until the ASCON cutover is accepted.
 
 ## Consequences
 

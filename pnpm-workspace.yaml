@@ -9,6 +9,3 @@ allowBuilds:
   protobufjs: true
   sharp: true
   unrs-resolver: true
-
-minimumReleaseAgeExclude:
-  - pg-boss@12.26.3

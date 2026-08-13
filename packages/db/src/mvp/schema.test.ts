@@ -1,0 +1,40 @@
+import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, it} from 'vitest';
+import {getTableName} from 'drizzle-orm';
+import {mvpTables} from './schema.ts';
+
+const expected = [
+  'workspaces', 'actors', 'oauth_login_attempts', 'operator_sessions', 'projects',
+  'project_memberships', 'actor_external_identities', 'project_source_artifacts',
+  'secret_refs', 'tracker_bindings', 'tracker_snapshots', 'incoming_events',
+  'approval_evidence', 'command_receipts', 'outbox_events', 'audit_events'
+];
+const sql = readFileSync(fileURLToPath(new URL('../../mvp-drizzle/0000_mvp.sql', import.meta.url)), 'utf8');
+
+describe('MVP fresh schema', () => {
+  it('declares exactly the approved 16 tables', () => {
+    expect(Object.values(mvpTables).map(getTableName)).toEqual(expected);
+    expect([...sql.matchAll(/CREATE TABLE "([^"]+)"/g)].map((match) => match[1])).toEqual(expected);
+  });
+
+  it.each(['work_items', 'agent_runs', 'task_packets', 'project_executions', 'deployment_jobs',
+    'risk_signals', 'conversation_messages', 'resource_access_grants'])('contains no legacy table %s', (name) => {
+    expect(sql).not.toContain(`"${name}"`);
+  });
+
+  it('contains no destructive or history migration operation', () => {
+    expect(sql).not.toMatch(/\b(?:DROP|ALTER|DELETE|TRUNCATE)\b/i);
+  });
+
+  it('keeps snapshot binding and provider inbox identities distinct', () => {
+    expect(sql).toMatch(/CREATE TABLE "tracker_snapshots"[\s\S]*?"binding_id" uuid NOT NULL REFERENCES "tracker_bindings"/);
+    expect(sql).toMatch(/CREATE TABLE "incoming_events"[\s\S]*?"project_id" uuid NOT NULL REFERENCES "projects"[\s\S]*?"provider" text NOT NULL/);
+  });
+
+  it('stores references and hashes, not secret values or chat transcripts', () => {
+    expect(expected).toContain('secret_refs');
+    expect(expected).not.toContain('secrets');
+    expect(sql).not.toMatch(/message_body|chat_history|secret_value|storage_reference/i);
+  });
+});

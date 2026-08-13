@@ -1,8 +1,4 @@
-import {onboardActorCommand} from '../../../../src/access-management-commands';
-
-export const dynamic = 'force-dynamic';
+import {onboard} from '../../../../src/mvp/api.ts';
 export const runtime = 'nodejs';
-
-export async function POST(request: Request) {
-  return onboardActorCommand(request);
-}
+export const dynamic = 'force-dynamic';
+export const POST = onboard;

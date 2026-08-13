@@ -1,8 +1,5 @@
-import {createProjectCommand} from '../../../src/project-intake-commands';
-
-export const dynamic = 'force-dynamic';
+import {projects} from '../../../src/mvp/api.ts';
 export const runtime = 'nodejs';
-
-export async function POST(request: Request) {
-  return createProjectCommand(request);
-}
+export const dynamic = 'force-dynamic';
+export const GET = projects;
+export const POST = projects;

@@ -18,8 +18,6 @@ COPY packages/application/package.json packages/application/package.json
 COPY packages/domain/package.json packages/domain/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/integrations/package.json packages/integrations/package.json
-COPY packages/runners/package.json packages/runners/package.json
-COPY packages/observability/package.json packages/observability/package.json
 
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
@@ -40,8 +38,8 @@ RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static 
     && if [ -d apps/web/public ]; then \
          cp -R apps/web/public apps/web/.next/standalone/apps/web/public; \
        fi \
-    && mkdir -p apps/web/.next/standalone/apps/web/.next/cache /var/lib/fai/artifacts \
-    && chown -R node:node apps/web/.next/standalone/apps/web/.next/cache /var/lib/fai
+    && mkdir -p apps/web/.next/standalone/apps/web/.next/cache \
+    && chown -R node:node apps/web/.next/standalone/apps/web/.next/cache
 
 USER node
 

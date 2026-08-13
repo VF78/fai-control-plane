@@ -5,7 +5,9 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   transpilePackages: [
     '@fai-control-plane/db',
-    '@fai-control-plane/observability'
+    '@fai-control-plane/application',
+    '@fai-control-plane/domain',
+    '@fai-control-plane/integrations'
   ]
 };
 

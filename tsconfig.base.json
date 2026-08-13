@@ -18,12 +18,10 @@
     "exactOptionalPropertyTypes": true,
     "baseUrl": ".",
     "paths": {
-      "@fai-control-plane/application": ["packages/application/src/index.ts"],
-      "@fai-control-plane/domain": ["packages/domain/src/index.ts"],
-      "@fai-control-plane/db": ["packages/db/src/index.ts"],
-      "@fai-control-plane/integrations": ["packages/integrations/src/index.ts"],
-      "@fai-control-plane/runners": ["packages/runners/src/index.ts"],
-      "@fai-control-plane/observability": ["packages/observability/src/index.ts"]
+      "@fai-control-plane/application": ["packages/application/src/mvp/index.ts"],
+      "@fai-control-plane/domain": ["packages/domain/src/mvp/index.ts"],
+      "@fai-control-plane/db": ["packages/db/src/mvp/index.ts"],
+      "@fai-control-plane/integrations": ["packages/integrations/src/mvp/index.ts"]
     }
   }
 }

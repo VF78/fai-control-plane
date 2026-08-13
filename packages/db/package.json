@@ -5,31 +5,22 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts"
-    },
-    "./runtime": {
-      "types": "./src/index.ts",
+      "types": "./src/mvp/index.ts",
       "import": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts src/migrate.ts --format esm --dts",
+    "build": "tsup src/mvp/index.ts src/mvp/migrate.ts src/mvp/bootstrap.ts --format esm --dts --external pg --external drizzle-orm --external @fai-control-plane/domain --external @fai-control-plane/application",
     "typecheck": "tsc --noEmit",
-    "db:generate": "drizzle-kit generate --name foundation",
-    "db:migrate": "tsx src/migrate.ts",
-    "db:seed": "tsx src/seed.ts",
-    "db:check": "node scripts/validate-migration-history.mjs && drizzle-kit check",
-    "test:schema": "vitest run --root ../.. packages/db/src/schema.test.ts",
-    "test:integration": "vitest run --root ../.. packages/db/src/persistence.integration.test.ts packages/db/src/incoming-event-inbox.integration.test.ts packages/db/src/tracker-snapshot-projection.integration.test.ts packages/db/src/tracker-repository-read-authorizer.integration.test.ts"
+    "db:migrate": "tsx src/mvp/migrate.ts",
+    "db:bootstrap": "tsx src/mvp/bootstrap.ts",
+    "db:check": "vitest run --root ../.. packages/db/src/mvp/schema.test.ts",
+    "test": "vitest run --root ../.. packages/db/src/mvp"
   },
   "dependencies": {
+    "@fai-control-plane/application": "workspace:*",
     "@fai-control-plane/domain": "workspace:*",
     "drizzle-orm": "0.45.2",
-    "pg": "8.22.0",
-    "pg-boss": "12.26.3"
-  },
-  "devDependencies": {
-    "drizzle-kit": "0.31.10"
+    "pg": "8.22.0"
   }
 }

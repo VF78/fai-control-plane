@@ -1,22 +1,21 @@
-import {cookies} from 'next/headers';
-import {currentOperatorSession} from '../src/operator-auth-runtime';
-import {OPERATOR_SESSION_COOKIE} from '../src/operator-auth';
-import {loadWorkspaceData} from '../src/operator-workspace-data';
-import {workspaceRoute, type WorkspaceQuery} from '../src/operator-workspace-route';
-import {OperatorLogin} from '../src/operator-login';
-import {WorkspaceShell} from '../src/workspace-ui';
+import {listProjects} from '@fai-control-plane/db';
+import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
 
 export const dynamic = 'force-dynamic';
-
-export default async function PortfolioPage({searchParams}: {searchParams: Promise<WorkspaceQuery>}) {
-  const cookieStore = await cookies();
-  const auth = await currentOperatorSession(cookieStore.get(OPERATOR_SESSION_COOKIE)?.value);
-  if (auth.enabled && auth.session === null) return <OperatorLogin />;
-  const route = workspaceRoute(['dashboard'], await searchParams)!;
-  const data = await loadWorkspaceData(route, auth.session?.actorId);
-  return <WorkspaceShell route={route} data={{
-    ...data,
-    csrfToken: auth.session?.csrfToken ?? null,
-    operatorActorId: auth.session?.actorId ?? null
-  }} />;
+export default async function Home() {
+  let projects: Awaited<ReturnType<typeof listProjects>> | null = null;
+  try {
+    const session = await requireSession();
+    projects = await listProjects(getDatabase(), session.actorId);
+  } catch {
+    projects = null;
+  }
+  if (projects === null) return <main><header><p>f(AI) Studio</p><h1>Control Plane</h1></header><section>
+      <h2>Вход оператора</h2><p>Авторизация выполняется через GitHub.</p>
+      <a className="button" href="/api/auth/github/login">Войти</a>
+    </section></main>;
+  return <main><header><p>f(AI) Studio</p><h1>Control Plane</h1></header><section>
+    <h2>Проекты</h2>{projects.length === 0 ? <p>Проекты ещё не подключены.</p> : <ul>{projects.map((project) =>
+      <li key={project.id}><a href={project.repositoryUrl}>{project.name}</a><small>{project.slug}</small></li>)}</ul>}
+  </section></main>;
 }
