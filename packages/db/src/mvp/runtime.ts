@@ -198,16 +198,16 @@ export const addSourceArtifact = async (database: Database, input: Readonly<{
   sha256: string; contentText: string; sourceUrl: string | null; provenance: string;
 }>): Promise<string> => {
   const id = randomUUID();
-  const result = await database.query(
+  const result = await database.query<{id: string}>(
     `insert into project_source_artifacts
       (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
      select $1,$2,$3,$4,$5,$6,$7,$8,$9,$10 where exists (
        select 1 from project_memberships where project_id=$2 and actor_id=$3 and active=true
-     )`, [id, input.projectId, input.actorId, input.kind, input.name, input.mediaType,
+     ) on conflict(project_id,sha256) do update set sha256=excluded.sha256 returning id`, [id, input.projectId, input.actorId, input.kind, input.name, input.mediaType,
       input.sha256, input.contentText, input.sourceUrl, input.provenance]
   );
   if (result.rowCount !== 1) throw new Error('source_membership_denied');
-  return id;
+  return result.rows[0]!.id;
 };
 
 export const appendIncomingEvent = async (database: Database, input: Readonly<{
@@ -446,9 +446,12 @@ export const canGovernMembership = async (database: Database, actorId: string, p
   return result.rows[0]?.role === 'project_owner';
 };
 
-export const resolveActiveHumanMember = async (database: Database, projectId: string, senderReference: string): Promise<Readonly<{actorId: string}> | null> => {
-  const result = await database.query<{actorId: string}>(
-    `select a.id as "actorId" from actor_external_identities i
+export const resolveActiveHumanMember = async (database: Database, projectId: string, senderReference: string): Promise<Readonly<{
+  actorId: string;
+  role: 'project_owner' | 'operator' | 'contributor' | 'client';
+}> | null> => {
+  const result = await database.query<{actorId: string; role: 'project_owner' | 'operator' | 'contributor' | 'client'}>(
+    `select a.id as "actorId",m.role from actor_external_identities i
      join actors a on a.id=i.actor_id
      join project_memberships m on m.actor_id=a.id and m.project_id=$1
      where i.subject_hash=$2 and a.kind='human' and a.enabled=true and m.active=true`, [projectId, senderReference]);

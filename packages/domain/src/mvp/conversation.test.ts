@@ -36,10 +36,15 @@ describe('MVP conversation boundary', () => {
     expect(validateConversationEnvelope({...value, action: {
       type: 'issue.create', title: '', statement: 'Details'
     }})).toBe(false);
+    expect(validateConversationEnvelope({...value, action: {type: 'approval.decide', approvalId: 'a',
+      kind: 'client_uat', targetReference: 't', decision: 'invalid' as 'approved'}})).toBe(false);
   });
 
   it('parses only the explicit bounded grammar and leaves free text pending', () => {
     expect(parseConversationCommand('/issue Defect | Reproduction')).toEqual({type: 'issue.create', title: 'Defect', statement: 'Reproduction'});
+    expect(parseConversationCommand('/source Test protocol | Expected result')).toEqual({
+      type: 'source.add', name: 'Test protocol', content: 'Expected result'
+    });
     expect(parseConversationCommand('Please interpret me')).toBeNull();
   });
 });

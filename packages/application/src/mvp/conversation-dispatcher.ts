@@ -2,18 +2,29 @@ import type {
   AgentDeliveryPort,
   ClientConversationEnvelope,
   InternalConversationEnvelope,
+  ProjectRole,
   TrackerMutationPort
 } from '@fai-control-plane/domain';
 import {authorizeConversation} from '@fai-control-plane/domain';
 import type {ConversationCompletionStore, ReceiptStore} from './contracts.ts';
 
 export type ConversationIdentityPort = Readonly<{
-  resolveActiveHuman(input: Readonly<{projectId: string; senderReference: string}>): Promise<Readonly<{actorId: string}> | null>;
+  resolveActiveHuman(input: Readonly<{projectId: string; senderReference: string}>): Promise<Readonly<{
+    actorId: string;
+    role: ProjectRole;
+  }> | null>;
 }>;
 
 type SharedPorts = Readonly<{
   facts: Readonly<{read(projectId: string): Promise<Readonly<{referenceId: string}>>}>;
   tracker: TrackerMutationPort;
+  sources: Readonly<{add(input: Readonly<{
+    projectId: string;
+    actorId: string;
+    name: string;
+    content: string;
+    messageReference: string;
+  }>): Promise<Readonly<{referenceId: string}>>}>;
   approvals: Readonly<{decide(input: Readonly<{
     projectId: string; actorId: string; approvalId: string;
     kind: 'plan' | 'internal_operation' | 'production' | 'acceptance' | 'client_uat';
@@ -35,38 +46,35 @@ const dispatch = async (input: Readonly<{
 }>): Promise<Result> => {
   const {envelope, ports} = input;
   if (!authorizeConversation(envelope)) return {status: 'denied'};
+  const identity = await ports.identities.resolveActiveHuman({projectId: envelope.message.projectId,
+    senderReference: envelope.message.senderReference});
+  if (identity === null) return {status: 'denied'};
   if (await ports.receipts.exists(envelope.message.idempotencyKey)) return {status: 'duplicate'};
   let referenceId: string;
-  let actorId: string | null = null;
+  const actorId = identity.actorId;
   switch (envelope.action.type) {
     case 'project_facts.read':
       referenceId = (await ports.facts.read(envelope.message.projectId)).referenceId;
       break;
     case 'issue.create': {
-      const identity = await ports.identities.resolveActiveHuman({projectId: envelope.message.projectId,
-        senderReference: envelope.message.senderReference});
-      if (identity === null) return {status: 'denied'};
-      actorId = identity.actorId;
       referenceId = (await ports.tracker.createIssue({projectId: envelope.message.projectId,
         title: envelope.action.title, statement: envelope.action.statement,
         idempotencyKey: envelope.message.idempotencyKey})).referenceId;
       break;
     }
     case 'issue.clarify': {
-      const identity = await ports.identities.resolveActiveHuman({projectId: envelope.message.projectId,
-        senderReference: envelope.message.senderReference});
-      if (identity === null) return {status: 'denied'};
-      actorId = identity.actorId;
       referenceId = (await ports.tracker.addIssueContext({referenceId: envelope.action.referenceId,
         expectedVersion: envelope.action.expectedVersion, statement: envelope.action.statement,
         idempotencyKey: envelope.message.idempotencyKey})).referenceId;
       break;
     }
+    case 'source.add': {
+      referenceId = (await ports.sources.add({projectId: envelope.message.projectId, actorId,
+        name: envelope.action.name, content: envelope.action.content,
+        messageReference: envelope.message.messageReference})).referenceId;
+      break;
+    }
     case 'approval.decide': {
-      const identity = await ports.identities.resolveActiveHuman({projectId: envelope.message.projectId,
-        senderReference: envelope.message.senderReference});
-      if (identity === null) return {status: 'denied'};
-      actorId = identity.actorId;
       referenceId = (await ports.approvals.decide({projectId: envelope.message.projectId, actorId,
         approvalId: envelope.action.approvalId, kind: envelope.action.kind,
         targetReference: envelope.action.targetReference, decision: envelope.action.decision,
@@ -74,7 +82,8 @@ const dispatch = async (input: Readonly<{
       break;
     }
     case 'agent.submit': {
-      if (envelope.message.contour !== 'trusted-main' || !('agent' in ports)) return {status: 'denied'};
+      if (envelope.message.contour !== 'trusted-main' || !('agent' in ports) ||
+        !['project_owner', 'operator'].includes(identity.role)) return {status: 'denied'};
       referenceId = (await ports.agent.submit(envelope.action.request)).deliveryReference;
       break;
     }

@@ -32,7 +32,7 @@ workspace, owner, project, GitHub identity/binding and optional Telegram
 identity without reading any secret value. OAuth is usable after bootstrap.
 Free-form chat messages remain visibly pending; only `/facts`,
 `/issue title | details`, `/clarify issue version | details`, and
-`/approve kind approval target decision` are executed. No transcript or
+`/source name | text`, and `/approve kind approval target decision` are executed. No transcript or
 Hermes conversation endpoint exists in this MVP.
 
 ## Checks
