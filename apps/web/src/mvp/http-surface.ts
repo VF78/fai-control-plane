@@ -7,7 +7,6 @@ export const mvpApiRoutes = Object.freeze([
   '/api/projects/[projectId]/sources',
   '/api/approvals/[id]',
   '/api/webhooks/github',
-  '/api/webhooks/bitrix24',
   '/api/health',
   '/api/ready'
 ] as const);

@@ -15,7 +15,6 @@ import {
 } from '@fai-control-plane/db';
 import {decideApproval, deliverPending, dispatchClientConversationAction, dispatchConversationAction, reconcileTracker} from '@fai-control-plane/application';
 import {
-  createBitrix24DeliveryAdapter,
   createGitHubTrackerMutationAdapter,
   createGitHubTrackerReadAdapter,
   createHermesDeliveryAdapter,
@@ -69,12 +68,9 @@ export const createWorker = (database: Database = createDatabase()) => {
   }, credentialRef: secret('github-projects-mutate', 'tracker_mutate', 'GITHUB_PROJECTS_TOKEN_FILE'), secrets});
   const agent = createHermesDeliveryAdapter({endpoint: env('HERMES_ROLE_REQUEST_URL'),
     credentialRef: secret('hermes', 'agent_delivery', 'HERMES_TOKEN_FILE'), secrets});
-  const clientMessenger = createBitrix24DeliveryAdapter({config: {
-    portalUrl: env('BITRIX24_PORTAL_URL'), memberId: env('BITRIX24_MEMBER_ID'), taskId: Number(env('BITRIX24_TASK_ID')), projectId,
-    allowedAuthorIds: env('BITRIX24_ALLOWED_AUTHOR_IDS').split(',').map(Number),
-    applicationTokenRef: secret('bitrix-app', 'messenger_webhook_verify', 'BITRIX24_APPLICATION_TOKEN_FILE'),
-    restTokenRef: secret('bitrix-rest', 'messenger_delivery', 'BITRIX24_REST_TOKEN_FILE')
-  }, secrets});
+  const clientMessenger = {async send() {
+    throw new Error('client_messenger_not_configured');
+  }};
   const telegram = createTelegramAdapter({config: {projectId, chatId: env('TELEGRAM_INTERNAL_CHAT_ID'),
     allowedUserIds: env('TELEGRAM_INTERNAL_ALLOWED_USER_IDS').split(','),
     tokenRef: secret('telegram', 'messenger_delivery', 'TELEGRAM_BOT_TOKEN_FILE')}, secrets});

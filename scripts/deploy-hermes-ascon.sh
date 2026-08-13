@@ -5,7 +5,6 @@ readonly deploy_root=/opt/fai-hermes-ascon
 readonly environment_file=/etc/fai-hermes-ascon/production.env
 readonly compose_file="$deploy_root/infra/hermes-ascon/compose.yaml"
 readonly api_secret_file=/etc/fai-hermes-ascon/secrets/api-server.env
-readonly provider_secret_file=/etc/fai-hermes-ascon/secrets/provider.env
 readonly project=fai-hermes-ascon
 
 fail() {
@@ -13,8 +12,8 @@ fail() {
   exit 1
 }
 
-[[ $# -eq 1 && ( $1 == stage || $1 == rollback ) ]] ||
-  fail 'usage: deploy-hermes-ascon.sh <stage|rollback>'
+[[ $# -eq 1 && ( $1 == auth || $1 == stage || $1 == rollback ) ]] ||
+  fail 'usage: deploy-hermes-ascon.sh <auth|stage|rollback>'
 readonly action=$1
 
 [[ $EUID -eq 0 ]] || fail 'must run as root on the approved host'
@@ -26,7 +25,7 @@ readonly action=$1
 [[ "${HERMES_APPROVED_CONFIG_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] ||
   fail 'approved config digest is missing or invalid'
 
-for path in "$environment_file" "$api_secret_file" "$provider_secret_file"; do
+for path in "$environment_file" "$api_secret_file"; do
   [[ -f "$path" && -r "$path" ]] || fail "missing required file: $path"
   [[ $(stat -c '%U:%G:%a' "$path") == root:root:600 ]] ||
     fail "file must be root:root mode 0600: $path"
@@ -42,8 +41,6 @@ grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' "$environment_file" &&
   fail 'production environment contains a placeholder'
 [[ $(grep -c '^API_SERVER_KEY=' "$api_secret_file") -eq 1 ]] ||
   fail 'API secret file must contain exactly one API_SERVER_KEY'
-[[ $(grep -Ec '^[A-Z0-9_]+=.+' "$provider_secret_file") -eq 1 ]] ||
-  fail 'provider secret file must contain exactly one credential'
 
 compose=(
   docker compose
@@ -54,11 +51,22 @@ compose=(
 "${compose[@]}" config --quiet
 
 case "$action" in
-  stage)
+  auth)
     install -d -o root -g root -m 0750 \
       /var/lib/fai-hermes-ascon \
       /var/lib/fai-hermes-ascon/work
     "${compose[@]}" pull gateway
+    "${compose[@]}" run --rm --no-deps gateway auth add openai-codex
+    [[ -s /var/lib/fai-hermes-ascon/auth.json ]] || fail 'Codex OAuth store was not created'
+    ;;
+  stage)
+    [[ -s /var/lib/fai-hermes-ascon/auth.json ]] ||
+      fail 'Codex OAuth is missing; run the separately approved auth action first'
+    install -d -o root -g root -m 0750 \
+      /var/lib/fai-hermes-ascon \
+      /var/lib/fai-hermes-ascon/work
+    "${compose[@]}" pull gateway
+    "${compose[@]}" run --rm --no-deps gateway auth status openai-codex >/dev/null
     "${compose[@]}" up -d gateway
     curl -fsS --max-time 15 \
       https://hermes-ascon.f-ai.studio/health >/dev/null

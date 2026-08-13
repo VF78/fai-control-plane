@@ -38,7 +38,7 @@ readonly repository_root=$(git rev-parse --show-toplevel)
 readonly secret_root=/etc/fai-control-plane-mvp/secrets
 readonly secret_names=(
   postgres-password github-login-client-secret github-projects-token github-webhook-secret
-  hermes-token telegram-bot-token bitrix24-application-token bitrix24-rest-token
+  hermes-token telegram-bot-token
 )
 protected_health() {
   systemctl is-active --quiet myshopai-website.service
