@@ -57,6 +57,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm build
       - name: Fresh 16-table baseline and idempotent bootstrap
         run: |
           pnpm db:migrate
@@ -64,7 +65,6 @@ jobs:
           pnpm mvp:bootstrap
           pnpm db:check
       - run: pnpm test
-      - run: pnpm build
 
   compose-config:
     runs-on: ubuntu-latest
@@ -91,8 +91,9 @@ jobs:
           export TELEGRAM_BOT_TOKEN_HOST_FILE="$secret_dir/telegram"
           cp .env.example .env
           docker compose --profile bootstrap config --quiet
-          rendered=$(docker compose --profile bootstrap config --services)
-          test "$rendered" = $'postgres\nmigrate\nweb\nworker\nbootstrap'
+          rendered=$(docker compose --profile bootstrap config --services | sort)
+          expected=$(printf '%s\n' bootstrap migrate postgres web worker | sort)
+          test "$rendered" = "$expected"
 
   secret-scan:
     runs-on: ubuntu-latest
