@@ -24,8 +24,12 @@ role task from Hermes, and displays confirmed external facts. Hermes may use
 Codex CLI internally through Hermes' supported tools/skills; that composition
 is not a Control Plane concern.
 
-The first real acceptance contour is ASCON. Telegram/MSA conversations are
-deferred and are not a launch dependency.
+The first real acceptance contour is ASCON: GitHub Project and repository are
+the work authorities, Hermes is the executor, internal project communication
+uses Telegram, and client communication uses the existing Bitrix24 chat. The
+MVP core exposes provider-neutral messenger ports; provider credentials and
+runtime bindings are activated only in issue #174. Matrix/Element for MSA is a
+later adapter over the same boundary, not a separate chat architecture.
 
 ## Product and architecture invariants
 
@@ -69,7 +73,7 @@ approved by Vladimir.
 ## Release boundary
 
 Local implementation, PR merge, and production release are separate decisions.
-Nothing in a merged PR authorizes deployment. Read
-`docs/ops/PRODUCTION_RUNBOOK.md` and request Vladimir's explicit release
-approval for the exact commit and production diff. Use only
-`scripts/deploy-prod.sh` for an approved production release.
+Nothing in a merged PR authorizes deployment. The current deployment script
+fails closed. Issue #174 must replace the blocked runbook and script with a
+minimal verified MVP release path, followed by Vladimir's approval of the exact
+commit and production diff.

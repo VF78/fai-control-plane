@@ -1,0 +1,62 @@
+import {createDatabase, subjectHash} from './runtime.ts';
+
+const required = (name: string, max = 2_048): string => {
+  const value = process.env[name];
+  if (value === undefined || value.length === 0 || value.length > max || value.includes('\0')) throw new Error(`${name}_required`);
+  return value;
+};
+const optional = (name: string): string | null => process.env[name]?.trim() || null;
+const uuid = (name: string): string => {
+  const value = required(name, 36);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new Error(`${name}_invalid`);
+  return value;
+};
+const https = (name: string): string => {
+  const value = required(name); const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') throw new Error(`${name}_invalid`);
+  return url.toString();
+};
+
+export const bootstrap = async (): Promise<void> => {
+  const database = createDatabase(); const client = await database.connect();
+  const workspaceId = uuid('FCP_WORKSPACE_ID'); const projectId = uuid('FCP_PROJECT_ID');
+  const ownerId = uuid('BOOTSTRAP_OWNER_ACTOR_ID'); const bindingId = uuid('GITHUB_BINDING_ID');
+  const secretId = uuid('BOOTSTRAP_TRACKER_SECRET_REF_ID');
+  const workspace = {slug: required('BOOTSTRAP_WORKSPACE_SLUG', 100), name: required('BOOTSTRAP_WORKSPACE_NAME', 200)};
+  const repositoryUrl = https('BOOTSTRAP_REPOSITORY_URL');
+  try {
+    await client.query('begin');
+    await client.query(`insert into workspaces(id,slug,name) values($1,$2,$3) on conflict(id) do nothing`,
+      [workspaceId,workspace.slug,workspace.name]);
+    await client.query(`insert into actors(id,workspace_id,kind,display_name) values($1,$2,'human',$3) on conflict(id) do nothing`,
+      [ownerId,workspaceId,required('BOOTSTRAP_OWNER_NAME',200)]);
+    await client.query(`insert into actor_external_identities(actor_id,provider,subject_hash)
+      values($1,'github',$2) on conflict(provider,subject_hash) do nothing`,
+      [ownerId,subjectHash('github',required('BOOTSTRAP_OWNER_GITHUB_USER_ID',32))]);
+    const ownerTelegram = optional('BOOTSTRAP_OWNER_TELEGRAM_USER_ID');
+    if (ownerTelegram !== null) await client.query(`insert into actor_external_identities(actor_id,provider,subject_hash)
+      values($1,'telegram',$2) on conflict(provider,subject_hash) do nothing`, [ownerId,subjectHash('telegram',ownerTelegram)]);
+    await client.query(`insert into projects(id,workspace_id,slug,name,repository_url) values($1,$2,$3,$4,$5)
+      on conflict(id) do nothing`, [projectId,workspaceId,required('BOOTSTRAP_PROJECT_SLUG',100),
+      required('BOOTSTRAP_PROJECT_NAME',200),repositoryUrl]);
+    await client.query(`insert into project_memberships(project_id,actor_id,role) values($1,$2,'project_owner')
+      on conflict(project_id,actor_id) do nothing`, [projectId,ownerId]);
+    await client.query(`insert into secret_refs(id,workspace_id,purpose,locator) values($1,$2,'tracker_read',$3)
+      on conflict(id) do nothing`, [secretId,workspaceId,required('GITHUB_PROJECTS_TOKEN_FILE')]);
+    await client.query(`insert into tracker_bindings(id,project_id,secret_ref_id,provider,external_project_id,project_url,
+      repository_id,repository_url) values($1,$2,$3,'github',$4,$5,$6,$7) on conflict(id) do nothing`,
+      [bindingId,projectId,secretId,required('GITHUB_PROJECT_ID',256),https('BOOTSTRAP_GITHUB_PROJECT_URL'),
+        required('BOOTSTRAP_REPOSITORY_ID',256),repositoryUrl]);
+    const result = await client.query<{workspaceId:string;repositoryUrl:string;ownerRole:string;bindingProjectId:string}>(
+      `select p.workspace_id as "workspaceId",p.repository_url as "repositoryUrl",m.role as "ownerRole",
+       b.project_id as "bindingProjectId" from projects p join project_memberships m on m.project_id=p.id and m.actor_id=$2
+       join tracker_bindings b on b.project_id=p.id where p.id=$1`, [projectId,ownerId]);
+    const row = result.rows[0];
+    if (row?.workspaceId !== workspaceId || row.repositoryUrl !== repositoryUrl || row.ownerRole !== 'project_owner' ||
+      row.bindingProjectId !== projectId) throw new Error('bootstrap_existing_state_conflict');
+    await client.query('commit');
+  } catch (error) { await client.query('rollback'); throw error; }
+  finally { client.release(); await database.end(); }
+};
+
+if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href) await bootstrap();

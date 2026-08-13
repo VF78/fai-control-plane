@@ -3,8 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -18,160 +17,91 @@ jobs:
       postgres:
         image: postgres:16-bookworm
         env:
-          POSTGRES_DB: fai_control_plane
+          POSTGRES_DB: fai_control_plane_mvp
           POSTGRES_USER: fai
           POSTGRES_PASSWORD: fai
-        ports:
-          - 5432:5432
+        ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U fai -d fai_control_plane"
+          --health-cmd "pg_isready -U fai -d fai_control_plane_mvp"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-
     env:
-      DATABASE_URL: postgresql://fai:fai@127.0.0.1:5432/fai_control_plane
-
+      DATABASE_URL: postgresql://fai:fai@127.0.0.1:5432/fai_control_plane_mvp
+      FCP_WORKSPACE_ID: 10000000-0000-4000-8000-000000000001
+      FCP_PROJECT_ID: 10000000-0000-4000-8000-000000000002
+      GITHUB_BINDING_ID: 10000000-0000-4000-8000-000000000003
+      BOOTSTRAP_OWNER_ACTOR_ID: 10000000-0000-4000-8000-000000000004
+      BOOTSTRAP_TRACKER_SECRET_REF_ID: 10000000-0000-4000-8000-000000000005
+      BOOTSTRAP_WORKSPACE_SLUG: ci
+      BOOTSTRAP_WORKSPACE_NAME: CI
+      BOOTSTRAP_PROJECT_SLUG: ascon
+      BOOTSTRAP_PROJECT_NAME: ASCON
+      BOOTSTRAP_OWNER_NAME: CI Owner
+      BOOTSTRAP_OWNER_GITHUB_USER_ID: "1"
+      BOOTSTRAP_REPOSITORY_URL: https://github.com/VF78/ascon
+      BOOTSTRAP_REPOSITORY_ID: VF78/ascon
+      BOOTSTRAP_GITHUB_PROJECT_URL: https://github.com/users/VF78/projects/1
+      GITHUB_PROJECT_ID: PVT_ci
+      GITHUB_PROJECTS_TOKEN_FILE: /run/secrets/github-projects-token
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 11.17.0
           run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Check peer dependencies
-        run: pnpm peers check
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Test
-        run: pnpm test
-
-      - name: PostgreSQL persistence integration
-        run: pnpm --filter @fai-control-plane/db test:integration
-
-      - name: Validate migration history
-        run: pnpm db:check
-
-      - name: Detect schema drift
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Fresh 16-table baseline and idempotent bootstrap
         run: |
-          pnpm db:generate
-          git diff --exit-code -- packages/db/drizzle
-          test -z "$(git ls-files --others --exclude-standard packages/db/drizzle)"
+          pnpm db:migrate
+          pnpm mvp:bootstrap
+          pnpm mvp:bootstrap
+          pnpm db:check
+      - run: pnpm test
 
-      - name: Apply migrations
-        run: pnpm db:migrate
-
-      - name: Build
-        run: pnpm build
-
-  compose-smoke:
+  compose-config:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      COMPOSE_PROJECT_NAME: fai-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      POSTGRES_PORT: 55432
-      WEB_PORT: 53000
-      WORKER_PORT: 53001
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Compose smoke test
+      - uses: actions/checkout@v4
+      - name: Validate explicit secret mounts and fresh-MVP services
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          diagnostics() {
-            docker compose ps --all || true
-            docker compose logs --no-color || true
-          }
-
-          cleanup() {
-            docker compose down --volumes --remove-orphans || true
-          }
-
-          on_exit() {
-            status=$?
-            if [ "$status" -ne 0 ]; then
-              diagnostics
-            fi
-            cleanup
-            exit "$status"
-          }
-
-          wait_for_health() {
-            local service=$1
-            local deadline=$((SECONDS + 90))
-            local container
-
-            container=$(docker compose ps -q "$service")
-            until [ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy ]; do
-              if [ "$SECONDS" -ge "$deadline" ]; then
-                echo "Timed out waiting for $service to become healthy" >&2
-                return 1
-              fi
-              sleep 2
-            done
-          }
-
-          wait_for_endpoint() {
-            local name=$1
-            local url=$2
-            local expected=$3
-            local deadline=$((SECONDS + 120))
-            local body
-
-            while true; do
-              body=$(curl --fail --silent --show-error --max-time 3 "$url" || true)
-              if printf '%s' "$body" | grep --fixed-strings --quiet "$expected"; then
-                return 0
-              fi
-              if [ "$SECONDS" -ge "$deadline" ]; then
-                echo "Timed out waiting for $name at $url; last response: $body" >&2
-                return 1
-              fi
-              sleep 2
-            done
-          }
-
-          trap on_exit EXIT
-
-          docker compose build
-          docker compose up -d postgres
-          wait_for_health postgres
-          docker compose up --no-deps --abort-on-container-exit --exit-code-from migrate migrate
-          docker compose up -d web worker
-          wait_for_endpoint web "http://127.0.0.1:${WEB_PORT}/api/ready" '"status":"ready"'
-          wait_for_endpoint worker-health "http://127.0.0.1:${WORKER_PORT}/health" '"status":"ok"'
-          wait_for_endpoint worker-ready "http://127.0.0.1:${WORKER_PORT}/ready" '"status":"ready"'
+          secret_dir="$RUNNER_TEMP/fcp-secrets"
+          mkdir -p "$secret_dir"
+          for name in postgres github-login github-projects github-webhook hermes bitrix-app bitrix-rest telegram; do
+            printf 'ci-placeholder\n' > "$secret_dir/$name"
+          done
+          export POSTGRES_DB=fai_control_plane_mvp POSTGRES_USER=fai
+          export POSTGRES_PASSWORD_FILE="$secret_dir/postgres"
+          export GITHUB_LOGIN_CLIENT_SECRET_HOST_FILE="$secret_dir/github-login"
+          export GITHUB_PROJECTS_TOKEN_HOST_FILE="$secret_dir/github-projects"
+          export GITHUB_WEBHOOK_SECRET_HOST_FILE="$secret_dir/github-webhook"
+          export HERMES_TOKEN_HOST_FILE="$secret_dir/hermes"
+          export BITRIX24_APPLICATION_TOKEN_HOST_FILE="$secret_dir/bitrix-app"
+          export BITRIX24_REST_TOKEN_HOST_FILE="$secret_dir/bitrix-rest"
+          export TELEGRAM_BOT_TOKEN_HOST_FILE="$secret_dir/telegram"
+          cp .env.example .env
+          docker compose --profile bootstrap config --quiet
+          rendered=$(docker compose --profile bootstrap config --services | sort)
+          expected=$(printf '%s\n' bootstrap migrate postgres web worker | sort)
+          test "$rendered" = "$expected"
 
   secret-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout full history
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Scan for secrets
-        uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

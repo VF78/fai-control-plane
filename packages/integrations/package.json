@@ -5,16 +5,12 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts"
-    },
-    "./runtime": {
-      "types": "./src/index.ts",
+      "types": "./src/mvp/index.ts",
       "import": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup src/mvp/index.ts --format esm --dts --external @fai-control-plane/domain --external @fai-control-plane/application",
     "test": "vitest run --root ../.. packages/integrations/src",
     "typecheck": "tsc --noEmit"
   },

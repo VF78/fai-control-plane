@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "packages/domain/src/mvp/**/*.ts",
+    "packages/application/src/mvp/**/*.ts",
+    "packages/integrations/src/mvp/**/*.ts",
+    "packages/db/src/mvp/**/*.ts",
+    "apps/web/src/mvp/**/*.ts",
+    "apps/worker/src/mvp/**/*.ts"
+  ]
+}

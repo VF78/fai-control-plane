@@ -1,8 +1,5 @@
-import {setMembershipCommand} from '../../../../../src/access-management-commands';
-
-export const dynamic = 'force-dynamic';
+import {membership} from '../../../../../src/mvp/api.ts';
 export const runtime = 'nodejs';
-
-export async function POST(request: Request, context: {params: Promise<{id: string}>}) {
-  return setMembershipCommand(request, (await context.params).id);
-}
+export const dynamic = 'force-dynamic';
+export const POST = async (request: Request, context: {params: Promise<{id: string}>}): Promise<Response> =>
+  membership(request, (await context.params).id);

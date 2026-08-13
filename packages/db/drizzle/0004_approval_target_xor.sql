@@ -1,1 +1,0 @@
-ALTER TABLE "approval_requests" ADD CONSTRAINT "approval_requests_exactly_one_target" CHECK (("approval_requests"."work_item_id" is null) <> ("approval_requests"."agent_run_id" is null));
