@@ -1,5 +1,5 @@
 model:
-  provider: ${HERMES_PROVIDER}
+  provider: openai-codex
   default: ${HERMES_MODEL}
 
 terminal:
@@ -22,4 +22,3 @@ tool_loop_guardrails:
   hard_stop_after:
     exact_failure: 5
     idempotent_no_progress: 5
-

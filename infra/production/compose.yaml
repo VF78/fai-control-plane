@@ -75,8 +75,6 @@ services:
       - github-login-client-secret
       - github-projects-token
       - github-webhook-secret
-      - bitrix24-application-token
-      - bitrix24-rest-token
     networks:
       - database
       - egress
@@ -106,8 +104,6 @@ services:
       - github-projects-token
       - hermes-token
       - telegram-bot-token
-      - bitrix24-application-token
-      - bitrix24-rest-token
     networks:
       - database
       - egress
@@ -146,7 +142,3 @@ secrets:
     file: ${HERMES_TOKEN_HOST_FILE:?required}
   telegram-bot-token:
     file: ${TELEGRAM_BOT_TOKEN_HOST_FILE:?required}
-  bitrix24-application-token:
-    file: ${BITRIX24_APPLICATION_TOKEN_HOST_FILE:?required}
-  bitrix24-rest-token:
-    file: ${BITRIX24_REST_TOKEN_HOST_FILE:?required}

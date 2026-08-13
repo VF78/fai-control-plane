@@ -78,20 +78,25 @@ Both were resolved from their official registries on 2026-08-14.
 Never print the token. A separately approved transfer must write directly to
 the mode-0600 host file.
 
+The current Control Plane Telegram adapter safely handles deterministic
+commands and outbound notices, but free text remains pending interpretation.
+The required internal Hermes role therefore is not activation-ready: exactly
+one poller must own the bot, route only the approved chat/users to an isolated
+internal profile, and expose bounded Control Plane actions without duplicating
+the connector or granting production authority.
+
 ### Bitrix24
 
 - portal `https://b24.ascon.spb.ru/`, task `154312`;
-- callback `https://app.f-ai.studio/api/webhooks/bitrix24` for
-  `OnTaskCommentAdd`;
-- receive: verify application token, portal domain, exact
-  `auth[member_id]`, task and allowed human authors; refetch with
-  `tasks.task.get` and `im.dialog.messages.get`;
-- send: `tasks.task.chat.message.send`;
-- refs: `/etc/fai-control-plane-mvp/secrets/bitrix24-application-token` and
-  `/etc/fai-control-plane-mvp/secrets/bitrix24-rest-token`.
+- no REST application, member credential or webhook credential exists;
+- the user-authorized browser entry URL is credential-bearing and must stay in
+  isolated Hermes state, never in this repository, logs or Control Plane env;
+- the legacy direct REST webhook and adapter are not part of the MVP surface.
 
-The exact member ID, allowed author IDs and credential-authorized method check
-remain required before activation.
+The client role is not activation-ready. It requires a persistent browser
+backend and a narrow authenticated Control Plane capability for deduplicated
+issue intake and bounded replies. General terminal, checkout, status,
+production, internal-history and approval capabilities are forbidden.
 
 ### Separate ASCON Hermes
 
@@ -104,14 +109,13 @@ The separate deployment uses `/opt/fai-hermes-ascon`, state/work directory
 `/var/lib/fai-hermes-ascon` (mounted only at `/opt/data`) and dedicated work
 directory `/var/lib/fai-hermes-ascon/work`, candidate loopback port `13020`, Hermes-side ref
 `/etc/fai-hermes-ascon/secrets/api-server.env` containing only the required
-`API_SERVER_KEY`, provider ref `/etc/fai-hermes-ascon/secrets/provider.env`
-containing only the selected provider credential key, and Control-Plane-side ref
+`API_SERVER_KEY`, and Control-Plane-side ref
 `/etc/fai-control-plane-mvp/secrets/hermes-token`. DNS, TLS, receiver
 implementation/registration and proof of this ACK remain pending explicit
 approval. The MSA Hermes endpoint, state and credentials are forbidden.
 
 Current upstream research establishes the API contract: Hermes Agent
-v0.18.2 (`v2026.7.7.2`) officially supports `POST /v1/runs`, Bearer
+v0.20.1 (`v2026.8.13`) supports `POST /v1/runs`, Bearer
 `API_SERVER_KEY`, optional `session_id` and `instructions`, and returns HTTP 202
 `{"run_id":"...","status":"started"}`. Therefore the supported literal URL
 is `https://hermes-ascon.f-ai.studio/v1/runs`; the earlier invented
@@ -120,17 +124,20 @@ delivery evidence and the sent `session_id` to session evidence. No
 compatibility proxy is permitted.
 
 The supported deployment choice is the official Docker image
-`nousresearch/hermes-agent:v2026.7.7.2@sha256:9c841866021c54c4596849f6135717e8a4d52ba510b7f52c50aef1de1a283973`
+`nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6`
 in a
-separate Compose project `fai-hermes-ascon`, with dashboard/messaging/cron and
-browser tooling disabled, API bound inside the container and published only to
+separate Compose project `fai-hermes-ascon`. The initial safe stage keeps
+dashboard/messaging/cron and browser tooling disabled, binds the API inside the container and publishes it only to
 `127.0.0.1:13020`. An Nginx server dedicated to
 `hermes-ascon.f-ai.studio` terminates TLS and forwards only the API paths;
-Control Plane is the only intended caller. `API_SERVER_KEY` is mandatory.
+Control Plane is the only intended API caller. `API_SERVER_KEY` is mandatory.
 Initial limits are 1 CPU, 1 GiB memory, 256 PIDs and 1 GiB shared memory; the
 host preflight must be repeated because official guidance recommends 2–4 GiB
 when browser tooling is used. Rollback restores the prior pinned ASCON Hermes
-image only and never addresses any MSA unit, directory or credential.
+image only and never addresses any MSA unit, directory or credential. The
+provider is `openai-codex` with model `gpt-5.6-terra`; its device flow persists Hermes' independent OAuth
+session at `/var/lib/fai-hermes-ascon/auth.json`. No provider secret env file or
+Codex CLI credential copy is used.
 The official image keeps its immutable installation under `/opt/hermes`; only
 the isolated `/var/lib/fai-hermes-ascon` bind mounted at `/opt/data` is writable
 ASCON state.
@@ -143,6 +150,11 @@ approved and installed, the only command interface is:
 cd /opt/fai-hermes-ascon
 HERMES_APPROVED_IMAGE='<exact-approved-image@sha256>' \
 HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
+  ./scripts/deploy-hermes-ascon.sh auth
+
+cd /opt/fai-hermes-ascon
+HERMES_APPROVED_IMAGE='<exact-approved-image@sha256>' \
+HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
   ./scripts/deploy-hermes-ascon.sh stage
 
 cd /opt/fai-hermes-ascon
@@ -151,8 +163,9 @@ HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
   ./scripts/deploy-hermes-ascon.sh rollback
 ```
 
-`stage` validates the clean isolated checkout, exact image/config digest,
-root-only environment and secret files, then creates only the ASCON data/work
+`auth` is a separate interactive approval gate for the official Codex device
+flow. `stage` validates the clean isolated checkout, exact image/config digest,
+root-only environment and API secret, proves Codex auth structurally, then creates only the ASCON data/work
 directory, pulls and starts only project `fai-hermes-ascon`, and checks public
 health plus authenticated capabilities without displaying credentials.
 `rollback` stops only that Compose project and preserves its data. Neither
@@ -164,8 +177,10 @@ Research sources reviewed 2026-08-14:
   <https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server>;
 - official Docker data mount, gateway supervision, limits and upgrade model:
   <https://hermes-agent.nousresearch.com/docs/user-guide/docker/>;
-- official release `v2026.7.7.2`:
-  <https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.7.2>;
+- official release `v2026.8.13`:
+  <https://github.com/NousResearch/hermes-agent/releases/tag/v2026.8.13>;
+- official profile-routing contract:
+  <https://github.com/NousResearch/hermes-agent/blob/v2026.8.13/docs/profile-routing.md>;
 - public operational evidence reports deployment/auth confusion and unsafe
   unauthenticated exposure. It reinforces loopback-only publish, mandatory API
   key, no dashboard and a direct `/health` plus authenticated `/v1/capabilities`
@@ -176,7 +191,7 @@ Research sources reviewed 2026-08-14:
 ## Preflight and deployment
 
 Prepare `production.env` from `infra/production/production.env.example`, fill
-every `REQUIRED_*`, and install all eight secret files without displaying their
+every `REQUIRED_*`, and install all six secret files without displaying their
 contents. Review the exact commit and diff before copying the clean checkout to
 `/opt/fai-control-plane-mvp`.
 

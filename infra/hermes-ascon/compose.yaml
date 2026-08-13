@@ -6,14 +6,13 @@ services:
     command: ["gateway", "run"]
     env_file:
       - ${HERMES_API_SECRET_ENV_FILE:?required}
-      - ${HERMES_PROVIDER_SECRET_ENV_FILE:?required}
     environment:
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: "0.0.0.0"
       API_SERVER_PORT: "8642"
       HERMES_DASHBOARD: "0"
       HERMES_GATEWAY_NO_SUPERVISE: "1"
-      HERMES_PROVIDER: ${HERMES_PROVIDER:?required}
+      HERMES_PROVIDER: openai-codex
       HERMES_MODEL: ${HERMES_MODEL:?required}
     volumes:
       - /var/lib/fai-hermes-ascon:/opt/data

@@ -1,4 +1,0 @@
-import {bitrix24Webhook} from '../../../../src/mvp/api.ts';
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-export const POST = bitrix24Webhook;

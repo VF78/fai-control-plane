@@ -12,8 +12,8 @@ import {
   subjectHash
 } from '@fai-control-plane/db';
 import {decideApproval} from '@fai-control-plane/application';
-import {verifyGitHubWebhook, createBitrix24IngressAdapter, createGitHubTrackerReadAdapter} from '@fai-control-plane/integrations';
-import {mayChangeMembership, parseConversationCommand, type ApprovalEvidence, type ApprovalKind, type OpaqueSecretRef, type ProjectRole} from '@fai-control-plane/domain';
+import {verifyGitHubWebhook, createGitHubTrackerReadAdapter} from '@fai-control-plane/integrations';
+import {mayChangeMembership, type ApprovalEvidence, type ApprovalKind, type OpaqueSecretRef, type ProjectRole} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
@@ -203,33 +203,6 @@ export const githubWebhook = async (request: Request): Promise<Response> => {
     const result = await appendIncomingEvent(database, {projectId, provider: 'github',
       providerDeliveryId: verified.deliveryId, eventType: verified.eventType, payloadHash: verified.payloadHash,
       receivedAt: new Date().toISOString()});
-    return Response.json({status: result}, {status: result === 'recorded' ? 202 : 200});
-  } catch (error) { return jsonError(error); }
-};
-
-export const bitrix24Webhook = async (request: Request): Promise<Response> => {
-  try {
-    const database = getDatabase();
-    const projectId = string(process.env.FCP_PROJECT_ID);
-    const adapter = createBitrix24IngressAdapter({config: {
-      portalUrl: string(process.env.BITRIX24_PORTAL_URL, 2_048), memberId: string(process.env.BITRIX24_MEMBER_ID, 128),
-      taskId: Number(process.env.BITRIX24_TASK_ID),
-      projectId, allowedAuthorIds: string(process.env.BITRIX24_ALLOWED_AUTHOR_IDS).split(',').map(Number),
-      applicationTokenRef: envSecret('BITRIX24_APPLICATION_TOKEN', 'messenger_webhook_verify'),
-      restTokenRef: envSecret('BITRIX24_REST_TOKEN', 'messenger_delivery')
-    }, secrets: secretResolver});
-    const received = await adapter.receive({headers: {'content-type': request.headers.get('content-type') ?? undefined},
-      body: new Uint8Array(await request.arrayBuffer())});
-    if (received.status === 'rejected') throw new Error('webhook_denied');
-    const action = parseConversationCommand(received.message.text);
-    const result = await appendIncomingEvent(database, {projectId, provider: 'bitrix24',
-      providerDeliveryId: received.message.messageReference,
-      eventType: action === null ? 'conversation.pending_interpretation' : 'conversation.action',
-      payloadHash: createHash('sha256').update(received.message.messageReference).digest('hex'),
-      actionPayload: action === null ? {status: 'pending_interpretation', providerReference: received.message.messageReference,
-        contour: received.message.contour} :
-        {message: received.message, action},
-      receivedAt: received.message.observedAt});
     return Response.json({status: result}, {status: result === 'recorded' ? 202 : 200});
   } catch (error) { return jsonError(error); }
 };

@@ -19,7 +19,6 @@ apps/web/app/api/health/route.ts
 apps/web/app/api/projects/[projectId]/sources/route.ts
 apps/web/app/api/projects/route.ts
 apps/web/app/api/ready/route.ts
-apps/web/app/api/webhooks/bitrix24/route.ts
 apps/web/app/api/webhooks/github/route.ts
 apps/web/app/oauth/github/complete/route.ts
 apps/web/next-env.d.ts
