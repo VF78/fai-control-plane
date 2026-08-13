@@ -1,6 +1,11 @@
 import {describe, expect, it} from 'vitest';
-import {exclusiveRunner, workerReady} from './jobs.ts';
+import {exclusiveRunner, workerActive, workerReady} from './jobs.ts';
 describe('worker readiness', () => {
+  it('requires an exact activation gate', () => {
+    expect(workerActive('false')).toBe(false);
+    expect(workerActive('true')).toBe(true);
+    expect(() => workerActive(undefined)).toThrow('FCP_WORKER_ACTIVE_required');
+  });
   it('is ready only after both jobs succeed', () => expect(workerReady({lastReconcileAt: '2026-08-13T10:00:00Z',
     lastRetryAt: '2026-08-13T10:00:01Z', lastErrorAt: null,
     lastAgentDeliveryAt: '2026-08-13T10:00:01Z', lastAgentErrorAt: null}).ready).toBe(true));

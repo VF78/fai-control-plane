@@ -3,6 +3,12 @@ export type MvpWorkerJob = (typeof mvpWorkerJobs)[number];
 
 export type WorkerJobHandlers = Readonly<Record<MvpWorkerJob, () => Promise<void>>>;
 
+export const workerActive = (value: string | undefined): boolean => {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error('FCP_WORKER_ACTIVE_required');
+};
+
 /** Static composition: two jobs, no queue/provider registry or dynamic routing. */
 export const runWorkerJob = async (
   job: MvpWorkerJob,

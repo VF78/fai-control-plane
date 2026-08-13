@@ -1,0 +1,25 @@
+model:
+  provider: ${HERMES_PROVIDER}
+  default: ${HERMES_MODEL}
+
+terminal:
+  backend: local
+  cwd: /opt/data/work
+
+toolsets:
+  - file
+  - terminal
+  - search
+  - web
+  - skills
+  - todo
+  - memory
+  - session_search
+  - clarify
+
+tool_loop_guardrails:
+  hard_stop_enabled: true
+  hard_stop_after:
+    exact_failure: 5
+    idempotent_no_progress: 5
+
