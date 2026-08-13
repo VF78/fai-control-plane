@@ -32,13 +32,11 @@ for path in "$environment_file" "$api_secret_file" "$provider_secret_file"; do
     fail "file must be root:root mode 0600: $path"
 done
 
-[[ $(sha256sum "$environment_file" | cut -d ' ' -f 1) ==
-  "$HERMES_APPROVED_CONFIG_SHA256" ]] ||
+[[ $(sha256sum "$environment_file" | cut -d ' ' -f 1) == "$HERMES_APPROVED_CONFIG_SHA256" ]] ||
   fail 'production environment does not match approved digest'
 grep -Eq '^HERMES_IMAGE=' "$environment_file" ||
   fail 'configured image is missing'
-[[ $(sed -n 's/^HERMES_IMAGE=//p' "$environment_file") ==
-  "$HERMES_APPROVED_IMAGE" ]] ||
+[[ $(sed -n 's/^HERMES_IMAGE=//p' "$environment_file") == "$HERMES_APPROVED_IMAGE" ]] ||
   fail 'configured image is not approved'
 grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' "$environment_file" &&
   fail 'production environment contains a placeholder'
