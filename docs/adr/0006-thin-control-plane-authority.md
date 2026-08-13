@@ -6,6 +6,8 @@
 - Supersedes: workflow/runner scope in ADR 0001, task/workflow/run authority in
   ADR 0002, runner-specific product scope in ADR 0003/0005, and Control-Plane
   execution architecture in ADR 0004
+- Conversation note: the decision below to defer MSA and Telegram was
+  superseded by ADR 0007; all other authority boundaries remain in force.
 
 ## Context
 
@@ -62,8 +64,10 @@ workflow.
 
 ### Acceptance contour
 
-ASCON is the first real acceptance contour. MSA and Telegram conversations are
-not launch dependencies. The required path is:
+ASCON is the first real acceptance contour. At the time of this decision, MSA
+and Telegram conversations were not launch dependencies; ADR 0007 supersedes
+that conversation deferral while preserving ASCON as the first contour. The
+original required delivery path is:
 
 `three approved source documents -> Hermes manager plan in GitHub Project ->
 PO plan approval -> human or Hermes development -> Hermes QA -> PO deployment

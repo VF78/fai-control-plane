@@ -9,7 +9,7 @@ every chat.
 Build a lightweight supervisory layer over GitHub Project and Hermes. It joins
 the tools; it does not reproduce them.
 
-The current product contract is issue #158 and ADR 0006:
+The current product contract is issue #158, ADR 0006 and ADR 0007:
 
 | Fact or action | Sole authority |
 | --- | --- |
@@ -24,8 +24,14 @@ role task from Hermes, and displays confirmed external facts. Hermes may use
 Codex CLI internally through Hermes' supported tools/skills; that composition
 is not a Control Plane concern.
 
-The first real acceptance contour is ASCON. Telegram/MSA conversations are
-deferred and are not a launch dependency.
+The first real delivery acceptance contour remains ASCON. Project conversations
+use one operational agent deployment per project with two OS-isolated trust
+contours: a trusted executor/internal Telegram process and a client-facing
+process with only bounded client-visible tools. MSA uses Matrix/Element for the
+external room; ASCON uses its Bitrix24 task chat through supported REST/events.
+Full transcripts remain in the channel providers rather than PostgreSQL.
+The neutral boundary, Bitrix24 adapter, runtime delivery and bounded project
+tools precede the dependency-closed legacy chat/history/share/status cleanup.
 
 ## Product and architecture invariants
 
@@ -42,9 +48,21 @@ deferred and are not a launch dependency.
 - Human approvals remain explicit and audited. Hermes updates the same GitHub
   work item through its supported GitHub capability and never bypasses a human
   approval boundary.
+- External-room membership does not itself grant approval-decision authority.
+  Vladimir decides plans, releases/production and irreversible actions;
+  Vladimir or Vitaliy may decide internal operational approvals; client staff
+  may decide only exact-reference client UAT/acceptance. Composition resolves
+  every sender to an active human project member and enforces this policy.
 - Do not create or extend a second task/status/DAG, TaskPacket/AgentRun
   lifecycle, custom Hermes/Codex runtime, QA state machine, deployment
   executor/lease/daemon, Hermes Kanban, chat store or automated SSH/IAM system.
+- Hermes subagents are temporary work units, not caller IAM, durable channel
+  handlers or a security boundary. Runtime/provider names stay in composition;
+  the same bounded conversation and execution contracts must remain replaceable
+  by OpenClaw and Codex CLI/Claude CLI adapters.
+- Use native runtime gateways for Telegram and Matrix. Bitrix24 uses verified
+  REST/events; browser polling, DOM scraping and browser cookies are not a
+  supported transport.
 - Existing implementations of those surfaces are legacy to inventory/delete in
   #159/#162. Never infer target architecture from merged legacy code.
 - No production, DNS, VPS, `f-ai.studio`, Hermes, MSA contour, or secret change
