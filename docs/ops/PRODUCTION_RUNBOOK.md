@@ -119,7 +119,11 @@ directory `/var/lib/fai-hermes-ascon/work`, candidate loopback port `13020`, Her
 `/etc/fai-hermes-ascon/secrets/api-server.env` containing only the required
 `API_SERVER_KEY`; `/etc/fai-hermes-ascon/secrets/telegram.env` containing only
 `TELEGRAM_BOT_TOKEN`; separate internal/client bridge tokens mounted read-only
-under their profiles; and Control-Plane-side refs
+under their profiles from isolated UID-10000 runtime copies. Their canonical
+sources remain `/etc/fai-hermes-ascon/secrets/{internal-bridge-token,client-bridge-token}`
+as `root:root` mode `0600`; the deploy script recreates matching
+`/var/lib/fai-hermes-ascon/runtime-secrets/*` copies as `10000:10000` mode
+`0600` without displaying their contents. Control-Plane-side refs are
 `/etc/fai-control-plane-mvp/secrets/hermes-token`. DNS, TLS, receiver
 implementation/registration and proof of this ACK remain pending explicit
 approval. The MSA Hermes endpoint, state and credentials are forbidden.
@@ -164,27 +168,33 @@ approved and installed, the only command interface is:
 ```bash
 cd /opt/fai-hermes-ascon
 HERMES_APPROVED_IMAGE='nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6' \
-HERMES_APPROVED_CONFIG_SHA256='7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5' \
+HERMES_APPROVED_CONFIG_SHA256='b68936d8535863f01a8cc3c5d5b00f4da44a2742eb4a3f72e4a4f543200aff40' \
   ./scripts/deploy-hermes-ascon.sh auth
 
 cd /opt/fai-hermes-ascon
 HERMES_APPROVED_IMAGE='nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6' \
-HERMES_APPROVED_CONFIG_SHA256='7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5' \
+HERMES_APPROVED_CONFIG_SHA256='b68936d8535863f01a8cc3c5d5b00f4da44a2742eb4a3f72e4a4f543200aff40' \
   ./scripts/deploy-hermes-ascon.sh stage
 
 cd /opt/fai-hermes-ascon
 HERMES_APPROVED_IMAGE='nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6' \
-HERMES_APPROVED_CONFIG_SHA256='7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5' \
+HERMES_APPROVED_CONFIG_SHA256='b68936d8535863f01a8cc3c5d5b00f4da44a2742eb4a3f72e4a4f543200aff40' \
   ./scripts/deploy-hermes-ascon.sh rollback
 ```
 
 `auth` is a separate interactive approval gate for the official Codex device
-flow. `stage` validates the clean isolated checkout, exact image/config digest,
-root-only environment and five exact secret files, proves Codex auth structurally, then creates only the ASCON data/work
-directory, pulls and starts only project `fai-hermes-ascon`, and checks public
-health plus authenticated capabilities without displaying credentials.
-`rollback` stops only that Compose project and preserves its data. Neither
-action changes DNS, Nginx, TLS or any MSA service.
+flow. Before either `auth` or `stage`, the script makes exactly the three
+configs and five plugin/hook files root-owned mode `0644`, their two mounted
+source directories mode `0755`, the work directory `10000:10000` mode `0700`,
+and recreates the two isolated runtime token copies described above. An
+ephemeral UID-10000 probe must read all ten mounted files and write the work
+directory without config fallback. `stage` then proves Codex auth without
+printing its output, starts only project `fai-hermes-ascon`, waits at most 180
+seconds for container health, and only then checks public health plus
+authenticated capabilities. Any auth-status, readiness, public-health or
+capabilities failure automatically takes the isolated stage down and removes
+its runtime token copies. `rollback` does the same while preserving OAuth and
+canonical data. Neither action changes DNS, Nginx, TLS or any MSA service.
 
 Research sources reviewed 2026-08-14:
 
@@ -375,9 +385,10 @@ install -d -o root -g root -m 0700 \
   /etc/fai-control-plane-mvp/secrets \
   /etc/fai-hermes-ascon \
   /etc/fai-hermes-ascon/secrets
-install -d -o root -g root -m 0750 \
-  /var/lib/fai-hermes-ascon \
-  /var/lib/fai-hermes-ascon/work
+install -d -o root -g root -m 0755 /var/lib/fai-hermes-ascon
+install -d -o 10000 -g 10000 -m 0700 \
+  /var/lib/fai-hermes-ascon/work \
+  /var/lib/fai-hermes-ascon/runtime-secrets
 
 test "$(git -C /opt/fai-control-plane rev-parse HEAD)" = "$rollback_commit"
 test -z "$(git -C /opt/fai-control-plane status --porcelain)"
@@ -443,7 +454,7 @@ unset release_commit repository checkout remote_main source_file temporary_direc
 
 The Hermes environment file is content-independent of the Control Plane
 release commit; its reviewed SHA-256 remains
-`7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5`.
+`b68936d8535863f01a8cc3c5d5b00f4da44a2742eb4a3f72e4a4f543200aff40`.
 Install the approved disabled-worker file and Hermes file without editing them
 interactively:
 
@@ -453,7 +464,7 @@ set +x
 umask 077
 release_commit='<approved-40-hex>'
 cp_digest='<approved-disabled-cp-sha256>'
-hermes_digest=7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5
+hermes_digest=b68936d8535863f01a8cc3c5d5b00f4da44a2742eb4a3f72e4a4f543200aff40
 repository=https://github.com/VF78/fai-control-plane.git
 checkout=/opt/fai-control-plane-mvp
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
