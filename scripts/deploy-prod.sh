@@ -134,7 +134,13 @@ case "$action" in
     ;;
   rollback)
     curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
-    switch_upstream "$new_upstream" "$old_upstream"
+    old_count=$(grep -Fxc "$old_upstream" "$nginx_file" || true)
+    new_count=$(grep -Fxc "$new_upstream" "$nginx_file" || true)
+    if [[ $old_count -eq 0 && $new_count -eq 1 ]]; then
+      switch_upstream "$new_upstream" "$old_upstream"
+    elif [[ $old_count -ne 1 || $new_count -ne 0 ]]; then
+      fail 'unexpected current app upstream'
+    fi
     curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
     curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
     mapfile -t candidate_apps < <(docker ps --filter label=com.docker.compose.project=fai-control-plane-mvp \

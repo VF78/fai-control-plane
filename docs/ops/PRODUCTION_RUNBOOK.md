@@ -54,7 +54,7 @@ Both were resolved from their official registries on 2026-08-14.
 - user Project #4: `PVT_kwHOBIUvJs4Bbi0Q`, URL
   `https://github.com/users/VF78/projects/4`;
 - OAuth callback: `https://app.f-ai.studio/oauth/github/complete`, scope
-  `read:user`; OAuth client ID remains `REQUIRED_GITHUB_OAUTH_CLIENT_ID`;
+  `read:user`; OAuth client ID is `Ov23li6xIseHRQCF38Fz`;
 - webhook: `https://app.f-ai.studio/api/webhooks/github`, content type JSON,
   secret ref `/etc/fai-control-plane-mvp/secrets/github-webhook-secret`;
 - subscribe only to repository `issues` and `sub_issues` events. GitHub sends
@@ -135,6 +135,10 @@ exact ASCON chat/users, binds the API inside the container and publishes it only
 `127.0.0.1:13020`. An Nginx server dedicated to
 `hermes-ascon.f-ai.studio` terminates TLS and forwards only the API paths;
 Control Plane is the only intended API caller. `API_SERVER_KEY` is mandatory.
+The first certificate uses the HTTP-only
+`infra/hermes-ascon/nginx/hermes-ascon.bootstrap.conf`; after issuance it is
+replaced by the final server file, which retains the ACME webroot and exposes
+only health, authenticated capabilities and run submission.
 Initial limits are 1 CPU, 1 GiB memory, 256 PIDs and 1 GiB shared memory; the
 host preflight must be repeated because official guidance recommends 2–4 GiB
 when browser tooling is used. Rollback restores the prior pinned ASCON Hermes
@@ -192,10 +196,110 @@ Research sources reviewed 2026-08-14:
   <https://github.com/NousResearch/hermes-agent/issues/39365>, and
   <https://www.reddit.com/r/hermesagent/comments/1ucke01/vps_deployment_megathread_hermes_agent_june_2026/>.
 
+### Separately approved Hermes TLS/Nginx stage
+
+The commands in this section are inactive and must not be run without separate
+explicit approval of the exact Nginx files and host diff. They may create or
+replace only the `hermes-ascon.f-ai.studio` site and certificate. They must not
+change the `app.f-ai.studio` or marketing sites, any MSA service or file, or
+Amnezia. Never run the authenticated check with shell xtrace enabled.
+
+First prove both public resolvers agree and that port `13020` is either unused
+or bound only to loopback:
+
+```bash
+set -euo pipefail
+test "$(dig +short @1.1.1.1 hermes-ascon.f-ai.studio A | sort -u)" = '201.34.133.184'
+test "$(dig +short @8.8.8.8 hermes-ascon.f-ai.studio A | sort -u)" = '201.34.133.184'
+if ss -ltnH 'sport = :13020' | awk '{print $4}' | grep -Ev '^(127\.0\.0\.1|\[::1\]):13020$'; then
+  exit 1
+fi
+```
+
+For the first certificate, install and enable only the reviewed HTTP bootstrap
+site. Both destination paths must be absent; an existing path is a stop
+condition, not permission to overwrite it:
+
+```bash
+set -euo pipefail
+cd /opt/fai-hermes-ascon
+test ! -e /etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf
+test ! -e /etc/nginx/sites-enabled/hermes-ascon.f-ai.studio.conf
+install -d -o root -g root -m 0755 /var/lib/letsencrypt/.well-known/acme-challenge
+install -o root -g root -m 0644 \
+  infra/hermes-ascon/nginx/hermes-ascon.bootstrap.conf \
+  /etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf
+ln -s /etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf \
+  /etc/nginx/sites-enabled/hermes-ascon.f-ai.studio.conf
+nginx -t
+systemctl reload nginx
+```
+
+Issue a certificate for only the Hermes hostname through the retained ACME
+webroot, then replace only that site's available file with the reviewed final
+configuration:
+
+```bash
+set -euo pipefail
+certbot certonly --webroot --webroot-path /var/lib/letsencrypt \
+  --cert-name hermes-ascon.f-ai.studio \
+  --domains hermes-ascon.f-ai.studio \
+  --non-interactive
+cd /opt/fai-hermes-ascon
+install -o root -g root -m 0644 \
+  infra/hermes-ascon/nginx/hermes-ascon.f-ai.studio.conf \
+  /etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf
+nginx -t
+systemctl reload nginx
+```
+
+After the separately approved Hermes `stage` has started its loopback-only
+gateway, prove public health and authenticated capabilities without displaying
+the API key:
+
+```bash
+set -euo pipefail
+curl -fsS --max-time 15 https://hermes-ascon.f-ai.studio/health >/dev/null
+api_key=$(sed -n 's/^API_SERVER_KEY=//p' \
+  /etc/fai-hermes-ascon/secrets/api-server.env)
+test -n "$api_key"
+printf 'header = "Authorization: Bearer %s"\n' "$api_key" | \
+  curl -fsS --max-time 15 --config - \
+    https://hermes-ascon.f-ai.studio/v1/capabilities >/dev/null
+unset api_key
+```
+
+If certificate issuance or the final config/reload fails, restore only the
+bootstrap file and leave the new site enabled for ACME retry after diagnosis:
+
+```bash
+set -euo pipefail
+cd /opt/fai-hermes-ascon
+install -o root -g root -m 0644 \
+  infra/hermes-ascon/nginx/hermes-ascon.bootstrap.conf \
+  /etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf
+nginx -t
+systemctl reload nginx
+```
+
+For a separately approved full Hermes-site rollback, first run the Hermes
+Compose rollback, then disable only the exact new symlink. Preserve the
+available files and certificate as evidence; do not delete or edit another
+site:
+
+```bash
+set -euo pipefail
+test "$(readlink /etc/nginx/sites-enabled/hermes-ascon.f-ai.studio.conf)" = \
+  '/etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf'
+unlink /etc/nginx/sites-enabled/hermes-ascon.f-ai.studio.conf
+nginx -t
+systemctl reload nginx
+```
+
 ## Preflight and deployment
 
 Prepare `production.env` from `infra/production/production.env.example`, fill
-every `REQUIRED_*`, and install all six secret files without displaying their
+the release commit placeholder, and install all eight secret files without displaying their
 contents. Review the exact commit and diff before copying the clean checkout to
 `/opt/fai-control-plane-mvp`.
 
@@ -221,6 +325,13 @@ its readiness remains 503. Changing it to `true` is a separate exact config
 approval (with a new SHA-256) after provider registrations and synthetic-safe
 Hermes configuration are complete. This prevents staging from starting live
 ASCON work implicitly.
+
+The activation gate is deliberately two-step. First run `stage` with the
+approved `false` configuration and complete the provider/Hermes proofs. Then
+create and approve a second configuration differing only in
+`FCP_WORKER_ACTIVE=true`, calculate its new SHA-256, and rerun `stage` with
+that digest. Only after the worker reports `/ready` may `activate` run; a
+disabled or provider-unready worker can never pass the public cutover gate.
 
 Before activation, prove exactly 16 MVP tables, one ASCON project/binding,
 GitHub Project read/freshness, one synthetic Hermes ACK, Telegram allow/deny
@@ -251,7 +362,8 @@ FCP_APPROVED_RELEASE_COMMIT=<approved-40-hex> \
 ```
 
 Rollback first proves the old app ready, changes only the upstream line back to
-`127.0.0.1:13000`, validates/reloads Nginx, stops only the new MVP web/worker,
+`127.0.0.1:13000` when activation changed it, validates/reloads Nginx, stops
+only the new MVP web/worker,
 and rechecks protected health. Leave all containers and the fresh volume intact
 for evidence; stopped containers are not removed. Do not delete data or
 retry deployment until the failure is understood. Provider callbacks/tokens
