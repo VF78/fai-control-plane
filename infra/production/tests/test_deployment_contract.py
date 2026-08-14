@@ -1,4 +1,6 @@
 import pathlib
+import subprocess
+import tempfile
 import unittest
 
 
@@ -6,6 +8,47 @@ ROOT = pathlib.Path(__file__).parents[3]
 
 
 class DeploymentContractTest(unittest.TestCase):
+    def test_candidate_health_wait_survives_starting_under_errexit(self):
+        script = (ROOT / "scripts/deploy-prod.sh").read_text()
+        start = script.index("wait_for_candidate_health() {")
+        end = script.index("\n}\n\ncandidate_listener_absent()", start) + 3
+        health_wait = script[start:end]
+
+        self.assertIn("if (( all_healthy )); then", health_wait)
+        self.assertNotIn("(( all_healthy )) && return 0", health_wait)
+
+        with tempfile.NamedTemporaryFile(mode="w") as poll_file:
+            poll_file.write("0")
+            poll_file.flush()
+            harness = f"""\
+set -euo pipefail
+{health_wait}
+compose_stub() {{
+  printf '%s\\n' candidate-container-id
+}}
+docker() {{
+  poll=$(cat "$POLL_FILE")
+  poll=$((poll + 1))
+  printf '%s' "$poll" > "$POLL_FILE"
+  if (( poll == 1 )); then
+    printf '%s\\n' 'running starting'
+  else
+    printf '%s\\n' 'running healthy'
+  fi
+}}
+sleep() {{ :; }}
+compose=(compose_stub)
+wait_for_candidate_health "$((SECONDS + 10))" postgres
+test "$(cat "$POLL_FILE")" = 2
+"""
+            subprocess.run(
+                ["bash", "-c", harness],
+                check=True,
+                env={"PATH": "/usr/bin:/bin", "POLL_FILE": poll_file.name},
+                capture_output=True,
+                text=True,
+            )
+
     def test_stage_waits_for_candidate_health_and_cleans_up_failures(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
         stage = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
