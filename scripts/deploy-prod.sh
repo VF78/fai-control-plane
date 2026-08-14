@@ -51,6 +51,49 @@ protected_health() {
   [[ $(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1) == "$rollback_image" ]]
 }
 
+wait_for_candidate_health() {
+  local deadline=$1
+  shift
+  local all_healthy
+  local container_id
+  local health
+  local remaining
+  local service
+  local status
+
+  while (( SECONDS < deadline )); do
+    all_healthy=1
+    for service in "$@"; do
+      container_id=$("${compose[@]}" ps --all -q "$service" 2>/dev/null || true)
+      [[ -n "$container_id" ]] || return 1
+      read -r status health < <(docker inspect --format \
+        '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+        "$container_id" 2>/dev/null || true) || true
+      case "$status" in
+        exited|dead|'') return 1 ;;
+        running) ;;
+        *) return 1 ;;
+      esac
+      case "$health" in
+        healthy) ;;
+        unhealthy|missing|'') return 1 ;;
+        starting) all_healthy=0 ;;
+        *) return 1 ;;
+      esac
+    done
+    (( all_healthy )) && return 0
+    remaining=$((deadline - SECONDS))
+    (( remaining > 0 )) || return 1
+    if (( remaining < 5 )); then sleep "$remaining"; else sleep 5; fi
+  done
+  return 1
+}
+
+candidate_listener_absent() {
+  command -v ss >/dev/null 2>&1 || return 1
+  ! ss -H -ltn 'sport = :13010' | grep -q .
+}
+
 protected_health || fail 'protected-neighbour or rollback health check failed'
 
 if [[ "$action" != rollback ]]; then
@@ -78,6 +121,24 @@ if [[ "$action" != rollback ]]; then
   compose=(docker compose --project-name fai-control-plane-mvp --env-file "$environment_file" -f "$compose_file")
   "${compose[@]}" config --quiet
 fi
+
+stage_cleanup_required=0
+stage_exit_cleanup() {
+  local status=$?
+  if (( stage_cleanup_required )); then
+    if ! "${compose[@]}" down >/dev/null 2>&1; then
+      printf 'deploy-prod: automatic isolated-candidate cleanup failed\n' >&2
+      status=1
+    fi
+    if ! candidate_listener_absent; then
+      printf 'deploy-prod: candidate listener 13010 remains after cleanup\n' >&2
+      status=1
+    fi
+  fi
+  trap - EXIT
+  exit "$status"
+}
+trap stage_exit_cleanup EXIT
 
 switch_upstream() {
   local from=$1
@@ -113,11 +174,17 @@ switch_upstream() {
 
 case "$action" in
   stage)
+    stage_cleanup_required=1
     "${compose[@]}" build web worker migrate bootstrap
     "${compose[@]}" up -d postgres
+    candidate_health_deadline=$((SECONDS + 180))
+    wait_for_candidate_health "$candidate_health_deadline" postgres ||
+      fail 'candidate postgres did not become healthy within 180 seconds'
     "${compose[@]}" run --rm migrate
     "${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap
     "${compose[@]}" up -d --no-deps web worker
+    wait_for_candidate_health "$candidate_health_deadline" postgres web worker ||
+      fail 'candidate postgres, web and worker did not become healthy within 180 seconds'
     "${compose[@]}" ps
     curl -fsS --max-time 10 http://127.0.0.1:13010/api/health >/dev/null
     ;;
@@ -150,4 +217,5 @@ case "$action" in
 esac
 
 protected_health || fail 'protected-neighbour or rollback health changed'
+if [[ "$action" == stage ]]; then stage_cleanup_required=0; fi
 printf 'deploy-prod: %s complete for %s\n' "$action" "$release_commit"
