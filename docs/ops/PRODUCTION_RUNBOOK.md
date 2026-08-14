@@ -727,6 +727,15 @@ removal), verifies that no listener remains on `13010`, and preserves the named
 PostgreSQL volume and built image as evidence. A successful final
 protected-neighbour check disarms the guard.
 
+Before the candidate image build, `stage` normalizes only the non-secret
+tracked checkout from the Git index: the checkout root and tracked parent
+directories become mode `0755`, tracked regular files become `0644`, and only
+index mode `100755` files become `0755`. It rejects unsupported/symlink modes
+and requires the checkout to remain Git-clean. `.git`, untracked paths and all
+`/etc/fai-control-plane-mvp/secrets` are outside this operation. This prevents
+the root preparation `umask` from making runtime files unreadable after Docker
+`COPY` while keeping executable intent identical to the reviewed commit.
+
 The reviewed stage value is `FCP_WORKER_ACTIVE=false`: the worker process is
 healthy but performs no poll, reconciliation, delivery or provider call, and
 its readiness remains 503. Changing it to `true` is a separate exact config
