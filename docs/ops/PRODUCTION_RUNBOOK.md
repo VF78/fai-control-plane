@@ -2,8 +2,9 @@
 
 This is an inactive production procedure for issue #174. It does not authorize
 deployment, callback registration, DNS, TLS, provider writes or secret access.
-Vladimir must approve the exact release commit, this diff, values still marked
-`REQUIRED_*`, secret references and commands before use.
+Vladimir must approve a release package recorded in the owning GitHub issue,
+including the release commit, generated configuration digests, values still
+marked `REQUIRED_*`, secret references and commands before use.
 
 ## Fixed host boundary
 
@@ -304,11 +305,16 @@ systemctl reload nginx
 
 ## Exact Phase B execution package
 
-This package is bound to merged commit
-`310bab760bfd58ed5677e040163f3ac5eec64e78`. If `origin/main` no longer resolves
-to that commit, any destination already exists, an old secret source is absent
-or points somewhere else, or a digest differs, stop and prepare a newly
-reviewed package. Do not weaken a check or reuse a partially prepared path.
+This durable package is release-neutral. After the intended release is merged,
+the owning issue's approval comment must record its 40-character lowercase
+release commit plus the generated disabled-worker and enabled-worker Control
+Plane configuration SHA-256 digests. Copy those approved values into the
+explicit shell placeholders when running a block; never edit the checked-out
+runbook or scripts. If remote `main` or either checkout does not
+resolve to the approved commit, any destination already exists, an old secret
+source is absent or points somewhere else, or a digest differs, stop and
+prepare a newly reviewed approval package. Do not weaken a check or reuse a
+partially prepared path.
 
 ### Prepare only the new host paths
 
@@ -321,11 +327,12 @@ them only after exact approval of this block:
 set -euo pipefail
 set +x
 umask 077
-release_commit=310bab760bfd58ed5677e040163f3ac5eec64e78
+release_commit='<approved-40-hex>'
 repository=https://github.com/VF78/fai-control-plane.git
 rollback_commit=63cc41832bb216edfa5c29e270ce1394f45d9231
 rollback_image="fai-control-plane:${rollback_commit}"
 
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
 test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
 test "$(git -C /opt/fai-control-plane rev-parse HEAD)" = "$rollback_commit"
 test -z "$(git -C /opt/fai-control-plane status --porcelain)"
@@ -372,22 +379,73 @@ unset release_commit repository rollback_commit rollback_image
 Do not create `/var/lib/fai-control-plane-mvp`: the fresh named PostgreSQL
 volume is the Control Plane's only durable business state.
 
-### Install non-secret configuration
+### Generate and approve non-secret Control Plane configuration digests
 
-The reviewed disabled-worker, enabled-worker and Hermes configuration digests
-for this exact commit are respectively
-`e77ed5b7aee65ff0dedbc2c89e0e93ec8317230b1e71fac4d14da541d8748ac4`,
-`6c7156fae6974090fb687dfb995e5965514c30312d77479789a4b8af81b9f75d`
-and `7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5`.
-Install the first and third files without editing them interactively:
+After merge, run this block from the clean intended remote `main` checkout. It
+creates the two exact non-secret Control Plane configurations and prints only
+their SHA-256 digests. Record the release commit and both labeled digests
+together in the owning issue's approval comment. Any source change requires
+regenerating and reapproving the package:
 
 ```bash
 set -euo pipefail
 set +x
 umask 077
-release_commit=310bab760bfd58ed5677e040163f3ac5eec64e78
-cp_digest=e77ed5b7aee65ff0dedbc2c89e0e93ec8317230b1e71fac4d14da541d8748ac4
+release_commit='<approved-40-hex>'
+repository=https://github.com/VF78/fai-control-plane.git
+checkout=$(pwd -P)
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+test "$(git -C "$checkout" rev-parse --show-toplevel)" = "$checkout"
+test "$(git -C "$checkout" rev-parse HEAD)" = "$release_commit"
+test -z "$(git -C "$checkout" status --porcelain)"
+source_file="$checkout/infra/production/production.env.example"
+test "$(grep -Fxc 'FCP_RELEASE_COMMIT=REQUIRED_APPROVED_40_HEX_COMMIT' "$source_file")" -eq 1
+temporary_directory=$(mktemp -d)
+trap 'rm -rf "$temporary_directory"' EXIT
+sed "s/^FCP_RELEASE_COMMIT=REQUIRED_APPROVED_40_HEX_COMMIT$/FCP_RELEASE_COMMIT=${release_commit}/" \
+  "$source_file" >"$temporary_directory/disabled.env"
+test "$(grep -Fxc 'FCP_RELEASE_COMMIT=REQUIRED_APPROVED_40_HEX_COMMIT' \
+  "$temporary_directory/disabled.env")" -eq 0
+test "$(grep -Fxc "FCP_RELEASE_COMMIT=${release_commit}" \
+  "$temporary_directory/disabled.env")" -eq 1
+test "$(grep -Fxc 'FCP_WORKER_ACTIVE=false' "$temporary_directory/disabled.env")" -eq 1
+sed 's/^FCP_WORKER_ACTIVE=false$/FCP_WORKER_ACTIVE=true/' \
+  "$temporary_directory/disabled.env" >"$temporary_directory/enabled.env"
+test "$(grep -Fxc 'FCP_WORKER_ACTIVE=false' "$temporary_directory/enabled.env")" -eq 0
+test "$(grep -Fxc 'FCP_WORKER_ACTIVE=true' "$temporary_directory/enabled.env")" -eq 1
+! grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' \
+  "$temporary_directory/disabled.env" "$temporary_directory/enabled.env"
+printf 'disabled_cp_sha256=%s\n' \
+  "$(sha256sum "$temporary_directory/disabled.env" | cut -d ' ' -f 1)"
+printf 'enabled_cp_sha256=%s\n' \
+  "$(sha256sum "$temporary_directory/enabled.env" | cut -d ' ' -f 1)"
+rm -rf "$temporary_directory"
+trap - EXIT
+unset release_commit repository checkout source_file temporary_directory
+```
+
+The Hermes environment file is content-independent of the Control Plane
+release commit; its reviewed SHA-256 remains
+`7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5`.
+Install the approved disabled-worker file and Hermes file without editing them
+interactively:
+
+```bash
+set -euo pipefail
+set +x
+umask 077
+release_commit='<approved-40-hex>'
+cp_digest='<approved-disabled-cp-sha256>'
 hermes_digest=7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5
+repository=https://github.com/VF78/fai-control-plane.git
+checkout=/opt/fai-control-plane-mvp
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+[[ "$cp_digest" =~ ^[0-9a-f]{64}$ ]]
+[[ "$hermes_digest" =~ ^[0-9a-f]{64}$ ]]
+test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+test "$(git -C "$checkout" rev-parse HEAD)" = "$release_commit"
+test -z "$(git -C "$checkout" status --porcelain)"
 temporary=$(mktemp /etc/fai-control-plane-mvp/production.env.XXXXXX)
 trap 'rm -f "$temporary"' EXIT
 sed "s/^FCP_RELEASE_COMMIT=REQUIRED_APPROVED_40_HEX_COMMIT$/FCP_RELEASE_COMMIT=${release_commit}/" \
@@ -403,7 +461,7 @@ install -o root -g root -m 0600 \
   /etc/fai-hermes-ascon/production.env
 rm -f "$temporary"
 trap - EXIT
-unset release_commit cp_digest hermes_digest temporary
+unset release_commit cp_digest hermes_digest repository checkout temporary
 ```
 
 Do not install the enabled-worker file yet. After the disabled stage and safe
@@ -414,7 +472,15 @@ exactly one line and checking its exact digest:
 set -euo pipefail
 set +x
 umask 077
-enabled_digest=6c7156fae6974090fb687dfb995e5965514c30312d77479789a4b8af81b9f75d
+release_commit='<approved-40-hex>'
+enabled_digest='<approved-enabled-cp-sha256>'
+repository=https://github.com/VF78/fai-control-plane.git
+checkout=/opt/fai-control-plane-mvp
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+[[ "$enabled_digest" =~ ^[0-9a-f]{64}$ ]]
+test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+test "$(git -C "$checkout" rev-parse HEAD)" = "$release_commit"
+test -z "$(git -C "$checkout" status --porcelain)"
 temporary=$(mktemp /etc/fai-control-plane-mvp/production.env.XXXXXX)
 trap 'rm -f "$temporary"' EXIT
 test "$(grep -Fxc 'FCP_WORKER_ACTIVE=false' /etc/fai-control-plane-mvp/production.env)" -eq 1
@@ -425,7 +491,7 @@ test "$(sha256sum "$temporary" | cut -d ' ' -f 1)" = "$enabled_digest"
 install -o root -g root -m 0600 "$temporary" /etc/fai-control-plane-mvp/production.env
 rm -f "$temporary"
 trap - EXIT
-unset enabled_digest temporary
+unset release_commit enabled_digest repository checkout temporary
 ```
 
 ### Secret source to host filename map
@@ -589,10 +655,20 @@ the separately approved Hermes `auth` action and must remain at
 The only approved command interface is:
 
 ```bash
+set -euo pipefail
 cd /opt/fai-control-plane-mvp
-FCP_APPROVED_RELEASE_COMMIT=310bab760bfd58ed5677e040163f3ac5eec64e78 \
-FCP_APPROVED_CONFIG_SHA256=e77ed5b7aee65ff0dedbc2c89e0e93ec8317230b1e71fac4d14da541d8748ac4 \
-  ./scripts/deploy-prod.sh stage 310bab760bfd58ed5677e040163f3ac5eec64e78
+release_commit='<approved-40-hex>'
+config_digest='<approved-disabled-cp-sha256>'
+repository=https://github.com/VF78/fai-control-plane.git
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+[[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
+test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+test "$(git rev-parse HEAD)" = "$release_commit"
+test -z "$(git status --porcelain)"
+FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
+FCP_APPROVED_CONFIG_SHA256="$config_digest" \
+  ./scripts/deploy-prod.sh stage "$release_commit"
+unset release_commit config_digest repository
 ```
 
 `stage` verifies the old rollback image and protected-neighbour health, rejects
@@ -771,15 +847,27 @@ GitHub snapshot is older than ten minutes:
 ```bash
 set -euo pipefail
 cd /opt/fai-control-plane-mvp
+release_commit='<approved-40-hex>'
+config_digest='<approved-enabled-cp-sha256>'
+repository=https://github.com/VF78/fai-control-plane.git
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+[[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
+test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+test "$(git rev-parse HEAD)" = "$release_commit"
+test -z "$(git status --porcelain)"
+synthetic_idempotency_key="phase-b-synthetic:${release_commit}"
+synthetic_correlation_id="phase-b-synthetic-${release_commit}"
 compose=(docker compose --project-name fai-control-plane-mvp \
   --env-file /etc/fai-control-plane-mvp/production.env \
   -f infra/production/compose.yaml)
-inserted=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -qAtc \
-  "insert into outbox_events(project_id,topic,idempotency_key,payload,available_at) values ('fd22736d-1879-47fe-9b8a-c51653a4b635','agent-role-request','phase-b-synthetic:310bab760bfd58ed5677e040163f3ac5eec64e78',jsonb_build_object('request',jsonb_build_object('role','manager','repository',jsonb_build_object('id','phase-b-synthetic','url','https://app.f-ai.studio/'),'projectItem',jsonb_build_object('id','phase-b-synthetic','projectId','fd22736d-1879-47fe-9b8a-c51653a4b635','issueId','phase-b-synthetic','url','https://app.f-ai.studio/phase-b-synthetic'),'observedVersion','phase-b-synthetic-v1','sources','[]'::jsonb,'constraints',jsonb_build_array('Synthetic transport proof only. Do not call tools or mutate any repository, tracker, provider or host.'),'acceptanceCriteria',jsonb_build_array('Return only a transport acknowledgement.'),'approval',null,'correlationId','phase-b-synthetic-310bab760bfd58ed5677e040163f3ac5eec64e78','idempotencyKey','phase-b-synthetic-310bab760bfd58ed5677e040163f3ac5eec64e78')),now()) on conflict(idempotency_key) do nothing returning 1")
+inserted=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp \
+  -v idempotency_key="$synthetic_idempotency_key" \
+  -v correlation_id="$synthetic_correlation_id" -qAtc \
+  "insert into outbox_events(project_id,topic,idempotency_key,payload,available_at) values ('fd22736d-1879-47fe-9b8a-c51653a4b635','agent-role-request',:'idempotency_key',jsonb_build_object('request',jsonb_build_object('role','manager','repository',jsonb_build_object('id','phase-b-synthetic','url','https://app.f-ai.studio/'),'projectItem',jsonb_build_object('id','phase-b-synthetic','projectId','fd22736d-1879-47fe-9b8a-c51653a4b635','issueId','phase-b-synthetic','url','https://app.f-ai.studio/phase-b-synthetic'),'observedVersion','phase-b-synthetic-v1','sources','[]'::jsonb,'constraints',jsonb_build_array('Synthetic transport proof only. Do not call tools or mutate any repository, tracker, provider or host.'),'acceptanceCriteria',jsonb_build_array('Return only a transport acknowledgement.'),'approval',null,'correlationId',:'correlation_id','idempotencyKey',:'correlation_id')),now()) on conflict(idempotency_key) do nothing returning 1")
 test "$inserted" = 1
-FCP_APPROVED_RELEASE_COMMIT=310bab760bfd58ed5677e040163f3ac5eec64e78 \
-FCP_APPROVED_CONFIG_SHA256=6c7156fae6974090fb687dfb995e5965514c30312d77479789a4b8af81b9f75d \
-  ./scripts/deploy-prod.sh stage 310bab760bfd58ed5677e040163f3ac5eec64e78
+FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
+FCP_APPROVED_CONFIG_SHA256="$config_digest" \
+  ./scripts/deploy-prod.sh stage "$release_commit"
 for attempt in $(seq 1 30); do
   if "${compose[@]}" exec -T worker node -e \
     "fetch('http://127.0.0.1:3001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
@@ -788,24 +876,36 @@ for attempt in $(seq 1 30); do
   test "$attempt" -lt 30
   sleep 5
 done
-hermes_ack=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -Atc \
-  "select count(*) from outbox_events where idempotency_key='phase-b-synthetic:310bab760bfd58ed5677e040163f3ac5eec64e78' and delivered_at is not null and delivery_reference is not null and last_error_code is null")
+hermes_ack=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp \
+  -v idempotency_key="$synthetic_idempotency_key" -Atc \
+  "select count(*) from outbox_events where idempotency_key=:'idempotency_key' and delivered_at is not null and delivery_reference is not null and last_error_code is null")
 test "$hermes_ack" = 1
 fresh=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -Atc \
   "select count(*) from (select observed_at,error_code,source_url from tracker_snapshots where binding_id='7a7fcbf7-3753-4ac5-b64d-718d6daff573' order by observed_at desc,created_at desc limit 1) latest where error_code is null and source_url='https://github.com/users/VF78/projects/4' and observed_at >= now()-interval '10 minutes'")
 test "$fresh" = 1
 curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready | \
   grep -Fq '"clientConversationActions":false'
-unset compose inserted attempt hermes_ack fresh
+unset release_commit config_digest repository synthetic_idempotency_key \
+  synthetic_correlation_id compose inserted attempt hermes_ack fresh
 ```
 
 After Vladimir approves that evidence and the exact one-line proxy change:
 
 ```bash
+set -euo pipefail
 cd /opt/fai-control-plane-mvp
-FCP_APPROVED_RELEASE_COMMIT=310bab760bfd58ed5677e040163f3ac5eec64e78 \
-FCP_APPROVED_CONFIG_SHA256=6c7156fae6974090fb687dfb995e5965514c30312d77479789a4b8af81b9f75d \
-  ./scripts/deploy-prod.sh activate 310bab760bfd58ed5677e040163f3ac5eec64e78
+release_commit='<approved-40-hex>'
+config_digest='<approved-enabled-cp-sha256>'
+repository=https://github.com/VF78/fai-control-plane.git
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+[[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
+test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+test "$(git rev-parse HEAD)" = "$release_commit"
+test -z "$(git status --porcelain)"
+FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
+FCP_APPROVED_CONFIG_SHA256="$config_digest" \
+  ./scripts/deploy-prod.sh activate "$release_commit"
+unset release_commit config_digest repository
 ```
 
 `activate` requires web and worker readiness, changes only the existing
@@ -818,9 +918,16 @@ route, service or network rule changes.
 If candidate readiness or public smoke fails, run:
 
 ```bash
+set -euo pipefail
 cd /opt/fai-control-plane-mvp
-FCP_APPROVED_RELEASE_COMMIT=310bab760bfd58ed5677e040163f3ac5eec64e78 \
-  ./scripts/deploy-prod.sh rollback 310bab760bfd58ed5677e040163f3ac5eec64e78
+release_commit='<approved-40-hex>'
+repository=https://github.com/VF78/fai-control-plane.git
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+test "$(git rev-parse HEAD)" = "$release_commit"
+test -z "$(git status --porcelain)"
+FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
+  ./scripts/deploy-prod.sh rollback "$release_commit"
 test "$(grep -Fxc '    server 127.0.0.1:13000;' /etc/nginx/sites-available/app.f-ai.studio.conf)" -eq 1
 test "$(grep -Fxc '    server 127.0.0.1:13010;' /etc/nginx/sites-available/app.f-ai.studio.conf)" -eq 0
 test "$(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1)" = \
@@ -830,6 +937,7 @@ curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
 test -z "$(docker ps --filter label=com.docker.compose.project=fai-control-plane-mvp \
   --filter status=running --format '{{.Names}}' | grep -E -- '-(web|worker)-[0-9]+$' || true)"
 docker volume inspect fai-control-plane-mvp-postgres-data >/dev/null
+unset release_commit repository
 ```
 
 Rollback first proves the old app ready, changes only the upstream line back to
