@@ -43,10 +43,10 @@ grep -Eq '^HERMES_IMAGE=' "$environment_file" ||
   fail 'configured image is not approved'
 grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' "$environment_file" &&
   fail 'production environment contains a placeholder'
-[[ $(grep -c '^API_SERVER_KEY=' "$api_secret_file") -eq 1 ]] ||
-  fail 'API secret file must contain exactly one API_SERVER_KEY'
-[[ $(grep -c '^TELEGRAM_BOT_TOKEN=' "$telegram_secret_file") -eq 1 ]] ||
-  fail 'Telegram secret file must contain exactly one TELEGRAM_BOT_TOKEN'
+[[ $(wc -l < "$api_secret_file") -eq 1 && $(grep -Ec '^API_SERVER_KEY=[^[:space:]]+$' "$api_secret_file") -eq 1 ]] ||
+  fail 'API secret file must contain only one non-empty API_SERVER_KEY'
+[[ $(wc -l < "$telegram_secret_file") -eq 1 && $(grep -Ec '^TELEGRAM_BOT_TOKEN=[^[:space:]]+$' "$telegram_secret_file") -eq 1 ]] ||
+  fail 'Telegram secret file must contain only one non-empty TELEGRAM_BOT_TOKEN'
 for path in "$internal_bridge_token" "$client_bridge_token"; do
   token_length=$(wc -c < "$path")
   (( token_length >= 33 && token_length <= 513 )) || fail "invalid bridge token length: $path"
