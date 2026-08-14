@@ -718,6 +718,15 @@ It then builds and starts only the new stack, migrates the empty database,
 bootstraps idempotently, and checks the unpublished candidate through
 `127.0.0.1:13010`. It does not touch Nginx.
 
+From the first `stage` mutation through the final protected-neighbour check, an
+error cleanup guard is active. PostgreSQL, web and the inactive worker must all
+become healthy within one 180-second candidate-health deadline; a missing,
+exited, dead or unhealthy container fails immediately. Any stage failure runs
+only `docker compose down` for `fai-control-plane-mvp` (without `-v` or image
+removal), verifies that no listener remains on `13010`, and preserves the named
+PostgreSQL volume and built image as evidence. A successful final
+protected-neighbour check disarms the guard.
+
 The reviewed stage value is `FCP_WORKER_ACTIVE=false`: the worker process is
 healthy but performs no poll, reconciliation, delivery or provider call, and
 its readiness remains 503. Changing it to `true` is a separate exact config
