@@ -80,6 +80,31 @@ test "$(cat "$POLL_FILE")" = 2
             script.rindex("stage_cleanup_required=0"),
         )
 
+    def test_stage_reports_candidate_phases_and_attributes_data_setup_failures(self):
+        script = (ROOT / "scripts/deploy-prod.sh").read_text()
+        stage = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
+
+        for message in (
+            "stage: building isolated candidate images (web, worker, migrate, bootstrap)",
+            "stage: waiting for isolated candidate postgres health",
+            "stage: applying isolated candidate migrations",
+            "stage: bootstrapping isolated candidate data",
+            "stage: waiting for isolated candidate web and worker health",
+            "stage: checking isolated candidate web health endpoint",
+        ):
+            self.assertIn(f"log '{message}'", stage)
+
+        self.assertIn(
+            'if ! "${compose[@]}" run --rm migrate; then\n'
+            "      fail 'candidate migrations failed'",
+            stage,
+        )
+        self.assertIn(
+            'if ! "${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap; then\n'
+            "      fail 'candidate bootstrap failed'",
+            stage,
+        )
+
     def test_stage_normalizes_only_git_tracked_checkout_modes(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
         stage = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
