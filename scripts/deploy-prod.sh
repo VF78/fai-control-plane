@@ -94,6 +94,34 @@ candidate_listener_absent() {
   ! ss -H -ltn 'sport = :13010' | grep -q .
 }
 
+normalize_checkout_modes() {
+  local directory
+  local mode
+  local path
+  local record
+
+  chmod 0755 "$deploy_root"
+  while IFS= read -r -d '' record; do
+    mode=${record%% *}
+    path=${record#*$'\t'}
+    [[ "$mode" == 100644 || "$mode" == 100755 ]] ||
+      fail "unsupported tracked file mode: $mode"
+    [[ -f "$deploy_root/$path" && ! -L "$deploy_root/$path" ]] ||
+      fail "tracked path is not a regular file: $path"
+
+    chmod 0644 -- "$deploy_root/$path"
+    directory=$(dirname "$path")
+    while [[ "$directory" != . ]]; do
+      chmod 0755 -- "$deploy_root/$directory"
+      directory=$(dirname "$directory")
+    done
+    if [[ "$mode" == 100755 ]]; then chmod 0755 -- "$deploy_root/$path"; fi
+  done < <(git ls-files --stage -z)
+
+  [[ -z $(git status --porcelain) ]] ||
+    fail 'checkout mode normalization changed tracked Git state'
+}
+
 protected_health || fail 'protected-neighbour or rollback health check failed'
 
 if [[ "$action" != rollback ]]; then
@@ -175,6 +203,7 @@ switch_upstream() {
 case "$action" in
   stage)
     stage_cleanup_required=1
+    normalize_checkout_modes
     "${compose[@]}" build web worker migrate bootstrap
     "${compose[@]}" up -d postgres
     candidate_health_deadline=$((SECONDS + 180))
