@@ -22,6 +22,10 @@ fail() {
   exit 1
 }
 
+log() {
+  printf 'deploy-prod: %s\n' "$1"
+}
+
 [[ $# -eq 2 ]] || usage
 readonly action=$1
 readonly release_commit=$2
@@ -206,18 +210,33 @@ case "$action" in
   stage)
     stage_cleanup_required=1
     normalize_checkout_modes
+    log 'stage: building isolated candidate images (web, worker, migrate, bootstrap)'
     "${compose[@]}" build web worker migrate bootstrap
+    log 'stage: starting isolated candidate postgres'
     "${compose[@]}" up -d postgres
+    log 'stage: waiting for isolated candidate postgres health'
     candidate_health_deadline=$((SECONDS + 180))
     wait_for_candidate_health "$candidate_health_deadline" postgres ||
       fail 'candidate postgres did not become healthy within 180 seconds'
-    "${compose[@]}" run --rm migrate
-    "${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap
+    log 'stage: isolated candidate postgres is healthy'
+    log 'stage: applying isolated candidate migrations'
+    if ! "${compose[@]}" run --rm migrate; then
+      fail 'candidate migrations failed'
+    fi
+    log 'stage: bootstrapping isolated candidate data'
+    if ! "${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap; then
+      fail 'candidate bootstrap failed'
+    fi
+    log 'stage: starting isolated candidate web and worker'
     "${compose[@]}" up -d --no-deps web worker
+    log 'stage: waiting for isolated candidate web and worker health'
     wait_for_candidate_health "$candidate_health_deadline" postgres web worker ||
       fail 'candidate postgres, web and worker did not become healthy within 180 seconds'
+    log 'stage: isolated candidate web and worker are healthy'
     "${compose[@]}" ps
-    curl -fsS --max-time 10 http://127.0.0.1:13010/api/health >/dev/null
+    log 'stage: checking isolated candidate web health endpoint'
+    curl -fsS --max-time 10 http://127.0.0.1:13010/api/health >/dev/null ||
+      fail 'candidate web health endpoint failed'
     ;;
   activate)
     curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready >/dev/null
