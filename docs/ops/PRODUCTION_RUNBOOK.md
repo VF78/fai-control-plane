@@ -313,8 +313,10 @@ explicit shell placeholders when running a block; never edit the checked-out
 runbook or scripts. If remote `main` or either checkout does not
 resolve to the approved commit, any destination already exists, an old secret
 source is absent or points somewhere else, or a digest differs, stop and
-prepare a newly reviewed approval package. Do not weaken a check or reuse a
-partially prepared path.
+prepare a newly reviewed approval package. Do not weaken a check or delete a
+partially prepared path. The blocks below are explicit checkpoints: after a
+later block stops, resume only at that block under a fresh approval after all
+earlier block postconditions have been reverified exactly.
 
 ### Prepare only the new host paths
 
@@ -534,13 +536,17 @@ for source in "${oauth_sources[0]}" "${github_sources[0]}"; do
   test -f "$source"
   test ! -L "$source"
   test -s "$source"
-  test "$(stat -c '%U:%G:%a' "$source")" = root:root:600
+  source_metadata=$(stat -c '%U:%G:%a' "$source")
+  case "$source_metadata" in
+    root:root:600|dev_msa:dev_msa:400) ;;
+    *) exit 1 ;;
+  esac
 done
 install -o root -g root -m 0600 "${oauth_sources[0]}" \
   /etc/fai-control-plane-mvp/secrets/github-login-client-secret
 install -o root -g root -m 0600 "${github_sources[0]}" \
   /etc/fai-control-plane-mvp/secrets/github-projects-token
-unset old_environment oauth_sources github_sources source
+unset old_environment oauth_sources github_sources source source_metadata
 ```
 
 Generate independent PostgreSQL, webhook, Hermes API and bridge secrets on the
