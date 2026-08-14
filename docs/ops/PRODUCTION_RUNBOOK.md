@@ -310,13 +310,15 @@ the owning issue's approval comment must record its 40-character lowercase
 release commit plus the generated disabled-worker and enabled-worker Control
 Plane configuration SHA-256 digests. Copy those approved values into the
 explicit shell placeholders when running a block; never edit the checked-out
-runbook or scripts. If remote `main` or either checkout does not
-resolve to the approved commit, any destination already exists, an old secret
+runbook or scripts. If the fetched remote `main` does not contain the approved
+commit as an ancestor, either checkout is not clean at
+that exact approved commit, any destination already exists, an old secret
 source is absent or points somewhere else, or a digest differs, stop and
-prepare a newly reviewed approval package. Do not weaken a check or delete a
-partially prepared path. The blocks below are explicit checkpoints: after a
-later block stops, resume only at that block under a fresh approval after all
-earlier block postconditions have been reverified exactly.
+prepare a newly reviewed approval package. Remote-tip files are never used for
+the release. Do not weaken a check or delete a partially prepared path. The
+blocks below are explicit checkpoints: after a later block stops, resume only
+at that block under a fresh approval after all earlier block postconditions
+have been reverified exactly.
 
 ### Prepare only the new host paths
 
@@ -335,7 +337,6 @@ rollback_commit=63cc41832bb216edfa5c29e270ce1394f45d9231
 rollback_image="fai-control-plane:${rollback_commit}"
 
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
-test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
 test "$(git -C /opt/fai-control-plane rev-parse HEAD)" = "$rollback_commit"
 test -z "$(git -C /opt/fai-control-plane status --porcelain)"
 test "$(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1)" = "$rollback_image"
@@ -352,11 +353,19 @@ for path in \
 done
 
 git clone --no-checkout "$repository" /opt/fai-control-plane-mvp
+git -C /opt/fai-control-plane-mvp fetch --no-tags "$repository" refs/heads/main
+remote_main=$(git -C /opt/fai-control-plane-mvp rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+git -C /opt/fai-control-plane-mvp merge-base --is-ancestor "$release_commit" "$remote_main"
 git -C /opt/fai-control-plane-mvp checkout --detach "$release_commit"
 test "$(git -C /opt/fai-control-plane-mvp rev-parse HEAD)" = "$release_commit"
 test -z "$(git -C /opt/fai-control-plane-mvp status --porcelain)"
 
 git clone --no-checkout "$repository" /opt/fai-hermes-ascon
+git -C /opt/fai-hermes-ascon fetch --no-tags "$repository" refs/heads/main
+hermes_remote_main=$(git -C /opt/fai-hermes-ascon rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$hermes_remote_main" =~ ^[0-9a-f]{40}$ ]]
+git -C /opt/fai-hermes-ascon merge-base --is-ancestor "$release_commit" "$hermes_remote_main"
 git -C /opt/fai-hermes-ascon checkout --detach "$release_commit"
 test "$(git -C /opt/fai-hermes-ascon rev-parse HEAD)" = "$release_commit"
 test -z "$(git -C /opt/fai-hermes-ascon status --porcelain)"
@@ -375,7 +384,7 @@ test -z "$(git -C /opt/fai-control-plane status --porcelain)"
 test "$(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1)" = "$rollback_image"
 test "$(docker inspect --format '{{.State.Health.Status}}' fai-control-plane-production-web-1)" = healthy
 curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
-unset release_commit repository rollback_commit rollback_image
+unset release_commit repository remote_main hermes_remote_main rollback_commit rollback_image
 ```
 
 Do not create `/var/lib/fai-control-plane-mvp`: the fresh named PostgreSQL
@@ -383,11 +392,13 @@ volume is the Control Plane's only durable business state.
 
 ### Generate and approve non-secret Control Plane configuration digests
 
-After merge, run this block from the clean intended remote `main` checkout. It
-creates the two exact non-secret Control Plane configurations and prints only
-their SHA-256 digests. Record the release commit and both labeled digests
-together in the owning issue's approval comment. Any source change requires
-regenerating and reapproving the package:
+After merge, run this block from the clean checkout at the approved release
+commit. It fetches current remote `main` only for the ancestry proof; the two
+exact non-secret Control Plane configurations are generated only from the
+approved checkout bytes. It prints only their SHA-256 digests. Record the
+release commit and both labeled digests together in the owning issue's approval
+comment. Any approved-checkout source change requires regenerating and
+reapproving the package:
 
 ```bash
 set -euo pipefail
@@ -397,7 +408,10 @@ release_commit='<approved-40-hex>'
 repository=https://github.com/VF78/fai-control-plane.git
 checkout=$(pwd -P)
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
-test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+git -C "$checkout" fetch --no-tags "$repository" refs/heads/main
+remote_main=$(git -C "$checkout" rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+git -C "$checkout" merge-base --is-ancestor "$release_commit" "$remote_main"
 test "$(git -C "$checkout" rev-parse --show-toplevel)" = "$checkout"
 test "$(git -C "$checkout" rev-parse HEAD)" = "$release_commit"
 test -z "$(git -C "$checkout" status --porcelain)"
@@ -424,7 +438,7 @@ printf 'enabled_cp_sha256=%s\n' \
   "$(sha256sum "$temporary_directory/enabled.env" | cut -d ' ' -f 1)"
 rm -rf "$temporary_directory"
 trap - EXIT
-unset release_commit repository checkout source_file temporary_directory
+unset release_commit repository checkout remote_main source_file temporary_directory
 ```
 
 The Hermes environment file is content-independent of the Control Plane
@@ -445,7 +459,10 @@ checkout=/opt/fai-control-plane-mvp
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
 [[ "$cp_digest" =~ ^[0-9a-f]{64}$ ]]
 [[ "$hermes_digest" =~ ^[0-9a-f]{64}$ ]]
-test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+git -C "$checkout" fetch --no-tags "$repository" refs/heads/main
+remote_main=$(git -C "$checkout" rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+git -C "$checkout" merge-base --is-ancestor "$release_commit" "$remote_main"
 test "$(git -C "$checkout" rev-parse HEAD)" = "$release_commit"
 test -z "$(git -C "$checkout" status --porcelain)"
 temporary=$(mktemp /etc/fai-control-plane-mvp/production.env.XXXXXX)
@@ -463,7 +480,7 @@ install -o root -g root -m 0600 \
   /etc/fai-hermes-ascon/production.env
 rm -f "$temporary"
 trap - EXIT
-unset release_commit cp_digest hermes_digest repository checkout temporary
+unset release_commit cp_digest hermes_digest repository checkout remote_main temporary
 ```
 
 Do not install the enabled-worker file yet. After the disabled stage and safe
@@ -480,7 +497,10 @@ repository=https://github.com/VF78/fai-control-plane.git
 checkout=/opt/fai-control-plane-mvp
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
 [[ "$enabled_digest" =~ ^[0-9a-f]{64}$ ]]
-test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+git -C "$checkout" fetch --no-tags "$repository" refs/heads/main
+remote_main=$(git -C "$checkout" rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+git -C "$checkout" merge-base --is-ancestor "$release_commit" "$remote_main"
 test "$(git -C "$checkout" rev-parse HEAD)" = "$release_commit"
 test -z "$(git -C "$checkout" status --porcelain)"
 temporary=$(mktemp /etc/fai-control-plane-mvp/production.env.XXXXXX)
@@ -493,7 +513,7 @@ test "$(sha256sum "$temporary" | cut -d ' ' -f 1)" = "$enabled_digest"
 install -o root -g root -m 0600 "$temporary" /etc/fai-control-plane-mvp/production.env
 rm -f "$temporary"
 trap - EXIT
-unset release_commit enabled_digest repository checkout temporary
+unset release_commit enabled_digest repository checkout remote_main temporary
 ```
 
 ### Secret source to host filename map
@@ -668,13 +688,16 @@ config_digest='<approved-disabled-cp-sha256>'
 repository=https://github.com/VF78/fai-control-plane.git
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
 [[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
-test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+git fetch --no-tags "$repository" refs/heads/main
+remote_main=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+git merge-base --is-ancestor "$release_commit" "$remote_main"
 test "$(git rev-parse HEAD)" = "$release_commit"
 test -z "$(git status --porcelain)"
 FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
 FCP_APPROVED_CONFIG_SHA256="$config_digest" \
   ./scripts/deploy-prod.sh stage "$release_commit"
-unset release_commit config_digest repository
+unset release_commit config_digest repository remote_main
 ```
 
 `stage` verifies the old rollback image and protected-neighbour health, rejects
@@ -858,7 +881,10 @@ config_digest='<approved-enabled-cp-sha256>'
 repository=https://github.com/VF78/fai-control-plane.git
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
 [[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
-test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+git fetch --no-tags "$repository" refs/heads/main
+remote_main=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+git merge-base --is-ancestor "$release_commit" "$remote_main"
 test "$(git rev-parse HEAD)" = "$release_commit"
 test -z "$(git status --porcelain)"
 synthetic_idempotency_key="phase-b-synthetic:${release_commit}"
@@ -891,7 +917,7 @@ fresh=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane
 test "$fresh" = 1
 curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready | \
   grep -Fq '"clientConversationActions":false'
-unset release_commit config_digest repository synthetic_idempotency_key \
+unset release_commit config_digest repository remote_main synthetic_idempotency_key \
   synthetic_correlation_id compose inserted attempt hermes_ack fresh
 ```
 
@@ -905,13 +931,16 @@ config_digest='<approved-enabled-cp-sha256>'
 repository=https://github.com/VF78/fai-control-plane.git
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
 [[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
-test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+git fetch --no-tags "$repository" refs/heads/main
+remote_main=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+git merge-base --is-ancestor "$release_commit" "$remote_main"
 test "$(git rev-parse HEAD)" = "$release_commit"
 test -z "$(git status --porcelain)"
 FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
 FCP_APPROVED_CONFIG_SHA256="$config_digest" \
   ./scripts/deploy-prod.sh activate "$release_commit"
-unset release_commit config_digest repository
+unset release_commit config_digest repository remote_main
 ```
 
 `activate` requires web and worker readiness, changes only the existing
@@ -929,7 +958,10 @@ cd /opt/fai-control-plane-mvp
 release_commit='<approved-40-hex>'
 repository=https://github.com/VF78/fai-control-plane.git
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
-test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+git fetch --no-tags "$repository" refs/heads/main
+remote_main=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+git merge-base --is-ancestor "$release_commit" "$remote_main"
 test "$(git rev-parse HEAD)" = "$release_commit"
 test -z "$(git status --porcelain)"
 FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
@@ -943,7 +975,7 @@ curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
 test -z "$(docker ps --filter label=com.docker.compose.project=fai-control-plane-mvp \
   --filter status=running --format '{{.Names}}' | grep -E -- '-(web|worker)-[0-9]+$' || true)"
 docker volume inspect fai-control-plane-mvp-postgres-data >/dev/null
-unset release_commit repository
+unset release_commit repository remote_main
 ```
 
 Rollback first proves the old app ready, changes only the upstream line back to
