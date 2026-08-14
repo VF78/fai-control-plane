@@ -81,7 +81,9 @@ wait_for_candidate_health() {
         *) return 1 ;;
       esac
     done
-    (( all_healthy )) && return 0
+    if (( all_healthy )); then
+      return 0
+    fi
     remaining=$((deadline - SECONDS))
     (( remaining > 0 )) || return 1
     if (( remaining < 5 )); then sleep "$remaining"; else sleep 5; fi
