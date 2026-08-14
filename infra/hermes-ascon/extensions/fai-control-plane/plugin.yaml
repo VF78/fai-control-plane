@@ -1,0 +1,3 @@
+name: fai-control-plane
+version: "1.0.0"
+description: Bounded ASCON Control Plane actions with session-bound messenger identity

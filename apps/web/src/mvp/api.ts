@@ -8,7 +8,6 @@ import {
   createStores,
   databaseMvpReady,
   listProjects,
-  pendingInterpretationCount,
   subjectHash
 } from '@fai-control-plane/db';
 import {decideApproval} from '@fai-control-plane/application';
@@ -212,8 +211,7 @@ export const health = (): Response => Response.json({status: 'ok', service: 'web
 export const ready = async (): Promise<Response> => {
   const database = getDatabase();
   const ok = await databaseMvpReady(database);
-  const pendingInterpretation = ok ? await pendingInterpretationCount(database) : 0;
   return Response.json({status: ok ? 'ready' : 'not_ready', checks: {database: ok,
-    conversationAutomation: false}, pendingInterpretation},
+    internalConversationActions: true, clientConversationActions: false}},
     {status: ok ? 200 : 503, headers: {'cache-control': 'no-store'}});
 };

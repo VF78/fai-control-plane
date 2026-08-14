@@ -1,0 +1,11 @@
+model:
+  provider: openai-codex
+  default: gpt-5.6-terra
+
+plugins:
+  enabled:
+    - fai-control-plane
+
+toolsets:
+  - fai_internal
+  - clarify

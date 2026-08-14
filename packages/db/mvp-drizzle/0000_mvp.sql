@@ -128,9 +128,7 @@ CREATE TABLE "incoming_events" (
   "provider_delivery_id" text NOT NULL,
   "event_type" text NOT NULL,
   "payload_hash" text NOT NULL,
-  "action_payload" jsonb,
   "received_at" timestamptz NOT NULL,
-  "processed_at" timestamptz,
   "created_at" timestamptz DEFAULT now() NOT NULL,
   CONSTRAINT "incoming_events_delivery_unique" UNIQUE ("provider", "provider_delivery_id")
 );

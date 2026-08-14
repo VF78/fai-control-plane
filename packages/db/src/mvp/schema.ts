@@ -139,9 +139,7 @@ export const incomingEvents = pgTable('incoming_events', {
   providerDeliveryId: text('provider_delivery_id').notNull(),
   eventType: text('event_type').notNull(),
   payloadHash: text('payload_hash').notNull(),
-  actionPayload: jsonb('action_payload').$type<Readonly<Record<string, unknown>>>(),
   receivedAt: timestamp('received_at', {withTimezone: true}).notNull(),
-  processedAt: timestamp('processed_at', {withTimezone: true}),
   createdAt: createdAt()
 }, (table) => [uniqueIndex('incoming_events_delivery_unique').on(table.provider, table.providerDeliveryId)]);
 

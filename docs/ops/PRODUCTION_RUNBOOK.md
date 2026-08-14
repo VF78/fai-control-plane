@@ -78,12 +78,13 @@ Both were resolved from their official registries on 2026-08-14.
 Never print the token. A separately approved transfer must write directly to
 the mode-0600 host file.
 
-The current Control Plane Telegram adapter safely handles deterministic
-commands and outbound notices, but free text remains pending interpretation.
-The required internal Hermes role therefore is not activation-ready: exactly
-one poller must own the bot, route only the approved chat/users to an isolated
-internal profile, and expose bounded Control Plane actions without duplicating
-the connector or granting production authority.
+Hermes is the only inbound Telegram poller. It routes only the approved
+chat/users to the isolated `internal` profile. Control Plane retains outbound
+`sendMessage` delivery only; it has no `getUpdates`, chat transcript or local
+command queue. The native plugin promotes provider message identity only after
+Hermes authorization and exposes five bounded actions through
+`POST /api/hermes/conversation-actions`; actor, contour and authority remain
+server-owned.
 
 ### Bitrix24
 
@@ -93,7 +94,7 @@ the connector or granting production authority.
   isolated Hermes state, never in this repository, logs or Control Plane env;
 - the legacy direct REST webhook and adapter are not part of the MVP surface.
 
-The client role is not activation-ready. It requires a persistent browser
+The `bitrix-client` profile remains deliberately fail-closed. It requires a persistent browser
 backend and a narrow authenticated Control Plane capability for deduplicated
 issue intake and bounded replies. General terminal, checkout, status,
 production, internal-history and approval capabilities are forbidden.
@@ -109,7 +110,9 @@ The separate deployment uses `/opt/fai-hermes-ascon`, state/work directory
 `/var/lib/fai-hermes-ascon` (mounted only at `/opt/data`) and dedicated work
 directory `/var/lib/fai-hermes-ascon/work`, candidate loopback port `13020`, Hermes-side ref
 `/etc/fai-hermes-ascon/secrets/api-server.env` containing only the required
-`API_SERVER_KEY`, and Control-Plane-side ref
+`API_SERVER_KEY`; `/etc/fai-hermes-ascon/secrets/telegram.env` containing only
+`TELEGRAM_BOT_TOKEN`; separate internal/client bridge tokens mounted read-only
+under their profiles; and Control-Plane-side refs
 `/etc/fai-control-plane-mvp/secrets/hermes-token`. DNS, TLS, receiver
 implementation/registration and proof of this ACK remain pending explicit
 approval. The MSA Hermes endpoint, state and credentials are forbidden.
@@ -127,7 +130,8 @@ The supported deployment choice is the official Docker image
 `nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6`
 in a
 separate Compose project `fai-hermes-ascon`. The initial safe stage keeps
-dashboard/messaging/cron and browser tooling disabled, binds the API inside the container and publishes it only to
+dashboard/cron and browser tooling disabled, enables Telegram only for the
+exact ASCON chat/users, binds the API inside the container and publishes it only to
 `127.0.0.1:13020`. An Nginx server dedicated to
 `hermes-ascon.f-ai.studio` terminates TLS and forwards only the API paths;
 Control Plane is the only intended API caller. `API_SERVER_KEY` is mandatory.
@@ -165,7 +169,7 @@ HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
 
 `auth` is a separate interactive approval gate for the official Codex device
 flow. `stage` validates the clean isolated checkout, exact image/config digest,
-root-only environment and API secret, proves Codex auth structurally, then creates only the ASCON data/work
+root-only environment and five exact secret files, proves Codex auth structurally, then creates only the ASCON data/work
 directory, pulls and starts only project `fai-hermes-ascon`, and checks public
 health plus authenticated capabilities without displaying credentials.
 `rollback` stops only that Compose project and preserves its data. Neither

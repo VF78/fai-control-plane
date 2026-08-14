@@ -17,6 +17,21 @@ toolsets:
   - session_search
   - clarify
 
+plugins:
+  enabled:
+    - fai-control-plane
+
+gateway:
+  multiplex_profiles: true
+  multiplex_profile_allowlist:
+    - internal
+    - bitrix-client
+  profile_routes:
+    - name: ascon-internal
+      platform: telegram
+      chat_id: "-5540760630"
+      profile: internal
+
 tool_loop_guardrails:
   hard_stop_enabled: true
   hard_stop_after:

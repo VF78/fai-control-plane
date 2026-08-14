@@ -6,6 +6,7 @@ services:
     command: ["gateway", "run"]
     env_file:
       - ${HERMES_API_SECRET_ENV_FILE:?required}
+      - ${HERMES_TELEGRAM_SECRET_ENV_FILE:?required}
     environment:
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: "0.0.0.0"
@@ -14,9 +15,20 @@ services:
       HERMES_GATEWAY_NO_SUPERVISE: "1"
       HERMES_PROVIDER: openai-codex
       HERMES_MODEL: ${HERMES_MODEL:?required}
+      FCP_CONVERSATION_ACTION_URL: ${FCP_CONVERSATION_ACTION_URL:?required}
+      TELEGRAM_ALLOWED_USERS: ${HERMES_TELEGRAM_ALLOWED_USERS:?required}
+      TELEGRAM_ALLOWED_CHATS: ${HERMES_TELEGRAM_CHAT_ID:?required}
+      TELEGRAM_GROUP_ALLOWED_USERS: ${HERMES_TELEGRAM_ALLOWED_USERS:?required}
+      TELEGRAM_GROUP_ALLOWED_CHATS: ${HERMES_TELEGRAM_CHAT_ID:?required}
     volumes:
       - /var/lib/fai-hermes-ascon:/opt/data
       - ./config.yaml:/opt/data/config.yaml:ro
+      - ./extensions/fai-control-plane:/opt/data/plugins/fai-control-plane:ro
+      - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
+      - ./profiles/internal/config.yaml:/opt/data/profiles/internal/config.yaml:ro
+      - ./profiles/bitrix-client/config.yaml:/opt/data/profiles/bitrix-client/config.yaml:ro
+      - ${HERMES_INTERNAL_BRIDGE_TOKEN_FILE:?required}:/opt/data/profiles/internal/bridge-token:ro
+      - ${HERMES_CLIENT_BRIDGE_TOKEN_FILE:?required}:/opt/data/profiles/bitrix-client/bridge-token:ro
     ports:
       - "127.0.0.1:13020:8642"
     healthcheck:
