@@ -61,11 +61,12 @@ Both were resolved from their official registries on 2026-08-14.
   the initial `ping`. User Project #4 cannot emit `projects_v2_item`; webhook
   deliveries are reconcile hints and the bounded full Project poll is the
   authority for Project status/date changes;
-- activation tracker credential: dedicated fine-grained token restricted to
-  owner `VF78`, repository `VF78/ascon`, repository Metadata/Issues read and
-  account Projects read. Secret ref:
-  `/etc/fai-control-plane-mvp/secrets/github-projects-token`. Issue mutation
-  remains provider-denied until separate exact write permission is approved.
+- activation tracker credential: Vladimir-approved reuse of the existing
+  classic token for this internal MVP, with exact accepted scopes
+  `gist, project, read:org, repo, workflow`. Secret ref:
+  `/etc/fai-control-plane-mvp/secrets/github-projects-token`. This is a recorded
+  exception, not a claim that the credential is read-only; runtime actions
+  remain bounded by the reviewed GitHub adapters.
 
 ### Telegram
 
@@ -94,10 +95,15 @@ server-owned.
   isolated Hermes state, never in this repository, logs or Control Plane env;
 - the legacy direct REST webhook and adapter are not part of the MVP surface.
 
-The `bitrix-client` profile remains deliberately fail-closed. It requires a persistent browser
-backend and a narrow authenticated Control Plane capability for deduplicated
-issue intake and bounded replies. General terminal, checkout, status,
-production, internal-history and approval capabilities are forbidden.
+The `bitrix-client` profile remains deliberately fail-closed. Bitrix is Phase C,
+not a Phase B activation prerequisite: do not install a browser backend, copy
+the credential-bearing entry URL, enable the client bridge, register a
+callback, or require Bitrix evidence for Phase B. Web readiness must continue
+to report `clientConversationActions: false`. Phase C requires a separately
+approved persistent browser backend and stable authenticated native message and
+author identities before the narrow issue-intake capability can be enabled.
+General terminal, checkout, status, production, internal-history and approval
+capabilities remain forbidden.
 
 ### Separate ASCON Hermes
 
@@ -156,18 +162,18 @@ approved and installed, the only command interface is:
 
 ```bash
 cd /opt/fai-hermes-ascon
-HERMES_APPROVED_IMAGE='<exact-approved-image@sha256>' \
-HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
+HERMES_APPROVED_IMAGE='nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6' \
+HERMES_APPROVED_CONFIG_SHA256='7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5' \
   ./scripts/deploy-hermes-ascon.sh auth
 
 cd /opt/fai-hermes-ascon
-HERMES_APPROVED_IMAGE='<exact-approved-image@sha256>' \
-HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
+HERMES_APPROVED_IMAGE='nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6' \
+HERMES_APPROVED_CONFIG_SHA256='7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5' \
   ./scripts/deploy-hermes-ascon.sh stage
 
 cd /opt/fai-hermes-ascon
-HERMES_APPROVED_IMAGE='<exact-approved-image@sha256>' \
-HERMES_APPROVED_CONFIG_SHA256='<approved-production-env-sha256>' \
+HERMES_APPROVED_IMAGE='nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6' \
+HERMES_APPROVED_CONFIG_SHA256='7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5' \
   ./scripts/deploy-hermes-ascon.sh rollback
 ```
 
@@ -296,20 +302,297 @@ nginx -t
 systemctl reload nginx
 ```
 
-## Preflight and deployment
+## Exact Phase B execution package
 
-Prepare `production.env` from `infra/production/production.env.example`, fill
-the release commit placeholder, and install all eight secret files without displaying their
-contents. Review the exact commit and diff before copying the clean checkout to
-`/opt/fai-control-plane-mvp`.
+This package is bound to merged commit
+`310bab760bfd58ed5677e040163f3ac5eec64e78`. If `origin/main` no longer resolves
+to that commit, any destination already exists, an old secret source is absent
+or points somewhere else, or a digest differs, stop and prepare a newly
+reviewed package. Do not weaken a check or reuse a partially prepared path.
+
+### Prepare only the new host paths
+
+These inactive commands create two independent clean checkouts and only the new
+configuration/state directories. They do not stop, restart, migrate, attach to,
+or edit `/opt/fai-control-plane`, its Compose project, image or volumes. Run
+them only after exact approval of this block:
+
+```bash
+set -euo pipefail
+set +x
+umask 077
+release_commit=310bab760bfd58ed5677e040163f3ac5eec64e78
+repository=https://github.com/VF78/fai-control-plane.git
+rollback_commit=63cc41832bb216edfa5c29e270ce1394f45d9231
+rollback_image="fai-control-plane:${rollback_commit}"
+
+test "$(git ls-remote "$repository" refs/heads/main | awk '{print $1}')" = "$release_commit"
+test "$(git -C /opt/fai-control-plane rev-parse HEAD)" = "$rollback_commit"
+test -z "$(git -C /opt/fai-control-plane status --porcelain)"
+test "$(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1)" = "$rollback_image"
+test "$(docker inspect --format '{{.State.Health.Status}}' fai-control-plane-production-web-1)" = healthy
+curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
+
+for path in \
+  /opt/fai-control-plane-mvp \
+  /opt/fai-hermes-ascon \
+  /etc/fai-control-plane-mvp \
+  /etc/fai-hermes-ascon \
+  /var/lib/fai-hermes-ascon; do
+  test ! -e "$path"
+done
+
+git clone --no-checkout "$repository" /opt/fai-control-plane-mvp
+git -C /opt/fai-control-plane-mvp checkout --detach "$release_commit"
+test "$(git -C /opt/fai-control-plane-mvp rev-parse HEAD)" = "$release_commit"
+test -z "$(git -C /opt/fai-control-plane-mvp status --porcelain)"
+
+git clone --no-checkout "$repository" /opt/fai-hermes-ascon
+git -C /opt/fai-hermes-ascon checkout --detach "$release_commit"
+test "$(git -C /opt/fai-hermes-ascon rev-parse HEAD)" = "$release_commit"
+test -z "$(git -C /opt/fai-hermes-ascon status --porcelain)"
+
+install -d -o root -g root -m 0700 \
+  /etc/fai-control-plane-mvp \
+  /etc/fai-control-plane-mvp/secrets \
+  /etc/fai-hermes-ascon \
+  /etc/fai-hermes-ascon/secrets
+install -d -o root -g root -m 0750 \
+  /var/lib/fai-hermes-ascon \
+  /var/lib/fai-hermes-ascon/work
+
+test "$(git -C /opt/fai-control-plane rev-parse HEAD)" = "$rollback_commit"
+test -z "$(git -C /opt/fai-control-plane status --porcelain)"
+test "$(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1)" = "$rollback_image"
+test "$(docker inspect --format '{{.State.Health.Status}}' fai-control-plane-production-web-1)" = healthy
+curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
+unset release_commit repository rollback_commit rollback_image
+```
+
+Do not create `/var/lib/fai-control-plane-mvp`: the fresh named PostgreSQL
+volume is the Control Plane's only durable business state.
+
+### Install non-secret configuration
+
+The reviewed disabled-worker, enabled-worker and Hermes configuration digests
+for this exact commit are respectively
+`e77ed5b7aee65ff0dedbc2c89e0e93ec8317230b1e71fac4d14da541d8748ac4`,
+`6c7156fae6974090fb687dfb995e5965514c30312d77479789a4b8af81b9f75d`
+and `7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5`.
+Install the first and third files without editing them interactively:
+
+```bash
+set -euo pipefail
+set +x
+umask 077
+release_commit=310bab760bfd58ed5677e040163f3ac5eec64e78
+cp_digest=e77ed5b7aee65ff0dedbc2c89e0e93ec8317230b1e71fac4d14da541d8748ac4
+hermes_digest=7e7043b87bbccd88c5c41f2fc5963a28b7ec30e2425723ea6b188dcd915796b5
+temporary=$(mktemp /etc/fai-control-plane-mvp/production.env.XXXXXX)
+trap 'rm -f "$temporary"' EXIT
+sed "s/^FCP_RELEASE_COMMIT=REQUIRED_APPROVED_40_HEX_COMMIT$/FCP_RELEASE_COMMIT=${release_commit}/" \
+  /opt/fai-control-plane-mvp/infra/production/production.env.example >"$temporary"
+test "$(sha256sum "$temporary" | cut -d ' ' -f 1)" = "$cp_digest"
+test "$(grep -Fxc 'FCP_WORKER_ACTIVE=false' "$temporary")" -eq 1
+! grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' "$temporary"
+install -o root -g root -m 0600 "$temporary" /etc/fai-control-plane-mvp/production.env
+
+test "$(sha256sum /opt/fai-hermes-ascon/infra/hermes-ascon/production.env.example | cut -d ' ' -f 1)" = "$hermes_digest"
+install -o root -g root -m 0600 \
+  /opt/fai-hermes-ascon/infra/hermes-ascon/production.env.example \
+  /etc/fai-hermes-ascon/production.env
+rm -f "$temporary"
+trap - EXIT
+unset release_commit cp_digest hermes_digest temporary
+```
+
+Do not install the enabled-worker file yet. After the disabled stage and safe
+provider proofs pass, create the separately approved second file by replacing
+exactly one line and checking its exact digest:
+
+```bash
+set -euo pipefail
+set +x
+umask 077
+enabled_digest=6c7156fae6974090fb687dfb995e5965514c30312d77479789a4b8af81b9f75d
+temporary=$(mktemp /etc/fai-control-plane-mvp/production.env.XXXXXX)
+trap 'rm -f "$temporary"' EXIT
+test "$(grep -Fxc 'FCP_WORKER_ACTIVE=false' /etc/fai-control-plane-mvp/production.env)" -eq 1
+sed 's/^FCP_WORKER_ACTIVE=false$/FCP_WORKER_ACTIVE=true/' \
+  /etc/fai-control-plane-mvp/production.env >"$temporary"
+test "$(grep -Fxc 'FCP_WORKER_ACTIVE=true' "$temporary")" -eq 1
+test "$(sha256sum "$temporary" | cut -d ' ' -f 1)" = "$enabled_digest"
+install -o root -g root -m 0600 "$temporary" /etc/fai-control-plane-mvp/production.env
+rm -f "$temporary"
+trap - EXIT
+unset enabled_digest temporary
+```
+
+### Secret source to host filename map
+
+The existing GitHub OAuth App client secret and tracker token are approved for
+reuse for the internal MVP, and only after the guards below prove the old
+production environment still names them exactly. The Telegram token comes
+from its exact workstation Keychain locator:
+
+| Source | New host file |
+|---|---|
+| `/etc/fai-control-plane/secrets/github-login-client-secret` | `/etc/fai-control-plane-mvp/secrets/github-login-client-secret` |
+| `/etc/fai-control-plane/secrets/github-projects-oauth-token` | `/etc/fai-control-plane-mvp/secrets/github-projects-token` |
+| macOS Keychain service `fai-control-plane/ascon/telegram-bot-token`, account `@f_AI_Control_Bot` | `/etc/fai-control-plane-mvp/secrets/telegram-bot-token` and `TELEGRAM_BOT_TOKEN` in `/etc/fai-hermes-ascon/secrets/telegram.env` |
+
+The GitHub OAuth secret is reused only for client ID
+`Ov23li6xIseHRQCF38Fz`. Vladimir explicitly approved reuse of the current
+tracker token for the internal MVP on 2026-08-14. Its classic-token scopes are
+`gist, project, read:org, repo, workflow`; this is a recorded least-privilege
+exception, not a claim that the token is read-only. The application remains
+bounded by its GitHub adapters. If the exact source, identity or later
+repository/Project proof differs, stop; do not search other files or
+substitute another credential.
+
+On the host, copy the two approved existing sources without reading or printing
+their values:
+
+```bash
+set -euo pipefail
+set +x
+umask 077
+old_environment=/etc/fai-control-plane/production.env
+mapfile -t oauth_sources < <(sed -n 's/^GITHUB_LOGIN_CLIENT_SECRET_HOST_FILE=//p' "$old_environment")
+mapfile -t github_sources < <(sed -n 's/^GITHUB_PROJECTS_OAUTH_TOKEN_HOST_FILE=//p' "$old_environment")
+test "${#oauth_sources[@]}" -eq 1
+test "${oauth_sources[0]}" = /etc/fai-control-plane/secrets/github-login-client-secret
+test "${#github_sources[@]}" -eq 1
+test "${github_sources[0]}" = /etc/fai-control-plane/secrets/github-projects-oauth-token
+for source in "${oauth_sources[0]}" "${github_sources[0]}"; do
+  test -f "$source"
+  test ! -L "$source"
+  test -s "$source"
+  test "$(stat -c '%U:%G:%a' "$source")" = root:root:600
+done
+install -o root -g root -m 0600 "${oauth_sources[0]}" \
+  /etc/fai-control-plane-mvp/secrets/github-login-client-secret
+install -o root -g root -m 0600 "${github_sources[0]}" \
+  /etc/fai-control-plane-mvp/secrets/github-projects-token
+unset old_environment oauth_sources github_sources source
+```
+
+Generate independent PostgreSQL, webhook, Hermes API and bridge secrets on the
+host. The Hermes API value is written in the two formats required by Hermes and
+Control Plane; each bridge value is written only to its matching pair. Values
+never appear in command arguments or output:
+
+```bash
+set -euo pipefail
+set +x
+umask 077
+temporary=$(mktemp -d /etc/fai-control-plane-mvp/.secret-stage.XXXXXX)
+trap 'rm -rf "$temporary"' EXIT
+
+openssl rand -hex 32 >"$temporary/postgres-password"
+openssl rand -hex 32 >"$temporary/github-webhook-secret"
+{ printf 'API_SERVER_KEY='; openssl rand -hex 32; } >"$temporary/api-server.env"
+sed -n 's/^API_SERVER_KEY=//p' "$temporary/api-server.env" >"$temporary/hermes-token"
+openssl rand -hex 32 >"$temporary/internal-bridge-token"
+openssl rand -hex 32 >"$temporary/client-bridge-token"
+
+install -o root -g root -m 0600 "$temporary/postgres-password" \
+  /etc/fai-control-plane-mvp/secrets/postgres-password
+install -o root -g root -m 0600 "$temporary/github-webhook-secret" \
+  /etc/fai-control-plane-mvp/secrets/github-webhook-secret
+install -o root -g root -m 0600 "$temporary/hermes-token" \
+  /etc/fai-control-plane-mvp/secrets/hermes-token
+install -o root -g root -m 0600 "$temporary/api-server.env" \
+  /etc/fai-hermes-ascon/secrets/api-server.env
+install -o root -g root -m 0600 "$temporary/internal-bridge-token" \
+  /etc/fai-control-plane-mvp/secrets/hermes-internal-action-token
+install -o root -g root -m 0600 "$temporary/internal-bridge-token" \
+  /etc/fai-hermes-ascon/secrets/internal-bridge-token
+install -o root -g root -m 0600 "$temporary/client-bridge-token" \
+  /etc/fai-control-plane-mvp/secrets/hermes-client-action-token
+install -o root -g root -m 0600 "$temporary/client-bridge-token" \
+  /etc/fai-hermes-ascon/secrets/client-bridge-token
+rm -rf "$temporary"
+trap - EXIT
+unset temporary
+```
+
+Transfer only the exact Telegram Keychain item by the same no-print path:
+
+```bash
+set -euo pipefail
+set +x
+security find-generic-password -w \
+  -s 'fai-control-plane/ascon/telegram-bot-token' \
+  -a '@f_AI_Control_Bot' | ssh root@46.225.163.123 '
+    set -euo pipefail
+    set +x
+    umask 077
+    IFS= read -r telegram_token
+    test -n "$telegram_token"
+    temporary=$(mktemp -d /etc/fai-control-plane-mvp/.telegram-stage.XXXXXX)
+    trap '\''rm -rf "$temporary"'\'' EXIT
+    printf "%s\n" "$telegram_token" >"$temporary/telegram-bot-token"
+    printf "TELEGRAM_BOT_TOKEN=%s\n" "$telegram_token" >"$temporary/telegram.env"
+    install -o root -g root -m 0600 "$temporary/telegram-bot-token" \
+      /etc/fai-control-plane-mvp/secrets/telegram-bot-token
+    install -o root -g root -m 0600 "$temporary/telegram.env" \
+      /etc/fai-hermes-ascon/secrets/telegram.env
+    unset telegram_token
+    rm -rf "$temporary"
+    trap - EXIT
+  '
+```
+
+Finally, verify names, ownership, modes and required file shapes without
+printing contents. Bitrix files must not exist:
+
+```bash
+set -euo pipefail
+set +x
+for directory in /etc/fai-control-plane-mvp/secrets /etc/fai-hermes-ascon/secrets; do
+  test "$(stat -c '%U:%G:%a' "$directory")" = root:root:700
+done
+for file in \
+  /etc/fai-control-plane-mvp/secrets/postgres-password \
+  /etc/fai-control-plane-mvp/secrets/github-login-client-secret \
+  /etc/fai-control-plane-mvp/secrets/github-projects-token \
+  /etc/fai-control-plane-mvp/secrets/github-webhook-secret \
+  /etc/fai-control-plane-mvp/secrets/hermes-token \
+  /etc/fai-control-plane-mvp/secrets/telegram-bot-token \
+  /etc/fai-control-plane-mvp/secrets/hermes-internal-action-token \
+  /etc/fai-control-plane-mvp/secrets/hermes-client-action-token \
+  /etc/fai-hermes-ascon/secrets/api-server.env \
+  /etc/fai-hermes-ascon/secrets/telegram.env \
+  /etc/fai-hermes-ascon/secrets/internal-bridge-token \
+  /etc/fai-hermes-ascon/secrets/client-bridge-token; do
+  test -f "$file"
+  test ! -L "$file"
+  test -s "$file"
+  test "$(stat -c '%U:%G:%a' "$file")" = root:root:600
+done
+test "$(wc -l </etc/fai-hermes-ascon/secrets/api-server.env)" -eq 1
+test "$(grep -Ec '^API_SERVER_KEY=[^[:space:]]+$' /etc/fai-hermes-ascon/secrets/api-server.env)" -eq 1
+test "$(wc -l </etc/fai-hermes-ascon/secrets/telegram.env)" -eq 1
+test "$(grep -Ec '^TELEGRAM_BOT_TOKEN=[^[:space:]]+$' /etc/fai-hermes-ascon/secrets/telegram.env)" -eq 1
+test ! -e /etc/fai-control-plane-mvp/secrets/bitrix24-application-token
+test ! -e /etc/fai-control-plane-mvp/secrets/bitrix24-rest-token
+unset directory file
+```
+
+The Codex OAuth session is not copied as a secret file. It is created only by
+the separately approved Hermes `auth` action and must remain at
+`/var/lib/fai-hermes-ascon/auth.json`.
+
+## Preflight and deployment
 
 The only approved command interface is:
 
 ```bash
 cd /opt/fai-control-plane-mvp
-FCP_APPROVED_RELEASE_COMMIT=<approved-40-hex> \
-FCP_APPROVED_CONFIG_SHA256=<approved-production-env-sha256> \
-  ./scripts/deploy-prod.sh stage <approved-40-hex>
+FCP_APPROVED_RELEASE_COMMIT=310bab760bfd58ed5677e040163f3ac5eec64e78 \
+FCP_APPROVED_CONFIG_SHA256=e77ed5b7aee65ff0dedbc2c89e0e93ec8317230b1e71fac4d14da541d8748ac4 \
+  ./scripts/deploy-prod.sh stage 310bab760bfd58ed5677e040163f3ac5eec64e78
 ```
 
 `stage` verifies the old rollback image and protected-neighbour health, rejects
@@ -327,23 +610,202 @@ Hermes configuration are complete. This prevents staging from starting live
 ASCON work implicitly.
 
 The activation gate is deliberately two-step. First run `stage` with the
-approved `false` configuration and complete the provider/Hermes proofs. Then
-create and approve a second configuration differing only in
+approved `false` configuration and complete the database, provider-binding and
+Telegram boundary proofs. Then create and approve a second configuration differing only in
 `FCP_WORKER_ACTIVE=true`, calculate its new SHA-256, and rerun `stage` with
-that digest. Only after the worker reports `/ready` may `activate` run; a
+that digest; the single synthetic Hermes ACK and fresh reconciled snapshot are
+proved through that real worker process. Only after the worker reports `/ready` may `activate` run; a
 disabled or provider-unready worker can never pass the public cutover gate.
 
-Before activation, prove exactly 16 MVP tables, one ASCON project/binding,
-GitHub Project read/freshness, one synthetic Hermes ACK, Telegram allow/deny
-and Bitrix refetch/allow/deny evidence. Do not mutate a live ASCON task.
+Before activation, run the exact Phase B proofs below. Bitrix proof is not in
+this list because Bitrix remains fail-closed until Phase C. Do not create or
+change a GitHub issue, Project item/status/date, source, approval, callback or
+live ASCON task during any proof.
+
+### Disabled-stage database and readiness proof
+
+Run from the exact checkout after the disabled-worker `stage`. The table-name
+comparison proves both the required 16 tables and absence of an unexpected
+seventeenth table. The second query proves exactly one project and its one
+exact GitHub binding. Bootstrap a second time before the queries to prove
+idempotency:
+
+```bash
+set -euo pipefail
+cd /opt/fai-control-plane-mvp
+compose=(docker compose --project-name fai-control-plane-mvp \
+  --env-file /etc/fai-control-plane-mvp/production.env \
+  -f infra/production/compose.yaml)
+"${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap
+
+expected_tables=actor_external_identities,actors,approval_evidence,audit_events,command_receipts,incoming_events,oauth_login_attempts,operator_sessions,outbox_events,project_memberships,project_source_artifacts,projects,secret_refs,tracker_bindings,tracker_snapshots,workspaces
+actual_tables=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -Atc \
+  "select string_agg(table_name,',' order by table_name) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'")
+test "$actual_tables" = "$expected_tables"
+
+project_binding=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -Atc \
+  "select count(*)||':'||min(p.id::text)||':'||min(b.id::text)||':'||min(b.external_project_id) from projects p join tracker_bindings b on b.project_id=p.id where (select count(*) from projects)=1 and (select count(*) from tracker_bindings)=1")
+test "$project_binding" = '1:fd22736d-1879-47fe-9b8a-c51653a4b635:7a7fcbf7-3753-4ac5-b64d-718d6daff573:PVT_kwHOBIUvJs4Bbi0Q'
+
+curl -fsS --max-time 10 http://127.0.0.1:13010/api/health | grep -Fq '"status":"ok"'
+curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready | \
+  grep -Fq '"clientConversationActions":false'
+"${compose[@]}" exec -T worker node - <<'NODE'
+const response = await fetch('http://127.0.0.1:3001/ready');
+const body = await response.json();
+if (response.status !== 503 || body.active !== false || body.status !== 'not_ready') process.exit(1);
+NODE
+unset compose expected_tables actual_tables project_binding
+```
+
+### GitHub read proof
+
+This check runs inside the disabled worker container, where the required
+secret file is already mounted. It does not print the credential. The query is
+read-only and validates the exact repository and Project bindings at the time
+recorded in `readAt`:
+
+```bash
+set -euo pipefail
+cd /opt/fai-control-plane-mvp
+compose=(docker compose --project-name fai-control-plane-mvp \
+  --env-file /etc/fai-control-plane-mvp/production.env \
+  -f infra/production/compose.yaml)
+"${compose[@]}" exec -T worker node --input-type=module - <<'NODE'
+import {readFile} from 'node:fs/promises';
+const token = (await readFile('/run/secrets/github-projects-token', 'utf8')).trim();
+if (!token) throw new Error('github_token_missing');
+const query = `query {
+  repository(owner:"VF78",name:"ascon") { id nameWithOwner defaultBranchRef { name } }
+  user(login:"VF78") { projectV2(number:4) { id url updatedAt items(first:1) { totalCount } } }
+}`;
+const response = await fetch('https://api.github.com/graphql', {method:'POST', headers:{
+  accept:'application/vnd.github+json', authorization:`Bearer ${token}`,
+  'content-type':'application/json', 'user-agent':'fai-control-plane-mvp/phase-b-proof',
+  'x-github-api-version':'2022-11-28'}, body:JSON.stringify({query})});
+const value = await response.json();
+const repository = value?.data?.repository; const project = value?.data?.user?.projectV2;
+const restResponse = await fetch('https://api.github.com/repos/VF78/ascon', {headers:{
+  accept:'application/vnd.github+json', authorization:`Bearer ${token}`,
+  'user-agent':'fai-control-plane-mvp/phase-b-proof', 'x-github-api-version':'2022-11-28'}});
+const restRepository = await restResponse.json();
+const oauthScopes = (restResponse.headers.get('x-oauth-scopes') ?? '')
+  .split(',').map((scope) => scope.trim()).filter(Boolean).sort();
+const expectedScopes = ['gist','project','read:org','repo','workflow'].sort();
+const reportedPush = typeof restRepository?.permissions?.push === 'boolean'
+  ? restRepository.permissions.push : null;
+if (!response.ok || value.errors || !restResponse.ok ||
+    JSON.stringify(oauthScopes) !== JSON.stringify(expectedScopes) || repository?.id !== 'R_kgDOTD27Gw' ||
+    repository?.nameWithOwner !== 'VF78/ascon' || repository?.defaultBranchRef?.name !== 'main' ||
+    restRepository?.node_id !== 'R_kgDOTD27Gw' || restRepository?.full_name !== 'VF78/ascon' ||
+    restRepository?.default_branch !== 'main' ||
+    project?.id !== 'PVT_kwHOBIUvJs4Bbi0Q' || project?.url !== 'https://github.com/users/VF78/projects/4' ||
+    typeof project?.updatedAt !== 'string' || !Number.isInteger(project?.items?.totalCount)) {
+  throw new Error('github_read_proof_failed');
+}
+process.stdout.write(JSON.stringify({repository:repository.nameWithOwner, project:project.id,
+  projectUpdatedAt:project.updatedAt, itemCount:project.items.totalCount,
+  acceptedClassicScopes:oauthScopes, reportedPushPermission:reportedPush,
+  readAt:new Date().toISOString()})+'\n');
+NODE
+unset compose
+```
+
+### Telegram allow, deny and replay proof
+
+This invokes only the structured `project_facts.read` action through the local
+candidate web container. It sends no Telegram message, stores no transcript,
+and cannot change a GitHub task. The same exact provider delivery is accepted
+once and reported as a duplicate on replay; a wrong user and wrong chat are
+both denied:
+
+```bash
+set -euo pipefail
+cd /opt/fai-control-plane-mvp
+compose=(docker compose --project-name fai-control-plane-mvp \
+  --env-file /etc/fai-control-plane-mvp/production.env \
+  -f infra/production/compose.yaml)
+"${compose[@]}" exec -T web node --input-type=module - <<'NODE'
+import {readFile} from 'node:fs/promises';
+const token = (await readFile('/run/secrets/hermes-internal-action-token', 'utf8')).trim();
+if (!token) throw new Error('internal_bridge_token_missing');
+const endpoint = 'http://127.0.0.1:3000/api/hermes/conversation-actions';
+const send = async (source) => {
+  const response = await fetch(endpoint, {method:'POST', headers:{authorization:`Bearer ${token}`,
+    'content-type':'application/json'}, body:JSON.stringify({source,action:{type:'project_facts.read'}})});
+  return {status:response.status, body:await response.json()};
+};
+const base = {provider:'telegram',updateId:'174310001',messageId:'174310001',
+  userId:'96211907',chatId:'-5540760630',observedAt:new Date().toISOString()};
+const allowed = await send(base);
+const replay = await send(base);
+const wrongUser = await send({...base,updateId:'174310002',messageId:'174310002',userId:'1'});
+const wrongChat = await send({...base,updateId:'174310003',messageId:'174310003',chatId:'-1'});
+if (allowed.status !== 200 || allowed.body.status !== 'completed' ||
+    replay.status !== 202 || replay.body.status !== 'duplicate' ||
+    wrongUser.status !== 403 || wrongUser.body.error !== 'identity_denied' ||
+    wrongChat.status !== 403 || wrongChat.body.error !== 'identity_denied') {
+  throw new Error('telegram_boundary_proof_failed');
+}
+process.stdout.write(JSON.stringify({allowed:allowed.body.status,replay:replay.body.status,
+  wrongUser:wrongUser.body.error,wrongChat:wrongChat.body.error})+'\n');
+NODE
+unset compose
+```
+
+### One synthetic Hermes ACK, enabled-worker freshness and readiness
+
+Only after approval of the one-line enabled configuration, enqueue one local
+synthetic `agent-role-request` while the disabled worker is still running, then
+rerun `stage` with the exact enabled digest. This `/v1/runs` call starts the
+root Hermes executor with broad tools: its no-task constraints are prompt input,
+not a security boundary. It therefore requires separate explicit approval of
+this exact synthetic execution even though the item URL is local and no live
+task is referenced. The deterministic key prevents a second enqueue; do not
+add a profile, service or compatibility layer. The real worker has no GitHub mutation credential.
+Its successful delivery proves the expected Hermes 202 ACK through the actual
+adapter and supplies the agent readiness evidence. Stop if that one row lacks a
+delivery reference, the worker does not become ready, or the latest successful
+GitHub snapshot is older than ten minutes:
+
+```bash
+set -euo pipefail
+cd /opt/fai-control-plane-mvp
+compose=(docker compose --project-name fai-control-plane-mvp \
+  --env-file /etc/fai-control-plane-mvp/production.env \
+  -f infra/production/compose.yaml)
+inserted=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -qAtc \
+  "insert into outbox_events(project_id,topic,idempotency_key,payload,available_at) values ('fd22736d-1879-47fe-9b8a-c51653a4b635','agent-role-request','phase-b-synthetic:310bab760bfd58ed5677e040163f3ac5eec64e78',jsonb_build_object('request',jsonb_build_object('role','manager','repository',jsonb_build_object('id','phase-b-synthetic','url','https://app.f-ai.studio/'),'projectItem',jsonb_build_object('id','phase-b-synthetic','projectId','fd22736d-1879-47fe-9b8a-c51653a4b635','issueId','phase-b-synthetic','url','https://app.f-ai.studio/phase-b-synthetic'),'observedVersion','phase-b-synthetic-v1','sources','[]'::jsonb,'constraints',jsonb_build_array('Synthetic transport proof only. Do not call tools or mutate any repository, tracker, provider or host.'),'acceptanceCriteria',jsonb_build_array('Return only a transport acknowledgement.'),'approval',null,'correlationId','phase-b-synthetic-310bab760bfd58ed5677e040163f3ac5eec64e78','idempotencyKey','phase-b-synthetic-310bab760bfd58ed5677e040163f3ac5eec64e78')),now()) on conflict(idempotency_key) do nothing returning 1")
+test "$inserted" = 1
+FCP_APPROVED_RELEASE_COMMIT=310bab760bfd58ed5677e040163f3ac5eec64e78 \
+FCP_APPROVED_CONFIG_SHA256=6c7156fae6974090fb687dfb995e5965514c30312d77479789a4b8af81b9f75d \
+  ./scripts/deploy-prod.sh stage 310bab760bfd58ed5677e040163f3ac5eec64e78
+for attempt in $(seq 1 30); do
+  if "${compose[@]}" exec -T worker node -e \
+    "fetch('http://127.0.0.1:3001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+    break
+  fi
+  test "$attempt" -lt 30
+  sleep 5
+done
+hermes_ack=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -Atc \
+  "select count(*) from outbox_events where idempotency_key='phase-b-synthetic:310bab760bfd58ed5677e040163f3ac5eec64e78' and delivered_at is not null and delivery_reference is not null and last_error_code is null")
+test "$hermes_ack" = 1
+fresh=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -Atc \
+  "select count(*) from (select observed_at,error_code,source_url from tracker_snapshots where binding_id='7a7fcbf7-3753-4ac5-b64d-718d6daff573' order by observed_at desc,created_at desc limit 1) latest where error_code is null and source_url='https://github.com/users/VF78/projects/4' and observed_at >= now()-interval '10 minutes'")
+test "$fresh" = 1
+curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready | \
+  grep -Fq '"clientConversationActions":false'
+unset compose inserted attempt hermes_ack fresh
+```
 
 After Vladimir approves that evidence and the exact one-line proxy change:
 
 ```bash
 cd /opt/fai-control-plane-mvp
-FCP_APPROVED_RELEASE_COMMIT=<approved-40-hex> \
-FCP_APPROVED_CONFIG_SHA256=<approved-production-env-sha256> \
-  ./scripts/deploy-prod.sh activate <approved-40-hex>
+FCP_APPROVED_RELEASE_COMMIT=310bab760bfd58ed5677e040163f3ac5eec64e78 \
+FCP_APPROVED_CONFIG_SHA256=6c7156fae6974090fb687dfb995e5965514c30312d77479789a4b8af81b9f75d \
+  ./scripts/deploy-prod.sh activate 310bab760bfd58ed5677e040163f3ac5eec64e78
 ```
 
 `activate` requires web and worker readiness, changes only the existing
@@ -357,8 +819,17 @@ If candidate readiness or public smoke fails, run:
 
 ```bash
 cd /opt/fai-control-plane-mvp
-FCP_APPROVED_RELEASE_COMMIT=<approved-40-hex> \
-  ./scripts/deploy-prod.sh rollback <approved-40-hex>
+FCP_APPROVED_RELEASE_COMMIT=310bab760bfd58ed5677e040163f3ac5eec64e78 \
+  ./scripts/deploy-prod.sh rollback 310bab760bfd58ed5677e040163f3ac5eec64e78
+test "$(grep -Fxc '    server 127.0.0.1:13000;' /etc/nginx/sites-available/app.f-ai.studio.conf)" -eq 1
+test "$(grep -Fxc '    server 127.0.0.1:13010;' /etc/nginx/sites-available/app.f-ai.studio.conf)" -eq 0
+test "$(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1)" = \
+  fai-control-plane:63cc41832bb216edfa5c29e270ce1394f45d9231
+curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
+curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
+test -z "$(docker ps --filter label=com.docker.compose.project=fai-control-plane-mvp \
+  --filter status=running --format '{{.Names}}' | grep -E -- '-(web|worker)-[0-9]+$' || true)"
+docker volume inspect fai-control-plane-mvp-postgres-data >/dev/null
 ```
 
 Rollback first proves the old app ready, changes only the upstream line back to
