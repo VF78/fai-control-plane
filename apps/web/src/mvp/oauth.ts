@@ -29,6 +29,12 @@ const configuredOrigin = (): URL => {
 };
 const secure = (): string => configuredOrigin().protocol === 'https:' ? '; Secure' : '';
 
+export const redirectWithCookies = (location: URL, cookieValues: readonly string[]): Response => {
+  const headers = new Headers({location: location.toString()});
+  for (const cookie of cookieValues) headers.append('set-cookie', cookie);
+  return new Response(null, {status: 302, headers});
+};
+
 export const beginGithubLogin = async (): Promise<Response> => {
   const database = getDatabase();
   const workspaceId = process.env.FCP_WORKSPACE_ID;
@@ -47,9 +53,9 @@ export const beginGithubLogin = async (): Promise<Response> => {
   authorize.searchParams.set('state', state);
   authorize.searchParams.set('code_challenge', challenge);
   authorize.searchParams.set('code_challenge_method', 'S256');
-  const response = Response.redirect(authorize);
-  response.headers.append('set-cookie', `${oauthCookie}=${state}.${verifier}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${secure()}`);
-  return response;
+  return redirectWithCookies(authorize, [
+    `${oauthCookie}=${state}.${verifier}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${secure()}`
+  ]);
 };
 
 export const completeGithubLogin = async (url: URL): Promise<Response> => {
@@ -84,10 +90,10 @@ export const completeGithubLogin = async (url: URL): Promise<Response> => {
   if (actor === null || !actor.enabled || actor.workspaceId !== workspaceId) throw new Error('oauth_actor_denied');
   const token = randomToken();
   await createSession(database, actor.id, hash(token), new Date(Date.now() + 8 * 60 * 60_000).toISOString());
-  const response = Response.redirect(new URL('/', configuredOrigin()));
-  response.headers.append('set-cookie', `${sessionCookie}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800${secure()}`);
-  response.headers.append('set-cookie', `${oauthCookie}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure()}`);
-  return response;
+  return redirectWithCookies(new URL('/', configuredOrigin()), [
+    `${sessionCookie}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800${secure()}`,
+    `${oauthCookie}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure()}`
+  ]);
 };
 
 export const logout = async (request: Request): Promise<Response> => {
