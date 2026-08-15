@@ -22,6 +22,13 @@ import type {
 const {Pool} = pg;
 export type Database = InstanceType<typeof Pool>;
 
+// Forward-compatible read of snapshots written before ownerOptionId became a
+// provider-neutral fact. Missing legacy values mean "unassigned", never Hermes.
+const normalizeTrackerItems = (value: unknown): TrackerSnapshot['items'] => Array.isArray(value)
+  ? value.map((item) => typeof item === 'object' && item !== null && !('ownerOptionId' in item)
+    ? {...item, ownerOptionId: null} : item) as TrackerSnapshot['items']
+  : [];
+
 export const createDatabase = (connectionString = process.env.DATABASE_URL): Database => {
   if (connectionString !== undefined && connectionString.length > 0) return new Pool({connectionString, max: 10, idleTimeoutMillis: 30_000});
   if ([process.env.PGHOST,process.env.PGUSER,process.env.PGDATABASE,process.env.PGPASSWORD].some((value) => !value)) {
@@ -208,7 +215,7 @@ export const listProjectTaskViews = async (
     const observedAt = row.observedAt?.toISOString() ?? null;
     if (row.bindingId !== null && row.externalVersion !== null && row.sourceUrl !== null && observedAt !== null) {
       const snapshot: TrackerSnapshot = {bindingId: row.bindingId, externalVersion: row.externalVersion,
-        cursor: row.cursor, sourceUrl: row.sourceUrl, observedAt, items: row.facts?.items ?? []};
+        cursor: row.cursor, sourceUrl: row.sourceUrl, observedAt, items: normalizeTrackerItems(row.facts?.items)};
       if (validateTrackerSnapshot(snapshot)) tasks = snapshot.items;
       else projectionError = 'tracker_snapshot_invalid';
     }
@@ -360,6 +367,21 @@ export const createStores = (database: Database, workspaceId: string): Readonly<
     }
   },
   snapshots: {
+    async readLatest(bindingId: string) {
+      const result = await database.query<{
+        externalVersion: string; cursor: string | null; sourceUrl: string; facts: {items?: unknown}; observedAt: Date;
+      }>(`select external_version as "externalVersion",cursor,source_url as "sourceUrl",facts,
+          observed_at as "observedAt" from tracker_snapshots
+        where binding_id=$1 and error_code is null order by observed_at desc,created_at desc limit 1`, [bindingId]);
+      const row = result.rows[0];
+      if (row === undefined) return null;
+      if (!Array.isArray(row.facts.items)) throw new Error('tracker_snapshot_invalid');
+      const snapshot: TrackerSnapshot = {bindingId, externalVersion: row.externalVersion, cursor: row.cursor,
+        sourceUrl: row.sourceUrl, observedAt: row.observedAt.toISOString(),
+        items: normalizeTrackerItems(row.facts.items)};
+      if (!validateTrackerSnapshot(snapshot)) throw new Error('tracker_snapshot_invalid');
+      return snapshot;
+    },
     async replace(snapshot: TrackerSnapshot) {
       if (!validateTrackerSnapshot(snapshot)) throw new Error('tracker_snapshot_invalid');
       const client = await database.connect();

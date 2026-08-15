@@ -53,11 +53,25 @@ protected_health() {
 }
 
 active_mvp_health() {
-  local service
-  for service in postgres web worker; do
+  local service worker_exit_code worker_health worker_status
+  for service in postgres web; do
     [[ $(docker inspect --format '{{.State.Status}}' "fai-control-plane-mvp-${service}-1") == running ]]
     [[ $(docker inspect --format '{{.State.Health.Status}}' "fai-control-plane-mvp-${service}-1") == healthy ]]
   done
+  read -r worker_status worker_health worker_exit_code < <(docker inspect --format \
+    '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}} {{.State.ExitCode}}' \
+    fai-control-plane-mvp-worker-1 2>/dev/null) || return 1
+  case "$worker_status" in
+    running)
+      [[ "$worker_health" == healthy ]] || return 1
+      log 'active MVP worker mode=running health=healthy'
+      ;;
+    exited)
+      [[ "$worker_exit_code" == 0 ]] || return 1
+      log 'active MVP worker mode=incident-stopped status=exited exit_code=0'
+      ;;
+    *) return 1 ;;
+  esac
   curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready >/dev/null
   curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
 }

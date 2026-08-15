@@ -22,6 +22,8 @@ export type TrackerItemFact = Readonly<{
   version: string;
   statusOptionId: string | null;
   statusOptionName: string | null;
+  /** Provider-native single-select option identifying the task's execution owner. */
+  ownerOptionId: string | null;
   blocked: boolean | null;
   targetDate: string | null;
   parentIssueId: string | null;
@@ -93,6 +95,7 @@ export const validateTrackerSnapshot = (value: TrackerSnapshot): boolean =>
     singleLine(item.title, 512) && isHttpsUrl(item.url) && isBoundedId(item.version) &&
     (item.statusOptionId === null || isBoundedId(item.statusOptionId)) &&
     (item.statusOptionName === null || singleLine(item.statusOptionName, 512)) &&
+    (item.ownerOptionId === null || isBoundedId(item.ownerOptionId)) &&
     (item.blocked === null || typeof item.blocked === 'boolean') &&
     (item.targetDate === null || /^\d{4}-\d{2}-\d{2}$/.test(item.targetDate)) &&
     (item.parentIssueId === null || isBoundedId(item.parentIssueId)) &&

@@ -188,7 +188,9 @@ export const agentSubmit = async (request: Request): Promise<Response> => {
       acceptanceCriteria: strings(body.acceptanceCriteria, 40, 2_000)}, {
       resolveContext: async () => ({workspaceId: context.workspaceId, projectId: context.projectId,
         requesterRole: context.requesterRole, bindingId: context.bindingId,
-        repository: {id: context.repositoryId, url: context.repositoryUrl}}),
+        repository: {id: context.repositoryId, url: context.repositoryUrl},
+        agentTrackerOwnerOptionId: string(process.env.HERMES_TRACKER_OWNER_OPTION_ID, 512),
+        doneStatusOptionId: string(process.env.STATUS_DONE_ID, 512)}),
       readFreshSnapshot: () => tracker.readSnapshot(context.bindingId, context.cursor),
       persistSnapshot: stores.snapshots.replace,
       resolveSources: (input) => resolveAgentSourceReferences(database, input), repository, delivery,

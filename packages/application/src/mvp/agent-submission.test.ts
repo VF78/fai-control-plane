@@ -1,18 +1,21 @@
 import {describe, expect, it, vi} from 'vitest';
+import type {TrackerSnapshot} from '@fai-control-plane/domain';
 import type {AgentSubmissionPorts} from './agent-submission.ts';
 import {submitExplicitAgent} from './agent-submission.ts';
 
-const snapshot = {bindingId: 'binding', externalVersion: 'snapshot-v1', cursor: null,
+const snapshot: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'snapshot-v1', cursor: null,
   observedAt: '2026-08-15T10:00:00.000Z', sourceUrl: 'https://github.com/users/VF78/projects/1', items: [{
     itemId: 'PVTI_item', projectId: 'project', issueId: '210', title: 'GUI recovery',
     url: 'https://github.com/VF78/fai-control-plane/issues/210', version: 'github:updated-at:v1',
-    statusOptionId: 'ready', statusOptionName: 'Ready', blocked: false, targetDate: null,
+    statusOptionId: 'ready', statusOptionName: 'Ready', ownerOptionId: 'owner-hermes', blocked: false, targetDate: null,
     parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [],
     observedAt: '2026-08-15T10:00:00.000Z'}]};
+const task = snapshot.items[0]!;
 
 const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): AgentSubmissionPorts => ({
   resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: role,
-    bindingId: 'binding', repository: {id: 'R_repo', url: 'https://github.com/VF78/fai-control-plane'}}),
+    bindingId: 'binding', repository: {id: 'R_repo', url: 'https://github.com/VF78/fai-control-plane'},
+    agentTrackerOwnerOptionId: 'owner-hermes', doneStatusOptionId: 'done'}),
   readFreshSnapshot: async () => snapshot, persistSnapshot: async () => undefined,
   resolveSources: async () => [{id: 'source', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator',
     content: 'Approved source text'}],
@@ -61,5 +64,41 @@ describe('explicit agent submission', () => {
   it('never exposes the devops/production role on this seam', async () => {
     await expect(submitExplicitAgent({...command, role: 'devops'}, ports('project_owner')))
       .rejects.toThrow('agent_submit_denied');
+  });
+
+  it('denies a Done task even when it is assigned exactly to Hermes', async () => {
+    const base = ports();
+    const value: AgentSubmissionPorts = {...base, readFreshSnapshot: async () => ({...snapshot, items: [
+      {...task, statusOptionId: 'done'}
+    ]})};
+    const deliver = vi.spyOn(value.delivery, 'submit');
+    await expect(submitExplicitAgent(command, value)).rejects.toThrow('agent_submit_denied');
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('denies a non-Done task without the exact Hermes Owner option', async () => {
+    for (const ownerOptionId of [null, 'owner-other', 'OWNER-HERMES']) {
+      const base = ports();
+      const value: AgentSubmissionPorts = {...base, readFreshSnapshot: async () => ({...snapshot, items: [
+        {...task, ownerOptionId}
+      ]})};
+      const deliver = vi.spyOn(value.delivery, 'submit');
+      await expect(submitExplicitAgent(command, value)).rejects.toThrow('agent_submit_denied');
+      expect(deliver).not.toHaveBeenCalled();
+    }
+  });
+
+  it('allows an exact assigned non-Done task and refreshes it immediately before delivery', async () => {
+    const order: string[] = [];
+    const base = ports();
+    const value: AgentSubmissionPorts = {...base,
+      resolveSources: async (input) => { order.push('sources'); return base.resolveSources(input); },
+      repository: {readRepository: async (input) => { order.push('repository'); return base.repository.readRepository(input); }},
+      readFreshSnapshot: async () => { order.push('fresh-snapshot'); return snapshot; },
+      persistSnapshot: async () => { order.push('persist-snapshot'); },
+      delivery: {submit: async (request) => { order.push('delivery'); return base.delivery.submit(request); }}
+    };
+    await expect(submitExplicitAgent(command, value)).resolves.toMatchObject({status: 'completed'});
+    expect(order).toEqual(['repository', 'sources', 'fresh-snapshot', 'persist-snapshot', 'delivery']);
   });
 });

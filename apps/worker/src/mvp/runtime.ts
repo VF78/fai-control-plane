@@ -51,6 +51,10 @@ export const createWorker = (database: Database = createDatabase()) => {
     item: TrackerItemFact, reason: string, idempotencyKey: string
   ): Promise<MessengerDeliveryInput> => ({projectId, contour: 'trusted-main', channelReference: 'telegram:internal',
     text: `${reason}: ${item.title} — ${item.url}`, idempotencyKey});
+  const notificationSummary = async (
+    count: number, sourceUrl: string, idempotencyKey: string
+  ): Promise<MessengerDeliveryInput> => ({projectId, contour: 'trusted-main', channelReference: 'telegram:internal',
+    text: `action_required: ${count} tracker items changed — ${sourceUrl}`, idempotencyKey});
   return {
     async reconcile() {
       const cursor = await database.query<{cursor: string | null}>('select cursor from tracker_bindings where id=$1', [bindingId]);
@@ -59,7 +63,7 @@ export const createWorker = (database: Database = createDatabase()) => {
           development: env('STATUS_DEVELOPMENT_ID'), qa: env('STATUS_QA_ID'),
           acceptance: env('STATUS_ACCEPTANCE_ID'), done: env('STATUS_DONE_ID')},
         ports: {tracker, snapshots: stores.snapshots, outbox: stores.outbox, audit: stores.audit,
-          compose: {notification}}});
+          compose: {notification, notificationSummary}}});
     },
     async retry() {
       return deliverPending({limit: 20, ports: {internalMessenger: telegram,

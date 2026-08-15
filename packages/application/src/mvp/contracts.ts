@@ -16,6 +16,7 @@ export type ReceiptStore = Readonly<{
 }>;
 
 export type SnapshotStore = Readonly<{
+  readLatest(bindingId: string): Promise<TrackerSnapshot | null>;
   replace(snapshot: TrackerSnapshot): Promise<void>;
   recordFailure(input: Readonly<{
     bindingId: string;

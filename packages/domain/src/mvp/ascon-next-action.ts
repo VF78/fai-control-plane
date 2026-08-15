@@ -35,8 +35,9 @@ export const decideNextAction = (item: TrackerItemFact, statuses: StatusMap): Ne
     case statuses.qa:
       return {kind: 'agent', role: 'qa', reason: 'qa_requested', idempotencyKey};
     case statuses.acceptance:
-    case statuses.done:
       return {kind: 'human', role: null, reason: 'approval_required', idempotencyKey};
+    case statuses.done:
+      return {kind: 'none', role: null, reason: 'completed', idempotencyKey};
     case statuses.development:
     default:
       return {kind: 'none', role: null, reason: 'no_action', idempotencyKey};

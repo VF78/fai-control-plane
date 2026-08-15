@@ -708,8 +708,13 @@ release_commit='<approved-40-hex>'
 fetching or changing the checkout, environment, containers, services or
 Nginx. It requires the target to equal current `origin/main`, a clean isolated
 checkout, the exact protected-neighbour image and healthy protected services,
-healthy active MVP PostgreSQL/web/worker, public/local readiness, the existing
+healthy active MVP PostgreSQL/web plus either a healthy running worker or an
+incident-stopped worker with exact Docker state `exited` and exit code `0`,
+public/local readiness, the existing
 `13010` Nginx route, host-owned secret files and a valid current environment.
+Preflight prints the factual worker mode. Missing, unhealthy, dead or non-zero
+workers fail closed. This exception applies only to the active checkpoint;
+`deploy` still starts the target worker and requires it healthy.
 It prints the exact SHA-256 of the environment that `deploy` would install.
 That rendering changes only `FCP_RELEASE_COMMIT` and forces exactly one
 `BITRIX24_CLIENT_ACTIONS_ENABLED=false` line.
