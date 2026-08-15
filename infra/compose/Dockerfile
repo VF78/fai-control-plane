@@ -41,6 +41,10 @@ RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static 
     && mkdir -p apps/web/.next/standalone/apps/web/.next/cache \
     && chown -R node:node apps/web/.next/standalone/apps/web/.next/cache
 
+RUN command -v setpriv >/dev/null
+
 USER node
+
+ENTRYPOINT ["sh", "infra/compose/container-entrypoint.sh"]
 
 EXPOSE 3000 3001

@@ -8,6 +8,7 @@ x-app: &app
     target: runtime
   env_file:
     - ${FCP_RUNTIME_ENV_FILE:?required}
+  user: "0:0"
 
 x-database-environment: &database-environment
   PGHOST: postgres
@@ -40,7 +41,8 @@ services:
     command: ["sh", "infra/compose/run-with-postgres-secret.sh", "node", "packages/db/dist/migrate.js"]
     environment: *database-environment
     secrets:
-      - postgres-password
+      - source: postgres-password
+        target: source-postgres-password
     networks:
       - database
     depends_on:
@@ -54,7 +56,8 @@ services:
     command: ["sh", "infra/compose/run-with-postgres-secret.sh", "node", "packages/db/dist/bootstrap.js"]
     environment: *database-environment
     secrets:
-      - postgres-password
+      - source: postgres-password
+        target: source-postgres-password
     networks:
       - database
     depends_on:
@@ -71,12 +74,18 @@ services:
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
     secrets:
-      - postgres-password
-      - github-login-client-secret
-      - github-projects-token
-      - github-webhook-secret
-      - hermes-internal-action-token
-      - hermes-client-action-token
+      - source: postgres-password
+        target: source-postgres-password
+      - source: github-login-client-secret
+        target: source-github-login-client-secret
+      - source: github-projects-token
+        target: source-github-projects-token
+      - source: github-webhook-secret
+        target: source-github-webhook-secret
+      - source: hermes-internal-action-token
+        target: source-hermes-internal-action-token
+      - source: hermes-client-action-token
+        target: source-hermes-client-action-token
     networks:
       - database
       - egress
@@ -102,10 +111,14 @@ services:
       NODE_ENV: production
       PORT: "3001"
     secrets:
-      - postgres-password
-      - github-projects-token
-      - hermes-token
-      - telegram-bot-token
+      - source: postgres-password
+        target: source-postgres-password
+      - source: github-projects-token
+        target: source-github-projects-token
+      - source: hermes-token
+        target: source-hermes-token
+      - source: telegram-bot-token
+        target: source-telegram-bot-token
     networks:
       - database
       - egress

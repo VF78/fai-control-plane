@@ -8,6 +8,40 @@ ROOT = pathlib.Path(__file__).parents[3]
 
 
 class DeploymentContractTest(unittest.TestCase):
+    def test_root_only_host_secrets_are_copied_then_process_drops_privileges(self):
+        compose = (ROOT / "infra/production/compose.yaml").read_text()
+        dockerfile = (ROOT / "infra/compose/Dockerfile").read_text()
+        entrypoint = (ROOT / "infra/compose/container-entrypoint.sh").read_text()
+
+        app = compose.split("x-app: &app", 1)[1].split(
+            "x-database-environment:", 1
+        )[0]
+        postgres = compose.split("  postgres:", 1)[1].split("  migrate:", 1)[0]
+        self.assertIn('user: "0:0"', app)
+        self.assertIn(
+            'ENTRYPOINT ["sh", "infra/compose/container-entrypoint.sh"]',
+            dockerfile,
+        )
+        self.assertIn("RUN command -v setpriv >/dev/null", dockerfile)
+        self.assertIn("      - postgres-password", postgres)
+        self.assertNotIn("source-postgres-password", postgres)
+
+        service_boundaries = {
+            "migrate": "  bootstrap:",
+            "bootstrap": "  web:",
+            "web": "  worker:",
+            "worker": "networks:",
+        }
+        for service, next_section in service_boundaries.items():
+            section = compose.split(f"  {service}:\n", 1)[1].split(
+                f"\n{next_section}", 1
+            )[0]
+            self.assertIn("target: source-postgres-password", section)
+        self.assertIn('install -o node -g node -m 0400', entrypoint)
+        self.assertIn("--reuid=node --regid=node --init-groups", entrypoint)
+        self.assertIn("--no-new-privs --bounding-set=-all", entrypoint)
+        self.assertIn('exec setpriv', entrypoint)
+
     def test_candidate_health_wait_survives_starting_under_errexit(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
         start = script.index("wait_for_candidate_health() {")

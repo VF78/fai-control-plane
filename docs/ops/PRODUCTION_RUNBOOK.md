@@ -38,8 +38,11 @@ changes their configuration.
 The Compose file contains exactly PostgreSQL, one-shot `migrate`, one-shot
 `bootstrap`, web and worker. It adds no proxy container, observability stack,
 registry, backup framework, host daemon or cleanup. Web and worker run as the
-image `node` user. Their only durable business state is the fresh PostgreSQL
-volume.
+image `node` user. Each application container starts a bounded root entrypoint
+that copies only its mounted root-only secrets to mode-0400 container-local
+files, drops all privileges to `node`, and then executes the application. Host
+secret ownership and mode remain `root:root` `0600`. Their only durable
+business state is the fresh PostgreSQL volume.
 
 The application build base is pinned to the Node 24 Bookworm Slim multi-arch
 digest `sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03`;
