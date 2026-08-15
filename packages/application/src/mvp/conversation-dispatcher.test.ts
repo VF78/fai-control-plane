@@ -76,4 +76,16 @@ describe('client conversation trust boundary', () => {
     expect(request).not.toHaveProperty('runtimeVendor');
     expect(request).not.toHaveProperty('cliVendor');
   });
+  it('denies an explicit operator request targeting a different canonical project', async () => {
+    const request: AgentRoleRequest = {role: 'developer', repository: {id: 'repo', url: 'https://example.test/repo'},
+      projectItem: {id: 'item', projectId: 'other-project', issueId: 'issue', url: 'https://example.test/issue'},
+      observedVersion: 'v1', sources: [], constraints: ['bounded'], acceptanceCriteria: ['verified'], approval: null,
+      correlationId: 'correlation', idempotencyKey: 'agent-key'};
+    const internal: InternalConversationEnvelope = {message: {...envelope.message, contour: 'trusted-main'},
+      action: {type: 'agent.submit', request}};
+    const agent = {submit: vi.fn(async () => ({deliveryReference: 'delivery', sessionReference: 'session'}))};
+    await expect(dispatchConversationAction({workspaceId: 'workspace', envelope: internal,
+      ports: {...ports({actorId: 'operator-a', role: 'operator'}), agent}})).resolves.toEqual({status: 'denied'});
+    expect(agent.submit).not.toHaveBeenCalled();
+  });
 });

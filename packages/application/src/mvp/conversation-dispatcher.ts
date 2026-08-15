@@ -83,7 +83,8 @@ const dispatch = async (input: Readonly<{
     }
     case 'agent.submit': {
       if (envelope.message.contour !== 'trusted-main' || !('agent' in ports) ||
-        !['project_owner', 'operator'].includes(identity.role)) return {status: 'denied'};
+        !['project_owner', 'operator'].includes(identity.role) ||
+        envelope.action.request.projectItem.projectId !== envelope.message.projectId) return {status: 'denied'};
       referenceId = (await ports.agent.submit(envelope.action.request)).deliveryReference;
       break;
     }

@@ -1,5 +1,4 @@
 import type {
-  AgentRoleRequest,
   ApprovalEvidence,
   MessengerDeliveryInput,
   TrackerSnapshot
@@ -38,10 +37,9 @@ export type OutboxRecord = Readonly<{
   projectId: string;
   idempotencyKey: string;
   availableAt: string;
-}> & (
-  | Readonly<{topic: 'agent-role-request'; payload: Readonly<{request: AgentRoleRequest}>}>
-  | Readonly<{topic: 'messenger-notification'; payload: Readonly<{message: MessengerDeliveryInput}>}>
-);
+  topic: 'messenger-notification';
+  payload: Readonly<{message: MessengerDeliveryInput}>;
+}>;
 
 export type OutboxStore = Readonly<{
   enqueue(record: OutboxRecord): Promise<'enqueued' | 'duplicate'>;

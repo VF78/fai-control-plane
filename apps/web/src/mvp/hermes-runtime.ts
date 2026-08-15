@@ -7,7 +7,11 @@ import {
   resolveActiveHumanMember
 } from '@fai-control-plane/db';
 import {decideApproval, dispatchClientConversationAction, dispatchConversationAction} from '@fai-control-plane/application';
-import {createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter} from '@fai-control-plane/integrations';
+import {
+  createGitHubTrackerMutationAdapter,
+  createGitHubTrackerReadAdapter,
+  createHermesDeliveryAdapter
+} from '@fai-control-plane/integrations';
 import type {ApprovalKind, ClientConversationEnvelope, InternalConversationEnvelope, OpaqueSecretRef} from '@fai-control-plane/domain';
 import {createHermesConversationActionHandler} from './hermes-actions.ts';
 import {getDatabase, readSecretFile, secretResolver} from './runtime.ts';
@@ -34,6 +38,8 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
   const tracker = createGitHubTrackerMutationAdapter({binding,
     credentialRef: secret('github-projects-mutate', 'tracker_mutate', 'GITHUB_PROJECTS_TOKEN_FILE'),
     secrets: secretResolver});
+  const agent = createHermesDeliveryAdapter({endpoint: env('HERMES_ROLE_REQUEST_URL'),
+    credentialRef: secret('hermes', 'agent_delivery', 'HERMES_TOKEN_FILE'), secrets: secretResolver});
   const stores = createStores(database, workspaceId); const persistence = createApprovalPersistence(database);
   const shared = {
     facts: {async read(targetProjectId: string) {
@@ -79,7 +85,7 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
     projectId, telegramChatId: env('TELEGRAM_INTERNAL_CHAT_ID'),
     telegramUserIds: env('TELEGRAM_INTERNAL_ALLOWED_USER_IDS').split(','), bitrixTaskId: env('BITRIX24_TASK_ID'),
     dispatchInternal: (envelope: InternalConversationEnvelope) => dispatchConversationAction({workspaceId, envelope,
-      ports: {...shared, agent: {async submit() { throw new Error('agent_action_denied'); }}}}),
+      ports: {...shared, agent}}),
     dispatchClient: (envelope: ClientConversationEnvelope) => dispatchClientConversationAction({workspaceId,
       envelope, ports: shared})
   })(request);

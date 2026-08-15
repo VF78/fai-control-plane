@@ -3,12 +3,9 @@ import {createDatabase, createStores, type Database} from '@fai-control-plane/db
 import {deliverPending, reconcileTracker} from '@fai-control-plane/application';
 import {
   createGitHubTrackerReadAdapter,
-  createHermesDeliveryAdapter,
   createTelegramDeliveryAdapter
 } from '@fai-control-plane/integrations';
 import type {
-  AgentRole,
-  AgentRoleRequest,
   MessengerDeliveryInput,
   OpaqueSecretRef,
   SecretResolverPort,
@@ -45,27 +42,11 @@ export const createWorker = (database: Database = createDatabase()) => {
     projectUrl: `https://github.com/users/${owner}/projects/${projectNumber}`,
     credentialRef: secret('github-projects', 'tracker_read', 'GITHUB_PROJECTS_TOKEN_FILE')
   }, secrets});
-  const agent = createHermesDeliveryAdapter({endpoint: env('HERMES_ROLE_REQUEST_URL'),
-    credentialRef: secret('hermes', 'agent_delivery', 'HERMES_TOKEN_FILE'), secrets});
   const clientMessenger = {async send() {
     throw new Error('client_messenger_not_configured');
   }};
   const telegram = createTelegramDeliveryAdapter({config: {projectId, chatId: env('TELEGRAM_INTERNAL_CHAT_ID'),
     tokenRef: secret('telegram', 'messenger_delivery', 'TELEGRAM_BOT_TOKEN_FILE')}, secrets});
-  const agentRequest = async (
-    item: TrackerItemFact, role: AgentRole, idempotencyKey: string
-  ): Promise<AgentRoleRequest> => {
-    const sources = await database.query<{id: string; sha256: string; kind: string; provenance: string}>(
-      'select id,sha256,kind,provenance from project_source_artifacts where project_id=$1 order by created_at limit 20',
-      [projectId]
-    );
-    return {role, repository: {id: `${owner}/${repository}`, url: `https://github.com/${owner}/${repository}`},
-      projectItem: {id: item.itemId, projectId: item.projectId, issueId: item.issueId, url: item.url},
-      observedVersion: item.version, sources: sources.rows,
-      constraints: ['Work only on the referenced GitHub Project item.', 'Do not merge or deploy without explicit approval.'],
-      acceptanceCriteria: ['Update the same GitHub item and attach provider-native evidence.'],
-      approval: null, correlationId: idempotencyKey, idempotencyKey};
-  };
   const notification = async (
     item: TrackerItemFact, reason: string, idempotencyKey: string
   ): Promise<MessengerDeliveryInput> => ({projectId, contour: 'trusted-main', channelReference: 'telegram:internal',
@@ -78,10 +59,10 @@ export const createWorker = (database: Database = createDatabase()) => {
           development: env('STATUS_DEVELOPMENT_ID'), qa: env('STATUS_QA_ID'),
           acceptance: env('STATUS_ACCEPTANCE_ID'), done: env('STATUS_DONE_ID')},
         ports: {tracker, snapshots: stores.snapshots, outbox: stores.outbox, audit: stores.audit,
-          compose: {agentRequest, notification}}});
+          compose: {notification}}});
     },
     async retry() {
-      return deliverPending({limit: 20, ports: {agent, internalMessenger: telegram,
+      return deliverPending({limit: 20, ports: {internalMessenger: telegram,
         clientMessenger, outbox: stores.outbox, now: () => new Date()}});
     },
     close: () => database.end()

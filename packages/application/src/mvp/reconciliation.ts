@@ -1,7 +1,5 @@
 import {
   decideNextAction,
-  type AgentRole,
-  type AgentRoleRequest,
   type MessengerDeliveryInput,
   type StatusMap,
   type TrackerReadPort,
@@ -16,7 +14,6 @@ export type ReconciliationPorts = Readonly<{
   outbox: OutboxStore;
   audit: AuditStore;
   compose: Readonly<{
-    agentRequest(item: TrackerItemFact, role: AgentRole, idempotencyKey: string): Promise<AgentRoleRequest>;
     notification(item: TrackerItemFact, reason: string, idempotencyKey: string): Promise<MessengerDeliveryInput>;
   }>;
 }>;
@@ -27,7 +24,7 @@ export type ReconciliationResult = Readonly<{
   cursor: string | null;
 }>;
 
-/** One provider read, one factual snapshot, and intent only for actionable items. */
+/** One provider read, one factual snapshot, and notifications only for human-owned action. */
 export const reconcileTracker = async (input: Readonly<{
   bindingId: string;
   workspaceId: string;
@@ -63,12 +60,11 @@ export const reconcileTracker = async (input: Readonly<{
   let queuedActions = 0;
   for (const item of snapshot.items) {
     const decision = decideNextAction(item, input.statusMap);
-    if (decision.kind === 'none') continue;
-    const delivery = decision.kind === 'agent' && decision.role !== null
-      ? {topic: 'agent-role-request' as const, payload: {request:
-          await input.ports.compose.agentRequest(item, decision.role, decision.idempotencyKey)}}
-      : {topic: 'messenger-notification' as const, payload: {message:
-          await input.ports.compose.notification(item, decision.reason, decision.idempotencyKey)}};
+    // Tracker state is factual input, never authority to start an agent. Agent execution
+    // is available only through an authenticated human conversation command.
+    if (decision.kind !== 'human') continue;
+    const delivery = {topic: 'messenger-notification' as const, payload: {message:
+      await input.ports.compose.notification(item, decision.reason, decision.idempotencyKey)}};
     const result = await input.ports.outbox.enqueue({
       projectId: input.projectId,
       ...delivery,
