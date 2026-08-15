@@ -16,19 +16,13 @@ const snapshot = {
   ]
 } as const;
 const compose = {
-  agentRequest: async (item: typeof snapshot.items[number], role: 'manager' | 'developer' | 'qa' | 'devops', idempotencyKey: string) => ({
-    role, repository: {id: 'repo', url: 'https://example.test/repo'},
-    projectItem: {id: item.itemId, projectId: item.projectId, issueId: item.issueId, url: item.url},
-    observedVersion: item.version, sources: [], constraints: ['bounded'], acceptanceCriteria: ['verified'],
-    approval: null, correlationId: idempotencyKey, idempotencyKey
-  }),
   notification: async (item: typeof snapshot.items[number], _reason: string, idempotencyKey: string) => ({
     projectId: item.projectId, contour: 'trusted-main' as const, channelReference: 'internal', text: `Action required: ${item.url}`, idempotencyKey
   })
 };
 
 describe('MVP tracker reconciliation', () => {
-  it('stores facts and queues only actionable intent', async () => {
+  it('stores tracker facts without turning backlog or development state into execution', async () => {
     const replace = vi.fn(async () => undefined);
     const recordFailure = vi.fn(async () => undefined);
     const enqueue = vi.fn(async (_record: unknown) => 'enqueued' as const);
@@ -38,14 +32,21 @@ describe('MVP tracker reconciliation', () => {
       ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {replace, recordFailure}, compose,
         outbox: {enqueue, claim: async () => [], complete: async () => undefined, retry: async () => undefined},
         audit: {append}}
-    })).resolves.toEqual({observedItems: 2, queuedActions: 1, cursor: 'cursor-2'});
+    })).resolves.toEqual({observedItems: 2, queuedActions: 0, cursor: 'cursor-2'});
     expect(replace).toHaveBeenCalledWith(snapshot);
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(enqueue.mock.calls[0]?.[0]).toMatchObject({topic: 'agent-role-request'});
-    expect(enqueue.mock.calls[0]?.[0]).toMatchObject({payload: {request: {
-      projectItem: {id: 'one'}, observedVersion: 'v1'
-    }}});
+    expect(enqueue).not.toHaveBeenCalled();
     expect(append).toHaveBeenCalledWith(expect.objectContaining({workspaceId: 'workspace'}));
+  });
+
+  it.each(['b', 'r', 'q'] as const)('never queues an agent request for automatic status %s', async (status) => {
+    const enqueue = vi.fn(async () => 'enqueued' as const);
+    const automatic = {...snapshot, items: [{...snapshot.items[0], statusOptionId: status}]};
+    await reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,
+      statusMap, ports: {tracker: {readSnapshot: async () => automatic}, snapshots: {
+        replace: async () => undefined, recordFailure: async () => undefined
+      }, compose, outbox: {enqueue, claim: async () => [], complete: async () => undefined,
+        retry: async () => undefined}, audit: {append: async () => undefined}}});
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it('fails closed when the adapter crosses a project binding', async () => {

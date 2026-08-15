@@ -15,18 +15,16 @@ export const runWorkerJob = async (
   handlers: WorkerJobHandlers
 ): Promise<void> => handlers[job]();
 
-export type WorkerReadiness = Readonly<{ready: boolean; checks: Readonly<{github: boolean; agent: boolean}>;
-  lastReconcileAt: string | null; lastRetryAt: string | null; lastErrorAt: string | null;
-  lastAgentDeliveryAt: string | null; lastAgentErrorAt: string | null}>;
+export type WorkerReadiness = Readonly<{ready: boolean; checks: Readonly<{github: boolean; notifications: boolean}>;
+  lastReconcileAt: string | null; lastRetryAt: string | null; lastErrorAt: string | null}>;
 export const workerReady = (input: Omit<WorkerReadiness, 'ready' | 'checks'>): WorkerReadiness => {
   const success = input.lastReconcileAt !== null && input.lastRetryAt !== null
     ? Math.min(Date.parse(input.lastReconcileAt), Date.parse(input.lastRetryAt)) : Number.NaN;
   const cycleHealthy = Number.isFinite(success) &&
     (input.lastErrorAt === null || Date.parse(input.lastErrorAt) < success);
   const github = cycleHealthy && input.lastReconcileAt !== null;
-  const agent = input.lastAgentDeliveryAt !== null &&
-    (input.lastAgentErrorAt === null || Date.parse(input.lastAgentErrorAt) < Date.parse(input.lastAgentDeliveryAt));
-  return {...input, checks: {github, agent}, ready: github && agent};
+  const notifications = cycleHealthy && input.lastRetryAt !== null;
+  return {...input, checks: {github, notifications}, ready: github && notifications};
 };
 
 export const exclusiveRunner = (task: () => Promise<void>): (() => Promise<void>) => {

@@ -315,7 +315,8 @@ export const createStores = (database: Database, workspaceId: string): Readonly<
     async claim(limit, now) {
       const result = await database.query<OutboxRecord & {id: string; attempts: number}>(
         `update outbox_events set claimed_at=$2
-         where id in (select id from outbox_events where delivered_at is null and available_at <= $2
+         where id in (select id from outbox_events where topic='messenger-notification'
+           and delivered_at is null and available_at <= $2
            and (claimed_at is null or claimed_at < $2::timestamptz - interval '5 minutes')
            order by available_at limit $1 for update skip locked)
          returning id,project_id as "projectId",topic,idempotency_key as "idempotencyKey",payload,attempts,

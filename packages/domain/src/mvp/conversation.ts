@@ -58,6 +58,9 @@ export const parseConversationEnvelope = (value: unknown): ConversationEnvelope 
   else if (action.type === 'approval.decide') parsedAction = {type: 'approval.decide', approvalId: String(action.approvalId ?? ''),
     kind: action.kind as ApprovalKind, targetReference: String(action.targetReference ?? ''),
     decision: action.decision as ApprovalDecision};
+  else if (action.type === 'agent.submit' && action.request !== null && typeof action.request === 'object') {
+    parsedAction = {type: 'agent.submit', request: action.request as AgentRoleRequest};
+  }
   if (parsedAction === null) return null;
   const envelope: ConversationEnvelope = {message: {projectId: String(message.projectId ?? ''), contour,
     channelReference: String(message.channelReference ?? ''), senderReference: String(message.senderReference ?? ''),
