@@ -49,6 +49,17 @@ describe('MVP tracker reconciliation', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  it('does not notify historical acceptance items during the initial baseline read', async () => {
+    const enqueue = vi.fn(async () => 'enqueued' as const);
+    const historical = {...snapshot, items: [{...snapshot.items[0], statusOptionId: 'a'}]};
+    await reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,
+      statusMap, ports: {tracker: {readSnapshot: async () => historical}, snapshots: {
+        replace: async () => undefined, recordFailure: async () => undefined
+      }, compose, outbox: {enqueue, claim: async () => [], complete: async () => undefined,
+        retry: async () => undefined}, audit: {append: async () => undefined}}});
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it('fails closed when the adapter crosses a project binding', async () => {
     const replace = vi.fn(async () => undefined);
     await expect(reconcileTracker({
