@@ -7,11 +7,14 @@ import {
   createApprovalPersistence,
   createStores,
   databaseMvpReady,
+  executeAgentSubmissionTransaction,
   listProjects,
+  resolveAgentSourceReferences,
+  resolveAgentSubmissionBinding,
   subjectHash
 } from '@fai-control-plane/db';
-import {decideApproval} from '@fai-control-plane/application';
-import {verifyGitHubWebhook, createGitHubTrackerReadAdapter} from '@fai-control-plane/integrations';
+import {decideApproval, submitExplicitAgent} from '@fai-control-plane/application';
+import {verifyGitHubWebhook, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
 import {mayChangeMembership, type ApprovalEvidence, type ApprovalKind, type OpaqueSecretRef, type ProjectRole} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 
@@ -39,6 +42,10 @@ const requiredHttps = (value: unknown): string => {
   const result = optionalHttps(value);
   if (result === null) throw new Error('repository_url_required');
   return result;
+};
+const strings = (value: unknown, maximumItems: number, maximumLength: number): readonly string[] => {
+  if (!Array.isArray(value) || value.length > maximumItems) throw new Error('body_invalid');
+  return value.map((item) => string(item, maximumLength));
 };
 
 export const projects = async (request: Request): Promise<Response> => {
@@ -182,6 +189,55 @@ export const approval = async (request: Request, approvalId: string): Promise<Re
       }}, transaction: persistence.transaction});
     return Response.json({status: result}, {status: result === 'recorded' || result === 'duplicate' ? 200 : 409});
   } catch (error) { return jsonError(error); }
+};
+
+export const agentSubmit = async (request: Request): Promise<Response> => {
+  try {
+    const database = getDatabase();
+    const session = await requireSession();
+    requireCsrf(request);
+    const body = await json(request);
+    const projectId = string(body.projectId);
+    const context = await resolveAgentSubmissionBinding(database, session.actorId, projectId);
+    if (context === null) throw new Error('agent_submit_denied');
+    if (!['project_owner', 'operator'].includes(context.requesterRole)) throw new Error('agent_submit_denied');
+    if (context.agentCredentialRef === null) throw new Error('agent_provider_unavailable');
+    if (context.provider !== 'github') throw new Error('tracker_provider_unsupported');
+    const projectUrl = new URL(context.projectUrl); const repositoryUrl = new URL(context.repositoryUrl);
+    const projectMatch = /^\/users\/([^/]+)\/projects\/(\d+)$/.exec(projectUrl.pathname);
+    const repositoryMatch = /^\/([^/]+)\/([^/]+)\/?$/.exec(repositoryUrl.pathname);
+    if (projectUrl.origin !== 'https://github.com' || repositoryUrl.origin !== 'https://github.com' ||
+      projectMatch === null || repositoryMatch === null || projectMatch[1] !== repositoryMatch[1]) {
+      throw new Error('github_binding_invalid');
+    }
+    const binding = {id: context.bindingId, owner: projectMatch[1]!, repository: repositoryMatch[2]!,
+      projectId: context.projectId, projectNumber: Number(projectMatch[2]), projectUrl: context.projectUrl,
+      credentialRef: context.trackerCredentialRef};
+    const tracker = createGitHubTrackerReadAdapter({binding, secrets: secretResolver});
+    const stores = createStores(database, session.workspaceId);
+    const delivery = createHermesDeliveryAdapter({endpoint: string(process.env.HERMES_ROLE_REQUEST_URL, 2_048),
+      credentialRef: context.agentCredentialRef, secrets: secretResolver});
+    const result = await submitExplicitAgent({actorId: session.actorId, projectId,
+      projectItemId: string(body.projectItemId), role: string(body.role, 32) as 'manager'|'developer'|'qa'|'devops',
+      sourceIds: strings(body.sourceIds ?? [], 20, 256), constraints: strings(body.constraints, 40, 2_000),
+      acceptanceCriteria: strings(body.acceptanceCriteria, 40, 2_000)}, {
+      resolveContext: async () => ({workspaceId: context.workspaceId, projectId: context.projectId,
+        requesterRole: context.requesterRole, bindingId: context.bindingId,
+        repository: {id: context.repositoryId, url: context.repositoryUrl}}),
+      readFreshSnapshot: () => tracker.readSnapshot(context.bindingId, context.cursor),
+      persistSnapshot: stores.snapshots.replace,
+      resolveSources: (input) => resolveAgentSourceReferences(database, input), delivery,
+      transaction: {execute: (input, submit) => executeAgentSubmissionTransaction(database, input, submit)}
+    });
+    return Response.json({status: result.status, deliveryReference: result.deliveryReference});
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'request_failed';
+    if (['tracker_provider_unsupported','github_binding_invalid','github_read_failed','github_response_invalid',
+      'github_snapshot_changed','github_credential_invalid','agent_endpoint_invalid','agent_provider_unavailable',
+      'agent_credential_invalid','agent_delivery_failed','agent_response_invalid','secret_path_must_be_absolute',
+      'secret_invalid'].includes(code)) return Response.json({error: 'provider_error'}, {status: 502});
+    return jsonError(error);
+  }
 };
 
 const envSecret = (prefix: string, purpose: string): OpaqueSecretRef => ({

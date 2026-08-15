@@ -1,137 +1,68 @@
-import {
-  listApprovalEvidenceViews,
-  listProjectSourceViews,
-  listProjectTaskViews,
-  type ApprovalEvidenceView,
-  type ProjectSourceView,
-  type ProjectTaskView
-} from '@fai-control-plane/db';
+import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews, type ApprovalEvidenceView, type ProjectOperatorEvidenceView, type ProjectSourceView, type ProjectTaskView} from '@fai-control-plane/db';
 import type {ReactNode} from 'react';
+import {Bot, CircleDot, FolderKanban, LayoutDashboard, ListChecks, Menu, MessageSquareText, Settings2, ShieldCheck, UsersRound} from 'lucide-react';
 import {buildPortfolio, type PortfolioFocus, type PortfolioProject} from '../src/mvp/portfolio-view.ts';
+import {AccessControls, AgentSubmitControl, ApprovalControl, CreateProjectControl, LogoutControl, SourceAddControl} from '../src/mvp/operator-controls.tsx';
 import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
 
 export const dynamic = 'force-dynamic';
-type View = 'overview' | 'tasks' | 'sources' | 'approvals';
+type Area = 'portfolio' | 'delivery' | 'conversations' | 'people' | 'systems' | 'settings';
 type Query = Readonly<{view?: string; project?: string; task?: string}>;
-
-const viewLabel: Record<View, string> = {overview: 'Обзор', tasks: 'Задачи', sources: 'Источники', approvals: 'Согласования'};
-const viewGlyph: Record<View, string> = {overview: '◫', tasks: '☑', sources: '◇', approvals: '✓'};
-const currentView = (value: string | undefined): View => value === 'tasks' || value === 'sources' || value === 'approvals' ? value : 'overview';
-const href = (view: View, project?: string, task?: string): string => {
-  const query = new URLSearchParams({view});
-  if (project !== undefined) query.set('project', project);
-  if (task !== undefined) query.set('task', task);
-  return `/?${query.toString()}`;
-};
-const formatDate = (value: string): string => new Intl.DateTimeFormat('ru-RU', {
-  day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Europe/Moscow'
-}).format(new Date(value.length === 10 ? `${value}T12:00:00.000Z` : value));
-const formatInstant = (value: string): string => new Intl.DateTimeFormat('ru-RU', {
-  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow'
-}).format(new Date(value));
+const areas: readonly Exclude<Area, 'settings'>[] = ['portfolio', 'delivery', 'conversations', 'people', 'systems'];
+const labels: Record<Area, string> = {portfolio: 'Портфель', delivery: 'Разработка', conversations: 'Чаты', people: 'Люди и доступ', systems: 'Агенты и системы', settings: 'Настройки проекта'};
+const icons: Record<Area, typeof LayoutDashboard> = {portfolio: LayoutDashboard, delivery: ListChecks, conversations: MessageSquareText, people: UsersRound, systems: Bot, settings: Settings2};
+const current = (value: string | undefined): Area => [...areas, 'settings'].includes(value as Area) ? value as Area : 'portfolio';
+const href = (view: Area, project?: string, task?: string): string => { const query = new URLSearchParams({view}); if (project !== undefined) query.set('project', project); if (task !== undefined) query.set('task', task); return `/?${query.toString()}`; };
+const formatDate = (value: string): string => new Intl.DateTimeFormat('ru-RU', {day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Europe/Moscow'}).format(new Date(value.length === 10 ? `${value}T12:00:00.000Z` : value));
+const formatInstant = (value: string): string => new Intl.DateTimeFormat('ru-RU', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow'}).format(new Date(value));
+const freshness = (project: ProjectTaskView): string => project.tracker.errorCode !== null ? `Ошибка: ${project.tracker.errorCode}` : project.tracker.observedAt === null ? 'Снимок не получен' : `${project.tracker.freshness === 'fresh' ? 'Обновлено' : 'Снимок устарел'} ${formatInstant(project.tracker.observedAt)}`;
+const evidenceFor = (project: ProjectTaskView | null, evidence: readonly ProjectOperatorEvidenceView[]) => project === null ? null : evidence.find((item) => item.projectId === project.id) ?? null;
 const progress = (project: PortfolioProject): number => project.total === 0 ? 0 : project.done / project.total * 100;
-const healthLabel = (project: PortfolioProject): string => project.health === 'steady' ? 'По плану'
-  : project.health === 'attention' ? 'Требует внимания' : 'Нет актуальных данных';
-const focusDecision = (focus: PortfolioFocus): string => focus.kind === 'overdue' ? `Определить новый контроль для #${focus.issueId}`
-  : focus.kind === 'blocked' ? `Снять блокировку #${focus.issueId}` : `Проверить результат #${focus.issueId}`;
-const freshnessLabel = (project: ProjectTaskView): string => project.tracker.errorCode !== null
-  ? `Ошибка: ${project.tracker.errorCode}` : project.tracker.observedAt === null ? 'Снимок не получен'
-    : `${project.tracker.freshness === 'fresh' ? 'Обновлено' : 'Снимок устарел'} ${formatInstant(project.tracker.observedAt)}`;
+const healthLabel = (project: PortfolioProject): string => project.health === 'steady' ? 'По плану' : project.health === 'attention' ? 'Требует внимания' : 'Нет актуальных данных';
+const focusDecision = (focus: PortfolioFocus): string => focus.kind === 'overdue' ? `Определить новый контроль для #${focus.issueId}` : focus.kind === 'blocked' ? `Снять блокировку #${focus.issueId}` : `Проверить результат #${focus.issueId}`;
+const knownStages = ['Backlog', 'Ready', 'In Dev', 'QA', 'Acceptance', 'Done'];
+const tasksByStatus = (tasks: ProjectTaskView['tasks']) => { const names = [...new Set(tasks.map((task) => task.statusOptionName ?? 'Без статуса'))]; const ordered = [...knownStages.filter((stage) => names.includes(stage)), ...names.filter((name) => !knownStages.includes(name))]; return ordered.map((status) => ({status, tasks: tasks.filter((task) => (task.statusOptionName ?? 'Без статуса') === status)})); };
+const deliveryLabel = (value: {pending: number; delivered: number; failed: number}): string => value.failed > 0 ? `Ошибка · ${value.failed}` : value.pending > 0 ? `Ожидает · ${value.pending}` : value.delivered > 0 ? `Доставлено · ${value.delivered}` : 'Нет данных';
+type IntegrationConfig = Readonly<{hermes: boolean; telegram: Readonly<{configured: boolean; allowedUsers: number}>; bitrix: Readonly<{configured: boolean; active: boolean}>}>;
+const integrationConfig = (): IntegrationConfig => ({
+  hermes: Boolean(process.env.HERMES_ROLE_REQUEST_URL && process.env.HERMES_TOKEN_FILE),
+  telegram: {configured: Boolean(process.env.TELEGRAM_INTERNAL_CHAT_ID && process.env.TELEGRAM_INTERNAL_ALLOWED_USER_IDS && process.env.HERMES_INTERNAL_ACTION_TOKEN_FILE),
+    allowedUsers: process.env.TELEGRAM_INTERNAL_ALLOWED_USER_IDS?.split(',').filter(Boolean).length ?? 0},
+  bitrix: {configured: Boolean(process.env.BITRIX24_TASK_ID && process.env.HERMES_CLIENT_ACTION_TOKEN_FILE), active: false}
+});
 
-function Shell({view, projects, selected, operatorName, children}: Readonly<{
-  view: View; projects: readonly ProjectTaskView[]; selected: ProjectTaskView | null; operatorName: string; children: ReactNode;
-}>) {
-  const navigation = (items: readonly View[]) => items.map((item) => <a aria-current={view === item ? 'page' : undefined}
-    href={href(item, selected?.slug)} key={item}><i aria-hidden="true">{viewGlyph[item]}</i><span>{viewLabel[item]}</span></a>);
-  return <div className="fcp-workspace fcp-shell-layout">
-    <aside className="fcp-sidebar">
-      <a className="fcp-brand" href={href('overview')}><i aria-hidden="true">f</i><b>f(AI) Control</b></a>
-      <nav className="fcp-sidebar-section fcp-project-list-nav" aria-label="Доступные проекты"><span>Проекты</span>
-        {projects.map((project) => <a aria-current={selected?.id === project.id ? 'page' : undefined}
-          href={href(view, project.slug)} key={project.id}><i className={`fcp-project-initial project-${project.slug}`}>{project.name[0]}</i>
-          <div><b>{project.name}</b><small>{freshnessLabel(project)}</small></div><span className={`fcp-source-dot ${project.tracker.freshness}`} aria-label={project.tracker.freshness}/></a>)}</nav>
-      <nav className="fcp-sidebar-section fcp-sidebar-nav" aria-label="Рабочие разделы"><span>Работа</span>{navigation(['overview','tasks'])}</nav>
-      <nav className="fcp-sidebar-section fcp-sidebar-nav" aria-label="Контроль"><span>Контроль</span>{navigation(['approvals'])}</nav>
-      <nav className="fcp-sidebar-section fcp-sidebar-nav fcp-sidebar-settings" aria-label="Настройки"><span>Настройки</span>{navigation(['sources'])}</nav>
-    </aside>
-    <header className="fcp-topbar"><a className="fcp-mobile-brand" href={href('overview')}>f(AI) Control</a>
-      <strong>{selected === null ? viewLabel[view] : `${selected.name} · ${viewLabel[view]}`}</strong>
-      <span className="fcp-access-count">⌾ Доступ: {projects.length} {projects.length === 1 ? 'проект' : 'проекта'}</span>
-      <span className="fcp-user-avatar" aria-label={`Оператор: ${operatorName}`}>{operatorName.split(/\s+/).map((part) => part[0]).join('').slice(0,2).toUpperCase()}</span>
-      <details className="fcp-mobile-menu"><summary aria-label="Открыть навигацию">☰</summary><div className="fcp-mobile-menu-body">
-        <nav aria-label="Доступные проекты"><span>Проекты</span>{projects.map((project) => <a href={href(view, project.slug)} key={project.id}>{project.name}</a>)}</nav>
-        <nav aria-label="Разделы"><span>Работа</span>{navigation(['overview','tasks','approvals','sources'])}</nav>
-      </div></details>
-    </header>
-    <main className="fcp-main">{children}</main>
-  </div>;
+function Shell({view, projects, selected, operatorName, children}: Readonly<{view: Area; projects: readonly ProjectTaskView[]; selected: ProjectTaskView | null; operatorName: string; children: ReactNode;}>) {
+  const navigation = (items: readonly Area[]) => items.map((item) => { const Icon = icons[item]; return <a aria-current={view === item ? 'page' : undefined} href={href(item, selected?.slug)} key={item}><span className="fcp-nav-icon"><Icon aria-hidden="true" size={17}/></span><span>{labels[item]}</span></a>; });
+  return <div className="fcp-workspace fcp-shell-layout"><aside className="fcp-sidebar"><a className="fcp-brand" href={href('portfolio')}><i aria-hidden="true">f</i><b>f(AI) Control</b></a><nav className="fcp-sidebar-section fcp-project-list-nav" aria-label="Доступные проекты"><span>Проекты</span>{projects.map((project) => <a aria-current={selected?.id === project.id ? 'page' : undefined} href={href(view, project.slug)} key={project.id}><i className="fcp-project-initial">{project.name[0]}</i><div><b>{project.name}</b><small>{freshness(project)}</small></div><CircleDot aria-label={`Состояние источника: ${project.tracker.freshness}`} className={`fcp-source-dot ${project.tracker.freshness}`} size={13}/></a>)}</nav><nav className="fcp-sidebar-section fcp-sidebar-nav" aria-label="Операторская работа"><span>Работа</span>{navigation(areas)}</nav><nav className="fcp-sidebar-section fcp-sidebar-nav fcp-sidebar-settings" aria-label="Настройки"><span>Проект</span>{navigation(['settings'])}</nav></aside><header className="fcp-topbar"><a className="fcp-mobile-brand" href={href('portfolio')}>f(AI) Control</a><strong>{selected === null ? labels[view] : `${selected.name} · ${labels[view]}`}</strong><span className="fcp-access-count"><ShieldCheck aria-hidden="true" size={15}/>Доступ: {projects.length}</span><span className="fcp-user-avatar" aria-label={`Оператор: ${operatorName}`}>{operatorName.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</span><LogoutControl/><details className="fcp-mobile-menu"><summary aria-label="Открыть навигацию"><Menu aria-hidden="true" size={20}/></summary><div className="fcp-mobile-menu-body"><nav aria-label="Проекты"><span>Проекты</span>{projects.map((project) => <a href={href(view, project.slug)} key={project.id}><FolderKanban aria-hidden="true" size={16}/>{project.name}</a>)}</nav><nav aria-label="Работа"><span>Работа</span>{navigation([...areas, 'settings'])}</nav></div></details></header><main className="fcp-main">{children}</main></div>;
 }
 
 function Overview({projects}: Readonly<{projects: readonly ProjectTaskView[]}>) {
-  const portfolio = buildPortfolio(projects);
-  const attention = portfolio.filter((project) => project.health !== 'steady').length;
-  const exceptions = portfolio.flatMap((project) => project.focus.map((focus) => ({project, focus}))).slice(0, 3);
-  return <><div className="fcp-page-title"><div><h1>Обзор проектов</h1><p>Текущий статус портфеля по подтверждённым фактам GitHub Project.</p></div>
-    <aside className={`fcp-pulse ${attention === 0 ? 'steady' : ''}`}><span>Пульс портфеля</span><strong>{attention === 0 ? 'Исключений нет' : `${attention} ${attention === 1 ? 'проект требует' : 'проекта требуют'} внимания`}</strong></aside></div>
-    <section className="fcp-dashboard-progress" aria-label="Статус доступных проектов">{portfolio.map((project) =>
-      <article className="fcp-dashboard-progress-card" key={project.id}>
-        <header><div><span>{project.name}</span><small>GitHub Project · {project.open} открыто</small></div><b className={`fcp-health ${project.health}`}>{healthLabel(project)}</b></header>
-        <p className="fcp-health-reason">{project.healthReason}</p>
-        <strong>{project.done} <em>/ {project.total}</em></strong>
-        <div className="fcp-dashboard-progress-bar" role="img" aria-label={`${project.done} из ${project.total} завершено`}><span style={{width:`${progress(project)}%`}}/></div>
-        <dl className="fcp-dashboard-facts"><div><dt>Текущая фаза</dt><dd>{project.phase}</dd></div><div><dt>Следующий контроль</dt><dd>{project.nextControl === null ? 'Не задан' : formatDate(project.nextControl)}</dd></div>
-          <div><dt>Заблокировано</dt><dd>{project.blocked === null ? 'Нет данных' : project.blocked}</dd></div><div><dt>Просрочено</dt><dd>{project.overdue}</dd></div></dl>
-        <section className="fcp-focus"><header><h2>В фокусе</h2><a href={project.sourceUrl}>Открыть Project ↗</a></header>
-          {project.focus.length === 0 ? <p>Открытых исключений по доступным фактам нет.</p> : project.focus.map((focus) => <a href={focus.url} key={focus.itemId}><span>#{focus.issueId} · {focus.status}</span><strong>{focus.title}</strong><small>{focus.detail}</small></a>)}</section>
-        <footer><span>Главное решение</span>{project.decision === null ? <strong>Новых решений нет</strong> : <><strong>{focusDecision(project.decision)}</strong><a href={project.decision.url}>↗</a></>}</footer>
-      </article>)}</section>
-    <section className="fcp-exceptions"><header><div><span>Исключения портфеля</span><h2>Требует решения</h2></div></header>
-      {exceptions.length === 0 ? <p>По доступным provider-фактам исключений нет.</p> : <ol>{exceptions.map(({project,focus}) => <li key={`${project.id}-${focus.itemId}`}><a href={focus.url}><span>{project.name}</span><strong>#{focus.issueId} · {focus.title}</strong><small>{focus.detail}</small><b>↗</b></a></li>)}</ol>}</section>
-    <p className="fcp-provenance">Health — прозрачный вывод интерфейса из provider-native Blocked, сроков и freshness; отдельный локальный риск не сохраняется.</p></>;
+  const portfolio = buildPortfolio(projects); const attention = portfolio.filter((project) => project.health !== 'steady').length; const exceptions = portfolio.flatMap((project) => project.focus.map((focus) => ({project, focus}))).slice(0, 3);
+  return <><div className="fcp-page-title"><div><h1>Обзор проектов</h1><p>Текущий статус портфеля по подтверждённым фактам GitHub Project.</p></div><aside className={`fcp-pulse ${attention === 0 ? 'steady' : ''}`}><span>Пульс портфеля</span><strong>{attention === 0 ? 'Исключений нет' : `${attention} требуют внимания`}</strong></aside></div><CreateProjectControl/><section className="fcp-dashboard-progress" aria-label="Статус доступных проектов">{portfolio.map((project) => <article className="fcp-dashboard-progress-card" key={project.id}><header><div><span>{project.name}</span><small>GitHub Project · {project.open} открыто</small></div><b className={`fcp-health ${project.health}`}>{healthLabel(project)}</b></header><p className="fcp-health-reason">{project.healthReason}</p><strong>{project.done} <em>/ {project.total}</em></strong><div className="fcp-dashboard-progress-bar" aria-label={`${project.done} из ${project.total} завершено`}><span style={{width: `${progress(project)}%`}}/></div><dl className="fcp-dashboard-facts"><div><dt>Текущая фаза</dt><dd>{project.phase}</dd></div><div><dt>Следующий контроль</dt><dd>{project.nextControl === null ? 'Не задан' : formatDate(project.nextControl)}</dd></div><div><dt>Заблокировано</dt><dd>{project.blocked === null ? 'Нет данных' : project.blocked}</dd></div><div><dt>Просрочено</dt><dd>{project.overdue}</dd></div></dl><section className="fcp-focus"><header><h2>В фокусе</h2><a href={project.sourceUrl}>Открыть Project ↗</a></header>{project.focus.length === 0 ? <p>Открытых исключений нет.</p> : project.focus.map((focus) => <a href={focus.url} key={focus.itemId}><span>#{focus.issueId} · {focus.status}</span><strong>{focus.title}</strong><small>{focus.detail}</small></a>)}</section><footer><span>Главное решение</span><strong>{project.decision === null ? 'Новых решений нет' : focusDecision(project.decision)}</strong></footer></article>)}</section><section className="fcp-exceptions"><header><div><span>Исключения портфеля</span><h2>Требует решения</h2></div></header>{exceptions.length === 0 ? <p>По доступным provider-фактам исключений нет.</p> : <ol>{exceptions.map(({project, focus}) => <li key={`${project.id}-${focus.itemId}`}><a href={focus.url}><span>{project.name}</span><strong>#{focus.issueId} · {focus.title}</strong><small>{focus.detail}</small></a></li>)}</ol>}</section></>;
 }
 
-function Tasks({project, requestedTask}: Readonly<{project: ProjectTaskView | null; requestedTask: string | undefined}>) {
+function Delivery({project, approvals, task}: Readonly<{project: ProjectTaskView | null; approvals: readonly ApprovalEvidenceView[]; task: string | undefined;}>) {
+  if (project === null) return <Empty title="Нет доступных проектов"/>; const selected = project.tasks.find((item) => item.itemId === task) ?? null; const rows = approvals.filter((item) => item.projectId === project.id); const stages = tasksByStatus(project.tasks);
+  return <><PageTitle title="Разработка" detail={`${project.name} · GitHub Project — единственный источник задач и статусов`} state={freshness(project)}/><p className="fcp-control-note">Tracker binding: {project.tracker.configured === true ? `${project.tracker.provider ?? 'provider'} подключён` : 'Не настроено'}.</p>{project.tracker.errorCode === null ? null : <p className="fcp-error">Последний подтверждённый снимок: {project.tracker.errorCode}</p>}<section className="fcp-process"><header><div><span>Процесс разработки</span><h2>Статусы GitHub Project</h2></div><a href={project.tracker.sourceUrl ?? project.repositoryUrl}>Открыть Project ↗</a></header><ol>{knownStages.map((stage) => <li key={stage} className={stages.some((item) => item.status === stage && item.tasks.length > 0) ? 'active' : ''}><b>{stage}</b><small>{stages.find((item) => item.status === stage)?.tasks.length ?? 0} задач</small></li>)}</ol></section><div className={`fcp-kanban-layout ${selected === null ? '' : 'has-selection'}`}><section className="fcp-kanban" aria-label="Kanban GitHub Project">{stages.map(({status, tasks}) => <section key={status}><header><h2>{status}</h2><span>{tasks.length}</span></header>{tasks.length === 0 ? <p>Нет задач</p> : tasks.map((item) => <a aria-current={selected?.itemId === item.itemId ? 'page' : undefined} href={href('delivery', project.slug, item.itemId)} key={item.itemId}><span>#{item.issueId}</span><strong>{item.title}</strong><small>{item.assigneeIds.join(', ') || 'Не назначен'} · {item.targetDate === null ? 'Срок не задан' : formatDate(item.targetDate)}{item.blocked === true ? ' · Blocked' : ''}</small></a>)}</section>)}</section><article className="fcp-task-detail">{selected === null ? <><span className="fcp-eyebrow">Детали задачи</span><h2>Выберите карточку</h2><p>Детали соответствуют version-consistent снимку провайдера.</p></> : <><a className="fcp-back" href={href('delivery', project.slug)}>← К доске</a><span className="fcp-eyebrow">GitHub issue #{selected.issueId}</span><h2>{selected.title}</h2><dl><div><dt>Статус</dt><dd>{selected.statusOptionName ?? 'Не задан'}</dd></div><div><dt>Исполнители</dt><dd>{selected.assigneeIds.join(', ') || 'Не назначены'}</dd></div><div><dt>Срок</dt><dd>{selected.targetDate === null ? 'Не задан' : formatDate(selected.targetDate)}</dd></div><div><dt>Blocked</dt><dd>{selected.blocked === null ? 'Нет данных' : selected.blocked ? 'Yes' : 'No'}</dd></div><div><dt>Зависимости</dt><dd>{selected.dependencyIssueIds.map((id) => `#${id}`).join(', ') || 'Нет'}</dd></div></dl><a className="fcp-primary" href={selected.url}>Открыть в GitHub ↗</a></>}</article></div><ApprovalControl projectId={project.id} taskId={selected?.itemId ?? null}/><Evidence title="Согласования и подтверждения" rows={rows.map((item) => ({id: item.id, title: item.targetReference, detail: `${item.kind} · ${item.decision}`, at: item.decidedAt, url: item.targetUrl}))}/></>;
+}
+
+function Conversations({project, evidence, config}: Readonly<{project: ProjectTaskView | null; evidence: ProjectOperatorEvidenceView | null; config: IntegrationConfig;}>) {
   if (project === null) return <Empty title="Нет доступных проектов"/>;
-  const selected = project.tasks.find((task) => task.itemId === requestedTask) ?? null;
-  return <><PageTitle title="Задачи" detail={`${project.name} · GitHub Project является единственным источником статуса`} state={freshnessLabel(project)}/>
-    {project.tracker.errorCode === null ? null : <p className="fcp-error">Показан последний подтверждённый снимок. {project.tracker.errorCode}</p>}
-    <div className={`fcp-task-layout ${selected === null ? '' : 'has-selection'}`}><section className="fcp-task-master"><header><h2>Текущая работа</h2><a href={project.tracker.sourceUrl ?? project.repositoryUrl}>GitHub Project ↗</a></header>
-      <div className="fcp-task-list">{project.tasks.map((task) => <a aria-current={selected?.itemId === task.itemId ? 'page' : undefined}
-        href={href('tasks', project.slug, task.itemId)} key={task.itemId}><span>#{task.issueId} · {task.statusOptionName ?? 'Без статуса'}</span><strong>{task.title}</strong><small>{task.targetDate === null ? 'Срок не задан' : `Контроль ${formatDate(task.targetDate)}`}{task.blocked === true ? ' · Blocked' : ''}</small></a>)}</div></section>
-      <article className="fcp-task-detail">{selected === null ? <><span className="fcp-eyebrow">Детали</span><h2>Выберите задачу</h2><p>Факты отображаются из последнего подтверждённого snapshot.</p></> : <><a className="fcp-back" href={href('tasks',project.slug)}>← К списку</a><span className="fcp-eyebrow">GitHub issue #{selected.issueId}</span><h2>{selected.title}</h2>
-        <dl><div><dt>Статус</dt><dd>{selected.statusOptionName ?? 'Не задан'}</dd></div><div><dt>Blocked</dt><dd>{selected.blocked === null ? 'Нет данных' : selected.blocked ? 'Yes' : 'No'}</dd></div><div><dt>Срок</dt><dd>{selected.targetDate === null ? 'Не задан' : formatDate(selected.targetDate)}</dd></div><div><dt>Исполнители</dt><dd>{selected.assigneeIds.join(', ') || 'Не назначены'}</dd></div><div><dt>Родитель</dt><dd>{selected.parentIssueId === null ? 'Нет' : `#${selected.parentIssueId}`}</dd></div><div><dt>Зависимости</dt><dd>{selected.dependencyIssueIds.map((id) => `#${id}`).join(', ') || 'Нет'}</dd></div></dl>
-        <a className="fcp-primary" href={selected.url}>Открыть задачу в GitHub ↗</a></>}</article></div></>;
+  const contour = (input: Readonly<{name: string; provider: 'telegram' | 'bitrix24'; contour: 'trusted-main' | 'client-edge'; configured: boolean; active: boolean; note: string}>) => {
+    const action = evidence?.conversations.find((item) => item.contour === input.contour);
+    const bindings = evidence?.people.filter((person) => person.identityBindings.some((identity) => identity.provider === input.provider)) ?? [];
+    return <article className="fcp-contour" key={input.provider}><header><div><span>{input.name}</span><h2>{input.provider === 'telegram' ? 'Внутренний Telegram' : 'Внешний Bitrix24'}</h2></div><b className={input.active ? 'ready' : input.configured ? 'neutral' : 'danger'}>{input.active ? 'Работает' : input.configured ? 'Настроено, не активно' : 'Не настроено'}</b></header><dl><div><dt>Конфигурация</dt><dd>{input.configured ? 'Secret references и binding заданы' : 'Требуется настройка composition'}</dd></div><div><dt>Доступ</dt><dd>{bindings.length === 0 ? 'Identity не привязаны' : `${bindings.length} identity`}</dd></div><div><dt>Подтверждённые действия</dt><dd>{action === undefined ? 'Нет данных' : `${action.count} · ${formatInstant(action.lastOccurredAt)}`}</dd></div><div><dt>Уведомления</dt><dd>{input.contour === 'trusted-main' ? deliveryLabel(evidence?.messenger ?? {pending: 0, delivered: 0, failed: 0}) : 'Не включены'}</dd></div></dl><p>{input.note}</p><small>Транскрипты, payload и секреты не хранятся и не отображаются.</small></article>;
+  };
+  return <><PageTitle title="Чаты" detail={`${project.name} · внутренний и клиентский контуры`} state="Без транскриптов"/><section className="fcp-contour-grid">{contour({name: 'Внутренний контур', provider: 'telegram', contour: 'trusted-main', configured: config.telegram.configured, active: config.telegram.configured, note: `Разрешённые операторы: ${config.telegram.allowedUsers}. Действия проходят аутентификацию и policy.`})}{contour({name: 'Клиентский контур', provider: 'bitrix24', contour: 'client-edge', configured: config.bitrix.configured, active: config.bitrix.active, note: 'Bitrix-контур включается только после подтверждения устойчивой browser identity; сейчас fail-closed.'})}</section></>;
 }
 
-function Sources({project, sources}: Readonly<{project: ProjectTaskView | null; sources: readonly ProjectSourceView[]}>) {
-  if (project === null) return <Empty title="Нет доступных проектов"/>;
-  const rows = sources.filter((source) => source.projectId === project.id);
-  return <><PageTitle title="Источники" detail={`${project.name} · документы и конфигурация Control Plane`} state={`${rows.length} записей`}/>
-    <section className="fcp-list-section"><header><h2>Подтверждённые материалы</h2></header>{rows.length === 0 ? <p className="fcp-empty">Источники ещё не добавлены.</p> : <div className="fcp-record-list">{rows.map((source) => <article key={source.id}><div><span>{source.kind} · {source.mediaType}</span><strong>{source.name}</strong><small>{source.provenance}</small></div><div><span>{formatInstant(source.createdAt)}</span><code>{source.sha256.slice(0,12)}…</code>{source.sourceUrl === null ? null : <a href={source.sourceUrl}>Источник ↗</a>}</div></article>)}</div>}</section></>;
-}
+function People({project, evidence, actorId}: Readonly<{project: ProjectTaskView | null; evidence: ProjectOperatorEvidenceView | null; actorId: string;}>) { if (project === null) return <Empty title="Нет доступных проектов"/>; const people = evidence?.people ?? []; const canManage = people.some((person) => person.actorId === actorId && person.active && person.role === 'project_owner'); return <><PageTitle title="Люди и доступ" detail={`${project.name} · участники, роли и provider identity hashes`} state={`${people.filter((person) => person.active).length} активных`}/><AccessControls projectId={project.id} canManage={canManage} members={people}/><section className="fcp-list-section"><header><h2>Роли в проекте</h2><span>Изменение — только owner через canonical command</span></header>{people.length === 0 ? <p className="fcp-empty">Нет данных о членствах.</p> : <div className="fcp-record-list">{people.map((person) => <article key={person.actorId}><div><span>{person.kind} · {person.role}</span><strong>{person.displayName}</strong><small>{person.identityBindings.length === 0 ? 'Внешние identity не привязаны' : person.identityBindings.map((identity) => `${identity.provider}: ${identity.subjectHash.slice(0, 12)}…`).join(' · ')}</small></div><b className={`fcp-decision ${person.active ? 'approved' : 'rejected'}`}>{person.active ? 'active' : 'inactive'}</b></article>)}</div>}</section></>; }
 
-function Approvals({project, approvals}: Readonly<{project: ProjectTaskView | null; approvals: readonly ApprovalEvidenceView[]}>) {
-  if (project === null) return <Empty title="Нет доступных проектов"/>;
-  const rows = approvals.filter((approval) => approval.projectId === project.id);
-  return <><PageTitle title="Согласования" detail={`${project.name} · неизменяемые решения по точной внешней версии`} state={`${rows.length} решений`}/>
-    <section className="fcp-list-section"><header><h2>Журнал решений</h2></header>{rows.length === 0 ? <p className="fcp-empty">Согласований пока нет.</p> : <div className="fcp-record-list">{rows.map((approval) => <article key={approval.id}><div><span>{approval.kind}</span><strong>{approval.targetReference}</strong><small>{approval.targetVersion}</small></div><div><b className={`fcp-decision ${approval.decision}`}>{approval.decision}</b><span>{formatInstant(approval.decidedAt)}</span><a href={approval.targetUrl}>Цель ↗</a></div></article>)}</div>}</section></>;
-}
+function Systems({project, evidence, sources, config}: Readonly<{project: ProjectTaskView | null; evidence: ProjectOperatorEvidenceView | null; sources: readonly ProjectSourceView[]; config: IntegrationConfig;}>) { if (project === null) return <Empty title="Нет доступных проектов"/>; const submissions = evidence?.agentSubmissions ?? {count: 0, lastOccurredAt: null}; const rows = [...(evidence?.receipts ?? []).map((item, index) => ({id: `receipt-${index}`, title: item.commandType, detail: item.resultReference, at: item.occurredAt})), ...(evidence?.audit ?? []).map((item, index) => ({id: `audit-${index}`, title: item.action, detail: item.targetReference, at: item.occurredAt}))]; return <><PageTitle title="Агенты и системы" detail={`${project.name} · наблюдение интеграций, receipts и audit`} state="Явная команда"/><section className="fcp-agent-command"><header><div><span className="fcp-eyebrow">ASCON Hermes</span><h2>Только явная команда оператора</h2><p>Автоматического запуска backlog нет. Браузерная команда требует активной операторской сессии, same-origin проверку и точный свежий факт GitHub Project.</p></div><b className={config.hermes ? 'ready' : 'danger'}>{config.hermes ? 'Настроено' : 'Не настроено'}</b></header><dl className="fcp-system-facts"><div><dt>Integration readiness</dt><dd>{config.hermes ? 'Endpoint и secret reference заданы' : 'Требуется настройка composition'}</dd></div><div><dt>Явные запуски</dt><dd>{submissions.count}</dd></div><div><dt>Последний receipt</dt><dd>{submissions.lastOccurredAt === null ? 'Нет данных' : formatInstant(submissions.lastOccurredAt)}</dd></div></dl></section><AgentSubmitControl projectId={project.id} tasks={project.tasks} sources={sources.filter((source) => source.projectId === project.id)}/><Evidence title="Receipts и audit" rows={rows}/></>; }
 
-function PageTitle({title, detail, state}: Readonly<{title:string;detail:string;state:string}>) { return <div className="fcp-page-title"><div><h1>{title}</h1><p>{detail}</p></div><span className="fcp-page-state">{state}</span></div>; }
-function Empty({title}: Readonly<{title:string}>) { return <section className="fcp-empty-card"><h1>{title}</h1><p>После подключения данные появятся здесь.</p></section>; }
+function Settings({project, sources}: Readonly<{project: ProjectTaskView | null; sources: readonly ProjectSourceView[]}>) { if (project === null) return <Empty title="Нет доступных проектов"/>; const rows = sources.filter((source) => source.projectId === project.id); return <><PageTitle title="Настройки проекта" detail={`${project.name} · источники Control Plane`} state={`${rows.length} записей`}/><SourceAddControl projectId={project.id}/><section className="fcp-list-section"><header><h2>Подтверждённые источники</h2></header>{rows.length === 0 ? <p className="fcp-empty">Источники ещё не добавлены.</p> : <div className="fcp-record-list">{rows.map((source) => <article key={source.id}><div><span>{source.kind} · {source.mediaType}</span><strong>{source.name}</strong><small>{source.provenance} · {source.sha256.slice(0, 12)}…</small></div>{source.sourceUrl === null ? null : <a href={source.sourceUrl}>Источник ↗</a>}</article>)}</div>}</section></>; }
+function Evidence({title, rows}: Readonly<{title: string; rows: readonly Readonly<{id: string; title: string; detail: string; at: string; url?: string}>[]}>) { return <section className="fcp-list-section fcp-evidence"><header><h2>{title}</h2></header>{rows.length === 0 ? <p className="fcp-empty">Нет подтверждённых записей.</p> : <div className="fcp-record-list">{rows.map((row) => <article key={row.id}><div><strong>{row.title}</strong><small>{row.detail}</small></div><div><span>{formatInstant(row.at)}</span>{row.url === undefined ? null : <a href={row.url}>Открыть ↗</a>}</div></article>)}</div>}</section>; }
+function PageTitle({title, detail, state}: Readonly<{title: string; detail: string; state: string}>) { return <div className="fcp-page-title"><div><h1>{title}</h1><p>{detail}</p></div><span className="fcp-page-state">{state}</span></div>; }
+function Empty({title}: Readonly<{title: string}>) { return <section className="fcp-empty-card"><h1>{title}</h1><p>После подключения данные появятся здесь.</p></section>; }
 
-export default async function Home({searchParams}: Readonly<{searchParams: Promise<Query>}>) {
-  let session: Awaited<ReturnType<typeof requireSession>> | null = null;
-  try { session = await requireSession(); } catch { session = null; }
-  if (session === null) return <main className="fcp-login"><section><span className="fcp-eyebrow">f(AI) Control</span><h1>Вход оператора</h1><p>Авторизация выполняется через GitHub.</p><a className="fcp-primary" href="/api/auth/github/login">Войти через GitHub</a></section></main>;
-  const query = await searchParams; const view = currentView(query.view); const database = getDatabase();
-  const [projects,sources,approvals] = await Promise.all([
-    listProjectTaskViews(database,session.actorId), listProjectSourceViews(database,session.actorId),
-    listApprovalEvidenceViews(database,session.actorId)
-  ]);
-  const selected = projects.find((project) => project.slug === query.project) ?? projects[0] ?? null;
-  return <Shell view={view} projects={projects} selected={selected} operatorName={session.displayName}>{view === 'tasks' ? <Tasks project={selected} requestedTask={query.task}/>
-    : view === 'sources' ? <Sources project={selected} sources={sources}/>
-      : view === 'approvals' ? <Approvals project={selected} approvals={approvals}/>
-        : <Overview projects={projects}/>}</Shell>;
-}
+export default async function Home({searchParams}: Readonly<{searchParams: Promise<Query>}>) { let session: Awaited<ReturnType<typeof requireSession>> | null = null; try { session = await requireSession(); } catch { session = null; } if (session === null) return <main className="fcp-login"><section><span className="fcp-eyebrow">f(AI) Control</span><h1>Вход оператора</h1><p>Авторизация выполняется через GitHub.</p><a className="fcp-primary" href="/api/auth/github/login">Войти через GitHub</a></section></main>; const query = await searchParams; const view = current(query.view); const database = getDatabase(); const [projects, sources, approvals, evidence] = await Promise.all([listProjectTaskViews(database, session.actorId), listProjectSourceViews(database, session.actorId), listApprovalEvidenceViews(database, session.actorId), listProjectOperatorEvidenceViews(database, session.actorId)]); const selected = projects.find((project) => project.slug === query.project) ?? projects[0] ?? null; const selectedEvidence = evidenceFor(selected, evidence); const config = integrationConfig(); const content = view === 'delivery' ? <Delivery project={selected} approvals={approvals} task={query.task}/> : view === 'conversations' ? <Conversations project={selected} evidence={selectedEvidence} config={config}/> : view === 'people' ? <People project={selected} evidence={selectedEvidence} actorId={session.actorId}/> : view === 'systems' ? <Systems project={selected} evidence={selectedEvidence} sources={sources} config={config}/> : view === 'settings' ? <Settings project={selected} sources={sources}/> : <Overview projects={projects}/>; return <Shell view={view} projects={projects} selected={selected} operatorName={session.displayName}>{content}</Shell>; }
