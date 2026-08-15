@@ -5,15 +5,17 @@ readonly deploy_root=/opt/fai-control-plane-mvp
 readonly environment_file=/etc/fai-control-plane-mvp/production.env
 readonly compose_file="$deploy_root/infra/production/compose.yaml"
 readonly nginx_file=/etc/nginx/sites-available/app.f-ai.studio.conf
-readonly old_upstream='    server 127.0.0.1:13000;'
-readonly new_upstream='    server 127.0.0.1:13010;'
-readonly rollback_image='fai-control-plane:63cc41832bb216edfa5c29e270ce1394f45d9231'
+readonly repository=https://github.com/VF78/fai-control-plane.git
+readonly active_upstream='    server 127.0.0.1:13010;'
+readonly legacy_upstream='    server 127.0.0.1:13000;'
+readonly protected_image='fai-control-plane:63cc41832bb216edfa5c29e270ce1394f45d9231'
 
 usage() {
   printf '%s\n' \
-    'usage: FCP_APPROVED_RELEASE_COMMIT=<40-hex> scripts/deploy-prod.sh rollback <40-hex>' \
-    '   or: FCP_APPROVED_RELEASE_COMMIT=<40-hex> FCP_APPROVED_CONFIG_SHA256=<64-hex> scripts/deploy-prod.sh <stage|activate> <40-hex>' \
-    'This command mutates production only after Vladimir approves the exact commit and host diff.' >&2
+    'usage: scripts/deploy-prod.sh preflight <40-hex>' \
+    '   or: FCP_APPROVED_RELEASE_COMMIT=<40-hex> FCP_APPROVED_CONFIG_SHA256=<64-hex> scripts/deploy-prod.sh deploy <40-hex>' \
+    '   or: FCP_APPROVED_RELEASE_COMMIT=<40-hex> scripts/deploy-prod.sh rollback <40-hex>' \
+    'preflight is read-only and prints the exact resulting production.env SHA-256.' >&2
   exit 64
 }
 
@@ -29,21 +31,16 @@ log() {
 [[ $# -eq 2 ]] || usage
 readonly action=$1
 readonly release_commit=$2
-[[ "$action" == stage || "$action" == activate || "$action" == rollback ]] || usage
+[[ "$action" == preflight || "$action" == deploy || "$action" == rollback ]] || usage
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || fail 'release commit must be lowercase 40-hex'
-[[ "${FCP_APPROVED_RELEASE_COMMIT:-}" == "$release_commit" ]] || fail 'exact release approval is missing or mismatched'
 [[ $EUID -eq 0 ]] || fail 'must run as root on the approved host'
-
-readonly repository_root=$(git rev-parse --show-toplevel)
-[[ "$repository_root" == "$deploy_root" ]] || fail 'checkout is not the isolated MVP directory'
-[[ $(git rev-parse HEAD) == "$release_commit" ]] || fail 'checkout does not match approved release'
-[[ -z $(git status --porcelain) ]] || fail 'checkout is not clean'
 
 readonly secret_root=/etc/fai-control-plane-mvp/secrets
 readonly secret_names=(
   postgres-password github-login-client-secret github-projects-token github-webhook-secret
   hermes-token telegram-bot-token hermes-internal-action-token hermes-client-action-token
 )
+
 protected_health() {
   systemctl is-active --quiet myshopai-website.service
   systemctl is-active --quiet fai-content-platform.service
@@ -52,18 +49,28 @@ protected_health() {
   systemctl is-active --quiet hermes-gateway.service
   [[ $(docker inspect --format '{{.State.Status}}' amnezia-awg2) == running ]]
   [[ $(docker inspect --format '{{.State.Health.Status}}' fai-control-plane-production-web-1) == healthy ]]
-  [[ $(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1) == "$rollback_image" ]]
+  [[ $(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1) == "$protected_image" ]]
+}
+
+active_mvp_health() {
+  local service
+  for service in postgres web worker; do
+    [[ $(docker inspect --format '{{.State.Status}}' "fai-control-plane-mvp-${service}-1") == running ]]
+    [[ $(docker inspect --format '{{.State.Health.Status}}' "fai-control-plane-mvp-${service}-1") == healthy ]]
+  done
+  curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready >/dev/null
+  curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
+}
+
+active_upstream_unchanged() {
+  [[ $(grep -Fxc "$active_upstream" "$nginx_file") -eq 1 ]]
+  [[ $(grep -Fxc "$legacy_upstream" "$nginx_file") -eq 0 ]]
 }
 
 wait_for_candidate_health() {
   local deadline=$1
   shift
-  local all_healthy
-  local container_id
-  local health
-  local remaining
-  local service
-  local status
+  local all_healthy container_id health remaining service status
 
   while (( SECONDS < deadline )); do
     all_healthy=1
@@ -85,9 +92,7 @@ wait_for_candidate_health() {
         *) return 1 ;;
       esac
     done
-    if (( all_healthy )); then
-      return 0
-    fi
+    if (( all_healthy )); then return 0; fi
     remaining=$((deadline - SECONDS))
     (( remaining > 0 )) || return 1
     if (( remaining < 5 )); then sleep "$remaining"; else sleep 5; fi
@@ -95,16 +100,8 @@ wait_for_candidate_health() {
   return 1
 }
 
-candidate_listener_absent() {
-  command -v ss >/dev/null 2>&1 || return 1
-  ! ss -H -ltn 'sport = :13010' | grep -q .
-}
-
 normalize_checkout_modes() {
-  local directory
-  local mode
-  local path
-  local record
+  local directory mode path record
 
   chmod 0755 "$deploy_root"
   while IFS= read -r -d '' record; do
@@ -114,7 +111,6 @@ normalize_checkout_modes() {
       fail "unsupported tracked file mode: $mode"
     [[ -f "$deploy_root/$path" && ! -L "$deploy_root/$path" ]] ||
       fail "tracked path is not a regular file: $path"
-
     chmod 0644 -- "$deploy_root/$path"
     directory=$(dirname "$path")
     while [[ "$directory" != . ]]; do
@@ -123,149 +119,192 @@ normalize_checkout_modes() {
     done
     if [[ "$mode" == 100755 ]]; then chmod 0755 -- "$deploy_root/$path"; fi
   done < <(git ls-files --stage -z)
-
-  [[ -z $(git status --porcelain) ]] ||
-    fail 'checkout mode normalization changed tracked Git state'
+  [[ -z $(git status --porcelain) ]] || fail 'checkout mode normalization changed tracked Git state'
 }
 
-protected_health || fail 'protected-neighbour or rollback health check failed'
+render_target_environment() {
+  local release_count bitrix_count
+  release_count=$(grep -Ec '^FCP_RELEASE_COMMIT=' "$environment_file")
+  bitrix_count=$(grep -Ec '^BITRIX24_CLIENT_ACTIONS_ENABLED=' "$environment_file" || true)
+  [[ "$release_count" -eq 1 ]] || fail 'production environment must contain one release commit'
+  [[ "$bitrix_count" -le 1 ]] || fail 'production environment contains duplicate Bitrix gates'
+  awk -v release="$release_commit" '
+    /^FCP_RELEASE_COMMIT=/ { print "FCP_RELEASE_COMMIT=" release; next }
+    /^BITRIX24_CLIENT_ACTIONS_ENABLED=/ {
+      print "BITRIX24_CLIENT_ACTIONS_ENABLED=false"; bitrix = 1; next
+    }
+    { print }
+    END { if (!bitrix) print "BITRIX24_CLIENT_ACTIONS_ENABLED=false" }
+  ' "$environment_file"
+}
 
-if [[ "$action" != rollback ]]; then
-  [[ "${FCP_APPROVED_CONFIG_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || fail 'approved config digest is missing or invalid'
-  [[ -r "$environment_file" ]] || fail 'production environment file is missing'
+check_host_contract() {
+  local remote_main secret_name secret_path
+  local -a current_compose
+  [[ $(git rev-parse --show-toplevel) == "$deploy_root" ]] || fail 'checkout is not the isolated MVP directory'
+  [[ -z $(git status --porcelain) ]] || fail 'checkout is not clean'
+  [[ $(git remote get-url origin) == "$repository" ]] || fail 'origin is not the approved repository'
+  remote_main=$(git ls-remote --exit-code "$repository" refs/heads/main | awk 'NR == 1 { print $1 }')
+  [[ "$remote_main" == "$release_commit" ]] || fail 'release commit is not exact origin/main'
+  [[ -f "$environment_file" && ! -L "$environment_file" && -r "$environment_file" ]] ||
+    fail 'production environment file is missing or not a regular file'
   [[ $(stat -c '%U:%G:%a' "$environment_file") == root:root:600 ]] ||
     fail 'production environment must be root:root mode 0600'
-  [[ $(sha256sum "$environment_file" | cut -d ' ' -f 1) == "$FCP_APPROVED_CONFIG_SHA256" ]] ||
-    fail 'production environment does not match the approved digest'
-  mapfile -t configured_releases < <(sed -n 's/^FCP_RELEASE_COMMIT=//p' "$environment_file")
-  [[ ${#configured_releases[@]} -eq 1 && "${configured_releases[0]}" == "$release_commit" ]] ||
-    fail 'environment release does not match approved release'
-  mapfile -t configured_env_files < <(sed -n 's/^FCP_RUNTIME_ENV_FILE=//p' "$environment_file")
-  [[ ${#configured_env_files[@]} -eq 1 && "${configured_env_files[0]}" == "$environment_file" ]] ||
-    fail 'runtime environment file is not the isolated production file'
   if grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' "$environment_file"; then
     fail 'production environment contains an empty or placeholder value'
   fi
   for secret_name in "${secret_names[@]}"; do
     secret_path="$secret_root/$secret_name"
-    [[ -f "$secret_path" && -r "$secret_path" ]] || fail "missing secret file: $secret_path"
+    [[ -f "$secret_path" && ! -L "$secret_path" && -s "$secret_path" && -r "$secret_path" ]] ||
+      fail "missing or invalid secret file: $secret_path"
     [[ $(stat -c '%U:%G:%a' "$secret_path") == root:root:600 ]] ||
       fail "secret file must be root:root mode 0600: $secret_path"
   done
-  compose=(docker compose --project-name fai-control-plane-mvp --env-file "$environment_file" -f "$compose_file")
-  "${compose[@]}" config --quiet
-fi
-
-stage_cleanup_required=0
-stage_exit_cleanup() {
-  local status=$?
-  if (( stage_cleanup_required )); then
-    if ! "${compose[@]}" down >/dev/null 2>&1; then
-      printf 'deploy-prod: automatic isolated-candidate cleanup failed\n' >&2
-      status=1
-    fi
-    if ! candidate_listener_absent; then
-      printf 'deploy-prod: candidate listener 13010 remains after cleanup\n' >&2
-      status=1
-    fi
-  fi
-  trap - EXIT
-  exit "$status"
+  current_compose=(docker compose --project-name fai-control-plane-mvp --env-file "$environment_file" -f "$compose_file")
+  "${current_compose[@]}" config --quiet
+  protected_health || fail 'protected-neighbour health check failed'
+  active_mvp_health || fail 'active isolated MVP health check failed'
+  active_upstream_unchanged || fail 'app.f-ai.studio is not exclusively routed to 13010'
 }
-trap stage_exit_cleanup EXIT
+
+target_config_digest() {
+  render_target_environment | sha256sum | cut -d ' ' -f 1
+}
+
+run_preflight() {
+  local digest
+  check_host_contract
+  digest=$(target_config_digest)
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || fail 'could not calculate resulting config digest'
+  if [[ -n "${FCP_APPROVED_CONFIG_SHA256:-}" ]]; then
+    [[ "$FCP_APPROVED_CONFIG_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail 'approved config digest is invalid'
+    [[ "$digest" == "$FCP_APPROVED_CONFIG_SHA256" ]] || fail 'resulting config digest is not approved'
+  fi
+  printf 'deploy-prod: resulting_config_sha256=%s\n' "$digest"
+  printf 'deploy-prod: preflight complete for %s\n' "$release_commit"
+}
 
 switch_upstream() {
-  local from=$1
-  local to=$2
-  local temporary
+  local from=$1 to=$2 temporary
   [[ $(grep -Fxc "$from" "$nginx_file") -eq 1 ]] || fail 'unexpected current app upstream'
   [[ $(grep -Fxc "$to" "$nginx_file") -eq 0 ]] || fail 'target app upstream already occurs in config'
   temporary=$(mktemp /etc/nginx/sites-available/app.f-ai.studio.conf.XXXXXX)
-  if ! awk -v from="$from" -v to="$to" '
+  trap 'rm -f "$temporary"' RETURN
+  awk -v from="$from" -v to="$to" '
     $0 == from { print to; replaced += 1; next }
     { print }
     END { if (replaced != 1) exit 42 }
-  ' "$nginx_file" > "$temporary"; then
-    rm -f "$temporary"
-    fail 'exact app upstream replacement failed'
-  fi
+  ' "$nginx_file" >"$temporary" || fail 'exact app upstream replacement failed'
   install -o root -g root -m 0644 "$temporary" "$nginx_file"
-  if ! nginx -t; then
-    awk -v from="$to" -v to="$from" '$0 == from { print to; next } { print }' "$nginx_file" > "$temporary"
-    install -o root -g root -m 0644 "$temporary" "$nginx_file"
-    rm -f "$temporary"
-    fail 'Nginx validation failed; original upstream restored'
-  fi
-  if ! systemctl reload nginx; then
-    awk -v from="$to" -v to="$from" '$0 == from { print to; next } { print }' "$nginx_file" > "$temporary"
+  if ! nginx -t || ! systemctl reload nginx; then
+    awk -v from="$to" -v to="$from" '$0 == from { print to; next } { print }' \
+      "$nginx_file" >"$temporary"
     install -o root -g root -m 0644 "$temporary" "$nginx_file"
     nginx -t && systemctl reload nginx || true
-    rm -f "$temporary"
-    fail 'Nginx reload failed; original upstream restored'
+    fail 'Nginx rollback switch failed; original route restored where possible'
   fi
   rm -f "$temporary"
+  trap - RETURN
 }
 
-case "$action" in
-  stage)
-    stage_cleanup_required=1
-    normalize_checkout_modes
-    log 'stage: building isolated candidate images (web, worker, migrate, bootstrap)'
-    "${compose[@]}" build web worker migrate bootstrap
-    log 'stage: starting isolated candidate postgres'
-    "${compose[@]}" up -d postgres
-    log 'stage: waiting for isolated candidate postgres health'
-    candidate_health_deadline=$((SECONDS + 180))
-    wait_for_candidate_health "$candidate_health_deadline" postgres ||
-      fail 'candidate postgres did not become healthy within 180 seconds'
-    log 'stage: isolated candidate postgres is healthy'
-    log 'stage: applying isolated candidate migrations'
-    if ! "${compose[@]}" run --rm migrate; then
-      fail 'candidate migrations failed'
-    fi
-    log 'stage: bootstrapping isolated candidate data'
-    if ! "${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap; then
-      fail 'candidate bootstrap failed'
-    fi
-    log 'stage: starting isolated candidate web and worker'
-    "${compose[@]}" up -d --no-deps web worker
-    log 'stage: waiting for isolated candidate web and worker health'
-    wait_for_candidate_health "$candidate_health_deadline" postgres web worker ||
-      fail 'candidate postgres, web and worker did not become healthy within 180 seconds'
-    log 'stage: isolated candidate web and worker are healthy'
-    "${compose[@]}" ps
-    log 'stage: checking isolated candidate web health endpoint'
-    curl -fsS --max-time 10 http://127.0.0.1:13010/api/health >/dev/null ||
-      fail 'candidate web health endpoint failed'
-    ;;
-  activate)
-    curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready >/dev/null
-    "${compose[@]}" exec -T worker node -e \
-      "fetch('http://127.0.0.1:3001/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-    switch_upstream "$old_upstream" "$new_upstream"
-    curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready >/dev/null
-    if ! curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null; then
-      switch_upstream "$new_upstream" "$old_upstream"
-      fail 'public smoke failed; old upstream restored'
-    fi
-    ;;
-  rollback)
-    curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
-    old_count=$(grep -Fxc "$old_upstream" "$nginx_file" || true)
-    new_count=$(grep -Fxc "$new_upstream" "$nginx_file" || true)
-    if [[ $old_count -eq 0 && $new_count -eq 1 ]]; then
-      switch_upstream "$new_upstream" "$old_upstream"
-    elif [[ $old_count -ne 1 || $new_count -ne 0 ]]; then
-      fail 'unexpected current app upstream'
-    fi
-    curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
-    curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
-    mapfile -t candidate_apps < <(docker ps --filter label=com.docker.compose.project=fai-control-plane-mvp \
-      --filter status=running --format '{{.Names}}' | grep -E -- '-(web|worker)-[0-9]+$' || true)
-    if [[ ${#candidate_apps[@]} -gt 0 ]]; then docker stop "${candidate_apps[@]}" >/dev/null; fi
-    ;;
-esac
+run_rollback() {
+  local -a candidate_apps
+  [[ "${FCP_APPROVED_RELEASE_COMMIT:-}" == "$release_commit" ]] ||
+    fail 'exact rollback approval is missing or mismatched'
+  [[ $(git rev-parse --show-toplevel) == "$deploy_root" ]] || fail 'checkout is not the isolated MVP directory'
+  [[ $(git rev-parse HEAD) == "$release_commit" ]] || fail 'checkout does not match rollback source release'
+  [[ -z $(git status --porcelain) ]] || fail 'checkout is not clean'
+  protected_health || fail 'protected-neighbour health check failed'
+  active_mvp_health || fail 'active isolated MVP health check failed'
+  curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
+  switch_upstream "$active_upstream" "$legacy_upstream"
+  curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
+  mapfile -t candidate_apps < <(docker ps --filter label=com.docker.compose.project=fai-control-plane-mvp \
+    --filter status=running --format '{{.Names}}' | grep -E -- '-(web|worker)-[0-9]+$' || true)
+  if [[ ${#candidate_apps[@]} -gt 0 ]]; then docker stop "${candidate_apps[@]}" >/dev/null; fi
+  protected_health || fail 'protected-neighbour health changed'
+  printf 'deploy-prod: rollback complete from %s\n' "$release_commit"
+}
 
-protected_health || fail 'protected-neighbour or rollback health changed'
-if [[ "$action" == stage ]]; then stage_cleanup_required=0; fi
-printf 'deploy-prod: %s complete for %s\n' "$action" "$release_commit"
+if [[ "$action" == rollback ]]; then
+  run_rollback
+  exit 0
+fi
+
+if [[ "$action" == preflight ]]; then
+  run_preflight
+  exit 0
+fi
+
+[[ "${FCP_APPROVED_RELEASE_COMMIT:-}" == "$release_commit" ]] ||
+  fail 'exact release approval is missing or mismatched'
+[[ "${FCP_APPROVED_CONFIG_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] ||
+  fail 'approved config digest is missing or invalid'
+
+run_preflight
+
+log 'deploy: fetching exact origin/main'
+git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+[[ $(git rev-parse refs/remotes/origin/main) == "$release_commit" ]] || fail 'fetched origin/main changed'
+git merge-base --is-ancestor HEAD "$release_commit" || fail 'release is not a fast-forward'
+if [[ $(git rev-parse HEAD) != "$release_commit" ]]; then
+  git merge --ff-only "$release_commit"
+  [[ $(git rev-parse HEAD) == "$release_commit" ]] || fail 'checkout did not advance to release'
+  exec env \
+    FCP_APPROVED_RELEASE_COMMIT="$FCP_APPROVED_RELEASE_COMMIT" \
+    FCP_APPROVED_CONFIG_SHA256="$FCP_APPROVED_CONFIG_SHA256" \
+    "$deploy_root/scripts/deploy-prod.sh" deploy "$release_commit"
+fi
+
+normalize_checkout_modes
+[[ $(target_config_digest) == "$FCP_APPROVED_CONFIG_SHA256" ]] || fail 'resulting config digest changed'
+
+temporary_environment=$(mktemp /etc/fai-control-plane-mvp/production.env.XXXXXX)
+trap 'rm -f "$temporary_environment"' EXIT
+render_target_environment >"$temporary_environment"
+chown root:root "$temporary_environment"
+chmod 0600 "$temporary_environment"
+[[ $(sha256sum "$temporary_environment" | cut -d ' ' -f 1) == "$FCP_APPROVED_CONFIG_SHA256" ]] ||
+  fail 'rendered production environment digest changed'
+[[ $(grep -Fxc "FCP_RELEASE_COMMIT=$release_commit" "$temporary_environment") -eq 1 ]] ||
+  fail 'rendered release commit is incorrect'
+[[ $(grep -Fxc 'BITRIX24_CLIENT_ACTIONS_ENABLED=false' "$temporary_environment") -eq 1 ]] ||
+  fail 'Bitrix client actions must remain disabled'
+
+candidate_compose=(docker compose --project-name fai-control-plane-mvp --env-file "$temporary_environment" -f "$compose_file")
+"${candidate_compose[@]}" config --quiet
+log 'deploy: building exact application images'
+"${candidate_compose[@]}" build web worker migrate bootstrap
+
+mv -f "$temporary_environment" "$environment_file"
+trap - EXIT
+compose=(docker compose --project-name fai-control-plane-mvp --env-file "$environment_file" -f "$compose_file")
+"${compose[@]}" config --quiet
+
+log 'deploy: ensuring isolated PostgreSQL is healthy'
+"${compose[@]}" up -d postgres
+candidate_health_deadline=$((SECONDS + 180))
+wait_for_candidate_health "$candidate_health_deadline" postgres ||
+  fail 'PostgreSQL did not become healthy within 180 seconds'
+log 'deploy: applying migrations'
+"${compose[@]}" run --rm migrate || fail 'migrations failed'
+log 'deploy: bootstrapping idempotent data'
+"${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap || fail 'bootstrap failed'
+log 'deploy: replacing only isolated MVP web and worker'
+"${compose[@]}" up -d --no-deps web worker
+wait_for_candidate_health "$candidate_health_deadline" postgres web worker ||
+  fail 'PostgreSQL, web and worker did not become healthy within 180 seconds'
+
+for service in web worker; do
+  container_id=$("${compose[@]}" ps -q "$service")
+  [[ $(docker inspect --format '{{.Config.Image}}' "$container_id") == "fai-control-plane-mvp:$release_commit" ]] ||
+    fail "$service is not running the approved image"
+done
+curl -fsS --max-time 10 http://127.0.0.1:13010/api/health >/dev/null
+curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready >/dev/null
+curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
+curl -fsS --max-time 15 https://app.f-ai.studio/ >/dev/null
+protected_health || fail 'protected-neighbour health changed'
+active_upstream_unchanged || fail 'Nginx routing changed during deploy'
+printf 'deploy-prod: deploy complete for %s config %s\n' \
+  "$release_commit" "$FCP_APPROVED_CONFIG_SHA256"
