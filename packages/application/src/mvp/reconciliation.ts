@@ -61,8 +61,10 @@ export const reconcileTracker = async (input: Readonly<{
   for (const item of snapshot.items) {
     const decision = decideNextAction(item, input.statusMap);
     // Tracker state is factual input, never authority to start an agent. Agent execution
-    // is available only through an authenticated human conversation command.
-    if (decision.kind !== 'human') continue;
+    // is available only through an authenticated human conversation command. The first
+    // provider read establishes a baseline, so historical human-status items cannot
+    // flood the internal chat; only later changes can notify a person.
+    if (input.cursor === null || decision.kind !== 'human') continue;
     const delivery = {topic: 'messenger-notification' as const, payload: {message:
       await input.ports.compose.notification(item, decision.reason, decision.idempotencyKey)}};
     const result = await input.ports.outbox.enqueue({
