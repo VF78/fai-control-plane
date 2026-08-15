@@ -72,6 +72,46 @@ test "$(cat "$POLL_FILE")" = 2
                 text=True,
             )
 
+    def test_active_preflight_accepts_only_healthy_or_cleanly_incident_stopped_worker(self):
+        script = (ROOT / "scripts/deploy-prod.sh").read_text()
+        start = script.index("active_mvp_health() {")
+        end = script.index("\n}\n\nactive_upstream_unchanged()", start) + 3
+        active_health = script[start:end]
+        harness = f"""\
+set -euo pipefail
+{active_health}
+log() {{ printf '%s\n' "$1"; }}
+curl() {{ :; }}
+docker() {{
+  container=${{@: -1}}
+  if [[ "$container" == fai-control-plane-mvp-worker-1 ]]; then
+    printf '%s\n' "$WORKER_INSPECT"
+  elif [[ "$*" == *State.Health.Status* ]]; then
+    printf '%s\n' healthy
+  else
+    printf '%s\n' running
+  fi
+}}
+active_mvp_health
+"""
+        accepted = {
+            "running healthy 0": "mode=running",
+            "exited healthy 0": "mode=incident-stopped",
+        }
+        for worker_inspect, marker in accepted.items():
+            with self.subTest(worker_inspect=worker_inspect):
+                result = subprocess.run(["bash", "-c", harness], env={
+                    "PATH": "/usr/bin:/bin", "WORKER_INSPECT": worker_inspect
+                }, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(marker, result.stdout)
+        for worker_inspect in ("running unhealthy 0", "exited healthy 1", "dead missing 0"):
+            with self.subTest(worker_inspect=worker_inspect):
+                result = subprocess.run(["bash", "-c", harness], env={
+                    "PATH": "/usr/bin:/bin", "WORKER_INSPECT": worker_inspect
+                }, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+
     def test_preflight_is_read_only_and_reports_resulting_digest(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
         preflight_case = script.split('if [[ "$action" == preflight ]]', 1)[1].split(

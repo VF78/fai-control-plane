@@ -28,6 +28,7 @@ describe('MVP GitHub adapter', () => {
       id: 'PVT_1', url: 'https://github.com/users/acme/projects/1', updatedAt: '2026-08-13T00:00:00Z',
       items: {nodes: [{id: 'PVTI_1', updatedAt: '2026-08-13T00:00:00Z',
         statusValue: {optionId: 'status', name: 'Ready'}, blockedValue: {optionId: 'not-blocked', name: 'No'},
+        ownerValue: {optionId: 'owner-hermes'},
         targetDateValue: {date: '2026-08-31'},
         content: {id: 'I_1', databaseId: 42, number: 42, title: 'Deliver feature',
           repository: {nameWithOwner: 'acme/repo'},
@@ -46,7 +47,8 @@ describe('MVP GitHub adapter', () => {
       bindingId: 'binding', externalVersion: 'github:updated-at:2026-08-13T00:00:00Z',
       cursor: 'github:updated-at:2026-08-13T00:00:00Z',
       items: [{itemId: 'PVTI_1', projectId: 'project', issueId: '42', title: 'Deliver feature',
-        statusOptionName: 'Ready', blocked: false, targetDate: '2026-08-31', parentIssueId: '40',
+        statusOptionName: 'Ready', ownerOptionId: 'owner-hermes', blocked: false,
+        targetDate: '2026-08-31', parentIssueId: '40',
         subIssueIds: ['43'], dependencyIssueIds: ['41']}]
     });
     expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({authorization: 'Bearer token'});

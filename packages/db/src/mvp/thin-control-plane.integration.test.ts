@@ -41,7 +41,8 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
 
     const item: TrackerItemFact = {itemId, projectId, issueId: '901', title: 'E2E task',
       url: 'https://github.com/VF78/ascon/issues/901', version: `github:updated-at:${observedAt}`,
-      statusOptionId: 'acceptance-option', statusOptionName: 'Acceptance', blocked: false, targetDate: '2026-08-31',
+      statusOptionId: 'acceptance-option', statusOptionName: 'Acceptance', ownerOptionId: null,
+      blocked: false, targetDate: '2026-08-31',
       parentIssueId: null, subIssueIds: [], dependencyIssueIds: ['900'], assigneeIds: [], observedAt};
     const snapshot = {bindingId, externalVersion: `github:updated-at:${observedAt}`, cursor: null,
       observedAt, sourceUrl: 'https://github.com/users/VF78/projects/1', items: [item]} as const;
@@ -50,11 +51,15 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
       fact: TrackerItemFact, reason: string, idempotencyKey: string
     ): Promise<MessengerDeliveryInput> => ({projectId: fact.projectId, contour: 'trusted-main',
       channelReference: 'internal', text: `${reason}: ${fact.url}`, idempotencyKey});
+    const notificationSummary = async (
+      count: number, sourceUrl: string, idempotencyKey: string
+    ): Promise<MessengerDeliveryInput> => ({projectId, contour: 'trusted-main', channelReference: 'internal',
+      text: `action_required: ${count} tracker items changed — ${sourceUrl}`, idempotencyKey});
     const input = {bindingId, workspaceId, projectId, cursor: null,
       statusMap: {backlog: 'backlog-option', ready: 'ready-option', development: 'development-option',
         qa: 'qa-option', acceptance: 'acceptance-option', done: 'done-option'},
       ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: stores.snapshots,
-        outbox: stores.outbox, audit: stores.audit, compose: {notification}}};
+        outbox: stores.outbox, audit: stores.audit, compose: {notification, notificationSummary}}};
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 1});
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 0});
 

@@ -2,7 +2,8 @@ import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProject
 import type {ReactNode} from 'react';
 import {Bot, CircleDot, FolderKanban, LayoutDashboard, ListChecks, Menu, MessageSquareText, Settings2, ShieldCheck, UsersRound} from 'lucide-react';
 import {buildPortfolio, type PortfolioFocus, type PortfolioProject} from '../src/mvp/portfolio-view.ts';
-import {AccessControls, AgentSubmitControl, ApprovalControl, LogoutControl, SourceAddControl} from '../src/mvp/operator-controls.tsx';
+import {AccessControls, ApprovalControl, LogoutControl, SourceAddControl} from '../src/mvp/operator-controls.tsx';
+import {AgentSubmitControl} from '../src/mvp/agent-submit-control.tsx';
 import {integrationConfig, type IntegrationConfig} from '../src/mvp/integration-config.ts';
 import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
 

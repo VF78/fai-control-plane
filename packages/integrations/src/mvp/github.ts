@@ -76,6 +76,9 @@ const projectQuery = `query MvpProject($owner: String!, $number: Int!, $after: S
       statusValue: fieldValueByName(name: "Status") {
         ... on ProjectV2ItemFieldSingleSelectValue { optionId name }
       }
+      ownerValue: fieldValueByName(name: "Owner") {
+        ... on ProjectV2ItemFieldSingleSelectValue { optionId }
+      }
       blockedValue: fieldValueByName(name: "Blocked") {
         ... on ProjectV2ItemFieldSingleSelectValue { optionId name }
       }
@@ -151,6 +154,7 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
       const item = object(entry);
       const content = object(item?.content);
       const status = object(item?.statusValue);
+      const ownerValue = object(item?.ownerValue);
       const blockedValue = object(item?.blockedValue);
       const targetDateValue = object(item?.targetDateValue);
       const assignees = object(content?.assignees);
@@ -180,6 +184,7 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
         version: `github:updated-at:${item.updatedAt as string}`,
         statusOptionId: bounded(status?.optionId, 512) ? status.optionId : null,
         statusOptionName: bounded(status?.name, 512) ? status.name : null,
+        ownerOptionId: bounded(ownerValue?.optionId, 512) ? ownerValue.optionId : null,
         blocked,
         targetDate,
         parentIssueId: parent === null ? null : String(positiveInteger(parent.databaseId)),

@@ -5,6 +5,8 @@ import {validateAgentRoleRequest} from '@fai-control-plane/domain';
 export type AgentSubmissionContext = Readonly<{
   workspaceId: string; projectId: string; requesterRole: ProjectRole;
   bindingId: string; repository: Readonly<{id: string; url: string}>;
+  agentTrackerOwnerOptionId: string;
+  doneStatusOptionId: string;
 }>;
 
 export type AgentSubmissionPorts = Readonly<{
@@ -51,13 +53,9 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   if (context === null || !['project_owner', 'operator'].includes(context.requesterRole)) {
     throw new Error('agent_submit_denied');
   }
-  const snapshot = await ports.readFreshSnapshot(context);
-  if (snapshot.bindingId !== context.bindingId || snapshot.items.some((item) => item.projectId !== context.projectId)) {
-    throw new Error('tracker_project_mismatch');
+  if (!bounded(context.agentTrackerOwnerOptionId, 512) || !bounded(context.doneStatusOptionId, 512)) {
+    throw new Error('agent_submit_denied');
   }
-  await ports.persistSnapshot(snapshot);
-  const item = snapshot.items.find((candidate) => candidate.itemId === command.projectItemId);
-  if (item === undefined) throw new Error('tracker_item_unavailable');
   const repository = await ports.repository.readRepository({repositoryId: context.repository.id});
   if (repository.repositoryId !== context.repository.id || repository.url !== context.repository.url) {
     throw new Error('repository_binding_mismatch');
@@ -67,6 +65,20 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   if (sources.length !== command.sourceIds.length) throw new Error('agent_source_denied');
   if (sources.reduce((total, source) => total + utf8Size(source.content), 0) > 65_536) {
     throw new Error('agent_source_payload_too_large');
+  }
+  // Read the provider-native task fact only after all other request material is ready,
+  // immediately before the canonical delivery transaction. The configured exact
+  // provider Owner option is composition-owned and cannot be supplied by the caller.
+  const snapshot = await ports.readFreshSnapshot(context);
+  if (snapshot.bindingId !== context.bindingId || snapshot.items.some((item) => item.projectId !== context.projectId)) {
+    throw new Error('tracker_project_mismatch');
+  }
+  await ports.persistSnapshot(snapshot);
+  const item = snapshot.items.find((candidate) => candidate.itemId === command.projectItemId);
+  if (item === undefined) throw new Error('tracker_item_unavailable');
+  if (item.statusOptionId === null || item.statusOptionId === context.doneStatusOptionId ||
+    item.ownerOptionId !== context.agentTrackerOwnerOptionId) {
+    throw new Error('agent_submit_denied');
   }
   const normalized = {projectId: context.projectId, repositoryId: context.repository.id,
     itemId: item.itemId, observedVersion: item.version, role: command.role,

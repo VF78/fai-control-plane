@@ -5,7 +5,7 @@ import type {TrackerItemFact} from './model.ts';
 const statuses: StatusMap = {backlog: 'b', ready: 'r', development: 'd', qa: 'q', acceptance: 'a', done: 'z'};
 const item = (statusOptionId: string | null, assigneeIds: string[] = []): TrackerItemFact => ({
   itemId: 'item', projectId: 'project', issueId: 'issue', url: 'https://example.test/issues/1',
-  title: 'Issue title', version: 'v1', statusOptionId, statusOptionName: null, blocked: null,
+  title: 'Issue title', version: 'v1', statusOptionId, statusOptionName: null, ownerOptionId: null, blocked: null,
   targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [],
   assigneeIds, observedAt: '2026-08-13T00:00:00.000Z'
 });
@@ -15,11 +15,15 @@ describe('MVP fixed next-action decision', () => {
     ['b', 'agent', 'manager'],
     ['q', 'agent', 'qa'],
     ['a', 'human', null],
-    ['z', 'human', null],
+    ['z', 'none', null],
     ['d', 'none', null],
     ['unknown', 'none', null]
   ] as const)('maps %s to %s/%s', (status, kind, role) => {
     expect(decideNextAction(item(status), statuses)).toMatchObject({kind, role});
+  });
+
+  it('never requests human or agent work for Done', () => {
+    expect(decideNextAction(item(statuses.done, ['actor']), statuses)).toMatchObject({kind: 'none', reason: 'completed'});
   });
 
   it('uses a human assignee instead of dispatching development', () => {
