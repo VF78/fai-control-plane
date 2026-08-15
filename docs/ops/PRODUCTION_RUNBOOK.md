@@ -692,76 +692,56 @@ the separately approved Hermes `auth` action and must remain at
 
 ## Preflight and deployment
 
-The only approved command interface is:
+The isolated MVP is already active behind `127.0.0.1:13010`. Every later
+release uses the same two-command interface; never edit the checkout or
+`production.env` by hand:
 
 ```bash
 set -euo pipefail
 cd /opt/fai-control-plane-mvp
 release_commit='<approved-40-hex>'
-config_digest='<approved-disabled-cp-sha256>'
-repository=https://github.com/VF78/fai-control-plane.git
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
-[[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
-git fetch --no-tags "$repository" refs/heads/main
-remote_main=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
-[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
-git merge-base --is-ancestor "$release_commit" "$remote_main"
-test "$(git rev-parse HEAD)" = "$release_commit"
-test -z "$(git status --porcelain)"
-FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
-FCP_APPROVED_CONFIG_SHA256="$config_digest" \
-  ./scripts/deploy-prod.sh stage "$release_commit"
-unset release_commit config_digest repository remote_main
+./scripts/deploy-prod.sh preflight "$release_commit"
 ```
 
-`stage` verifies the old rollback image and protected-neighbour health, rejects
-dirty/mismatched checkouts, placeholders, missing/mis-permissioned secret files
-and an environment-file digest different from the approved non-secret config.
-It then builds and starts only the new stack, migrates the empty database,
-bootstraps idempotently, and checks the unpublished candidate through
-`127.0.0.1:13010`. It does not touch Nginx.
+`preflight` is production-read-only: it uses `git ls-remote` rather than
+fetching or changing the checkout, environment, containers, services or
+Nginx. It requires the target to equal current `origin/main`, a clean isolated
+checkout, the exact protected-neighbour image and healthy protected services,
+healthy active MVP PostgreSQL/web/worker, public/local readiness, the existing
+`13010` Nginx route, host-owned secret files and a valid current environment.
+It prints the exact SHA-256 of the environment that `deploy` would install.
+That rendering changes only `FCP_RELEASE_COMMIT` and forces exactly one
+`BITRIX24_CLIENT_ACTIONS_ENABLED=false` line.
 
-From the first `stage` mutation through the final protected-neighbour check, an
-error cleanup guard is active. PostgreSQL, web and the inactive worker must all
-become healthy within one 180-second candidate-health deadline; a missing,
-exited, dead or unhealthy container fails immediately. Any stage failure runs
-only `docker compose down` for `fai-control-plane-mvp` (without `-v` or image
-removal), verifies that no listener remains on `13010`, and preserves the named
-PostgreSQL volume and built image as evidence. A successful final
-protected-neighbour check disarms the guard.
+Record and approve the exact release commit and printed digest. Then run:
 
-Before the candidate image build, `stage` normalizes only the non-secret
-tracked checkout from the Git index: the checkout root and tracked parent
-directories become mode `0755`, tracked regular files become `0644`, and only
-index mode `100755` files become `0755`. It rejects unsupported/symlink modes
-and requires the checkout to remain Git-clean. `.git`, untracked paths and all
-`/etc/fai-control-plane-mvp/secrets` are outside this operation. This prevents
-the root preparation `umask` from making runtime files unreadable after Docker
-`COPY` while keeping executable intent identical to the reviewed commit.
+```bash
+set -euo pipefail
+cd /opt/fai-control-plane-mvp
+release_commit='<approved-40-hex>'
+config_digest='<approved-resulting-config-sha256>'
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+[[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
+FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
+FCP_APPROVED_CONFIG_SHA256="$config_digest" \
+  ./scripts/deploy-prod.sh deploy "$release_commit"
+unset release_commit config_digest
+```
 
-The reviewed stage value is `FCP_WORKER_ACTIVE=false`: the worker process is
-healthy but performs no poll, reconciliation, delivery or provider call, and
-its readiness remains 503. Changing it to `true` is a separate exact config
-approval (with a new SHA-256) after provider registrations and synthetic-safe
-Hermes configuration are complete. This prevents staging from starting live
-ASCON work implicitly.
+`deploy` repeats the preflight with the approved digest, fetches exact
+`origin/main`, requires a fast-forward and re-executes the reviewed target
+script. It validates and builds the target images before atomically replacing
+the environment file, then runs the existing migration, idempotent bootstrap
+and only the isolated MVP web/worker replacement. PostgreSQL, web and worker
+must become healthy within 180 seconds; exact image tags, local health/ready,
+public ready/dashboard and all protected neighbours are checked afterward.
+It never runs `compose down`, prune, Nginx reload or any Hermes/MSA/marketing/
+Amnezia mutation. Stop on any failure; do not bypass a guard.
 
-The activation gate is deliberately two-step. First run `stage` with the
-approved `false` configuration and complete the database, provider-binding and
-Telegram boundary proofs. Then create and approve a second configuration differing only in
-`FCP_WORKER_ACTIVE=true`, calculate its new SHA-256, and rerun `stage` with
-that digest; the single synthetic Hermes ACK and fresh reconciled snapshot are
-proved through that real worker process. Only after the worker reports `/ready` may `activate` run; a
-disabled or provider-unready worker can never pass the public cutover gate.
+### Database and readiness proof
 
-Before activation, run the exact Phase B proofs below. Bitrix proof is not in
-this list because Bitrix remains fail-closed until Phase C. Do not create or
-change a GitHub issue, Project item/status/date, source, approval, callback or
-live ASCON task during any proof.
-
-### Disabled-stage database and readiness proof
-
-Run from the exact checkout after the disabled-worker `stage`. The table-name
+Run from the exact checkout when a release approval requires this evidence. The table-name
 comparison proves both the required 16 tables and absence of an unexpected
 seventeenth table. The second query proves exactly one project and its one
 exact GitHub binding. Bootstrap a second time before the queries to prove
@@ -902,32 +882,9 @@ an extra run. Separately require a fresh successful GitHub snapshot, ready web
 and worker endpoints, and `clientConversationActions:false` until the Bitrix
 gate receives its own explicit activation approval.
 
-After Vladimir approves that evidence and the exact one-line proxy change:
-
-```bash
-set -euo pipefail
-cd /opt/fai-control-plane-mvp
-release_commit='<approved-40-hex>'
-config_digest='<approved-enabled-cp-sha256>'
-repository=https://github.com/VF78/fai-control-plane.git
-[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
-[[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
-git fetch --no-tags "$repository" refs/heads/main
-remote_main=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
-[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
-git merge-base --is-ancestor "$release_commit" "$remote_main"
-test "$(git rev-parse HEAD)" = "$release_commit"
-test -z "$(git status --porcelain)"
-FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
-FCP_APPROVED_CONFIG_SHA256="$config_digest" \
-  ./scripts/deploy-prod.sh activate "$release_commit"
-unset release_commit config_digest repository remote_main
-```
-
-`activate` requires web and worker readiness, changes only the existing
-`fai_control_plane_web` server from `127.0.0.1:13000` to
-`127.0.0.1:13010`, validates Nginx and reloads it. No other server block,
-route, service or network rule changes.
+No activation command follows: the isolated MVP is already the public `13010`
+upstream. A normal `deploy` requires that exact route before and after the
+release and never edits or reloads Nginx.
 
 ## Disable and rollback
 

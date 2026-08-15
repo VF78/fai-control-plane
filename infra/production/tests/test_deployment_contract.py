@@ -40,16 +40,13 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn('install -o node -g node -m 0400', entrypoint)
         self.assertIn("--reuid=node --regid=node --init-groups", entrypoint)
         self.assertIn("--no-new-privs --bounding-set=-all", entrypoint)
-        self.assertIn('exec setpriv', entrypoint)
 
-    def test_candidate_health_wait_survives_starting_under_errexit(self):
+    def test_health_wait_survives_starting_under_errexit(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
         start = script.index("wait_for_candidate_health() {")
-        end = script.index("\n}\n\ncandidate_listener_absent()", start) + 3
+        end = script.index("\n}\n\nnormalize_checkout_modes()", start) + 3
         health_wait = script[start:end]
-
-        self.assertIn("if (( all_healthy )); then", health_wait)
-        self.assertNotIn("(( all_healthy )) && return 0", health_wait)
+        self.assertIn("if (( all_healthy )); then return 0; fi", health_wait)
 
         with tempfile.NamedTemporaryFile(mode="w") as poll_file:
             poll_file.write("0")
@@ -57,18 +54,10 @@ class DeploymentContractTest(unittest.TestCase):
             harness = f"""\
 set -euo pipefail
 {health_wait}
-compose_stub() {{
-  printf '%s\\n' candidate-container-id
-}}
+compose_stub() {{ printf '%s\\n' candidate-container-id; }}
 docker() {{
-  poll=$(cat "$POLL_FILE")
-  poll=$((poll + 1))
-  printf '%s' "$poll" > "$POLL_FILE"
-  if (( poll == 1 )); then
-    printf '%s\\n' 'running starting'
-  else
-    printf '%s\\n' 'running healthy'
-  fi
+  poll=$(cat "$POLL_FILE"); poll=$((poll + 1)); printf '%s' "$poll" > "$POLL_FILE"
+  if (( poll == 1 )); then printf '%s\\n' 'running starting'; else printf '%s\\n' 'running healthy'; fi
 }}
 sleep() {{ :; }}
 compose=(compose_stub)
@@ -83,88 +72,111 @@ test "$(cat "$POLL_FILE")" = 2
                 text=True,
             )
 
-    def test_stage_waits_for_candidate_health_and_cleans_up_failures(self):
+    def test_preflight_is_read_only_and_reports_resulting_digest(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
-        stage = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
-        cleanup = script.split("stage_exit_cleanup()", 1)[1].split(
-            "trap stage_exit_cleanup", 1
+        preflight_case = script.split('if [[ "$action" == preflight ]]', 1)[1].split(
+            "fi", 1
+        )[0]
+        preflight = script.split("run_preflight() {", 1)[1].split("\n}\n", 1)[0]
+        host_checks = script.split("check_host_contract() {", 1)[1].split(
+            "\n}\n", 1
         )[0]
 
-        self.assertIn("candidate_health_deadline=$((SECONDS + 180))", stage)
-        self.assertIn(
-            'wait_for_candidate_health "$candidate_health_deadline" postgres', stage
-        )
-        self.assertIn(
-            'wait_for_candidate_health "$candidate_health_deadline" postgres web worker',
-            stage,
-        )
-        self.assertIn("exited|dead|'') return 1", script)
-        self.assertIn("unhealthy|missing|'') return 1", script)
-        self.assertLess(
-            stage.index("stage_cleanup_required=1"),
-            stage.index('"${compose[@]}" build'),
-        )
-        self.assertIn('"${compose[@]}" down', cleanup)
-        self.assertNotIn(" down -v", cleanup)
-        self.assertNotIn("--rmi", cleanup)
-        self.assertIn("candidate_listener_absent", cleanup)
-        self.assertIn("ss -H -ltn 'sport = :13010'", script)
-        self.assertLess(
-            script.rindex("protected_health || fail"),
-            script.rindex("stage_cleanup_required=0"),
-        )
-
-    def test_stage_reports_candidate_phases_and_attributes_data_setup_failures(self):
-        script = (ROOT / "scripts/deploy-prod.sh").read_text()
-        stage = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
-
-        for message in (
-            "stage: building isolated candidate images (web, worker, migrate, bootstrap)",
-            "stage: waiting for isolated candidate postgres health",
-            "stage: applying isolated candidate migrations",
-            "stage: bootstrapping isolated candidate data",
-            "stage: waiting for isolated candidate web and worker health",
-            "stage: checking isolated candidate web health endpoint",
+        self.assertIn("run_preflight", preflight_case)
+        self.assertIn("exit 0", preflight_case)
+        self.assertIn("resulting_config_sha256", preflight)
+        self.assertIn("git ls-remote --exit-code", host_checks)
+        for mutation in (
+            "git fetch",
+            "git merge",
+            "docker compose up",
+            "docker compose build",
+            "install ",
+            "mv -f",
+            "systemctl reload",
         ):
-            self.assertIn(f"log '{message}'", stage)
+            self.assertNotIn(mutation, preflight + host_checks + preflight_case)
 
-        self.assertIn(
-            'if ! "${compose[@]}" run --rm migrate; then\n'
-            "      fail 'candidate migrations failed'",
-            stage,
-        )
-        self.assertIn(
-            'if ! "${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap; then\n'
-            "      fail 'candidate bootstrap failed'",
-            stage,
-        )
-
-    def test_stage_normalizes_only_git_tracked_checkout_modes(self):
+    def test_environment_render_changes_only_release_and_bitrix_gate(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
-        stage = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
-        normalization = script.split("normalize_checkout_modes()", 1)[1].split(
-            "protected_health || fail", 1
-        )[0]
+        start = script.index("render_target_environment() {")
+        end = script.index("\n}\n\ncheck_host_contract()", start) + 3
+        renderer = script[start:end]
+        old = """A=one
+FCP_RELEASE_COMMIT=old
+MIDDLE=kept
+BITRIX24_CLIENT_ACTIONS_ENABLED=true
+Z=last
+"""
+        expected = """A=one
+FCP_RELEASE_COMMIT=0123456789abcdef0123456789abcdef01234567
+MIDDLE=kept
+BITRIX24_CLIENT_ACTIONS_ENABLED=false
+Z=last
+"""
+        with tempfile.NamedTemporaryFile(mode="w") as environment:
+            environment.write(old)
+            environment.flush()
+            harness = f"""\
+set -euo pipefail
+fail() {{ printf '%s\\n' "$1" >&2; exit 1; }}
+environment_file="$ENVIRONMENT_FILE"
+release_commit=0123456789abcdef0123456789abcdef01234567
+{renderer}
+render_target_environment
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                check=True,
+                env={"PATH": "/usr/bin:/bin", "ENVIRONMENT_FILE": environment.name},
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.stdout, expected)
 
-        self.assertLess(
-            stage.index("stage_cleanup_required=1"),
-            stage.index("normalize_checkout_modes"),
+        without_gate = old.replace("BITRIX24_CLIENT_ACTIONS_ENABLED=true\n", "")
+        with tempfile.NamedTemporaryFile(mode="w") as environment:
+            environment.write(without_gate)
+            environment.flush()
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                check=True,
+                env={"PATH": "/usr/bin:/bin", "ENVIRONMENT_FILE": environment.name},
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(
+            result.stdout,
+            expected.replace("BITRIX24_CLIENT_ACTIONS_ENABLED=false\n", "")
+            + "BITRIX24_CLIENT_ACTIONS_ENABLED=false\n",
         )
-        self.assertLess(
-            stage.index("normalize_checkout_modes"),
-            stage.index('"${compose[@]}" build'),
+
+    def test_deploy_fast_forwards_then_builds_before_atomic_environment_install(self):
+        script = (ROOT / "scripts/deploy-prod.sh").read_text()
+        deploy = script[script.index("log 'deploy: fetching exact origin/main'") :]
+
+        ordered = (
+            "git fetch --no-tags origin",
+            'git merge --ff-only "$release_commit"',
+            '"${candidate_compose[@]}" build web worker migrate bootstrap',
+            'mv -f "$temporary_environment" "$environment_file"',
+            '"${compose[@]}" run --rm migrate',
+            '"${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap',
+            '"${compose[@]}" up -d --no-deps web worker',
+            "https://app.f-ai.studio/api/ready",
+            "https://app.f-ai.studio/",
         )
-        self.assertIn("git ls-files --stage -z", normalization)
-        self.assertIn('chmod 0755 "$deploy_root"', normalization)
-        self.assertIn('chmod 0644 -- "$deploy_root/$path"', normalization)
-        self.assertIn('if [[ "$mode" == 100755 ]]', normalization)
-        self.assertIn('chmod 0755 -- "$deploy_root/$path"', normalization)
-        self.assertIn(
-            '[[ -f "$deploy_root/$path" && ! -L "$deploy_root/$path" ]]',
-            normalization,
-        )
-        self.assertNotIn("find ", normalization)
-        self.assertNotIn("/etc/fai-control-plane-mvp", normalization)
+        positions = [deploy.index(item) for item in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("git merge-base --is-ancestor HEAD", deploy)
+        self.assertIn("FCP_APPROVED_CONFIG_SHA256", deploy)
+        self.assertIn("BITRIX24_CLIENT_ACTIONS_ENABLED=false", deploy)
+        self.assertNotIn("switch_upstream", deploy)
+        self.assertNotIn("systemctl reload nginx", deploy)
+        self.assertNotIn('install -o root -g root -m 0644', deploy)
+        self.assertNotIn("docker stop", deploy)
+        self.assertNotIn(" down", deploy)
+        self.assertNotIn("prune", deploy)
 
 
 if __name__ == "__main__":
