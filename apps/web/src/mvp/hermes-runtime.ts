@@ -9,11 +9,11 @@ import {
 import {decideApproval, dispatchClientConversationAction, dispatchConversationAction} from '@fai-control-plane/application';
 import {
   createGitHubTrackerMutationAdapter,
-  createGitHubTrackerReadAdapter,
-  createHermesDeliveryAdapter
+  createGitHubTrackerReadAdapter
 } from '@fai-control-plane/integrations';
 import type {ApprovalKind, ClientConversationEnvelope, InternalConversationEnvelope, OpaqueSecretRef} from '@fai-control-plane/domain';
 import {createHermesConversationActionHandler} from './hermes-actions.ts';
+import {bitrixClientActionsEnabled} from './integration-config.ts';
 import {getDatabase, readSecretFile, secretResolver} from './runtime.ts';
 
 const env = (name: string, maximum = 2_048): string => {
@@ -28,6 +28,7 @@ const secret = (id: string, purpose: string, variable: string): OpaqueSecretRef 
 
 export const hermesConversationAction = async (request: Request): Promise<Response> => {
   const database = getDatabase();
+  const clientActionsEnabled = bitrixClientActionsEnabled();
   const workspaceId = env('FCP_WORKSPACE_ID'); const projectId = env('FCP_PROJECT_ID');
   const bindingId = env('GITHUB_BINDING_ID'); const owner = env('GITHUB_OWNER', 100);
   const repository = env('GITHUB_REPOSITORY', 100); const projectNumber = Number(env('GITHUB_PROJECT_NUMBER', 16));
@@ -38,8 +39,6 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
   const tracker = createGitHubTrackerMutationAdapter({binding,
     credentialRef: secret('github-projects-mutate', 'tracker_mutate', 'GITHUB_PROJECTS_TOKEN_FILE'),
     secrets: secretResolver});
-  const agent = createHermesDeliveryAdapter({endpoint: env('HERMES_ROLE_REQUEST_URL'),
-    credentialRef: secret('hermes', 'agent_delivery', 'HERMES_TOKEN_FILE'), secrets: secretResolver});
   const stores = createStores(database, workspaceId); const persistence = createApprovalPersistence(database);
   const shared = {
     facts: {async read(targetProjectId: string) {
@@ -83,9 +82,10 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
     internalToken: () => readSecretFile(env('HERMES_INTERNAL_ACTION_TOKEN_FILE')),
     clientToken: () => readSecretFile(env('HERMES_CLIENT_ACTION_TOKEN_FILE')),
     projectId, telegramChatId: env('TELEGRAM_INTERNAL_CHAT_ID'),
-    telegramUserIds: env('TELEGRAM_INTERNAL_ALLOWED_USER_IDS').split(','), bitrixTaskId: env('BITRIX24_TASK_ID'),
+    telegramUserIds: env('TELEGRAM_INTERNAL_ALLOWED_USER_IDS').split(','),
+    bitrixTaskId: clientActionsEnabled ? env('BITRIX24_TASK_ID') : '', clientActionsEnabled,
     dispatchInternal: (envelope: InternalConversationEnvelope) => dispatchConversationAction({workspaceId, envelope,
-      ports: {...shared, agent}}),
+      ports: shared}),
     dispatchClient: (envelope: ClientConversationEnvelope) => dispatchClientConversationAction({workspaceId,
       envelope, ports: shared})
   })(request);

@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from 'vitest';
-import {dispatchClientConversationAction, dispatchConversationAction} from './conversation-dispatcher.ts';
-import type {AgentRoleRequest, ClientConversationEnvelope, InternalConversationEnvelope, ProjectRole} from '@fai-control-plane/domain';
+import {dispatchClientConversationAction} from './conversation-dispatcher.ts';
+import type {ClientConversationEnvelope, ProjectRole} from '@fai-control-plane/domain';
 
 const envelope: ClientConversationEnvelope = {message: {projectId: 'project', contour: 'client-edge',
   channelReference: 'channel', senderReference: 'sender', messageReference: 'message',
@@ -47,45 +47,5 @@ describe('client conversation trust boundary', () => {
     await expect(dispatchClientConversationAction({workspaceId: 'workspace', envelope: source, ports: target}))
       .resolves.toEqual({status: 'completed', referenceId: 'source-1'});
     expect(target.sources.add).toHaveBeenCalledWith(expect.objectContaining({actorId: 'client-a'}));
-  });
-  it('does not let a client role submit an agent request even on trusted-main', async () => {
-    const request: AgentRoleRequest = {role: 'developer', repository: {id: 'repo', url: 'https://example.test/repo'},
-      projectItem: {id: 'item', projectId: 'project', issueId: 'issue', url: 'https://example.test/issue'},
-      observedVersion: 'v1', sources: [], constraints: ['bounded'], acceptanceCriteria: ['verified'], approval: null,
-      correlationId: 'correlation', idempotencyKey: 'agent-key'};
-    const internal: InternalConversationEnvelope = {message: {...envelope.message, contour: 'trusted-main',
-      text: 'agent request'}, action: {type: 'agent.submit', request}};
-    const target = {...ports({actorId: 'client-a', role: 'client'}),
-      agent: {submit: vi.fn(async () => ({deliveryReference: 'delivery', sessionReference: 'session'}))}};
-    await expect(dispatchConversationAction({workspaceId: 'workspace', envelope: internal, ports: target}))
-      .resolves.toEqual({status: 'denied'});
-    expect(target.agent.submit).not.toHaveBeenCalled();
-  });
-  it('keeps core semantics identical when Hermes/OpenClaw or Codex/Claude execution is substituted', async () => {
-    const request: AgentRoleRequest = {role: 'developer', repository: {id: 'repo', url: 'https://example.test/repo'},
-      projectItem: {id: 'item', projectId: 'project', issueId: 'issue', url: 'https://example.test/issue'},
-      observedVersion: 'v1', sources: [], constraints: ['bounded'], acceptanceCriteria: ['verified'], approval: null,
-      correlationId: 'correlation', idempotencyKey: 'agent-key'};
-    const internal: InternalConversationEnvelope = {message: {...envelope.message, contour: 'trusted-main',
-      text: 'agent request', idempotencyKey: 'agent-key'}, action: {type: 'agent.submit', request}};
-    const run = async (deliveryReference: string) => dispatchConversationAction({workspaceId: 'workspace', envelope: internal,
-      ports: {...ports({actorId: 'operator-a', role: 'operator'}), agent: {submit: async () => ({deliveryReference,
-        sessionReference: `session:${deliveryReference}`})}}});
-    await expect(run('hermes-codex')).resolves.toEqual({status: 'completed', referenceId: 'hermes-codex'});
-    await expect(run('openclaw-claude')).resolves.toEqual({status: 'completed', referenceId: 'openclaw-claude'});
-    expect(request).not.toHaveProperty('runtimeVendor');
-    expect(request).not.toHaveProperty('cliVendor');
-  });
-  it('denies an explicit operator request targeting a different canonical project', async () => {
-    const request: AgentRoleRequest = {role: 'developer', repository: {id: 'repo', url: 'https://example.test/repo'},
-      projectItem: {id: 'item', projectId: 'other-project', issueId: 'issue', url: 'https://example.test/issue'},
-      observedVersion: 'v1', sources: [], constraints: ['bounded'], acceptanceCriteria: ['verified'], approval: null,
-      correlationId: 'correlation', idempotencyKey: 'agent-key'};
-    const internal: InternalConversationEnvelope = {message: {...envelope.message, contour: 'trusted-main'},
-      action: {type: 'agent.submit', request}};
-    const agent = {submit: vi.fn(async () => ({deliveryReference: 'delivery', sessionReference: 'session'}))};
-    await expect(dispatchConversationAction({workspaceId: 'workspace', envelope: internal,
-      ports: {...ports({actorId: 'operator-a', role: 'operator'}), agent}})).resolves.toEqual({status: 'denied'});
-    expect(agent.submit).not.toHaveBeenCalled();
   });
 });

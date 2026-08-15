@@ -1,21 +1,19 @@
-import type {AgentRoleRequest, ClientMessengerInbound, InternalMessengerInbound, MessengerInbound} from './ports.ts';
+import type {ClientMessengerInbound, InternalMessengerInbound, MessengerInbound} from './ports.ts';
 import {approvalKinds, isBoundedId, isInstant, type ApprovalDecision, type ApprovalKind} from './model.ts';
-import {validateAgentRoleRequest} from './agent-role-request.ts';
 
 export type ConversationAction =
   | Readonly<{type: 'project_facts.read'}>
   | Readonly<{type: 'issue.create'; title: string; statement: string}>
   | Readonly<{type: 'issue.clarify'; referenceId: string; expectedVersion: string; statement: string}>
   | Readonly<{type: 'source.add'; name: string; content: string}>
-  | Readonly<{type: 'approval.decide'; approvalId: string; kind: 'plan' | 'internal_operation' | 'production' | 'acceptance' | 'client_uat'; targetReference: string; decision: 'approved' | 'rejected'}>
-  | Readonly<{type: 'agent.submit'; request: AgentRoleRequest}>;
+  | Readonly<{type: 'approval.decide'; approvalId: string; kind: 'plan' | 'internal_operation' | 'production' | 'acceptance' | 'client_uat'; targetReference: string; decision: 'approved' | 'rejected'}>;
 
 export type ConversationEnvelope = Readonly<{
   message: MessengerInbound;
   action: ConversationAction;
 }>;
 export type InternalConversationEnvelope = Readonly<{message: InternalMessengerInbound; action: ConversationAction}>;
-export type ClientConversationAction = Exclude<ConversationAction, Readonly<{type: 'agent.submit'; request: AgentRoleRequest}>>;
+export type ClientConversationAction = ConversationAction;
 export type ClientConversationEnvelope = Readonly<{message: ClientMessengerInbound; action: ClientConversationAction}>;
 
 const text = (value: unknown, maximum: number): value is string =>
@@ -36,7 +34,6 @@ export const validateConversationEnvelope = (input: ConversationEnvelope): boole
     case 'approval.decide': return isBoundedId(input.action.approvalId) && isBoundedId(input.action.targetReference) &&
       approvalKinds.includes(input.action.kind) &&
       (input.action.decision === 'approved' || input.action.decision === 'rejected');
-    case 'agent.submit': return validateAgentRoleRequest(input.action.request);
   }
 };
 
@@ -58,9 +55,6 @@ export const parseConversationEnvelope = (value: unknown): ConversationEnvelope 
   else if (action.type === 'approval.decide') parsedAction = {type: 'approval.decide', approvalId: String(action.approvalId ?? ''),
     kind: action.kind as ApprovalKind, targetReference: String(action.targetReference ?? ''),
     decision: action.decision as ApprovalDecision};
-  else if (action.type === 'agent.submit' && action.request !== null && typeof action.request === 'object') {
-    parsedAction = {type: 'agent.submit', request: action.request as AgentRoleRequest};
-  }
   if (parsedAction === null) return null;
   const envelope: ConversationEnvelope = {message: {projectId: String(message.projectId ?? ''), contour,
     channelReference: String(message.channelReference ?? ''), senderReference: String(message.senderReference ?? ''),
@@ -71,7 +65,5 @@ export const parseConversationEnvelope = (value: unknown): ConversationEnvelope 
 };
 
 export const authorizeConversation = (input: ConversationEnvelope): boolean => {
-  if (!validateConversationEnvelope(input)) return false;
-  if (input.message.contour === 'client-edge' && input.action.type === 'agent.submit') return false;
-  return true;
+  return validateConversationEnvelope(input);
 };

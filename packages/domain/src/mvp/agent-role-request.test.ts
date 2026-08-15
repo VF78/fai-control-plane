@@ -7,7 +7,8 @@ const request = (role: AgentRoleRequest['role'] = 'developer'): AgentRoleRequest
   repository: {id: 'repo-1', url: 'https://example.test/repository'},
   projectItem: {id: 'item-1', projectId: 'project-1', issueId: 'issue-1', url: 'https://example.test/issues/1'},
   observedVersion: 'version-1',
-  sources: [{id: 'source-1', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator upload'}],
+  sources: [{id: 'source-1', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator upload',
+    content: 'Approved requirements'}],
   constraints: ['Do not merge'],
   acceptanceCriteria: ['Focused checks pass'],
   approval: null,
@@ -37,5 +38,11 @@ describe('MVP agent role request', () => {
       contract: 'fai.agent-role-request.v1', request: {role: 'developer'}
     });
     expect(renderAgentRoleRequest(request())).not.toContain('codex-cli');
+  });
+
+  it('rejects more than 64 KiB of selected UTF-8 source text', () => {
+    const value = request();
+    expect(validateAgentRoleRequest({...value, sources: [{...value.sources[0]!, content: 'я'.repeat(32_769)}]}))
+      .toBe(false);
   });
 });

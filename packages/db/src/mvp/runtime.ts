@@ -2,6 +2,9 @@ import {createHash, randomUUID} from 'node:crypto';
 import pg from 'pg';
 import type {
   ApprovalKind,
+  OpaqueSecretRef,
+  ProjectRole,
+  SourceReference,
   TrackerSnapshot
 } from '@fai-control-plane/domain';
 import {validateTrackerSnapshot} from '@fai-control-plane/domain';
@@ -54,6 +57,8 @@ export type ProjectRow = Readonly<{
 
 export type ProjectTaskView = ProjectRow & Readonly<{
   tracker: Readonly<{
+    provider?: string | null;
+    configured?: boolean;
     sourceUrl: string | null;
     observedAt: string | null;
     freshness: 'fresh' | 'stale' | 'error' | 'unavailable';
@@ -72,6 +77,93 @@ export type ApprovalEvidenceView = Readonly<{
   targetReference: string; targetUrl: string; targetVersion: string; decidedAt: string;
 }>;
 
+/**
+ * Safe operator evidence.  This is deliberately a read projection: it exposes
+ * neither secret locators nor event/outbox payloads, and it does not turn the
+ * Control Plane into a messenger or Hermes runtime.
+ */
+export type ProjectOperatorEvidenceView = Readonly<{
+  projectId: string;
+  people: readonly Readonly<{
+    membershipId: string; actorId: string; displayName: string; kind: 'human' | 'agent' | 'system'; role: string; active: boolean;
+    identityBindings: readonly Readonly<{provider: string; subjectHash: string}>[];
+  }>[];
+  ingress: readonly Readonly<{provider: string; lastReceivedAt: string; count: number}>[];
+  conversations: readonly Readonly<{contour: 'trusted-main' | 'client-edge'; lastOccurredAt: string; count: number}>[];
+  messenger: Readonly<{pending: number; delivered: number; failed: number; lastOccurredAt: string | null}>;
+  agentSubmissions: Readonly<{count: number; lastOccurredAt: string | null}>;
+  receipts: readonly Readonly<{commandType: string; resultReference: string; occurredAt: string}>[];
+  audit: readonly Readonly<{action: string; targetReference: string; occurredAt: string}>[];
+}>;
+
+export const listProjectOperatorEvidenceViews = async (
+  database: Database,
+  actorId: string
+): Promise<readonly ProjectOperatorEvidenceView[]> => {
+  type PersonRow = {projectId: string; membershipId: string; actorId: string; displayName: string; kind: 'human' | 'agent' | 'system'; role: string; active: boolean;
+    provider: string | null; subjectHash: string | null};
+  type IngressRow = {projectId: string; provider: string; lastReceivedAt: Date; count: string};
+  type DeliveryRow = {projectId: string; pending: string; delivered: string;
+    failed: string; lastOccurredAt: Date | null};
+  type ReceiptRow = {projectId: string; commandType: string; resultReference: string; occurredAt: Date};
+  type AuditRow = {projectId: string; action: string; targetReference: string; occurredAt: Date};
+  type ConversationRow = {projectId: string; contour: 'trusted-main' | 'client-edge'; lastOccurredAt: Date; count: string};
+  type AgentSubmissionRow = {projectId: string; lastOccurredAt: Date; count: string};
+  const scope = `select p.id from projects p join project_memberships m on m.project_id=p.id
+    where m.actor_id=$1 and m.active=true`;
+  const [people, ingress, deliveries, receipts, audit, conversations, agentSubmissions] = await Promise.all([
+    database.query<PersonRow>(`select m.project_id as "projectId",m.id as "membershipId",a.id as "actorId",a.display_name as "displayName",a.kind,m.role,m.active,
+      i.provider,i.subject_hash as "subjectHash" from project_memberships m join actors a on a.id=m.actor_id
+      left join actor_external_identities i on i.actor_id=a.id where m.project_id in (${scope})
+      order by a.display_name,i.provider`, [actorId]),
+    database.query<IngressRow>(`select project_id as "projectId",provider,max(received_at) as "lastReceivedAt",count(*)::text as count
+      from incoming_events where project_id in (${scope}) group by project_id,provider`, [actorId]),
+    database.query<DeliveryRow>(`select project_id as "projectId",
+      count(*) filter(where delivered_at is null and last_error_code is null)::text as pending,
+      count(*) filter(where delivered_at is not null)::text as delivered,
+      count(*) filter(where delivered_at is null and last_error_code is not null)::text as failed,
+      max(coalesce(delivered_at,claimed_at,created_at)) as "lastOccurredAt" from outbox_events
+      where project_id in (${scope}) and topic='messenger-notification' group by project_id`, [actorId]),
+    database.query<ReceiptRow>(`select project_id as "projectId",command_type as "commandType",result_reference as "resultReference",occurred_at as "occurredAt"
+      from command_receipts where project_id in (${scope}) order by occurred_at desc limit 80`, [actorId]),
+    database.query<AuditRow>(`select project_id as "projectId",action,target_reference as "targetReference",occurred_at as "occurredAt"
+      from audit_events where project_id in (${scope}) order by occurred_at desc limit 80`, [actorId]),
+    database.query<ConversationRow>(`select project_id as "projectId",details->>'contour' as contour,
+      max(occurred_at) as "lastOccurredAt",count(*)::text as count from audit_events
+      where project_id in (${scope}) and action like 'conversation.%'
+        and details->>'contour' in ('trusted-main','client-edge')
+      group by project_id,details->>'contour'`, [actorId]),
+    database.query<AgentSubmissionRow>(`select project_id as "projectId",max(occurred_at) as "lastOccurredAt",
+      count(*)::text as count from command_receipts where project_id in (${scope}) and command_type='agent.submit'
+      group by project_id`, [actorId])
+  ]);
+  const ids = await listProjects(database, actorId);
+  return ids.map((project) => {
+    const memberRows = people.rows.filter((row) => row.projectId === project.id);
+    const members = [...new Map(memberRows.map((row) => [row.actorId, {
+      membershipId: row.membershipId, actorId: row.actorId, displayName: row.displayName, kind: row.kind, role: row.role, active: row.active,
+      identityBindings: memberRows.filter((item) => item.actorId === row.actorId && item.provider !== null && item.subjectHash !== null)
+        .map((item) => ({provider: item.provider!, subjectHash: item.subjectHash!}))
+    }])).values()];
+    const summary = () => {
+      const row = deliveries.rows.find((item) => item.projectId === project.id);
+      return {pending: Number(row?.pending ?? 0), delivered: Number(row?.delivered ?? 0), failed: Number(row?.failed ?? 0),
+        lastOccurredAt: row?.lastOccurredAt?.toISOString() ?? null};
+    };
+    const agentSubmission = agentSubmissions.rows.find((row) => row.projectId === project.id);
+    return {projectId: project.id, people: members,
+      ingress: ingress.rows.filter((row) => row.projectId === project.id).map((row) => ({provider: row.provider,
+        lastReceivedAt: row.lastReceivedAt.toISOString(), count: Number(row.count)})),
+      conversations: conversations.rows.filter((row) => row.projectId === project.id).map((row) => ({contour: row.contour,
+        lastOccurredAt: row.lastOccurredAt.toISOString(), count: Number(row.count)})),
+      messenger: summary(),
+      agentSubmissions: {count: Number(agentSubmission?.count ?? 0),
+        lastOccurredAt: agentSubmission?.lastOccurredAt.toISOString() ?? null},
+      receipts: receipts.rows.filter((row) => row.projectId === project.id).slice(0, 8).map((row) => ({...row, occurredAt: row.occurredAt.toISOString()})),
+      audit: audit.rows.filter((row) => row.projectId === project.id).slice(0, 8).map((row) => ({...row, occurredAt: row.occurredAt.toISOString()}))};
+  });
+};
+
 export const listProjects = async (database: Database, actorId: string): Promise<readonly ProjectRow[]> => {
   const result = await database.query<ProjectRow>(
     `select p.id, p.workspace_id as "workspaceId", p.slug, p.name, p.repository_url as "repositoryUrl"
@@ -88,6 +180,7 @@ export const listProjectTaskViews = async (
 ): Promise<readonly ProjectTaskView[]> => {
   type Row = ProjectRow & Readonly<{
     bindingId: string | null;
+    provider: string | null;
     externalVersion: string | null;
     cursor: string | null;
     sourceUrl: string | null;
@@ -98,7 +191,7 @@ export const listProjectTaskViews = async (
   }>;
   const result = await database.query<Row>(
     `select p.id,p.workspace_id as "workspaceId",p.slug,p.name,p.repository_url as "repositoryUrl",
-       b.id as "bindingId",ok.external_version as "externalVersion",ok.cursor,ok.source_url as "sourceUrl",
+       b.id as "bindingId",b.provider,ok.external_version as "externalVersion",ok.cursor,ok.source_url as "sourceUrl",
        ok.facts,ok.observed_at as "observedAt",attempt.observed_at as "attemptAt",
        attempt.error_code as "attemptErrorCode"
      from projects p join project_memberships m on m.project_id=p.id and m.actor_id=$1 and m.active=true
@@ -129,7 +222,8 @@ export const listProjectTaskViews = async (
       : now.getTime() - row.observedAt!.getTime() > 10 * 60_000 ? 'stale' as const
       : 'fresh' as const;
     return {id: row.id, workspaceId: row.workspaceId, slug: row.slug, name: row.name,
-      repositoryUrl: row.repositoryUrl, tracker: {sourceUrl: row.sourceUrl, observedAt, freshness, errorCode}, tasks};
+      repositoryUrl: row.repositoryUrl, tracker: {provider: row.provider, configured: row.bindingId !== null,
+        sourceUrl: row.sourceUrl, observedAt, freshness, errorCode}, tasks};
   });
 };
 
@@ -460,4 +554,84 @@ export const canApprove = async (
   if (kind === 'client_uat') return role === 'project_owner' || role === 'client';
   if (kind === 'internal_operation') return role === 'project_owner' || role === 'operator';
   return role === 'project_owner';
+};
+
+export type AgentSubmissionBinding = Readonly<{
+  workspaceId: string; projectId: string; requesterRole: ProjectRole; bindingId: string;
+  provider: string; externalProjectId: string; projectUrl: string; repositoryId: string; repositoryUrl: string;
+  cursor: string | null; trackerCredentialRef: OpaqueSecretRef; agentCredentialRef: OpaqueSecretRef | null;
+}>;
+
+export const resolveAgentSubmissionBinding = async (
+  database: Database, actorId: string, projectId: string
+): Promise<AgentSubmissionBinding | null> => {
+  type Row = Omit<AgentSubmissionBinding, 'trackerCredentialRef' | 'agentCredentialRef'> & Readonly<{
+    trackerSecretId: string; trackerSecretPurpose: string; trackerSecretLocator: string;
+    agentSecretId: string | null; agentSecretLocator: string | null;
+  }>;
+  const result = await database.query<Row>(
+    `select p.workspace_id as "workspaceId",p.id as "projectId",m.role as "requesterRole",
+       b.id as "bindingId",b.provider,b.external_project_id as "externalProjectId",b.project_url as "projectUrl",
+       b.repository_id as "repositoryId",b.repository_url as "repositoryUrl",b.cursor,
+       tracker_secret.id as "trackerSecretId",tracker_secret.purpose as "trackerSecretPurpose",
+       tracker_secret.locator as "trackerSecretLocator",agent_secret.id as "agentSecretId",
+       agent_secret.locator as "agentSecretLocator"
+     from projects p join project_memberships m on m.project_id=p.id and m.actor_id=$1 and m.active=true
+     join tracker_bindings b on b.project_id=p.id and b.enabled=true
+     join secret_refs tracker_secret on tracker_secret.id=b.secret_ref_id and tracker_secret.workspace_id=p.workspace_id
+     left join secret_refs agent_secret on agent_secret.workspace_id=p.workspace_id and agent_secret.purpose='agent_delivery'
+     where p.id=$2`, [actorId, projectId]);
+  const row = result.rows[0];
+  if (row === undefined || row.trackerSecretPurpose !== 'tracker_read') return null;
+  return {...row,
+    trackerCredentialRef: {id: row.trackerSecretId, purpose: 'tracker_read', locator: row.trackerSecretLocator},
+    agentCredentialRef: row.agentSecretId === null || row.agentSecretLocator === null ? null
+      : {id: row.agentSecretId, purpose: 'agent_delivery', locator: row.agentSecretLocator}};
+};
+
+export const resolveAgentSourceReferences = async (database: Database, input: Readonly<{
+  actorId: string; projectId: string; sourceIds: readonly string[];
+}>): Promise<readonly SourceReference[]> => {
+  if (input.sourceIds.length === 0) return [];
+  const result = await database.query<SourceReference>(
+    `select s.id,s.sha256,s.kind,s.provenance,s.content_text as content from project_source_artifacts s
+     join project_memberships m on m.project_id=s.project_id and m.actor_id=$1 and m.active=true
+     where s.project_id=$2 and s.id=any($3::uuid[])`, [input.actorId, input.projectId, input.sourceIds]);
+  const byId = new Map(result.rows.map((row) => [row.id, row]));
+  return input.sourceIds.flatMap((id) => byId.get(id) ?? []);
+};
+
+/** Holds a project-scoped idempotency lock across the external delivery and canonical receipt/audit commit. */
+export const executeAgentSubmissionTransaction = async (database: Database, input: Readonly<{
+  workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
+  role: string; itemId: string; observedVersion: string; sourceCount: number;
+}>, submit: () => Promise<Readonly<{deliveryReference: string}>>): Promise<Readonly<{
+  status: 'completed' | 'duplicate'; deliveryReference: string;
+}>> => {
+  const client = await database.connect();
+  try {
+    await client.query('begin');
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [input.idempotencyKey]);
+    const existing = await client.query<{deliveryReference: string}>(
+      `select result_reference as "deliveryReference" from command_receipts
+       where idempotency_key=$1 and command_type='agent.submit'`, [input.idempotencyKey]);
+    if (existing.rows[0] !== undefined) {
+      await client.query('rollback');
+      return {status: 'duplicate', deliveryReference: existing.rows[0].deliveryReference};
+    }
+    const delivered = await submit();
+    const occurredAt = new Date().toISOString();
+    await client.query(
+      `insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
+       values($1,$2,$3,'agent.submit',$4,$5)`,
+      [input.projectId,input.actorId,input.idempotencyKey,delivered.deliveryReference,occurredAt]);
+    await client.query(
+      `insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
+       values($1,$2,$3,'agent.submit',$4,$5,$6,$7)`,
+      [input.workspaceId,input.projectId,input.actorId,input.itemId,input.correlationId,
+        JSON.stringify({role: input.role, observedVersion: input.observedVersion, sourceCount: input.sourceCount}),occurredAt]);
+    await client.query('commit');
+    return {status: 'completed', deliveryReference: delivered.deliveryReference};
+  } catch (error) { await client.query('rollback'); throw error; }
+  finally { client.release(); }
 };

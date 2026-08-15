@@ -9,6 +9,8 @@ export type SourceReference = Readonly<{
   sha256: string;
   kind: string;
   provenance: string;
+  /** Explicitly selected bounded text supplied to the configured executor. */
+  content: string;
 }>;
 
 export type TrackerItemFact = Readonly<{

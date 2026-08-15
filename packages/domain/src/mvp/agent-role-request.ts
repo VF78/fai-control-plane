@@ -3,6 +3,7 @@ import {approvalKinds, isBoundedId, isHttpsUrl} from './model.ts';
 
 const boundedText = (value: unknown, maximum: number): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
+const utf8Size = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 export const validateAgentRoleRequest = (value: AgentRoleRequest): boolean => {
   if (!['manager', 'developer', 'qa', 'devops'].includes(value.role) ||
@@ -17,7 +18,8 @@ export const validateAgentRoleRequest = (value: AgentRoleRequest): boolean => {
   }
   if (!value.sources.every((source) => isBoundedId(source.id) &&
     /^[a-f0-9]{64}$/.test(source.sha256) && isBoundedId(source.kind) &&
-    boundedText(source.provenance, 512))) return false;
+    boundedText(source.provenance, 512) && boundedText(source.content, 65_536)) ||
+    value.sources.reduce((total, source) => total + utf8Size(source.content), 0) > 65_536) return false;
   if (value.role === 'devops') {
     return value.approval !== null && value.approval.kind === 'production' &&
       approvalKinds.includes(value.approval.kind) && value.approval.decision === 'approved' &&

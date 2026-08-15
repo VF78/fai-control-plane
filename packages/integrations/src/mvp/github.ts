@@ -194,7 +194,7 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
     });
     const snapshot: TrackerSnapshot = {
       bindingId, externalVersion: `github:updated-at:${projectVersion}`,
-      cursor: null,
+      cursor: `github:updated-at:${projectVersion}`,
       observedAt, sourceUrl: input.binding.projectUrl, items
     };
     return snapshot;
@@ -212,6 +212,7 @@ export const createGitHubRepositoryReadAdapter = (input: Readonly<{
   async readRepository({repositoryId}) {
     if (repositoryId !== input.repositoryId) throw new Error('github_repository_denied');
     const token = (await input.secrets.resolve(input.credentialRef, credentialPurpose)).value;
+    if (!bounded(token, 65_536)) throw new Error('github_credential_invalid');
     const response = await (input.fetch ?? globalThis.fetch)(
       `https://api.github.com/repos/${input.owner}/${input.repository}`,
       {headers: apiHeaders(token), signal: AbortSignal.timeout(10_000)}
@@ -219,7 +220,8 @@ export const createGitHubRepositoryReadAdapter = (input: Readonly<{
     const value = response.ok ? object(await response.json()) : null;
     if (value?.html_url !== `https://github.com/${input.owner}/${input.repository}` ||
       !bounded(value.default_branch, 256)) throw new Error('github_repository_read_failed');
-    return {repositoryId, url: value.html_url as string, defaultBranch: value.default_branch, observedAt: new Date().toISOString()};
+    return {repositoryId, url: value.html_url as string, defaultBranch: value.default_branch as string,
+      observedAt: new Date().toISOString()};
   }
 });
 
@@ -270,13 +272,25 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       const projectValue = project.ok ? object(await project.json()) : null;
       const projectNodeId = object(object(object(projectValue?.data)?.user)?.projectV2)?.id;
       if (!bounded(projectNodeId, 512)) throw new Error('github_mutation_failed');
-      const add = await request('https://api.github.com/graphql', {method: 'POST', headers: apiHeaders(credential),
-        body: JSON.stringify({query: `mutation($project:ID!,$content:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}`,
-          variables: {project: projectNodeId, content: value.node_id}}), signal: AbortSignal.timeout(10_000)});
-      const addValue = add.ok ? object(await add.json()) : null;
-      const errors = addValue?.errors;
-      const returned = object(object(object(addValue?.data)?.addProjectV2ItemById)?.item)?.id;
-      if (!add.ok || (Array.isArray(errors) && errors.length > 0) || !bounded(returned,512)) throw new Error('github_mutation_failed');
+      const membership = await request('https://api.github.com/graphql', {method: 'POST', headers: apiHeaders(credential),
+        body: JSON.stringify({query: `query($content:ID!){node(id:$content){... on Issue{projectItems(first:100){nodes{id project{id}} pageInfo{hasNextPage}}}}}`,
+          variables: {content: value.node_id}}), signal: AbortSignal.timeout(10_000)});
+      const membershipValue = membership.ok ? object(await membership.json()) : null;
+      const projectItems = object(object(membershipValue?.data)?.node)?.projectItems;
+      const connection = object(projectItems);
+      if (!membership.ok || !Array.isArray(connection?.nodes) || object(connection.pageInfo)?.hasNextPage === true) {
+        throw new Error('github_mutation_failed');
+      }
+      const alreadyAdded = connection.nodes.some((entry) => object(object(entry)?.project)?.id === projectNodeId);
+      if (!alreadyAdded) {
+        const add = await request('https://api.github.com/graphql', {method: 'POST', headers: apiHeaders(credential),
+          body: JSON.stringify({query: `mutation($project:ID!,$content:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}`,
+            variables: {project: projectNodeId, content: value.node_id}}), signal: AbortSignal.timeout(10_000)});
+        const addValue = add.ok ? object(await add.json()) : null;
+        const errors = addValue?.errors;
+        const returned = object(object(object(addValue?.data)?.addProjectV2ItemById)?.item)?.id;
+        if (!add.ok || (Array.isArray(errors) && errors.length > 0) || !bounded(returned,512)) throw new Error('github_mutation_failed');
+      }
       return {referenceId: String(number), url, version: `github:updated-at:${value.updated_at as string}`};
     },
     async addIssueContext(command) {

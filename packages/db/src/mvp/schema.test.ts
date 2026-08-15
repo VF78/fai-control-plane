@@ -11,6 +11,8 @@ const expected = [
   'approval_evidence', 'command_receipts', 'outbox_events', 'audit_events'
 ];
 const sql = readFileSync(fileURLToPath(new URL('../../mvp-drizzle/0000_mvp.sql', import.meta.url)), 'utf8');
+const cleanup = readFileSync(fileURLToPath(
+  new URL('../../mvp-drizzle/0001_remove_legacy_agent_outbox.sql', import.meta.url)), 'utf8');
 
 describe('MVP fresh schema', () => {
   it('declares exactly the approved 16 tables', () => {
@@ -25,6 +27,13 @@ describe('MVP fresh schema', () => {
 
   it('contains no destructive or history migration operation', () => {
     expect(sql).not.toMatch(/\b(?:DROP|ALTER|DELETE|TRUNCATE)\b/i);
+  });
+
+  it('removes only the approved legacy agent outbox topic in the forward cleanup', () => {
+    expect(cleanup).toContain(`DELETE FROM "outbox_events" WHERE "topic" = 'agent-role-request'`);
+    expect(cleanup).toContain(`CHECK ("topic" = 'messenger-notification')`);
+    expect(cleanup).not.toMatch(/DROP\s+(?:TABLE|TYPE)|CASCADE|TRUNCATE|project_|tracker_|audit_/i);
+    expect(sql).not.toContain('agent-role-request');
   });
 
   it('keeps snapshot binding and provider inbox identities distinct', () => {

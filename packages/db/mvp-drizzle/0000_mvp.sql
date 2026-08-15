@@ -176,7 +176,7 @@ CREATE TABLE "outbox_events" (
   "last_error_code" text,
   "created_at" timestamptz DEFAULT now() NOT NULL,
   CONSTRAINT "outbox_events_idempotency_unique" UNIQUE ("idempotency_key"),
-  CONSTRAINT "outbox_events_topic_check" CHECK ("topic" IN ('agent-role-request', 'messenger-notification')),
+  CONSTRAINT "outbox_events_topic_check" CHECK ("topic" = 'messenger-notification'),
   CONSTRAINT "outbox_events_attempts_check" CHECK ("attempts" >= 0)
 );
 CREATE INDEX "outbox_events_ready_idx" ON "outbox_events" ("available_at", "delivered_at");

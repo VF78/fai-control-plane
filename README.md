@@ -33,7 +33,16 @@ identity without reading any secret value. OAuth is usable after bootstrap.
 Free-form chat messages remain visibly pending; only `/facts`,
 `/issue title | details`, `/clarify issue version | details`, and
 `/source name | text`, and `/approve kind approval target decision` are executed. No transcript or
-Hermes conversation endpoint exists in this MVP.
+chat history is stored in this MVP.
+
+## HTTP command surface
+
+- `POST /api/hermes/conversation-actions` accepts the separately authenticated internal/client Hermes bridge envelopes.
+- `POST /api/agents/submit` is the browser-only explicit `agent.submit` seam. It requires an active operator session,
+  an exact same-origin request, and active `project_owner` or `operator` membership. The server refreshes the configured
+  tracker snapshot, resolves the selected item/version, repository and safe source references, then uses the existing
+  `AgentDeliveryPort`. Deterministic duplicates return the existing receipt. It never changes tracker status, publishes,
+  deploys, or exposes a production/devops command.
 
 ## Checks
 
