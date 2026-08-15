@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import type {AgentDeliveryPort, AgentRole, AgentRoleRequest, ProjectRole, SourceReference, TrackerSnapshot} from '@fai-control-plane/domain';
+import type {AgentDeliveryPort, AgentRole, AgentRoleRequest, ProjectRole, RepositoryReadPort, SourceReference, TrackerSnapshot} from '@fai-control-plane/domain';
 import {validateAgentRoleRequest} from '@fai-control-plane/domain';
 
 export type AgentSubmissionContext = Readonly<{
@@ -12,6 +12,7 @@ export type AgentSubmissionPorts = Readonly<{
   readFreshSnapshot(context: AgentSubmissionContext): Promise<TrackerSnapshot>;
   persistSnapshot(snapshot: TrackerSnapshot): Promise<void>;
   resolveSources(input: Readonly<{actorId: string; projectId: string; sourceIds: readonly string[]}>): Promise<readonly SourceReference[]>;
+  repository: RepositoryReadPort;
   delivery: AgentDeliveryPort;
   transaction: Readonly<{execute(input: Readonly<{
     workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
@@ -31,6 +32,7 @@ const bounded = (value: unknown, maximum: number): value is string =>
 
 const stableKey = (value: unknown): string =>
   `agent.submit:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+const utf8Size = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports: AgentSubmissionPorts): Promise<Readonly<{
   status: 'completed' | 'duplicate'; deliveryReference: string;
@@ -56,16 +58,23 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   await ports.persistSnapshot(snapshot);
   const item = snapshot.items.find((candidate) => candidate.itemId === command.projectItemId);
   if (item === undefined) throw new Error('tracker_item_unavailable');
+  const repository = await ports.repository.readRepository({repositoryId: context.repository.id});
+  if (repository.repositoryId !== context.repository.id || repository.url !== context.repository.url) {
+    throw new Error('repository_binding_mismatch');
+  }
   const sources = await ports.resolveSources({actorId: command.actorId, projectId: context.projectId,
     sourceIds: command.sourceIds});
   if (sources.length !== command.sourceIds.length) throw new Error('agent_source_denied');
+  if (sources.reduce((total, source) => total + utf8Size(source.content), 0) > 65_536) {
+    throw new Error('agent_source_payload_too_large');
+  }
   const normalized = {projectId: context.projectId, repositoryId: context.repository.id,
     itemId: item.itemId, observedVersion: item.version, role: command.role,
     sourceIds: sources.map((source) => source.id).sort(), constraints: command.constraints,
     acceptanceCriteria: command.acceptanceCriteria};
   const idempotencyKey = stableKey(normalized);
   const correlationId = `browser:${idempotencyKey.slice('agent.submit:'.length)}`;
-  const request: AgentRoleRequest = {role: command.role, repository: context.repository,
+  const request: AgentRoleRequest = {role: command.role, repository: {id: repository.repositoryId, url: repository.url},
     projectItem: {id: item.itemId, projectId: context.projectId, issueId: item.issueId, url: item.url},
     observedVersion: item.version, sources, constraints: command.constraints,
     acceptanceCriteria: command.acceptanceCriteria, approval: null, correlationId, idempotencyKey};

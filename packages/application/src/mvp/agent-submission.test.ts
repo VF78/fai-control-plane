@@ -14,7 +14,10 @@ const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): Age
   resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: role,
     bindingId: 'binding', repository: {id: 'R_repo', url: 'https://github.com/VF78/fai-control-plane'}}),
   readFreshSnapshot: async () => snapshot, persistSnapshot: async () => undefined,
-  resolveSources: async () => [{id: 'source', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator'}],
+  resolveSources: async () => [{id: 'source', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator',
+    content: 'Approved source text'}],
+  repository: {readRepository: async () => ({repositoryId: 'R_repo',
+    url: 'https://github.com/VF78/fai-control-plane', defaultBranch: 'main', observedAt: '2026-08-15T10:00:00.000Z'})},
   delivery: {submit: async (request) => ({deliveryReference: `hermes:${request.idempotencyKey}`,
     sessionReference: request.correlationId})},
   transaction: {execute: async (_input, submit) => ({status: 'completed', ...(await submit())})}
@@ -42,7 +45,17 @@ describe('explicit agent submission', () => {
     await expect(submitExplicitAgent(command, value)).resolves.toMatchObject({status: 'duplicate'});
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(deliver.mock.calls[0]![0]).toMatchObject({projectItem: {id: 'PVTI_item', projectId: 'project'},
-      observedVersion: 'github:updated-at:v1', constraints: ['Do not deploy']});
+      observedVersion: 'github:updated-at:v1', constraints: ['Do not deploy'],
+      sources: [{id: 'source', content: 'Approved source text'}]});
+  });
+
+  it('rejects aggregate selected source text above 64 KiB before delivery', async () => {
+    const base = ports();
+    const value: AgentSubmissionPorts = {...base, resolveSources: async () => [{id: 'source',
+      sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator', content: 'я'.repeat(32_769)}]};
+    const deliver = vi.spyOn(value.delivery, 'submit');
+    await expect(submitExplicitAgent(command, value)).rejects.toThrow('agent_source_payload_too_large');
+    expect(deliver).not.toHaveBeenCalled();
   });
 
   it('never exposes the devops/production role on this seam', async () => {

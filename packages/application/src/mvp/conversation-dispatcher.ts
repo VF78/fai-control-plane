@@ -1,5 +1,4 @@
 import type {
-  AgentDeliveryPort,
   ClientConversationEnvelope,
   InternalConversationEnvelope,
   ProjectRole,
@@ -36,7 +35,7 @@ type SharedPorts = Readonly<{
 }>;
 
 export type ClientConversationPorts = SharedPorts;
-export type InternalConversationPorts = SharedPorts & Readonly<{agent: AgentDeliveryPort}>;
+export type InternalConversationPorts = SharedPorts;
 type Result = Readonly<{status: 'completed' | 'duplicate' | 'denied'; referenceId?: string}>;
 
 const dispatch = async (input: Readonly<{
@@ -79,13 +78,6 @@ const dispatch = async (input: Readonly<{
         approvalId: envelope.action.approvalId, kind: envelope.action.kind,
         targetReference: envelope.action.targetReference, decision: envelope.action.decision,
         idempotencyKey: envelope.message.idempotencyKey})).referenceId;
-      break;
-    }
-    case 'agent.submit': {
-      if (envelope.message.contour !== 'trusted-main' || !('agent' in ports) ||
-        !['project_owner', 'operator'].includes(identity.role) ||
-        envelope.action.request.projectItem.projectId !== envelope.message.projectId) return {status: 'denied'};
-      referenceId = (await ports.agent.submit(envelope.action.request)).deliveryReference;
       break;
     }
   }

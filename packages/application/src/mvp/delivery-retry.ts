@@ -24,8 +24,8 @@ export const deliverPending = async (input: Readonly<{
   let retried = 0;
   for (const record of records) {
     try {
-      // Runtime records are untrusted persistence data. Only messenger delivery is
-      // accepted here; legacy agent records remain inert and cannot reach a provider.
+      // Runtime records are untrusted persistence data. The typed outbox and
+      // persistence claim expose messenger delivery only.
       if (record.topic !== 'messenger-notification') continue;
       const reference = (await (record.payload.message.contour === 'trusted-main'
         ? input.ports.internalMessenger : input.ports.clientMessenger).send(record.payload.message)).deliveryReference;

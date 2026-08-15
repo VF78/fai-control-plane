@@ -4,7 +4,7 @@ import {operatorCapabilityMatrix} from './capability-matrix.ts';
 describe('operator capability matrix', () => {
   it('keeps every safe core fact or command on a visible operator seam', () => {
     expect(operatorCapabilityMatrix.map((row) => row[0])).toEqual([
-      'GitHub Project snapshot', 'Create project', 'Logout', 'Add source', 'Exact approval', 'Onboard member',
+      'GitHub Project snapshot', 'Logout', 'Add source', 'Exact approval', 'Onboard member',
       'Change membership', 'Explicit browser agent submit', 'Messenger delivery'
     ]);
     for (const [, boundary, surface, evidence] of operatorCapabilityMatrix) {

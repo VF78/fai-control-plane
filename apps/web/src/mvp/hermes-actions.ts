@@ -12,6 +12,7 @@ export type HermesActionDependencies = Readonly<{
   telegramChatId: string;
   telegramUserIds: readonly string[];
   bitrixTaskId: string;
+  clientActionsEnabled: boolean;
 }>;
 
 const equal = (left: string, right: string): boolean => {
@@ -40,10 +41,15 @@ export const createHermesConversationActionHandler = (dependencies: HermesAction
       if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'POST'}});
       const bearer = token(request);
       const internal = await dependencies.internalToken();
-      const client = await dependencies.clientToken();
-      if (equal(internal, client)) throw new Error('authentication_denied');
-      const profile: HermesProfile = equal(bearer, internal) ? 'internal'
-        : equal(bearer, client) ? 'bitrix-client' : (() => { throw new Error('authentication_denied'); })();
+      const client = dependencies.clientActionsEnabled ? await dependencies.clientToken() : null;
+      if (client !== null && equal(internal, client)) throw new Error('authentication_denied');
+      let profile: HermesProfile;
+      if (equal(bearer, internal)) profile = 'internal';
+      else {
+        if (!dependencies.clientActionsEnabled) throw new Error('client_actions_denied');
+        if (client === null || !equal(bearer, client)) throw new Error('authentication_denied');
+        profile = 'bitrix-client';
+      }
       const body = await json(request);
       if (!Object.hasOwn(body, 'source') || !Object.hasOwn(body, 'action') || Object.keys(body).length !== 2) {
         throw new Error('body_invalid');

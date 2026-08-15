@@ -15,10 +15,26 @@ export const migrate = async (): Promise<void> => {
       'secret_refs', 'tracker_bindings', 'tracker_snapshots', 'workspaces'
     ];
     const names = existing.rows.map(({name}) => name);
+    const migration = import.meta.url.includes('/dist/')
+      ? new URL('../mvp-drizzle/0001_remove_legacy_agent_outbox.sql', import.meta.url)
+      : new URL('../../mvp-drizzle/0001_remove_legacy_agent_outbox.sql', import.meta.url);
+    const cleanup = await readFile(fileURLToPath(migration), 'utf8');
+    const applyCleanup = async (): Promise<void> => {
+      const constraint = await database.query<{definition: string}>(
+        `select pg_get_constraintdef(oid) as definition from pg_constraint
+         where conrelid='outbox_events'::regclass and conname='outbox_events_topic_check'`
+      );
+      const definition = constraint.rows[0]?.definition;
+      if (definition === undefined || !definition.includes('messenger-notification')) {
+        throw new Error('database_schema_not_mvp');
+      }
+      if (definition.includes('agent-role-request')) await database.query(`begin;\n${cleanup}\ncommit;`);
+    };
     if (names.length > 0) {
       if (JSON.stringify(names) !== JSON.stringify(expected) || !await databaseMvpReady(database)) {
         throw new Error('database_schema_not_mvp');
       }
+      await applyCleanup();
       return;
     }
     const baseline = import.meta.url.includes('/dist/')
@@ -26,6 +42,7 @@ export const migrate = async (): Promise<void> => {
       : new URL('../../mvp-drizzle/0000_mvp.sql', import.meta.url);
     const sql = await readFile(fileURLToPath(baseline), 'utf8');
     await database.query(`begin;\n${sql}\ncommit;`);
+    await applyCleanup();
   } finally {
     await database.end();
   }

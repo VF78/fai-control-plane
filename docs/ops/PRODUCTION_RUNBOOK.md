@@ -890,68 +890,17 @@ NODE
 unset compose
 ```
 
-### One synthetic Hermes ACK, enabled-worker freshness and readiness
+### Explicit operator agent-submit evidence and readiness
 
-Only after approval of the one-line enabled configuration, enqueue one local
-synthetic `agent-role-request` while the disabled worker is still running, then
-rerun `stage` with the exact enabled digest. This `/v1/runs` call starts the
-root Hermes executor with broad tools: its no-task constraints are prompt input,
-not a security boundary. It therefore requires separate explicit approval of
-this exact synthetic execution even though the item URL is local and no live
-task is referenced. The deterministic key prevents a second enqueue; do not
-add a profile, service or compatibility layer. The real worker has no GitHub mutation credential.
-Its successful delivery proves the expected Hermes 202 ACK through the actual
-adapter and supplies the agent readiness evidence. Stop if that one row lacks a
-delivery reference, the worker does not become ready, or the latest successful
-GitHub snapshot is older than ten minutes:
-
-```bash
-set -euo pipefail
-cd /opt/fai-control-plane-mvp
-release_commit='<approved-40-hex>'
-config_digest='<approved-enabled-cp-sha256>'
-repository=https://github.com/VF78/fai-control-plane.git
-[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
-[[ "$config_digest" =~ ^[0-9a-f]{64}$ ]]
-git fetch --no-tags "$repository" refs/heads/main
-remote_main=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
-[[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
-git merge-base --is-ancestor "$release_commit" "$remote_main"
-test "$(git rev-parse HEAD)" = "$release_commit"
-test -z "$(git status --porcelain)"
-synthetic_idempotency_key="phase-b-synthetic:${release_commit}"
-synthetic_correlation_id="phase-b-synthetic-${release_commit}"
-compose=(docker compose --project-name fai-control-plane-mvp \
-  --env-file /etc/fai-control-plane-mvp/production.env \
-  -f infra/production/compose.yaml)
-inserted=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp \
-  -v idempotency_key="$synthetic_idempotency_key" \
-  -v correlation_id="$synthetic_correlation_id" -qAtc \
-  "insert into outbox_events(project_id,topic,idempotency_key,payload,available_at) values ('fd22736d-1879-47fe-9b8a-c51653a4b635','agent-role-request',:'idempotency_key',jsonb_build_object('request',jsonb_build_object('role','manager','repository',jsonb_build_object('id','phase-b-synthetic','url','https://app.f-ai.studio/'),'projectItem',jsonb_build_object('id','phase-b-synthetic','projectId','fd22736d-1879-47fe-9b8a-c51653a4b635','issueId','phase-b-synthetic','url','https://app.f-ai.studio/phase-b-synthetic'),'observedVersion','phase-b-synthetic-v1','sources','[]'::jsonb,'constraints',jsonb_build_array('Synthetic transport proof only. Do not call tools or mutate any repository, tracker, provider or host.'),'acceptanceCriteria',jsonb_build_array('Return only a transport acknowledgement.'),'approval',null,'correlationId',:'correlation_id','idempotencyKey',:'correlation_id')),now()) on conflict(idempotency_key) do nothing returning 1")
-test "$inserted" = 1
-FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
-FCP_APPROVED_CONFIG_SHA256="$config_digest" \
-  ./scripts/deploy-prod.sh stage "$release_commit"
-for attempt in $(seq 1 30); do
-  if "${compose[@]}" exec -T worker node -e \
-    "fetch('http://127.0.0.1:3001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
-    break
-  fi
-  test "$attempt" -lt 30
-  sleep 5
-done
-hermes_ack=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp \
-  -v idempotency_key="$synthetic_idempotency_key" -Atc \
-  "select count(*) from outbox_events where idempotency_key=:'idempotency_key' and delivered_at is not null and delivery_reference is not null and last_error_code is null")
-test "$hermes_ack" = 1
-fresh=$("${compose[@]}" exec -T postgres psql -X -U fai_mvp -d fai_control_plane_mvp -Atc \
-  "select count(*) from (select observed_at,error_code,source_url from tracker_snapshots where binding_id='7a7fcbf7-3753-4ac5-b64d-718d6daff573' order by observed_at desc,created_at desc limit 1) latest where error_code is null and source_url='https://github.com/users/VF78/projects/4' and observed_at >= now()-interval '10 minutes'")
-test "$fresh" = 1
-curl -fsS --max-time 10 http://127.0.0.1:13010/api/ready | \
-  grep -Fq '"clientConversationActions":false'
-unset release_commit config_digest repository remote_main synthetic_idempotency_key \
-  synthetic_correlation_id compose inserted attempt hermes_ack fresh
-```
+Do not enqueue a synthetic agent request and do not start Hermes merely to
+prove transport. After Vladimir explicitly selects a real GitHub Project item,
+role, constraints and source documents in the authenticated UI, verify that the
+single resulting `agent.submit` command receipt has a non-empty provider
+reference and that its matching audit event carries the same correlation. This
+is read-only evidence of the operator-authorized call; it must never manufacture
+an extra run. Separately require a fresh successful GitHub snapshot, ready web
+and worker endpoints, and `clientConversationActions:false` until the Bitrix
+gate receives its own explicit activation approval.
 
 After Vladimir approves that evidence and the exact one-line proxy change:
 

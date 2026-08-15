@@ -188,7 +188,7 @@ export const outboxEvents = pgTable('outbox_events', {
 }, (table) => [
   uniqueIndex('outbox_events_idempotency_unique').on(table.idempotencyKey),
   index('outbox_events_ready_idx').on(table.availableAt, table.deliveredAt),
-  check('outbox_events_topic_check', sql`${table.topic} in ('agent-role-request', 'messenger-notification')`),
+  check('outbox_events_topic_check', sql`${table.topic} = 'messenger-notification'`),
   check('outbox_events_attempts_check', sql`${table.attempts} >= 0`)
 ]);
 

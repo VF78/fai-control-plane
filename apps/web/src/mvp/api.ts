@@ -1,4 +1,4 @@
-import {createHash, randomUUID} from 'node:crypto';
+import {createHash} from 'node:crypto';
 import {
   addSourceArtifact,
   appendIncomingEvent,
@@ -9,14 +9,16 @@ import {
   databaseMvpReady,
   executeAgentSubmissionTransaction,
   listProjects,
+  onboardProjectMember,
   resolveAgentSourceReferences,
   resolveAgentSubmissionBinding,
   subjectHash
 } from '@fai-control-plane/db';
 import {decideApproval, submitExplicitAgent} from '@fai-control-plane/application';
-import {verifyGitHubWebhook, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
+import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
 import {mayChangeMembership, type ApprovalEvidence, type ApprovalKind, type OpaqueSecretRef, type ProjectRole} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
+import {readiness} from './http-surface.ts';
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('media_type_invalid');
@@ -38,11 +40,6 @@ const optionalHttps = (value: unknown): string | null => {
   if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') throw new Error('body_invalid');
   return parsed.toString();
 };
-const requiredHttps = (value: unknown): string => {
-  const result = optionalHttps(value);
-  if (result === null) throw new Error('repository_url_required');
-  return result;
-};
 const strings = (value: unknown, maximumItems: number, maximumLength: number): readonly string[] => {
   if (!Array.isArray(value) || value.length > maximumItems) throw new Error('body_invalid');
   return value.map((item) => string(item, maximumLength));
@@ -50,21 +47,10 @@ const strings = (value: unknown, maximumItems: number, maximumLength: number): r
 
 export const projects = async (request: Request): Promise<Response> => {
   try {
+    if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET'}});
     const database = getDatabase();
     const session = await requireSession();
-    if (request.method === 'GET') return Response.json({projects: await listProjects(database, session.actorId)});
-    requireCsrf(request);
-    const body = await json(request);
-    const id = randomUUID();
-    await database.query(
-      `insert into projects(id,workspace_id,slug,name,repository_url) values($1,$2,$3,$4,$5)`,
-      [id, session.workspaceId, string(body.slug, 100), string(body.name, 200), requiredHttps(body.repositoryUrl)]
-    );
-    await database.query(
-      `insert into project_memberships(project_id,actor_id,role) values($1,$2,'project_owner')`,
-      [id, session.actorId]
-    );
-    return Response.json({id}, {status: 201});
+    return Response.json({projects: await listProjects(database, session.actorId)});
   } catch (error) { return jsonError(error); }
 };
 
@@ -76,42 +62,19 @@ export const onboard = async (request: Request): Promise<Response> => {
     const body = await json(request);
     const projectId = string(body.projectId);
     if (!await canGovernMembership(database, session.actorId, projectId)) throw new Error('onboarding_denied');
-    const githubUserId = string(body.githubUserId, 32);
-    if (!/^[1-9][0-9]*$/.test(githubUserId)) throw new Error('body_invalid');
     const role = string(body.role, 32);
     if (!['operator', 'contributor', 'client'].includes(role)) throw new Error('body_invalid');
-    const actorId = randomUUID();
-    const client = await database.connect();
-    try {
-      await client.query('begin');
-      await client.query(
-        `insert into actors(id,workspace_id,kind,display_name) values($1,$2,'human',$3)`,
-        [actorId, session.workspaceId, string(body.displayName, 200)]
-      );
-      await client.query(
-        `insert into actor_external_identities(actor_id,provider,subject_hash) values($1,'github',$2)`,
-        [actorId, subjectHash('github', githubUserId)]
-      );
-      if (body.telegramUserId !== undefined) await client.query(
-        `insert into actor_external_identities(actor_id,provider,subject_hash) values($1,'telegram',$2)`,
-        [actorId, subjectHash('telegram', string(body.telegramUserId, 32))]
-      );
-      if (body.bitrix24UserId !== undefined) await client.query(
-        `insert into actor_external_identities(actor_id,provider,subject_hash) values($1,'bitrix24',$2)`,
-        [actorId, subjectHash('bitrix24', string(body.bitrix24UserId, 32))]
-      );
-      await client.query(
-        'insert into project_memberships(project_id,actor_id,role) values($1,$2,$3)',
-        [projectId, actorId, role]
-      );
-      await client.query('commit');
-    } catch (error) {
-      await client.query('rollback');
-      throw error;
-    } finally {
-      client.release();
-    }
-    return Response.json({actorId}, {status: 201});
+    const identity = (provider: 'github'|'telegram'|'bitrix24', value: unknown, numeric: boolean) => {
+      if (value === undefined || value === null || value === '') return null;
+      const subject = string(value, 64);
+      if (numeric && !/^[1-9][0-9]*$/.test(subject)) throw new Error('body_invalid');
+      return {provider, subjectHash: subjectHash(provider, subject)} as const;
+    };
+    const identities = [identity('github', body.githubUserId, true), identity('telegram', body.telegramUserId, true),
+      identity('bitrix24', body.bitrix24UserId, false)].filter((value) => value !== null);
+    const result = await onboardProjectMember(database, {workspaceId: session.workspaceId, projectId,
+      displayName: string(body.displayName, 200), role: role as 'operator'|'contributor'|'client', identities});
+    return Response.json({actorId: result.actorId, created: result.created}, {status: result.created ? 201 : 200});
   } catch (error) { return jsonError(error); }
 };
 
@@ -214,6 +177,8 @@ export const agentSubmit = async (request: Request): Promise<Response> => {
       projectId: context.projectId, projectNumber: Number(projectMatch[2]), projectUrl: context.projectUrl,
       credentialRef: context.trackerCredentialRef};
     const tracker = createGitHubTrackerReadAdapter({binding, secrets: secretResolver});
+    const repository = createGitHubRepositoryReadAdapter({owner: binding.owner, repository: binding.repository,
+      repositoryId: context.repositoryId, credentialRef: context.trackerCredentialRef, secrets: secretResolver});
     const stores = createStores(database, session.workspaceId);
     const delivery = createHermesDeliveryAdapter({endpoint: string(process.env.HERMES_ROLE_REQUEST_URL, 2_048),
       credentialRef: context.agentCredentialRef, secrets: secretResolver});
@@ -226,7 +191,7 @@ export const agentSubmit = async (request: Request): Promise<Response> => {
         repository: {id: context.repositoryId, url: context.repositoryUrl}}),
       readFreshSnapshot: () => tracker.readSnapshot(context.bindingId, context.cursor),
       persistSnapshot: stores.snapshots.replace,
-      resolveSources: (input) => resolveAgentSourceReferences(database, input), delivery,
+      resolveSources: (input) => resolveAgentSourceReferences(database, input), repository, delivery,
       transaction: {execute: (input, submit) => executeAgentSubmissionTransaction(database, input, submit)}
     });
     return Response.json({status: result.status, deliveryReference: result.deliveryReference});
@@ -267,7 +232,6 @@ export const health = (): Response => Response.json({status: 'ok', service: 'web
 export const ready = async (): Promise<Response> => {
   const database = getDatabase();
   const ok = await databaseMvpReady(database);
-  return Response.json({status: ok ? 'ready' : 'not_ready', checks: {database: ok,
-    internalConversationActions: true, clientConversationActions: false}},
+  return Response.json({status: ok ? 'ready' : 'not_ready', ...readiness({database: ok})},
     {status: ok ? 200 : 503, headers: {'cache-control': 'no-store'}});
 };

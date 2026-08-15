@@ -6,6 +6,7 @@ export const mvpApiRoutes = Object.freeze([
   '/api/access/memberships/[id]',
   '/api/projects/[projectId]/sources',
   '/api/approvals/[id]',
+  '/api/agents/submit',
   '/api/webhooks/github',
   '/api/hermes/conversation-actions',
   '/api/health',

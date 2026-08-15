@@ -43,7 +43,8 @@ describe('MVP GitHub adapter', () => {
       secrets: secrets('token'), fetch
     });
     await expect(adapter.readSnapshot('binding', null)).resolves.toMatchObject({
-      bindingId: 'binding', externalVersion: 'github:updated-at:2026-08-13T00:00:00Z', cursor: null,
+      bindingId: 'binding', externalVersion: 'github:updated-at:2026-08-13T00:00:00Z',
+      cursor: 'github:updated-at:2026-08-13T00:00:00Z',
       items: [{itemId: 'PVTI_1', projectId: 'project', issueId: '42', title: 'Deliver feature',
         statusOptionName: 'Ready', blocked: false, targetDate: '2026-08-31', parentIssueId: '40',
         subIssueIds: ['43'], dependencyIssueIds: ['41']}]
@@ -59,7 +60,22 @@ describe('MVP GitHub adapter', () => {
     const adapter = createGitHubTrackerReadAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
       projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
       secrets: secrets('token'), fetch});
-    await expect(adapter.readSnapshot('binding', 'previous-provider-marker')).resolves.toMatchObject({cursor: null});
+    await expect(adapter.readSnapshot('binding', 'previous-provider-marker')).resolves.toMatchObject({
+      cursor: 'github:updated-at:2026-08-13T00:00:00Z'
+    });
+  });
+
+  it('keeps repository observation provider-neutral and bound to the configured repository', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      html_url: 'https://github.com/acme/repo', default_branch: 'main'
+    })));
+    const adapter = createGitHubRepositoryReadAdapter({owner: 'acme', repository: 'repo', repositoryId: 'R_1',
+      credentialRef: secretRef, secrets: secrets('token'), fetch});
+    await expect(adapter.readRepository({repositoryId: 'R_1'})).resolves.toMatchObject({
+      repositoryId: 'R_1', url: 'https://github.com/acme/repo', defaultBranch: 'main'
+    });
+    await expect(adapter.readRepository({repositoryId: 'R_2'})).rejects.toThrow('github_repository_denied');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('reads every Project page into one version-consistent snapshot', async () => {
@@ -82,19 +98,16 @@ describe('MVP GitHub adapter', () => {
     expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({variables: {after: 'next-page'}});
   });
 
-  it('denies repository reads outside the bound repository', async () => {
-    const adapter = createGitHubRepositoryReadAdapter({owner: 'acme', repository: 'repo', repositoryId: 'R_1',
-      credentialRef: secretRef, secrets: secrets('token'), fetch: vi.fn()});
-    await expect(adapter.readRepository({repositoryId: 'R_2'})).rejects.toThrow('github_repository_denied');
-  });
-
-  it('recovers an issue mutation replay through the deterministic command marker', async () => {
+  it('recovers an issue-create replay and repairs missing Project membership', async () => {
     const fetched: string[] = [];
-    const fetch = vi.fn(async (url: string | URL | Request) => {
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       fetched.push(String(url));
       if (String(url).includes('search/issues')) return new Response(JSON.stringify({items: [{number: 42,
         node_id: 'I_42', html_url: 'https://github.com/acme/repo/issues/42', updated_at: '2026-08-13T00:00:00Z'}]}));
       if (fetched.length === 2) return new Response(JSON.stringify({data: {user: {projectV2: {id: 'PVT_1'}}}}));
+      if (String(init?.body).includes('projectItems')) return new Response(JSON.stringify({data: {node: {
+        projectItems: {nodes: [], pageInfo: {hasNextPage: false}}
+      }}}));
       return new Response(JSON.stringify({data: {addProjectV2ItemById: {item: {id: 'PVTI_1'}}}}));
     });
     const adapter = createGitHubTrackerMutationAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
@@ -103,8 +116,27 @@ describe('MVP GitHub adapter', () => {
     await expect(adapter.createIssue({projectId: 'project', title: 'Defect', statement: 'Details', idempotencyKey: 'command'}))
       .resolves.toEqual({referenceId: '42', url: 'https://github.com/acme/repo/issues/42',
         version: 'github:updated-at:2026-08-13T00:00:00Z'});
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
     expect(fetched[0]).toContain('search/issues');
-    expect(fetched[2]).toBe('https://api.github.com/graphql');
+    expect(String(fetch.mock.calls[3]?.[1]?.body)).toContain('addProjectV2ItemById');
+  });
+
+  it('treats a marker-found issue already in the Project as a completed replay', async () => {
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes('search/issues')) return new Response(JSON.stringify({items: [{number: 42,
+        node_id: 'I_42', html_url: 'https://github.com/acme/repo/issues/42', updated_at: '2026-08-13T00:00:00Z'}]}));
+      if (String(init?.body).includes('projectV2(number')) {
+        return new Response(JSON.stringify({data: {user: {projectV2: {id: 'PVT_1'}}}}));
+      }
+      return new Response(JSON.stringify({data: {node: {projectItems: {
+        nodes: [{id: 'PVTI_1', project: {id: 'PVT_1'}}], pageInfo: {hasNextPage: false}
+      }}}}));
+    });
+    const adapter = createGitHubTrackerMutationAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
+      projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
+      credentialRef: secretRef, secrets: secrets('token'), fetch});
+    await expect(adapter.createIssue({projectId: 'project', title: 'Defect', statement: 'Details', idempotencyKey: 'command'}))
+      .resolves.toMatchObject({referenceId: '42'});
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 });

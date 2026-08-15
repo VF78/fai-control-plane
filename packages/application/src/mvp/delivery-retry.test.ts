@@ -36,15 +36,4 @@ describe('MVP delivery retry', () => {
     expect(retry).toHaveBeenCalledWith('outbox-1', '2026-08-13T00:00:01.000Z', 'delivery_failed');
   });
 
-  it('keeps a legacy agent outbox record inert without any agent delivery port', async () => {
-    const internalMessenger = {send: vi.fn()}; const clientMessenger = {send: vi.fn()};
-    const legacy = {id: 'legacy', projectId: 'project', topic: 'agent-role-request', idempotencyKey: 'old',
-      attempts: 0, availableAt: '2026-08-13T00:00:00.000Z', payload: {request: {}}};
-    const ports = {internalMessenger, clientMessenger, outbox: {enqueue: vi.fn(),
-      claim: vi.fn(async () => [legacy] as never), complete: vi.fn(), retry: vi.fn()},
-      now: () => new Date('2026-08-13T00:00:00.000Z')};
-    await expect(deliverPending({limit: 10, ports})).resolves.toEqual({delivered: 0, retried: 0});
-    expect(internalMessenger.send).not.toHaveBeenCalled(); expect(clientMessenger.send).not.toHaveBeenCalled();
-    expect(ports.outbox.complete).not.toHaveBeenCalled(); expect(ports.outbox.retry).not.toHaveBeenCalled();
-  });
 });

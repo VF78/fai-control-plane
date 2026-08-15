@@ -21,16 +21,6 @@ describe('MVP conversation boundary', () => {
     expect(validateConversationEnvelope({...value, message: {...value.message, text: 'x'.repeat(4_001)}})).toBe(false);
   });
 
-  it('denies agent delivery from the client contour', () => {
-    const value = envelope('client-edge');
-    expect(authorizeConversation({...value, action: {type: 'agent.submit', request: {
-      role: 'developer', repository: {id: 'r', url: 'https://example.test/r'},
-      projectItem: {id: 'i', projectId: 'p', issueId: 'x', url: 'https://example.test/i'},
-      observedVersion: 'v', sources: [], constraints: ['bounded'], acceptanceCriteria: ['checked'],
-      approval: null, correlationId: 'c', idempotencyKey: 'k'
-    }}})).toBe(false);
-  });
-
   it('rejects invalid commands', () => {
     const value = envelope();
     expect(validateConversationEnvelope({...value, action: {

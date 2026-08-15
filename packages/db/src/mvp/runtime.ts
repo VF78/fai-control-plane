@@ -91,7 +91,6 @@ export type ProjectOperatorEvidenceView = Readonly<{
   ingress: readonly Readonly<{provider: string; lastReceivedAt: string; count: number}>[];
   conversations: readonly Readonly<{contour: 'trusted-main' | 'client-edge'; lastOccurredAt: string; count: number}>[];
   messenger: Readonly<{pending: number; delivered: number; failed: number; lastOccurredAt: string | null}>;
-  agentRequests: Readonly<{pending: number; delivered: number; failed: number; lastOccurredAt: string | null}>;
   agentSubmissions: Readonly<{count: number; lastOccurredAt: string | null}>;
   receipts: readonly Readonly<{commandType: string; resultReference: string; occurredAt: string}>[];
   audit: readonly Readonly<{action: string; targetReference: string; occurredAt: string}>[];
@@ -104,7 +103,7 @@ export const listProjectOperatorEvidenceViews = async (
   type PersonRow = {projectId: string; membershipId: string; actorId: string; displayName: string; kind: 'human' | 'agent' | 'system'; role: string; active: boolean;
     provider: string | null; subjectHash: string | null};
   type IngressRow = {projectId: string; provider: string; lastReceivedAt: Date; count: string};
-  type DeliveryRow = {projectId: string; topic: 'agent-role-request' | 'messenger-notification'; pending: string; delivered: string;
+  type DeliveryRow = {projectId: string; pending: string; delivered: string;
     failed: string; lastOccurredAt: Date | null};
   type ReceiptRow = {projectId: string; commandType: string; resultReference: string; occurredAt: Date};
   type AuditRow = {projectId: string; action: string; targetReference: string; occurredAt: Date};
@@ -119,12 +118,12 @@ export const listProjectOperatorEvidenceViews = async (
       order by a.display_name,i.provider`, [actorId]),
     database.query<IngressRow>(`select project_id as "projectId",provider,max(received_at) as "lastReceivedAt",count(*)::text as count
       from incoming_events where project_id in (${scope}) group by project_id,provider`, [actorId]),
-    database.query<DeliveryRow>(`select project_id as "projectId",topic,
+    database.query<DeliveryRow>(`select project_id as "projectId",
       count(*) filter(where delivered_at is null and last_error_code is null)::text as pending,
       count(*) filter(where delivered_at is not null)::text as delivered,
       count(*) filter(where delivered_at is null and last_error_code is not null)::text as failed,
       max(coalesce(delivered_at,claimed_at,created_at)) as "lastOccurredAt" from outbox_events
-      where project_id in (${scope}) group by project_id,topic`, [actorId]),
+      where project_id in (${scope}) and topic='messenger-notification' group by project_id`, [actorId]),
     database.query<ReceiptRow>(`select project_id as "projectId",command_type as "commandType",result_reference as "resultReference",occurred_at as "occurredAt"
       from command_receipts where project_id in (${scope}) order by occurred_at desc limit 80`, [actorId]),
     database.query<AuditRow>(`select project_id as "projectId",action,target_reference as "targetReference",occurred_at as "occurredAt"
@@ -146,9 +145,8 @@ export const listProjectOperatorEvidenceViews = async (
       identityBindings: memberRows.filter((item) => item.actorId === row.actorId && item.provider !== null && item.subjectHash !== null)
         .map((item) => ({provider: item.provider!, subjectHash: item.subjectHash!}))
     }])).values()];
-    const delivery = (topic: DeliveryRow['topic']) => deliveries.rows.find((row) => row.projectId === project.id && row.topic === topic);
-    const summary = (topic: DeliveryRow['topic']) => {
-      const row = delivery(topic);
+    const summary = () => {
+      const row = deliveries.rows.find((item) => item.projectId === project.id);
       return {pending: Number(row?.pending ?? 0), delivered: Number(row?.delivered ?? 0), failed: Number(row?.failed ?? 0),
         lastOccurredAt: row?.lastOccurredAt?.toISOString() ?? null};
     };
@@ -158,7 +156,7 @@ export const listProjectOperatorEvidenceViews = async (
         lastReceivedAt: row.lastReceivedAt.toISOString(), count: Number(row.count)})),
       conversations: conversations.rows.filter((row) => row.projectId === project.id).map((row) => ({contour: row.contour,
         lastOccurredAt: row.lastOccurredAt.toISOString(), count: Number(row.count)})),
-      messenger: summary('messenger-notification'), agentRequests: summary('agent-role-request'),
+      messenger: summary(),
       agentSubmissions: {count: Number(agentSubmission?.count ?? 0),
         lastOccurredAt: agentSubmission?.lastOccurredAt.toISOString() ?? null},
       receipts: receipts.rows.filter((row) => row.projectId === project.id).slice(0, 8).map((row) => ({...row, occurredAt: row.occurredAt.toISOString()})),
@@ -596,7 +594,7 @@ export const resolveAgentSourceReferences = async (database: Database, input: Re
 }>): Promise<readonly SourceReference[]> => {
   if (input.sourceIds.length === 0) return [];
   const result = await database.query<SourceReference>(
-    `select s.id,s.sha256,s.kind,s.provenance from project_source_artifacts s
+    `select s.id,s.sha256,s.kind,s.provenance,s.content_text as content from project_source_artifacts s
      join project_memberships m on m.project_id=s.project_id and m.actor_id=$1 and m.active=true
      where s.project_id=$2 and s.id=any($3::uuid[])`, [input.actorId, input.projectId, input.sourceIds]);
   const byId = new Map(result.rows.map((row) => [row.id, row]));

@@ -24,6 +24,7 @@ export type TrackerMutationPort = Readonly<{
   }>): Promise<Readonly<{referenceId: string; url: string; version: string}>>;
 }>;
 
+/** Provider-neutral observation of the repository named by a tracker binding. */
 export type RepositoryReadPort = Readonly<{
   readRepository(input: Readonly<{repositoryId: string}>): Promise<Readonly<{
     repositoryId: string;
