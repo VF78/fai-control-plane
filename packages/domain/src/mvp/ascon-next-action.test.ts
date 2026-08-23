@@ -5,9 +5,9 @@ import type {TrackerItemFact} from './model.ts';
 const statuses: StatusMap = {backlog: 'b', ready: 'r', development: 'd', qa: 'q', acceptance: 'a', done: 'z'};
 const item = (statusOptionId: string | null, assigneeIds: string[] = []): TrackerItemFact => ({
   itemId: 'item', projectId: 'project', issueId: 'issue', url: 'https://example.test/issues/1',
-  title: 'Issue title', version: 'v1', statusOptionId, statusOptionName: null, ownerOptionId: null, blocked: null,
+  title: 'Issue title', version: 'v1', statusOptionId, statusOptionName: null, ownerOptionId: null, estimate: null, blocked: null,
   targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [],
-  assigneeIds, observedAt: '2026-08-13T00:00:00.000Z'
+  assigneeIds, assignees: [], observedAt: '2026-08-13T00:00:00.000Z'
 });
 
 describe('MVP fixed next-action decision', () => {

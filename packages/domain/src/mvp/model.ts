@@ -24,12 +24,16 @@ export type TrackerItemFact = Readonly<{
   statusOptionName: string | null;
   /** Provider-native single-select option identifying the task's execution owner. */
   ownerOptionId: string | null;
+  /** Bounded numeric Project Estimate. Null means the provider did not supply one. */
+  estimate: number | null;
   blocked: boolean | null;
   targetDate: string | null;
   parentIssueId: string | null;
   subIssueIds: readonly string[];
   dependencyIssueIds: readonly string[];
   assigneeIds: readonly string[];
+  /** Readable provider projection; IDs above remain the eligibility authority. */
+  assignees: readonly Readonly<{id: string; login: string; name: string | null}>[];
   observedAt: string;
 }>;
 
@@ -41,6 +45,9 @@ export type TrackerSnapshot = Readonly<{
   sourceUrl: string;
   items: readonly TrackerItemFact[];
 }>;
+
+/** Conservative provider-neutral upper bound for the optional Project Estimate fact. */
+export const trackerEstimateMaximum = 100_000;
 
 export const approvalKinds = [
   'plan', 'internal_operation', 'production', 'acceptance', 'client_uat'
@@ -96,9 +103,15 @@ export const validateTrackerSnapshot = (value: TrackerSnapshot): boolean =>
     (item.statusOptionId === null || isBoundedId(item.statusOptionId)) &&
     (item.statusOptionName === null || singleLine(item.statusOptionName, 512)) &&
     (item.ownerOptionId === null || isBoundedId(item.ownerOptionId)) &&
+    (item.estimate === null || (Number.isFinite(item.estimate) && item.estimate > 0 && item.estimate <= trackerEstimateMaximum)) &&
     (item.blocked === null || typeof item.blocked === 'boolean') &&
     (item.targetDate === null || /^\d{4}-\d{2}-\d{2}$/.test(item.targetDate)) &&
     (item.parentIssueId === null || isBoundedId(item.parentIssueId)) &&
     item.subIssueIds.length <= 100 && item.subIssueIds.every(isBoundedId) &&
     item.dependencyIssueIds.length <= 100 && item.dependencyIssueIds.every(isBoundedId) &&
-    item.assigneeIds.length <= 20 && item.assigneeIds.every(isBoundedId) && isInstant(item.observedAt));
+    item.assigneeIds.length <= 20 && item.assigneeIds.every(isBoundedId) &&
+    item.assignees.length <= 20 && item.assignees.every((assignee) => isBoundedId(assignee.id) &&
+      singleLine(assignee.login, 256) && (assignee.name === null || singleLine(assignee.name, 256)) &&
+      item.assigneeIds.includes(assignee.id)) &&
+    new Set(item.assignees.map((assignee) => assignee.id)).size === item.assignees.length &&
+    isInstant(item.observedAt));

@@ -8,13 +8,13 @@ const snapshot = {
   sourceUrl: 'https://example.test/project',
   items: [
     {itemId: 'one', projectId: 'project', issueId: 'i1', title: 'First task', url: 'https://example.test/i1',
-      version: 'v1', statusOptionId: 'b', statusOptionName: 'Backlog', ownerOptionId: null,
+      version: 'v1', statusOptionId: 'b', statusOptionName: 'Backlog', ownerOptionId: null, estimate: null,
       blocked: false, targetDate: '2026-08-31',
-      parentIssueId: null, subIssueIds: ['i3'], dependencyIssueIds: ['i4'], assigneeIds: [], observedAt: '2026-08-13T00:00:00.000Z'},
+      parentIssueId: null, subIssueIds: ['i3'], dependencyIssueIds: ['i4'], assigneeIds: [], assignees: [], observedAt: '2026-08-13T00:00:00.000Z'},
     {itemId: 'two', projectId: 'project', issueId: 'i2', title: 'Second task', url: 'https://example.test/i2',
-      version: 'v1', statusOptionId: 'd', statusOptionName: 'Development', ownerOptionId: null,
+      version: 'v1', statusOptionId: 'd', statusOptionName: 'Development', ownerOptionId: null, estimate: null,
       blocked: false, targetDate: null,
-      parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], observedAt: '2026-08-13T00:00:00.000Z'}
+      parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [], observedAt: '2026-08-13T00:00:00.000Z'}
   ]
 } as const;
 const compose = {

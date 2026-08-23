@@ -7,7 +7,7 @@ import type {
   SourceReference,
   TrackerSnapshot
 } from '@fai-control-plane/domain';
-import {validateTrackerSnapshot} from '@fai-control-plane/domain';
+import {trackerEstimateMaximum, validateTrackerSnapshot} from '@fai-control-plane/domain';
 import type {
   ApprovalTransactionStore,
   AuditStore,
@@ -22,11 +22,15 @@ import type {
 const {Pool} = pg;
 export type Database = InstanceType<typeof Pool>;
 
-// Forward-compatible read of snapshots written before ownerOptionId became a
-// provider-neutral fact. Missing legacy values mean "unassigned", never Hermes.
+// Forward-compatible read of snapshots written before optional Phase A fields.
+// Missing facts stay absent/unknown: they never become a local lifecycle fact.
 const normalizeTrackerItems = (value: unknown): TrackerSnapshot['items'] => Array.isArray(value)
-  ? value.map((item) => typeof item === 'object' && item !== null && !('ownerOptionId' in item)
-    ? {...item, ownerOptionId: null} : item) as TrackerSnapshot['items']
+  ? value.map((item) => typeof item === 'object' && item !== null
+    ? {...item,
+      ...(!('ownerOptionId' in item) ? {ownerOptionId: null} : {}),
+      ...(!('estimate' in item) || typeof item.estimate !== 'number' || !Number.isFinite(item.estimate) || item.estimate <= 0 || item.estimate > trackerEstimateMaximum ? {estimate: null} : {}),
+      ...(!('assignees' in item) ? {assignees: []} : {})
+    } : item) as TrackerSnapshot['items']
   : [];
 
 export const createDatabase = (connectionString = process.env.DATABASE_URL): Database => {
