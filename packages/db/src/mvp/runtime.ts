@@ -7,7 +7,7 @@ import type {
   SourceReference,
   TrackerSnapshot
 } from '@fai-control-plane/domain';
-import {trackerEstimateMaximum, validateTrackerSnapshot} from '@fai-control-plane/domain';
+import {trackerStaleAfterMs, validateTrackerSnapshot} from '@fai-control-plane/domain';
 import type {
   ApprovalTransactionStore,
   AuditStore,
@@ -22,13 +22,15 @@ import type {
 const {Pool} = pg;
 export type Database = InstanceType<typeof Pool>;
 
+export const trackerSnapshotFreshness = (observedAt: Date | null, now: Date): 'fresh' | 'stale' | 'unavailable' =>
+  observedAt === null ? 'unavailable' : now.getTime() - observedAt.getTime() > trackerStaleAfterMs ? 'stale' : 'fresh';
+
 // Forward-compatible read of snapshots written before optional Phase A fields.
 // Missing facts stay absent/unknown: they never become a local lifecycle fact.
 const normalizeTrackerItems = (value: unknown): TrackerSnapshot['items'] => Array.isArray(value)
   ? value.map((item) => typeof item === 'object' && item !== null
     ? {...item,
       ...(!('ownerOptionId' in item) ? {ownerOptionId: null} : {}),
-      ...(!('estimate' in item) || typeof item.estimate !== 'number' || !Number.isFinite(item.estimate) || item.estimate <= 0 || item.estimate > trackerEstimateMaximum ? {estimate: null} : {}),
       ...(!('assignees' in item) ? {assignees: []} : {})
     } : item) as TrackerSnapshot['items']
   : [];
@@ -228,10 +230,7 @@ export const listProjectTaskViews = async (
       ? row.attemptErrorCode
       : null;
     const errorCode = projectionError ?? providerError;
-    const freshness = errorCode !== null ? 'error' as const
-      : observedAt === null ? 'unavailable' as const
-      : now.getTime() - row.observedAt!.getTime() > 10 * 60_000 ? 'stale' as const
-      : 'fresh' as const;
+    const freshness = errorCode !== null ? 'error' as const : trackerSnapshotFreshness(row.observedAt, now);
     return {id: row.id, workspaceId: row.workspaceId, slug: row.slug, name: row.name,
       repositoryUrl: row.repositoryUrl, tracker: {provider: row.provider, configured: row.bindingId !== null,
         sourceUrl: row.sourceUrl, observedAt, freshness, errorCode}, tasks};
@@ -394,7 +393,8 @@ export const createStores = (database: Database, workspaceId: string): Readonly<
         await client.query('select 1 from tracker_bindings where id=$1 for update', [snapshot.bindingId]);
         await client.query(
           `insert into tracker_snapshots(binding_id,external_version,cursor,source_url,facts,observed_at)
-           values($1,$2,$3,$4,$5,$6) on conflict(binding_id,external_version) do nothing`,
+           values($1,$2,$3,$4,$5,$6) on conflict(binding_id,external_version) do update set
+             cursor=excluded.cursor,source_url=excluded.source_url,facts=excluded.facts,observed_at=excluded.observed_at`,
           [snapshot.bindingId, snapshot.externalVersion, snapshot.cursor, snapshot.sourceUrl,
             JSON.stringify({items: snapshot.items}), snapshot.observedAt]
         );

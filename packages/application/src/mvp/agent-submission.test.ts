@@ -7,7 +7,7 @@ const snapshot: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'snaps
   observedAt: '2026-08-15T10:00:00.000Z', sourceUrl: 'https://github.com/users/VF78/projects/1', items: [{
     itemId: 'PVTI_item', projectId: 'project', issueId: '210', title: 'GUI recovery',
     url: 'https://github.com/VF78/fai-control-plane/issues/210', version: 'github:updated-at:v1',
-    statusOptionId: 'ready', statusOptionName: 'Ready', ownerOptionId: 'owner-hermes', estimate: null, blocked: false, targetDate: null,
+    statusOptionId: 'ready', statusOptionName: 'Ready', ownerOptionId: 'owner-hermes', blocked: false, targetDate: null,
     parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [],
     observedAt: '2026-08-15T10:00:00.000Z'}]};
 const task = snapshot.items[0]!;

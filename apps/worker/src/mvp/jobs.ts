@@ -1,5 +1,10 @@
+import {trackerPollIntervalMs} from '@fai-control-plane/domain';
+
 export const mvpWorkerJobs = Object.freeze(['github-reconcile', 'delivery-retry'] as const);
 export type MvpWorkerJob = (typeof mvpWorkerJobs)[number];
+
+/** Human-paced MVP polling; GitHub webhooks are not the full repair source. */
+export const workerPollIntervalMs = trackerPollIntervalMs;
 
 export type WorkerJobHandlers = Readonly<Record<MvpWorkerJob, () => Promise<void>>>;
 
