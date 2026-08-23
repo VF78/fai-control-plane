@@ -41,9 +41,9 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
 
     const item: TrackerItemFact = {itemId, projectId, issueId: '901', title: 'E2E task',
       url: 'https://github.com/VF78/ascon/issues/901', version: `github:updated-at:${observedAt}`,
-      statusOptionId: 'acceptance-option', statusOptionName: 'Acceptance', ownerOptionId: null,
+      statusOptionId: 'acceptance-option', statusOptionName: 'Acceptance', ownerOptionId: null, estimate: null,
       blocked: false, targetDate: '2026-08-31',
-      parentIssueId: null, subIssueIds: [], dependencyIssueIds: ['900'], assigneeIds: [], observedAt};
+      parentIssueId: null, subIssueIds: [], dependencyIssueIds: ['900'], assigneeIds: [], assignees: [], observedAt};
     const snapshot = {bindingId, externalVersion: `github:updated-at:${observedAt}`, cursor: null,
       observedAt, sourceUrl: 'https://github.com/users/VF78/projects/1', items: [item]} as const;
     const stores = createStores(database!, workspaceId);

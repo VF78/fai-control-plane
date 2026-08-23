@@ -4,8 +4,8 @@ import {eligibleHermesTasks} from './agent-submit-control.tsx';
 
 const task = (itemId: string, statusOptionId: string | null, ownerOptionId: string | null): TrackerItemFact => ({
   itemId, projectId: 'project', issueId: itemId, title: itemId, url: `https://example.test/issues/${itemId}`,
-  version: 'v1', statusOptionId, statusOptionName: null, ownerOptionId, blocked: false, targetDate: null,
-  parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [],
+  version: 'v1', statusOptionId, statusOptionName: null, ownerOptionId, estimate: null, blocked: false, targetDate: null,
+  parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [],
   observedAt: '2026-08-15T10:00:00.000Z'
 });
 

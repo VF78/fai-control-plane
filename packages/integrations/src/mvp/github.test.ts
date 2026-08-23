@@ -27,12 +27,12 @@ describe('MVP GitHub adapter', () => {
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({data: {user: {projectV2: {
       id: 'PVT_1', url: 'https://github.com/users/acme/projects/1', updatedAt: '2026-08-13T00:00:00Z',
       items: {nodes: [{id: 'PVTI_1', updatedAt: '2026-08-13T00:00:00Z',
-        statusValue: {optionId: 'status', name: 'Ready'}, blockedValue: {optionId: 'not-blocked', name: 'No'},
+        statusValue: {optionId: 'status', name: 'Ready'}, blockedValue: {optionId: 'not-blocked', name: 'No'}, estimateValue: {number: 3},
         ownerValue: {optionId: 'owner-hermes'},
         targetDateValue: {date: '2026-08-31'},
         content: {id: 'I_1', databaseId: 42, number: 42, title: 'Deliver feature',
           repository: {nameWithOwner: 'acme/repo'},
-          url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: [{id: 'U_1'}]},
+          url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: [{id: 'U_1', login: 'octo', name: 'Octo Cat'}]},
           parent: {databaseId: 40, repository: {nameWithOwner: 'acme/repo'}},
           subIssues: {nodes: [{databaseId: 43, repository: {nameWithOwner: 'acme/repo'}}], pageInfo: {hasNextPage: false}},
           blockedBy: {nodes: [{databaseId: 41, repository: {nameWithOwner: 'acme/repo'}}], pageInfo: {hasNextPage: false}}}}],
@@ -47,7 +47,7 @@ describe('MVP GitHub adapter', () => {
       bindingId: 'binding', externalVersion: 'github:updated-at:2026-08-13T00:00:00Z',
       cursor: 'github:updated-at:2026-08-13T00:00:00Z',
       items: [{itemId: 'PVTI_1', projectId: 'project', issueId: '42', title: 'Deliver feature',
-        statusOptionName: 'Ready', ownerOptionId: 'owner-hermes', blocked: false,
+        statusOptionName: 'Ready', ownerOptionId: 'owner-hermes', estimate: 3, assignees: [{id: 'U_1', login: 'octo', name: 'Octo Cat'}], blocked: false,
         targetDate: '2026-08-31', parentIssueId: '40',
         subIssueIds: ['43'], dependencyIssueIds: ['41']}]
     });
