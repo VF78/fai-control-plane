@@ -4,10 +4,12 @@ import {describe, expect, it} from 'vitest';
 const source = async (name: string) => readFile(new URL(`./${name}`, import.meta.url), 'utf8');
 
 describe('Phase B operator surfaces', () => {
-  it('keeps the four routes in one current presentation component', async () => {
+  it('keeps Systems diagnostics without restoring a launch control', async () => {
     const view = await source('phase-b-ui.tsx');
     expect(view).toContain("export type PhaseBView = 'conversations'|'people'|'systems'|'settings'");
-    expect(view).toContain('AgentSubmitControl');
+    expect(view).toContain('function Systems');
+    expect(view).toContain('задачу GitHub Project');
+    expect(view).not.toContain('AgentSubmitControl');
     expect(view).toContain('AccessControls');
     expect(view).toContain('SourceAddControl');
     expect(view).toContain('TaskApprovalEvidence');
@@ -25,6 +27,7 @@ describe('Phase B operator surfaces', () => {
     const view = await source('phase-b-ui.tsx');
     expect(page).toMatch(/view === 'tasks'[\s\S]*<ApprovalControl[\s\S]*<TaskApprovalEvidence/);
     expect(page).toContain('<PhaseB view={view}');
+    expect(page).toContain('TaskExecutorControl');
     expect(page).toContain('const config = integrationConfig()');
     expect(view).not.toContain('integrationConfig(');
   });

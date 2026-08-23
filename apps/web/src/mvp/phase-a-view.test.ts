@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import type {TrackerItemFact} from '@fai-control-plane/domain';
-import {asconProcess, dashboardProjection, phaseAState} from './phase-a-view.ts';
+import {asconProcess, dashboardProjection, executorFact, phaseAState} from './phase-a-view.ts';
 
 const task = (statusOptionName: string | null, overrides: Partial<TrackerItemFact> = {}): TrackerItemFact => ({
   itemId: 'item', projectId: 'project', issueId: '1', title: 'Task', url: 'https://example.test/issues/1', version: 'v1',
@@ -28,5 +28,12 @@ describe('Phase A read projections', () => {
     expect(dashboardProjection([task('Ready'), task('QA', {itemId: 'item-2'})]).phase).toBe('QA');
     expect(dashboardProjection([task('Done'), task('In Dev', {itemId: 'item-2'}), task('Acceptance', {itemId: 'item-3'})]).phase).toBe('Acceptance');
     expect(dashboardProjection([task('Done')])).toMatchObject({phase: 'Done', blocked: 0});
+  });
+
+  it('projects one executor fact without hiding a conflicting provider fact', () => {
+    expect(executorFact(task('Ready', {assignees: [{id: 'U', login: 'octo', name: 'Octo'}]}), 'hermes')).toBe('Octo');
+    expect(executorFact(task('Ready', {ownerOptionId: 'hermes'}), 'hermes')).toBe('Hermes');
+    expect(executorFact(task('Ready', {ownerOptionId: 'hermes', assignees: [{id: 'U', login: 'octo', name: null}]}), 'hermes')).toBe('Конфликт: Hermes + octo');
+    expect(executorFact(task('Ready'), 'hermes')).toBe('Не назначен');
   });
 });

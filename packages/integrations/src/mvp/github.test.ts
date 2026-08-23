@@ -141,4 +141,45 @@ describe('MVP GitHub adapter', () => {
       .resolves.toMatchObject({referenceId: '42'});
     expect(fetch).toHaveBeenCalledTimes(3);
   });
+
+  it('reads assignable people from GitHub and treats an exact Hermes assignment as a no-op', async () => {
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes('/assignees')) return new Response(JSON.stringify([{id: 7, login: 'octo', name: 'Octo Cat'}]));
+      if (String(init?.body).includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {id: 'PVTI_1', updatedAt: '2026-08-24T00:00:00Z', project: {id: 'PVT_1'},
+        statusValue: {optionId: 'ready', name: 'Ready'}, ownerValue: {optionId: 'owner-hermes', name: 'Hermes'},
+        content: {id: 'I_42', databaseId: 9001, number: 42, url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: []}}}}}));
+      throw new Error(`unexpected request ${String(url)}`);
+    });
+    const adapter = createGitHubTrackerMutationAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
+      projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
+      credentialRef: secretRef, secrets: secrets('token'), fetch});
+    await expect(adapter.listAssignableUsers()).resolves.toEqual([{id: '7', login: 'octo', name: 'Octo Cat'}]);
+    await expect(adapter.assignHermesExecutor({itemId: 'PVTI_1', issueId: '9001', expectedVersion: 'github:updated-at:2026-08-24T00:00:00Z', hermesOwnerOptionId: 'owner-hermes'})).resolves.toBe('already_assigned');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the provider issue number, not the stored database id, for human Assignee mutation', async () => {
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body ?? '');
+      if (body.includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {id: 'PVTI_1', updatedAt: '2026-08-24T00:00:00Z', project: {id: 'PVT_1'},
+        statusValue: {optionId: 'ready', name: 'Ready'}, ownerValue: {optionId: 'owner-hermes', name: 'Hermes'},
+        content: {id: 'I_42', databaseId: 9001, number: 42, url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: []}}}}}));
+      if (String(url).includes('/assignees')) return new Response(JSON.stringify([{id: 7, login: 'octo', name: null}]));
+      if (body.includes('fields(first:100)')) return new Response(JSON.stringify({data: {user: {projectV2: {id: 'PVT_1', fields: {nodes: [
+        {id: 'owner-field', name: 'Owner', options: [{id: 'owner-hermes', name: 'Hermes'}]},
+        {id: 'status-field', name: 'Status', options: [{id: 'in-dev', name: 'In Dev'}]}
+      ], pageInfo: {hasNextPage: false}}}}}}));
+      if (String(url).endsWith('/issues/42') && init?.method === 'PATCH') return new Response(JSON.stringify({number: 42}));
+      if (body.includes('clearProjectV2ItemFieldValue')) return new Response(JSON.stringify({data: {clearProjectV2ItemFieldValue: {projectV2Item: {id: 'PVTI_1'}}}}));
+      if (body.includes('updateProjectV2ItemFieldValue')) return new Response(JSON.stringify({data: {updateProjectV2ItemFieldValue: {projectV2Item: {id: 'PVTI_1'}}}}));
+      throw new Error(`unexpected request ${String(url)} ${body}`);
+    });
+    const adapter = createGitHubTrackerMutationAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
+      projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
+      credentialRef: secretRef, secrets: secrets('token'), fetch});
+    await expect(adapter.assignHumanExecutor({itemId: 'PVTI_1', issueId: '9001', expectedVersion: 'github:updated-at:2026-08-24T00:00:00Z',
+      candidate: {id: '7', login: 'octo'}})).resolves.toBeUndefined();
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith('/issues/42') && init?.method === 'PATCH')).toBe(true);
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/issues/9001'))).toBe(false);
+  });
 });

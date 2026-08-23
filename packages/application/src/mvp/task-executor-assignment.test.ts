@@ -1,0 +1,59 @@
+import {describe, expect, it, vi} from 'vitest';
+import type {TrackerSnapshot} from '@fai-control-plane/domain';
+import type {TaskExecutorAssignmentPorts} from './task-executor-assignment.ts';
+import {assignTaskExecutor} from './task-executor-assignment.ts';
+
+const base: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'v1', cursor: null, observedAt: '2026-08-24T00:00:00.000Z', sourceUrl: 'https://github.com/users/acme/projects/1', items: [{itemId: 'item', projectId: 'project', issueId: '219', title: 'Assign executor', url: 'https://github.com/acme/repo/issues/219', version: 'github:updated-at:v1', statusOptionId: 'ready', statusOptionName: 'Ready', ownerOptionId: null, blocked: false, targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [], observedAt: '2026-08-24T00:00:00.000Z'}]};
+
+const ports = (failStart = false, initialStatus = 'Ready') => {
+  let owner: string|null = null; let assignees: readonly {id: string; login: string; name: string|null}[] = []; let status = initialStatus; let version = 1; let delivered = false; let startFails = failStart;
+  const snapshot = (): TrackerSnapshot => ({...base, items: [{...base.items[0]!, ownerOptionId: owner, assignees, assigneeIds: assignees.map((user) => user.id), statusOptionName: status, version: `github:updated-at:v${version}`}]});
+  const value: TaskExecutorAssignmentPorts = {
+    resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done'}),
+    readFreshSnapshot: async () => snapshot(), persistSnapshot: async () => undefined, resolveSources: async () => [],
+    repository: {readRepository: async () => ({repositoryId: 'repo', url: 'https://github.com/acme/repo', defaultBranch: 'main', observedAt: '2026-08-24T00:00:00.000Z'})},
+    delivery: {submit: vi.fn(async () => ({deliveryReference: 'hermes:receipt', sessionReference: 'hermes:session'}))},
+    transaction: {execute: async (_input, submit) => delivered ? {status: 'duplicate', deliveryReference: 'hermes:receipt'} : (delivered = true, {status: 'completed', ...(await submit())})},
+    tracker: {listAssignableUsers: async () => [{id: 'U_1', login: 'octo', name: 'Octo'}], assignHumanExecutor: async () => { owner = null; assignees = [{id: 'U_1', login: 'octo', name: 'Octo'}]; status = 'In Dev'; version += 1; },
+      assignHermesExecutor: async () => { if (owner === 'hermes') return 'already_assigned'; owner = 'hermes'; assignees = []; version += 1; return 'assigned'; },
+      startHermesExecutor: async () => { if (startFails) { startFails = false; throw new Error('github_mutation_failed'); } status = 'In Dev'; version += 1; return 'advanced'; }}
+  };
+  return {value, delivery: value.delivery.submit};
+};
+
+describe('task executor assignment', () => {
+  it('uses GitHub candidates for a human assignment without a Hermes submission', async () => {
+    const value = ports();
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'human', candidate: {id: 'U_1', login: 'octo'}}}, value.value)).resolves.toEqual({status: 'assigned'});
+    expect(value.delivery).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the fresh human assignment does not match the requested GitHub login', async () => {
+    const value = ports(); const broken: TaskExecutorAssignmentPorts = {...value.value, tracker: {...value.value.tracker, assignHumanExecutor: async () => undefined}};
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'human', candidate: {id: 'U_1', login: 'octo'}}}, broken)).rejects.toThrow('task_executor_conflict');
+  });
+
+  it('denies Hermes on Acceptance before delivery', async () => {
+    const value = ports(); const baseRead = value.value.readFreshSnapshot;
+    const acceptance: TaskExecutorAssignmentPorts = {...value.value, readFreshSnapshot: async (context) => { const snapshot = await baseRead(context); return {...snapshot, items: [{...snapshot.items[0]!, statusOptionName: 'Acceptance'}]}; }};
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, acceptance)).rejects.toThrow('task_executor_unavailable');
+    expect(value.delivery).not.toHaveBeenCalled();
+  });
+
+  it.each(['In Dev', 'QA'])('starts Hermes in %s without changing the current stage', async (stage) => {
+    const value = ports(false, stage); const command = {actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'} as const};
+    await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'started', deliveryReference: 'hermes:receipt'});
+    expect(value.delivery).toHaveBeenCalledTimes(1);
+    const context = await value.value.resolveContext({actorId: 'actor', projectId: 'project'});
+    if (context === null) throw new Error('missing test context');
+    const fresh = await value.value.readFreshSnapshot(context);
+    expect(fresh.items[0]?.statusOptionName).toBe(stage);
+  });
+
+  it('retries a failed status sync without delivering Hermes twice', async () => {
+    const value = ports(true); const command = {actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'} as const};
+    await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'status_sync_failed', deliveryReference: 'hermes:receipt'});
+    await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'duplicate', deliveryReference: 'hermes:receipt'});
+    expect(value.delivery).toHaveBeenCalledTimes(1);
+  });
+});
