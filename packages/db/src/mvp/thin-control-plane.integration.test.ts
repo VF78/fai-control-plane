@@ -41,10 +41,10 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
 
     const item: TrackerItemFact = {itemId, projectId, issueId: '901', title: 'E2E task',
       url: 'https://github.com/VF78/ascon/issues/901', version: `github:updated-at:${observedAt}`,
-      statusOptionId: 'acceptance-option', statusOptionName: 'Acceptance', ownerOptionId: null, estimate: null,
+      statusOptionId: 'acceptance-option', statusOptionName: 'Acceptance', ownerOptionId: null,
       blocked: false, targetDate: '2026-08-31',
       parentIssueId: null, subIssueIds: [], dependencyIssueIds: ['900'], assigneeIds: [], assignees: [], observedAt};
-    const snapshot = {bindingId, externalVersion: `github:updated-at:${observedAt}`, cursor: null,
+    let snapshot = {bindingId, externalVersion: `github:updated-at:${observedAt}`, cursor: null,
       observedAt, sourceUrl: 'https://github.com/users/VF78/projects/1', items: [item]} as const;
     const stores = createStores(database!, workspaceId);
     const notification = async (
@@ -63,6 +63,22 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 1});
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 0});
 
+    const refreshedAt = new Date(Date.parse(observedAt) + 5 * 60_000).toISOString();
+    snapshot = {...snapshot, observedAt: refreshedAt,
+      items: [{...item, observedAt: refreshedAt}]} as const;
+    await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 0});
+    const refreshed = await database!.query<{count: string; observedAt: Date}>(
+      `select count(*)::text as count,max(observed_at) as "observedAt" from tracker_snapshots
+       where binding_id=$1 and external_version=$2`, [bindingId, snapshot.externalVersion]
+    );
+    expect(refreshed.rows[0]).toEqual({count: '1', observedAt: new Date(refreshedAt)});
+    const freshViews = await listProjectTaskViews(database!, process.env.BOOTSTRAP_OWNER_ACTOR_ID!,
+      new Date(Date.parse(refreshedAt) + 15 * 60_000));
+    expect(freshViews.find((view) => view.id === projectId)?.tracker.freshness).toBe('fresh');
+    const staleViews = await listProjectTaskViews(database!, process.env.BOOTSTRAP_OWNER_ACTOR_ID!,
+      new Date(Date.parse(refreshedAt) + 15 * 60_000 + 1));
+    expect(staleViews.find((view) => view.id === projectId)?.tracker.freshness).toBe('stale');
+
     await expect(deliverPending({limit: 20, ports: {outbox: stores.outbox,
       internalMessenger: {send: async () => { throw new Error('fake_messenger_unavailable'); }},
       clientMessenger: {send: async () => ({deliveryReference: 'unused'})},
@@ -75,7 +91,7 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
        'approval_required: https://github.com/VF78/ascon/issues/901'`);
     expect(outbox.rows[0]).toEqual({count: '1', attempts: 1, errorCode: 'delivery_failed'});
 
-    const failedAt = new Date(Date.parse(observedAt) + 1_000).toISOString();
+    const failedAt = new Date(Date.parse(refreshedAt) + 1_000).toISOString();
     await stores.snapshots.recordFailure({bindingId, observedAt: failedAt, errorCode: 'github_read_failed'});
     const views = await listProjectTaskViews(database!, process.env.BOOTSTRAP_OWNER_ACTOR_ID!, new Date(failedAt));
     const project = views.find((view) => view.id === projectId);

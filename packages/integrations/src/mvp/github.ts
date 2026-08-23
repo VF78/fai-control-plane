@@ -1,13 +1,12 @@
 import {createHash, createHmac, timingSafeEqual} from 'node:crypto';
-import {
+import type {
   OpaqueSecretRef,
   RepositoryReadPort,
   SecretResolverPort,
   TrackerMutationPort,
   TrackerItemFact,
   TrackerReadPort,
-  TrackerSnapshot,
-  trackerEstimateMaximum
+  TrackerSnapshot
 } from '@fai-control-plane/domain';
 
 type Fetch = typeof globalThis.fetch;
@@ -86,9 +85,6 @@ const projectQuery = `query MvpProject($owner: String!, $number: Int!, $after: S
       targetDateValue: fieldValueByName(name: "Target date") {
         ... on ProjectV2ItemFieldDateValue { date }
       }
-      estimateValue: fieldValueByName(name: "Estimate") {
-        ... on ProjectV2ItemFieldNumberValue { number }
-      }
       content { ... on Issue {
         id databaseId number title url repository { nameWithOwner }
         assignees(first: 20) { nodes { id login name } }
@@ -160,7 +156,6 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
       const ownerValue = object(item?.ownerValue);
       const blockedValue = object(item?.blockedValue);
       const targetDateValue = object(item?.targetDateValue);
-      const estimateValue = object(item?.estimateValue);
       const assignees = object(content?.assignees);
       const issueNumber = positiveInteger(content?.number);
       if (!bounded(item?.id, 512) || !bounded(item?.updatedAt, 64) || !bounded(content?.id, 512) ||
@@ -178,11 +173,6 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
           : (() => { throw new Error('github_response_invalid'); })();
       const blocked = blockedValue === null ? null : blockedValue.name === 'Yes' ? true
         : blockedValue.name === 'No' ? false : (() => { throw new Error('github_response_invalid'); })();
-      const estimateRaw = estimateValue?.number;
-      // Estimate is a bounded presentation fact. A malformed optional number must
-      // not reject an otherwise valid provider snapshot or become task-count UI.
-      const estimate = typeof estimateRaw === 'number' && Number.isFinite(estimateRaw) &&
-        estimateRaw > 0 && estimateRaw <= trackerEstimateMaximum ? estimateRaw : null;
       const parent = content.parent === null ? null : object(content.parent);
       if (parent !== null && object(parent.repository)?.nameWithOwner !==
         `${input.binding.owner}/${input.binding.repository}`) throw new Error('github_response_invalid');
@@ -194,7 +184,6 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
         statusOptionId: bounded(status?.optionId, 512) ? status.optionId : null,
         statusOptionName: bounded(status?.name, 512) ? status.name : null,
         ownerOptionId: bounded(ownerValue?.optionId, 512) ? ownerValue.optionId : null,
-        estimate,
         blocked,
         targetDate,
         parentIssueId: parent === null ? null : String(positiveInteger(parent.databaseId)),

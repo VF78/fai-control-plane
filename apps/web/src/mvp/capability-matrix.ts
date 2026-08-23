@@ -1,6 +1,6 @@
 /** Kept executable so a new core capability cannot silently lose its UI seam. */
 export const operatorCapabilityMatrix = [
-  ['GitHub Project snapshot', 'tracker_snapshots → listProjectTaskViews', 'Dashboard, Tasks board/detail', 'fresh/stale/error; bounded Estimate and readable assignee projection'],
+  ['GitHub Project snapshot', 'tracker_snapshots → listProjectTaskViews', 'Dashboard, Tasks board/detail', 'fresh/stale/error; task-count status and readable assignee projection'],
   ['ASCON process policy', 'provider-neutral read policy', 'Process', 'read-only stages, gates, evidence and terminal Done'],
   ['Logout', 'logout()', 'Shell: Выйти', 'session revoked/error'],
   ['Add source', 'addSourceArtifact → source()', 'Settings: Добавить источник', 'success/error'],

@@ -1,6 +1,6 @@
 import {createServer} from 'node:http';
 import {createWorker} from './mvp/runtime.ts';
-import {exclusiveRunner, workerActive, workerReady} from './mvp/jobs.ts';
+import {exclusiveRunner, workerActive, workerPollIntervalMs, workerReady} from './mvp/jobs.ts';
 
 const active = workerActive(process.env.FCP_WORKER_ACTIVE);
 const worker = active ? createWorker() : null;
@@ -17,7 +17,7 @@ const run = exclusiveRunner(async () => {
     }
 });
 if (active) await run();
-const interval = active ? setInterval(() => void run(), 30_000) : null;
+const interval = active ? setInterval(() => void run(), workerPollIntervalMs) : null;
 const server = createServer((request, response) => {
   if (request.url === '/health') {
     response.writeHead(200, {'content-type': 'application/json'}).end('{"status":"ok"}');

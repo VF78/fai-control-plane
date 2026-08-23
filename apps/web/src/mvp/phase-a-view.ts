@@ -1,4 +1,4 @@
-import {trackerEstimateMaximum, type TrackerItemFact} from '@fai-control-plane/domain';
+import type {TrackerItemFact} from '@fai-control-plane/domain';
 
 export const phaseAStages = ['Backlog', 'Ready', 'In Dev', 'QA', 'Acceptance', 'Done'] as const;
 export type PhaseAState = 'accepted' | 'review' | 'in-progress' | 'not-started';
@@ -11,7 +11,6 @@ export const readableAssignees = (item: TrackerItemFact): string =>
   item.assignees.map((assignee) => assignee.name ?? assignee.login).join(', ') || 'Не назначен';
 
 export type DashboardProjection = Readonly<{
-  configured: boolean;
   total: number;
   states: Readonly<Record<PhaseAState, number>>;
   phase: string;
@@ -20,16 +19,16 @@ export type DashboardProjection = Readonly<{
 }>;
 
 export const dashboardProjection = (tasks: readonly TrackerItemFact[]): DashboardProjection => {
-  const configured = tasks.length > 0 && tasks.every((task) => task.estimate !== null &&
-    Number.isFinite(task.estimate) && task.estimate > 0 && task.estimate <= trackerEstimateMaximum);
   const states: Record<PhaseAState, number> = {accepted: 0, review: 0, 'in-progress': 0, 'not-started': 0};
-  if (configured) for (const task of tasks) states[phaseAState(task.statusOptionName)] += task.estimate!;
+  for (const task of tasks) states[phaseAState(task.statusOptionName)] += 1;
   const active = tasks.filter((task) => task.statusOptionName !== 'Done');
   const dates = active.map((task) => task.targetDate).filter((date): date is string => date !== null).sort();
   const hasBlockedFact = active.some((task) => task.blocked !== null);
-  return {configured, total: Object.values(states).reduce((sum, value) => sum + value, 0), states,
-    phase: [...phaseAStages].reverse().find((stage) => active.some((task) => task.statusOptionName === stage)) ?? 'Не определена',
-    deadline: dates[0] ?? null, blocked: hasBlockedFact ? active.filter((task) => task.blocked === true).length : null};
+  return {total: tasks.length, states,
+    phase: [...phaseAStages].reverse().find((stage) => active.some((task) => task.statusOptionName === stage)) ??
+      (tasks.some((task) => task.statusOptionName === 'Done') ? 'Done' : 'Не определена'),
+    deadline: dates[0] ?? null, blocked: active.length === 0 && tasks.length > 0 ? 0 :
+      hasBlockedFact ? active.filter((task) => task.blocked === true).length : null};
 };
 
 export type ProcessStage = Readonly<{name: typeof phaseAStages[number]; responsibility: string; gate: string; evidence: string; next: string}>;

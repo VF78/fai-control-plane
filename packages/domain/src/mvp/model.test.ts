@@ -23,12 +23,11 @@ describe('MVP primitive validation', () => {
 });
 
 const snapshot = (item: Partial<TrackerItemFact>): TrackerSnapshot => ({bindingId: 'binding', externalVersion: 'v1', cursor: null,
-  observedAt: '2026-08-23T10:00:00.000Z', sourceUrl: 'https://example.test/project', items: [{itemId: 'item', projectId: 'project', issueId: '1', title: 'Task', url: 'https://example.test/issues/1', version: 'v1', statusOptionId: null, statusOptionName: null, ownerOptionId: null, estimate: 2, blocked: null, targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: ['user'], assignees: [{id: 'user', login: 'octo', name: null}], observedAt: '2026-08-23T10:00:00.000Z', ...item}]});
+  observedAt: '2026-08-23T10:00:00.000Z', sourceUrl: 'https://example.test/project', items: [{itemId: 'item', projectId: 'project', issueId: '1', title: 'Task', url: 'https://example.test/issues/1', version: 'v1', statusOptionId: null, statusOptionName: null, ownerOptionId: null, blocked: null, targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: ['user'], assignees: [{id: 'user', login: 'octo', name: null}], observedAt: '2026-08-23T10:00:00.000Z', ...item}]});
 
 describe('Tracker snapshot Phase A bounded facts', () => {
-  it('accepts finite positive Estimate and readable assignee projection', () => expect(validateTrackerSnapshot(snapshot({}))).toBe(true));
-  it('rejects a non-positive Estimate and unbounded display identity', () => {
-    expect(validateTrackerSnapshot(snapshot({estimate: 0}))).toBe(false);
+  it('accepts a readable assignee projection', () => expect(validateTrackerSnapshot(snapshot({}))).toBe(true));
+  it('rejects an unbounded display identity', () => {
     expect(validateTrackerSnapshot(snapshot({assignees: [{id: 'user', login: '', name: null}]}))).toBe(false);
   });
 
