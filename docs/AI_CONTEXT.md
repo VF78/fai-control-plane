@@ -1,87 +1,72 @@
 # AI context
 
-This file contains stable orientation only. GitHub Project `f(AI) Studio` #1
-and repository issues contain live status and must be queried at the start of
-every chat.
+Stable orientation only. GitHub Project `f(AI) Studio` #1 and repository
+issues contain live status, acceptance and release evidence.
 
-## Product outcome
+## Product
 
-Build a lightweight supervisory layer over GitHub Project and Hermes. It joins
-the tools; it does not reproduce them.
+f(AI) Control is a provider-neutral supervisory workspace, not another tracker,
+chat or agent platform. It must let a Product Owner:
 
-The current product contract is issue #158 and ADR 0006:
+1. see portfolio/project status, current focus and material risks;
+2. follow the same GitHub Project task through delivery;
+3. see the responsible human or Hermes role;
+4. manage supported project sources, memberships and exact approvals;
+5. observe internal/client messenger contours, agent readiness and receipts;
+6. explicitly submit eligible Hermes-owned work and understand success,
+   denial, stale and provider-error states.
 
-| Fact or action | Sole authority |
+Authority is fixed:
+
+| Concern | Authority |
 | --- | --- |
 | Code, PRs, checks, release references | GitHub repository |
-| Tasks, assignees, dates, dependencies, status | GitHub Project |
+| Tasks, status, assignees, dates, dependencies | GitHub Project |
 | Planning, development, QA and DevOps execution | Hermes |
-| Project source documents/configuration and explicit human approvals | Control Plane/PostgreSQL |
-| Trigger correlation, provider cursor/freshness and audit | Control Plane/PostgreSQL, bounded to the external item/session |
+| Projects/sources, bindings, exact approvals, bounded snapshots, receipts/audit | Control Plane/PostgreSQL |
 
-The Control Plane reads the same GitHub Project item, requests the next bounded
-role task from Hermes, and displays confirmed external facts. Hermes may use
-Codex CLI internally through Hermes' supported tools/skills; that composition
-is not a Control Plane concern.
+The active ASCON composition uses GitHub, a project-isolated Hermes and
+Telegram for the internal contour. Bitrix client actions remain fail-closed
+until stable browser identity is separately proven. MSA later reuses the same
+contracts with its own bindings, including Matrix/Element; it is not a fork.
 
-The first real acceptance contour is ASCON: GitHub Project and repository are
-the work authorities, Hermes is the executor, internal project communication
-uses Telegram, and client communication uses the existing Bitrix24 chat. The
-MVP core exposes provider-neutral messenger ports; provider credentials and
-runtime bindings are activated only in issue #174. Matrix/Element for MSA is a
-later adapter over the same boundary, not a separate chat architecture.
+## Invariants
 
-## Product and architecture invariants
-
-- Premium-minimal, GitHub-informed web UX with compact infographics and familiar
-  Lucide icons, accessible labels, progressive disclosure, and no decorative
-  dashboard clutter, nested cards, or workflow canvas.
-- One project/environment/time scope. Desktop/tablet use master-detail; mobile
-  uses a full detail route.
-- Render facts from their named authority. For mirrored provider facts show the
-  source link, freshness and error/stale state; never substitute local state.
-- Preserve provider-neutral domain, view-model, navigation, and design-token
-  boundaries. Web is primary; keep later native Android/iOS portability cheap
-  without introducing React Native or a second client now.
-- Human approvals remain explicit and audited. Hermes updates the same GitHub
-  work item through its supported GitHub capability and never bypasses a human
-  approval boundary.
-- Do not create or extend a second task/status/DAG, TaskPacket/AgentRun
-  lifecycle, custom Hermes/Codex runtime, QA state machine, deployment
-  executor/lease/daemon, Hermes Kanban, chat store or automated SSH/IAM system.
-- Existing implementations of those surfaces are legacy to inventory/delete in
-  #159/#162. Never infer target architecture from merged legacy code.
-- No production, DNS, VPS, `f-ai.studio`, Hermes, MSA contour, or secret change
-  without Vladimir's explicit authorization.
-- Russia network accessibility remains outside the current scope.
+- Modular monolith: web + one worker; PostgreSQL has the fresh 16-table MVP
+  baseline and no dependency on the legacy database.
+- GitHub Project is the only task/status truth. Local storage contains only
+  bounded provider facts required for projection, freshness, delivery,
+  idempotency and audit.
+- Hermes is behind `AgentDeliveryPort`; OpenClaw may replace its adapter without
+  changing core semantics. Codex CLI/Claude CLI remain executor internals.
+- No automatic backlog execution. Only an authenticated operator may submit a
+  non-Done item whose provider-native `Owner` is exactly Hermes.
+- UI shows confirmed facts, provenance, freshness and error state. Missing data
+  is `Unknown`/`Not configured`; controls exist only for canonical commands.
+- UX is premium-minimal and manager-first: compact visualization, progressive
+  disclosure, one desktop model with responsive mobile detail, no decorative
+  clutter, text-heavy debug panels, dead navigation or duplicate UI.
+- No second task lifecycle, agent runtime, chat store, workflow canvas, generic
+  IAM/provider registry, automatic merge/deploy or speculative abstraction.
 
 ## Start query
 
-Use concise `gh` queries to resolve:
+Using local `git`/`gh`:
 
-1. `origin/main` and the current production baseline recorded in the Project;
-2. open PRs;
-3. the sole Project item with `Status = In progress`;
-4. issue #158, the approved #159 deletion map, and the selected sub-issue;
-5. that issue's unchecked acceptance and next dependency-ordered item.
+1. fetch and resolve exact `origin/main`;
+2. list open PRs;
+3. list Project items for `VF78/fai-control-plane` only;
+4. read issue `#158`, then the current leaf `In progress` issue and its direct
+   dependencies/latest compact evidence;
+5. read the next dependency-ready issue only when current WIP is accepted.
 
-If local state conflicts with GitHub, stop and reconcile Project truth before
-implementation. Do not infer completion from an unmerged commit. Do not start
-product implementation until the exact #159 inventory and target diagram are
-approved by Vladimir.
+If local state and GitHub differ, reconcile Project truth before work. A
+closed issue, merged PR or deployed screen is not Vladimir's product/visual
+acceptance unless the current issue records that exact approval.
 
 ## Release boundary
 
-Local implementation, PR merge, and production release are separate decisions.
-Nothing in a merged PR authorizes deployment. The current deployment script
-fails closed. Issue #174 must replace the blocked runbook and script with a
-minimal verified MVP release path, followed by Vladimir's approval of the exact
-commit and production diff.
-
-The canonical VPS is `root@46.225.163.123`; the replaceable Control Plane public
-endpoint is `https://app.f-ai.studio/`. The same host's f(AI) Studio marketing
-site, MSA test environment, MSA-specific Hermes deployment and Amnezia VPN are
-protected neighbouring services and must not be changed or disrupted. The
-existing Hermes is MSA-only; ASCON needs a separate project-isolated Hermes
-endpoint, state/work directory and credential. The MVP uses an independent
-directory, Compose project and fresh PostgreSQL volume.
+Implementation, merge and production release are separate decisions. The
+current deployment script is active but requires exact commit/config approval.
+Read `docs/ops/PRODUCTION_RUNBOOK.md`; never infer production state from old
+issue comments or retained branches.
