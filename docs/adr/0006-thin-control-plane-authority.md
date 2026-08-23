@@ -1,6 +1,6 @@
 # ADR 0006: Thin Control Plane over GitHub Project and Hermes
 
-- Status: Accepted product direction; implementation gated by issue #159
+- Status: Accepted and implemented by the thin 16-table MVP
 - Date: 2026-08-12
 - Issue: #158
 - Supersedes: workflow/runner scope in ADR 0001, task/workflow/run authority in
@@ -68,22 +68,16 @@ provider-neutral messenger boundary; issue #174 supplies the provider adapters,
 identity bindings and activation. Matrix/Element for MSA later uses the same
 boundary. The required path is:
 
-`three approved source documents -> Hermes manager plan in GitHub Project ->
-PO plan approval -> human or Hermes development -> Hermes QA -> PO deployment
-approval -> Hermes DevOps via the project runbook/GitHub Actions -> PO result
-acceptance -> client UAT`.
+`approved source documents -> plan in GitHub Project -> PO plan approval ->
+human or explicitly submitted Hermes work -> QA evidence -> PO deployment
+approval -> approved project runbook -> PO result acceptance -> client UAT`.
 
 ## Migration and deletion
 
-Issue #159 must inventory every table, command, route, UI control, worker,
-systemd unit and script as `delete now`, `keep as read mirror`, `keep for
-documents/approval/audit`, or `defer disabled`. Vladimir must approve that map
-and the target component diagram before product implementation begins.
-
-Issue #162 builds a fresh 16-table MVP database and removes contradicting
-reachable code rather than leaving a competing disabled architecture. It does
-not read, migrate or delete the legacy database. The legacy commit and database
-remain the rollback boundary until the ASCON cutover is accepted.
+Issues #159/#162 completed the authority inventory and hybrid rebuild. The
+active product uses the fresh 16-table MVP database and one reachable
+architecture; it does not read, migrate or delete the retained legacy database.
+Their historical execution plans are not current implementation instructions.
 
 ## Consequences
 

@@ -55,5 +55,6 @@ pnpm db:check
 
 Current product authority and acceptance are defined by GitHub issue #158,
 ADR 0006 and the live `f(AI) Studio` Project. Historical ADRs and legacy
-production files are retained only as rollback evidence. The deployment script
-fails closed until issue #174 supplies an approved MVP-specific release path.
+branches are not active product scope. Production uses the fail-closed
+`scripts/deploy-prod.sh` flow documented in `docs/ops/PRODUCTION_RUNBOOK.md`;
+merge and deployment always require separate approval.
