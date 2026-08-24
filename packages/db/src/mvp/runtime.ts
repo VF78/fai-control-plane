@@ -104,7 +104,11 @@ export type ProjectOperatorEvidenceView = Readonly<{
   ingress: readonly Readonly<{provider: string; lastReceivedAt: string; count: number}>[];
   conversations: readonly Readonly<{contour: 'trusted-main' | 'client-edge'; lastOccurredAt: string; count: number}>[];
   messenger: Readonly<{pending: number; delivered: number; failed: number; lastOccurredAt: string | null}>;
-  agentSubmissions: Readonly<{count: number; lastOccurredAt: string | null}>;
+  agentSubmissions: Readonly<{
+    count: number;
+    lastOccurredAt: string | null;
+    recent: readonly Readonly<{targetReference: string; deliveryReference: string; occurredAt: string}>[];
+  }>;
   receipts: readonly Readonly<{commandType: string; resultReference: string; occurredAt: string}>[];
   audit: readonly Readonly<{action: string; targetReference: string; occurredAt: string}>[];
 }>;
@@ -122,9 +126,10 @@ export const listProjectOperatorEvidenceViews = async (
   type AuditRow = {projectId: string; action: string; targetReference: string; occurredAt: Date};
   type ConversationRow = {projectId: string; contour: 'trusted-main' | 'client-edge'; lastOccurredAt: Date; count: string};
   type AgentSubmissionRow = {projectId: string; lastOccurredAt: Date; count: string};
+  type AgentSubmissionEvidenceRow = {projectId: string; targetReference: string; deliveryReference: string; occurredAt: Date};
   const scope = `select p.id from projects p join project_memberships m on m.project_id=p.id
     where m.actor_id=$1 and m.active=true`;
-  const [people, ingress, deliveries, receipts, audit, conversations, agentSubmissions] = await Promise.all([
+  const [people, ingress, deliveries, receipts, audit, conversations, agentSubmissions, agentSubmissionEvidence] = await Promise.all([
     database.query<PersonRow>(`select m.project_id as "projectId",m.id as "membershipId",a.id as "actorId",a.display_name as "displayName",a.kind,m.role,m.active,
       i.provider,i.subject_hash as "subjectHash" from project_memberships m join actors a on a.id=m.actor_id
       left join actor_external_identities i on i.actor_id=a.id where m.project_id in (${scope})
@@ -148,7 +153,12 @@ export const listProjectOperatorEvidenceViews = async (
       group by project_id,details->>'contour'`, [actorId]),
     database.query<AgentSubmissionRow>(`select project_id as "projectId",max(occurred_at) as "lastOccurredAt",
       count(*)::text as count from command_receipts where project_id in (${scope}) and command_type='agent.submit'
-      group by project_id`, [actorId])
+      group by project_id`, [actorId]),
+    database.query<AgentSubmissionEvidenceRow>(`select a.project_id as "projectId",a.target_reference as "targetReference",
+      r.result_reference as "deliveryReference",r.occurred_at as "occurredAt" from audit_events a
+      join command_receipts r on r.project_id=a.project_id and r.actor_id is not distinct from a.actor_id
+        and r.occurred_at=a.occurred_at and r.command_type='agent.submit'
+      where a.project_id in (${scope}) and a.action='agent.submit' order by r.occurred_at desc limit 80`, [actorId])
   ]);
   const ids = await listProjects(database, actorId);
   return ids.map((project) => {
@@ -171,7 +181,10 @@ export const listProjectOperatorEvidenceViews = async (
         lastOccurredAt: row.lastOccurredAt.toISOString(), count: Number(row.count)})),
       messenger: summary(),
       agentSubmissions: {count: Number(agentSubmission?.count ?? 0),
-        lastOccurredAt: agentSubmission?.lastOccurredAt.toISOString() ?? null},
+        lastOccurredAt: agentSubmission?.lastOccurredAt.toISOString() ?? null,
+        recent: agentSubmissionEvidence.rows.filter((row) => row.projectId === project.id)
+          .map((row) => ({targetReference: row.targetReference, deliveryReference: row.deliveryReference,
+            occurredAt: row.occurredAt.toISOString()}))},
       receipts: receipts.rows.filter((row) => row.projectId === project.id).slice(0, 8).map((row) => ({...row, occurredAt: row.occurredAt.toISOString()})),
       audit: audit.rows.filter((row) => row.projectId === project.id).slice(0, 8).map((row) => ({...row, occurredAt: row.occurredAt.toISOString()}))};
   });
