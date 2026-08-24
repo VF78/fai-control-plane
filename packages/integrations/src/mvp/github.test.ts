@@ -182,4 +182,63 @@ describe('MVP GitHub adapter', () => {
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith('/issues/42') && init?.method === 'PATCH')).toBe(true);
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/issues/9001'))).toBe(false);
   });
+
+  it('changes one exact provider Project item stage and reads it back', async () => {
+    let stage = {optionId: 'ready', name: 'Ready'}; let updatedAt = '2026-08-24T00:00:00Z';
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body ?? '');
+      if (body.includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {
+        id: 'PVTI_1', updatedAt, project: {id: 'PVT_1'}, statusValue: stage, ownerValue: null,
+        content: {id: 'I_42', databaseId: 9001, number: 42,
+          url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: []}}
+      }}}));
+      if (body.includes('fields(first:100)')) return new Response(JSON.stringify({data: {user: {projectV2: {
+        id: 'PVT_1', fields: {nodes: [
+          {id: 'owner-field', name: 'Owner', options: []},
+          {id: 'status-field', name: 'Status', options: [{id: 'ready', name: 'Ready'}, {id: 'qa', name: 'QA'}]}
+        ], pageInfo: {hasNextPage: false}}
+      }}}}));
+      if (body.includes('updateProjectV2ItemFieldValue')) {
+        stage = {optionId: 'qa', name: 'QA'}; updatedAt = '2026-08-24T00:01:00Z';
+        return new Response(JSON.stringify({data: {updateProjectV2ItemFieldValue: {projectV2Item: {id: 'PVTI_1'}}}}));
+      }
+      throw new Error(`unexpected request ${body}`);
+    });
+    const adapter = createGitHubTrackerMutationAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
+      projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
+      credentialRef: secretRef, secrets: secrets('token'), fetch});
+    await expect(adapter.setProjectItemStage({projectId: 'project', itemId: 'PVTI_1', issueId: '9001',
+      expectedVersion: 'github:updated-at:2026-08-24T00:00:00Z', stage: 'QA', idempotencyKey: 'command'}))
+      .resolves.toEqual({referenceId: 'PVTI_1', url: 'https://github.com/users/acme/projects/1',
+        version: 'github:updated-at:2026-08-24T00:01:00Z'});
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('updates one exact bound issue with optimistic item version and provider readback', async () => {
+    let updatedAt = '2026-08-24T00:00:00Z'; let body = 'Before';
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const graphql = String(init?.body ?? '');
+      if (graphql.includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {
+        id: 'PVTI_1', updatedAt, project: {id: 'PVT_1'}, statusValue: {optionId: 'ready', name: 'Ready'}, ownerValue: null,
+        content: {id: 'I_42', databaseId: 9001, number: 42,
+          url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: []}}
+      }}}));
+      if (String(url).endsWith('/issues/42') && init?.method === 'PATCH') {
+        body = String(JSON.parse(String(init.body)).body); updatedAt = '2026-08-24T00:01:00Z';
+        return new Response(JSON.stringify({number: 42}));
+      }
+      if (String(url).endsWith('/issues/42') && init?.method === undefined) return new Response(JSON.stringify({
+        number: 42, html_url: 'https://github.com/acme/repo/issues/42', body, updated_at: updatedAt
+      }));
+      throw new Error(`unexpected request ${String(url)} ${graphql}`);
+    });
+    const adapter = createGitHubTrackerMutationAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
+      projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
+      credentialRef: secretRef, secrets: secrets('token'), fetch});
+    await expect(adapter.updateIssue({projectId: 'project', itemId: 'PVTI_1', issueId: '9001',
+      expectedVersion: 'github:updated-at:2026-08-24T00:00:00Z', operation: 'body', value: 'After',
+      idempotencyKey: 'command'})).resolves.toEqual({referenceId: '42',
+      url: 'https://github.com/acme/repo/issues/42', version: 'github:updated-at:2026-08-24T00:01:00Z'});
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
 });

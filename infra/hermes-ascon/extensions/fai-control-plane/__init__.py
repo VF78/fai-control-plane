@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -50,7 +51,7 @@ def _token(profile: str) -> str:
     return value
 
 
-def _post(profile: str, source: dict[str, str], action: dict) -> str:
+def _post(profile: str, source: dict[str, str], action: dict, response_limit: int = 4_096) -> str:
     payload = json.dumps({"source": source, "action": action}, separators=(",", ":")).encode("utf-8")
     if len(payload) > 32_000:
         return json.dumps({"error": "bridge_payload_invalid"})
@@ -59,8 +60,8 @@ def _post(profile: str, source: dict[str, str], action: dict) -> str:
     })
     try:
         with urlopen(request, timeout=15) as response:
-            body = response.read(4_097)
-            if len(body) > 4_096:
+            body = response.read(response_limit + 1)
+            if len(body) > response_limit:
                 raise ValueError("bridge_response_too_large")
             value = json.loads(body)
             if response.status not in (200, 202) or value.get("status") not in ("completed", "duplicate"):
@@ -70,11 +71,56 @@ def _post(profile: str, source: dict[str, str], action: dict) -> str:
         return json.dumps({"error": "control_plane_unavailable"})
 
 
+def _context_hook(state, **kwargs):
+    session_id = str(kwargs.get("session_id") or "")
+    platform_value = kwargs.get("platform")
+    platform = str(getattr(platform_value, "value", platform_value or ""))
+    if platform != "telegram":
+        return None
+    source = bridge_state.resolve(session_id)
+    if source is None or source.get("provider") != "telegram":
+        return {"context": "Project context is unavailable. Do not mutate project systems until identity and current context are confirmed."}
+    try:
+        cached_version = str(state.get("project_context_version", "") or "")
+        cached_capsule = str(state.get("project_context_capsule", "") or "")
+    except (RuntimeError, ValueError, OSError):
+        cached_version = ""
+        cached_capsule = ""
+    if not re.fullmatch(r"[a-f0-9]{64}", cached_version):
+        cached_version = ""
+    if not cached_capsule or "\x00" in cached_capsule or len(cached_capsule.encode("utf-8")) > 4_000:
+        cached_capsule = ""
+    action = {"type": "project_context.read", "ifVersion": cached_version or None}
+    raw = _post("internal", source, action, response_limit=8_192)
+    try:
+        result = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        result = {"error": "control_plane_unavailable"}
+    version = str(result.get("version") or "") if isinstance(result, dict) else ""
+    status = result.get("status") if isinstance(result, dict) else None
+    if status == "completed" and re.fullmatch(r"[a-f0-9]{64}", version):
+        capsule = str(result.get("capsule") or "")
+        if capsule and "\x00" not in capsule and len(capsule.encode("utf-8")) <= 4_000:
+            try:
+                state.set("project_context_version", version)
+                state.set("project_context_capsule", capsule)
+            except (RuntimeError, ValueError, OSError):
+                pass
+            return {"context": f"Active project context {version[:12]} (current):\n{capsule}"}
+    if status == "duplicate" and version == cached_version and cached_capsule:
+        return {"context": f"Active project context {cached_version[:12]} (current):\n{cached_capsule}"}
+    if cached_capsule:
+        return {"context": f"WARNING: project context service is unavailable; cached version {cached_version[:12]} may be stale. Do not mutate project systems until live facts are re-read.\n{cached_capsule}"}
+    return {"context": "Project context is unavailable. Do not mutate project systems until the current context is loaded from Control Plane."}
+
+
 def _handler(action_type: str):
     def handle(args: dict, **kwargs) -> str:
         session_id = str(kwargs.get("session_id") or "")
         source = bridge_state.resolve(session_id)
-        if source is None or source.get("provider") != "telegram":
+        if source is None and re.fullmatch(r"browser:[a-f0-9]{64}", session_id):
+            source = {"provider": "agent-role-run", "sessionId": session_id}
+        if source is None or source.get("provider") not in ("telegram", "agent-role-run"):
             return json.dumps({"error": "authenticated_message_identity_required"})
         action = {"type": action_type, **args}
         return _post("internal", source, action)
@@ -99,8 +145,17 @@ _TOOLS = (
     ("fai_project_facts", "project_facts.read", "Read current provider-native project facts.", {}, []),
     ("fai_issue_create", "issue.create", "Create one issue in the bound repository and Project.",
      {"title": {"type": "string", "minLength": 1, "maxLength": 160}, "statement": _TEXT}, ["title", "statement"]),
+    ("fai_issue_update", "issue.update", "Update one exact issue and verify the provider result.",
+     {"itemId": _ID, "issueId": _ID, "expectedVersion": _ID,
+      "operation": {"type": "string", "enum": ["title", "body", "state"]}, "value": _TEXT},
+     ["itemId", "issueId", "expectedVersion", "operation", "value"]),
     ("fai_issue_clarify", "issue.clarify", "Add clarification to an exact issue version.",
      {"referenceId": _ID, "expectedVersion": _ID, "statement": _TEXT}, ["referenceId", "expectedVersion", "statement"]),
+    ("fai_project_item_stage", "project_item.stage",
+     "Change the stage of the exact GitHub Project item and verify the provider result. Done is approval-gated and unavailable here.",
+     {"itemId": _ID, "issueId": _ID, "expectedVersion": _ID,
+      "stage": {"type": "string", "enum": ["Backlog", "Ready", "In Dev", "QA", "Acceptance"]}},
+     ["itemId", "issueId", "expectedVersion", "stage"]),
     ("fai_source_add", "source.add", "Attach bounded source context to the project.",
      {"name": {"type": "string", "minLength": 1, "maxLength": 200}, "content": _TEXT}, ["name", "content"]),
     ("fai_approval_decide", "approval.decide", "Record an explicit human decision for an exact approval target.",
@@ -114,9 +169,10 @@ def register(ctx) -> None:
     for name, action_type, description, properties, required in _TOOLS:
         ctx.register_tool(name=name, toolset="fai_internal", schema=_schema(name, description, properties, required),
                           handler=_handler(action_type))
-    for name, action_type, description, properties, required in _TOOLS[1:3]:
+    for name, action_type, description, properties, required in (_TOOLS[1], _TOOLS[3]):
         client_name = name.replace("fai_", "fai_client_", 1)
         ctx.register_tool(name=client_name, toolset="fai_client",
                           schema=_schema(client_name, description, properties, required),
                           handler=_client_handler(action_type))
     ctx.register_hook("pre_gateway_dispatch", _pre_dispatch)
+    ctx.register_hook("pre_llm_call", lambda **kwargs: _context_hook(ctx.state, **kwargs))

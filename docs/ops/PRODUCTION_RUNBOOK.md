@@ -92,6 +92,67 @@ network change.
 - GitHub Actions are not required for deployment; use approved local checks
   while the Actions spending limit is active.
 
+### Hermes GitHub credential boundary
+
+Reviewed non-secret Hermes environment example SHA-256:
+`e4d34238d06866defd3fb6ceaa8364ed88129e83d628ee2abaf549337b115ac1`.
+
+Reviewed non-secret Control Plane environment example SHA-256:
+`703dbd9d4ec8d9373dcb0b70aee167ca5a9852e9cb2e257e69bbdd018153ebbe`.
+
+- Never mount a GitHub PAT, App private key, deploy key or `GH_TOKEN` into the
+  Hermes gateway or its terminal. The ASCON repository cannot currently prove
+  protected-ref enforcement, so a standing `contents:write` credential would
+  also expose merge/release writes.
+- Routine Hermes Project mutations use the existing Control Plane GitHub
+  adapter. Hermes receives only its project-isolated internal bridge token;
+  Telegram identity is bound server-side, every command is idempotent/audited,
+  and provider versions are checked immediately before mutation.
+- The host-owned GitHub credential remains only at
+  `/etc/fai-control-plane-mvp/secrets/github-projects-token`, root-only mode
+  `0600`, and is resolved by the web/worker adapters. Never copy it to the
+  Hermes checkout, data root, environment, logs or approval evidence.
+- Merge, Actions mutation, release and production deploy are not standing
+  Hermes capabilities. Enabling any one requires a separately reviewed broker
+  operation that resolves approved evidence against the exact current provider
+  target/version; a prompt, role name or retained approval is insufficient.
+
+### Isolated Hermes Codex CLI credential
+
+The Hermes-derived image is built from the exact upstream digest recorded in
+`infra/hermes-ascon/Dockerfile` and pins `@openai/codex` `0.144.1`. The gateway
+runs as UID/GID `10000:10000`, with `CODEX_HOME=/opt/data/codex-home` and
+working directory `/opt/data/work/project`. Never copy or mount root's Codex
+home, a raw GitHub token or another project's credential into this data root.
+
+After separate approval for the interactive device flow, create only the
+project-isolated Codex credential. This action builds and probes the derived
+image but does not start or restart the gateway:
+
+```bash
+cd /opt/fai-hermes-ascon
+sudo env \
+  HERMES_APPROVED_IMAGE=nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6 \
+  HERMES_APPROVED_CONFIG_SHA256=<approved-64-hex-hermes-environment> \
+  scripts/deploy-hermes-ascon.sh codex-auth
+```
+
+The approved image value is always that immutable upstream digest. The
+separately validated local derived tag is `fai-hermes-ascon:codex-0.144.1`.
+Codex device auth, version, filesystem and login-status probes run only in the
+minimal `codex-cli` Compose service. It mounts only the isolated Codex home and
+project work directory, with no gateway API/Telegram environment, bridge-token
+mounts, other Hermes data or listening ports.
+
+`stage` deletes stale readiness first and recreates
+`/var/lib/fai-hermes-ascon/readiness/codex-cli.json` only after the separate
+Hermes provider credential, Codex CLI credential, exact CLI version, derived
+image, gateway health and public capabilities all pass. The root-written file
+is self-hashed and mounted read-only into the Control Plane web container.
+Failed staging and `rollback` remove it, so missing or drifted evidence keeps
+Codex execution unavailable. Staging or rollback remains a separate exact
+production authorization.
+
 ## Supported release
 
 `scripts/deploy-prod.sh` is the source of truth. It accepts only exact current

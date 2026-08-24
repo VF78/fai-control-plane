@@ -5,6 +5,8 @@ export const mvpApiRoutes = Object.freeze([
   '/api/access/onboarding',
   '/api/access/memberships/[id]',
   '/api/projects/[projectId]/sources',
+  '/api/projects/[projectId]/agent-routing',
+  '/api/projects/[projectId]/context/refresh',
   '/api/approvals/[id]',
   '/api/tasks/executor',
   '/api/webhooks/github',

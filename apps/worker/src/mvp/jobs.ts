@@ -4,7 +4,9 @@ export const mvpWorkerJobs = Object.freeze(['github-reconcile', 'delivery-retry'
 export type MvpWorkerJob = (typeof mvpWorkerJobs)[number];
 
 /** Human-paced MVP polling; GitHub webhooks are not the full repair source. */
-export const workerPollIntervalMs = trackerPollIntervalMs;
+export const workerTrackerPollIntervalMs = trackerPollIntervalMs;
+/** Local outbox retries never read GitHub, so they can remain responsive. */
+export const workerRetryIntervalMs = 10_000;
 
 export type WorkerJobHandlers = Readonly<Record<MvpWorkerJob, () => Promise<void>>>;
 

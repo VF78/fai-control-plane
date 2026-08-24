@@ -2,12 +2,16 @@ import {createHash, randomUUID} from 'node:crypto';
 import pg from 'pg';
 import type {
   ApprovalKind,
+  AgentRoutingPolicy,
+  MessengerDeliveryInput,
   OpaqueSecretRef,
   ProjectRole,
-  SourceReference,
+  SourceReference, ProjectContextSnapshot, ProjectProcessPolicy,
   TrackerSnapshot
 } from '@fai-control-plane/domain';
-import {trackerStaleAfterMs, validateTrackerSnapshot} from '@fai-control-plane/domain';
+import {isUuid, parseAgentRoutingPolicy, parseProjectContextSnapshot, parseProjectContextSource, parseProjectProcessPolicy,
+  projectContextSnapshotKind, projectContextSnapshotVersion, projectContextSourceKind, serializeProjectContextSnapshot,
+  trackerStaleAfterMs, validateTrackerSnapshot} from '@fai-control-plane/domain';
 import type {
   ApprovalTransactionStore,
   AuditStore,
@@ -360,11 +364,300 @@ export const addSourceArtifact = async (database: Database, input: Readonly<{
       (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
      select $1,$2,$3,$4,$5,$6,$7,$8,$9,$10 where exists (
        select 1 from project_memberships where project_id=$2 and actor_id=$3 and active=true
-     ) on conflict(project_id,sha256) do update set sha256=excluded.sha256 returning id`, [id, input.projectId, input.actorId, input.kind, input.name, input.mediaType,
+     ) on conflict(project_id,kind,sha256) do update set sha256=excluded.sha256 returning id`, [id, input.projectId, input.actorId, input.kind, input.name, input.mediaType,
       input.sha256, input.contentText, input.sourceUrl, input.provenance]
   );
   if (result.rowCount !== 1) throw new Error('source_membership_denied');
   return result.rows[0]!.id;
+};
+
+export type AgentRoutingPolicyView = Readonly<{
+  id: string; projectId: string; version: string; provenance: string; createdAt: string;
+  policy: AgentRoutingPolicy;
+}>;
+
+/** Immutable project configuration versions; the latest valid artifact is active. */
+export const readAgentRoutingPolicy = async (database: Database, actorId: string,
+  projectId: string): Promise<AgentRoutingPolicyView | null> => {
+  const result = await database.query<Readonly<{
+    id: string; projectId: string; sha256: string; provenance: string; createdAt: Date; contentText: string;
+  }>>(`select s.id,s.project_id as "projectId",s.sha256,s.provenance,s.created_at as "createdAt",
+      s.content_text as "contentText" from project_source_artifacts s
+    join project_memberships m on m.project_id=s.project_id and m.actor_id=$1 and m.active=true
+    where s.project_id=$2 and s.kind='agent_routing_policy_v1'
+    order by s.created_at desc,s.id desc limit 1`, [actorId, projectId]);
+  const row = result.rows[0]; if (row === undefined) return null;
+  let decoded: unknown;
+  try { decoded = JSON.parse(row.contentText); } catch { throw new Error('agent_routing_policy_invalid'); }
+  const policy = parseAgentRoutingPolicy(decoded);
+  if (policy === null || createHash('sha256').update(row.contentText).digest('hex') !== row.sha256) {
+    throw new Error('agent_routing_policy_invalid');
+  }
+  return {id: row.id, projectId: row.projectId, version: row.sha256,
+    provenance: row.provenance, createdAt: row.createdAt.toISOString(), policy};
+};
+
+export const saveAgentRoutingPolicy = async (database: Database, input: Readonly<{
+  workspaceId: string; projectId: string; actorId: string; policy: AgentRoutingPolicy;
+  idempotencyKey: string; occurredAt: string;
+}>): Promise<Readonly<{id: string; version: string}>> => {
+  const policy = parseAgentRoutingPolicy(input.policy);
+  if (policy === null || !/^[a-z0-9:_-]{1,256}$/.test(input.idempotencyKey) ||
+    !Number.isFinite(Date.parse(input.occurredAt))) throw new Error('agent_routing_policy_invalid');
+  const content = JSON.stringify(policy); const version = createHash('sha256').update(content).digest('hex');
+  const client = await database.connect();
+  try {
+    await client.query('begin');
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [input.idempotencyKey]);
+    const owner = await client.query<{workspaceId: string}>(`select p.workspace_id as "workspaceId"
+      from project_memberships m join projects p on p.id=m.project_id
+      where m.project_id=$1 and m.actor_id=$2 and m.active=true and m.role='project_owner' for update`,
+    [input.projectId, input.actorId]);
+    if (owner.rows[0]?.workspaceId !== input.workspaceId) throw new Error('agent_routing_policy_denied');
+    const prior = await client.query<{id: string}>(`select result_reference as id from command_receipts
+      where idempotency_key=$1 and command_type='agent.routing.configure'`, [input.idempotencyKey]);
+    if (prior.rows[0] !== undefined) {
+      const priorArtifact = await client.query<{version: string}>(`select sha256 as version
+        from project_source_artifacts where id=$1 and project_id=$2 and kind='agent_routing_policy_v1'`, [prior.rows[0].id, input.projectId]);
+      if (priorArtifact.rows[0] === undefined) throw new Error('agent_routing_policy_invalid');
+      await client.query('rollback'); return {id: prior.rows[0].id, version: priorArtifact.rows[0].version};
+    }
+    const existing = await client.query<{id: string}>(`select id from project_source_artifacts
+      where project_id=$1 and kind='agent_routing_policy_v1' and sha256=$2`, [input.projectId, version]);
+    let id = existing.rows[0]?.id;
+    if (id === undefined) {
+      id = randomUUID();
+      await client.query(`insert into project_source_artifacts
+        (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance,created_at)
+        values($1,$2,$3,'agent_routing_policy_v1','Agent routing policy','application/json',$4,$5,null,$6,$7)`,
+      [id,input.projectId,input.actorId,version,content,`control-plane:${input.idempotencyKey}`,input.occurredAt]);
+    }
+    await client.query(`insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
+      values($1,$2,$3,'agent.routing.configure',$4,$5) on conflict(idempotency_key) do nothing`,
+    [input.projectId,input.actorId,input.idempotencyKey,id,input.occurredAt]);
+    await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
+      values($1,$2,$3,'agent.routing.configure',$4,$5,$6,$7)`,
+    [input.workspaceId,input.projectId,input.actorId,id,`ui:${input.idempotencyKey}`,
+      JSON.stringify({version}),input.occurredAt]);
+    await client.query('commit'); return {id, version};
+  } catch (error) { await client.query('rollback'); throw error; }
+  finally { client.release(); }
+};
+
+export type ProjectProcessPolicyView = Readonly<{
+  id: string; projectId: string; version: string; provenance: string; createdAt: string;
+  policy: ProjectProcessPolicy;
+}>;
+
+export const readProjectProcessPolicy = async (database: Database, actorId: string,
+  projectId: string): Promise<ProjectProcessPolicyView | null> => {
+  const result = await database.query<Readonly<{
+    id: string; projectId: string; sha256: string; provenance: string; createdAt: Date; contentText: string;
+  }>>(`select s.id,s.project_id as "projectId",s.sha256,s.provenance,s.created_at as "createdAt",
+      s.content_text as "contentText" from project_source_artifacts s
+    join project_memberships m on m.project_id=s.project_id and m.actor_id=$1 and m.active=true
+    join lateral (select target_reference from audit_events where project_id=$2 and action='project.process.configure'
+      order by occurred_at desc,created_at desc limit 1) active on active.target_reference=s.id
+    where s.project_id=$2 and s.kind='project_process_policy_v1'`, [actorId, projectId]);
+  const row = result.rows[0]; if (row === undefined) return null;
+  let decoded: unknown;
+  try { decoded = JSON.parse(row.contentText); } catch { throw new Error('project_process_policy_invalid'); }
+  const policy = parseProjectProcessPolicy(decoded);
+  if (policy === null || createHash('sha256').update(row.contentText).digest('hex') !== row.sha256) {
+    throw new Error('project_process_policy_invalid');
+  }
+  return {id: row.id, projectId: row.projectId, version: row.sha256, provenance: row.provenance,
+    createdAt: row.createdAt.toISOString(), policy};
+};
+
+export const saveProjectProcessPolicy = async (database: Database, input: Readonly<{
+  workspaceId: string; projectId: string; actorId: string; policy: ProjectProcessPolicy;
+  idempotencyKey: string; occurredAt: string;
+}>): Promise<Readonly<{id: string; version: string}>> => {
+  const policy = parseProjectProcessPolicy(input.policy);
+  if (policy === null || !/^[a-z0-9:_-]{1,256}$/.test(input.idempotencyKey) ||
+    !Number.isFinite(Date.parse(input.occurredAt))) throw new Error('project_process_policy_invalid');
+  const content = JSON.stringify(policy); const version = createHash('sha256').update(content).digest('hex');
+  const client = await database.connect();
+  try {
+    await client.query('begin');
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [input.idempotencyKey]);
+    const owner = await client.query<{workspaceId: string}>(`select p.workspace_id as "workspaceId"
+      from project_memberships m join projects p on p.id=m.project_id
+      where m.project_id=$1 and m.actor_id=$2 and m.active=true and m.role='project_owner' for update`,
+    [input.projectId, input.actorId]);
+    if (owner.rows[0]?.workspaceId !== input.workspaceId) throw new Error('project_process_policy_denied');
+    const prior = await client.query<{id: string}>(`select result_reference as id from command_receipts
+      where idempotency_key=$1 and command_type='project.process.configure'`, [input.idempotencyKey]);
+    if (prior.rows[0] !== undefined) {
+      const artifact = await client.query<{version: string}>(`select sha256 as version from project_source_artifacts
+        where id=$1 and project_id=$2 and kind='project_process_policy_v1'`, [prior.rows[0].id,input.projectId]);
+      if (artifact.rows[0] === undefined) throw new Error('project_process_policy_invalid');
+      await client.query('rollback'); return {id: prior.rows[0].id, version: artifact.rows[0].version};
+    }
+    const existing = await client.query<{id: string}>(`select id from project_source_artifacts
+      where project_id=$1 and kind='project_process_policy_v1' and sha256=$2`, [input.projectId,version]);
+    const id = existing.rows[0]?.id ?? randomUUID();
+    if (existing.rows[0] === undefined) await client.query(`insert into project_source_artifacts
+      (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance,created_at)
+      values($1,$2,$3,'project_process_policy_v1','Project process policy','application/json',$4,$5,null,$6,$7)`,
+    [id,input.projectId,input.actorId,version,content,`control-plane:${input.idempotencyKey}`,input.occurredAt]);
+    await client.query(`insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
+      values($1,$2,$3,'project.process.configure',$4,$5)`, [input.projectId,input.actorId,input.idempotencyKey,id,input.occurredAt]);
+    await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
+      values($1,$2,$3,'project.process.configure',$4,$5,$6,$7)`, [input.workspaceId,input.projectId,input.actorId,id,
+      `ui:${input.idempotencyKey}`,JSON.stringify({version}),input.occurredAt]);
+    await client.query('commit'); return {id,version};
+  } catch (error) { await client.query('rollback'); throw error; }
+  finally { client.release(); }
+};
+
+export const activateProjectContextSnapshot = async (database: Database, input: Readonly<{
+  workspaceId: string; projectId: string; actorId: string; sourceIds: readonly string[]; content: string;
+  idempotencyKey: string; occurredAt: string;
+}>): Promise<Readonly<{id: string; version: string; status: 'completed' | 'duplicate'}>> => {
+  if (input.sourceIds.length === 0 || input.sourceIds.length > 20 ||
+    new Set(input.sourceIds).size !== input.sourceIds.length || !input.sourceIds.every(isUuid) ||
+    !/^[a-z0-9:_-]{1,256}$/.test(input.idempotencyKey) || !Number.isFinite(Date.parse(input.occurredAt))) {
+    throw new Error('project_context_invalid');
+  }
+  const client = await database.connect();
+  try {
+    await client.query('begin');
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [input.idempotencyKey]);
+    const membership = await client.query<{workspaceId: string}>(`select p.workspace_id as "workspaceId"
+      from project_memberships m join projects p on p.id=m.project_id
+      where m.project_id=$1 and m.actor_id=$2 and m.active=true and m.role in ('project_owner','operator') for update`,
+    [input.projectId,input.actorId]);
+    if (membership.rows[0]?.workspaceId !== input.workspaceId) throw new Error('project_context_denied');
+    const prior = await client.query<{id: string}>(`select result_reference as id from command_receipts
+      where idempotency_key=$1 and command_type='project.context.activate'`, [input.idempotencyKey]);
+    if (prior.rows[0] !== undefined) {
+      const artifact = await client.query<{version: string}>(`select sha256 as version from project_source_artifacts
+        where id=$1 and project_id=$2 and kind=$3`, [prior.rows[0].id,input.projectId,projectContextSnapshotKind]);
+      if (artifact.rows[0] === undefined) throw new Error('project_context_invalid');
+      await client.query('rollback'); return {id:prior.rows[0].id,version:artifact.rows[0].version,status:'duplicate'};
+    }
+    const sources = await client.query<{id:string;name:string;kind:string;sha256:string;provenance:string;contentText:string}>(`select
+      id,name,kind,sha256,provenance,content_text as "contentText" from project_source_artifacts
+      where project_id=$1 and id=any($2::uuid[]) and kind=$3`,
+    [input.projectId,input.sourceIds,projectContextSourceKind]);
+    if (sources.rows.length !== input.sourceIds.length) throw new Error('project_context_source_denied');
+    for (const source of sources.rows) {
+      let decoded: unknown;
+      try { decoded=JSON.parse(source.contentText); } catch { throw new Error('project_context_source_denied'); }
+      const canonical=parseProjectContextSource(decoded);
+      if (canonical === null || canonical.key !== source.name || projectContextSnapshotVersion(source.contentText) !== source.sha256) {
+        throw new Error('project_context_source_denied');
+      }
+    }
+    const snapshot: ProjectContextSnapshot = {contract:'fai.project-context.v1', content:input.content,
+      sources:sources.rows.map((source) => ({id:source.id,key:source.name,kind:projectContextSourceKind,
+        version:source.sha256,provenance:source.provenance}))};
+    const serialized = serializeProjectContextSnapshot(snapshot); const version = projectContextSnapshotVersion(serialized);
+    const existing = await client.query<{id:string}>(`select id from project_source_artifacts
+      where project_id=$1 and kind=$2 and sha256=$3`, [input.projectId,projectContextSnapshotKind,version]);
+    const id = existing.rows[0]?.id ?? randomUUID();
+    if (existing.rows[0] === undefined) await client.query(`insert into project_source_artifacts
+      (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance,created_at)
+      values($1,$2,$3,$4,'Project context snapshot','application/json',$5,$6,null,$7,$8)`,
+    [id,input.projectId,input.actorId,projectContextSnapshotKind,version,serialized,
+      `control-plane:${input.idempotencyKey}`,input.occurredAt]);
+    await client.query(`insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
+      values($1,$2,$3,'project.context.activate',$4,$5)`, [input.projectId,input.actorId,input.idempotencyKey,id,input.occurredAt]);
+    await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
+      values($1,$2,$3,'project.context.activate',$4,$5,$6,$7)`, [input.workspaceId,input.projectId,input.actorId,id,
+      `ui:${input.idempotencyKey}`,JSON.stringify({version,sourceCount:sources.rows.length}),input.occurredAt]);
+    await client.query('commit'); return {id,version,status:existing.rows[0] === undefined ? 'completed' : 'duplicate'};
+  } catch (error) { await client.query('rollback'); throw error; }
+  finally { client.release(); }
+};
+
+export type ProjectContextStatusView = Readonly<{
+  status: 'current' | 'stale';
+  snapshot: Readonly<SourceReference & {createdAt: string}>;
+  sources: ProjectContextSnapshot['sources'];
+}>;
+
+export const readProjectContextStatus = async (database: Database, actorId: string,
+  projectId: string): Promise<ProjectContextStatusView | null> => {
+  const result = await database.query<{id:string;sha256:string;kind:string;provenance:string;content:string;createdAt:Date}>(`select
+      s.id,s.sha256,s.kind,s.provenance,s.content_text as content,s.created_at as "createdAt" from project_source_artifacts s
+    join project_memberships m on m.project_id=s.project_id and m.actor_id=$1 and m.active=true
+    join lateral (select target_reference from audit_events where project_id=$2 and action='project.context.activate'
+      order by occurred_at desc,created_at desc limit 1) active on active.target_reference=s.id
+    where s.project_id=$2 and s.kind=$3`, [actorId,projectId,projectContextSnapshotKind]);
+  const row = result.rows[0]; if (row === undefined || projectContextSnapshotVersion(row.content) !== row.sha256) return null;
+  let decoded: unknown;
+  try { decoded = JSON.parse(row.content); } catch { return null; }
+  const snapshot = parseProjectContextSnapshot(decoded); if (snapshot === null) return null;
+  const sources = await database.query<{id:string;name:string;kind:string;sha256:string;provenance:string;contentText:string}>(`select distinct on(name)
+      id,name,kind,sha256,provenance,content_text as "contentText" from project_source_artifacts
+    where project_id=$1 and kind=$2 and name=any($3::text[]) order by name,created_at desc,id desc`,
+  [projectId,projectContextSourceKind,snapshot.sources.map((source) => source.key)]);
+  const current = new Map(sources.rows.map((source) => [source.name,source]));
+  const stale = snapshot.sources.some((source) => { const value=current.get(source.key); if (value === undefined) return true;
+    let decoded: unknown; try { decoded=JSON.parse(value.contentText); } catch { return true; }
+    const canonical=parseProjectContextSource(decoded); return canonical === null || canonical.key !== value.name ||
+      value.id !== source.id || value.kind !== source.kind || value.sha256 !== source.version ||
+      value.provenance !== source.provenance || projectContextSnapshotVersion(value.contentText) !== value.sha256; });
+  const {createdAt, ...source} = row;
+  return {status: stale ? 'stale' : 'current', snapshot: {...source, createdAt: createdAt.toISOString()},
+    sources:snapshot.sources};
+};
+
+export const readActiveProjectContext = async (database: Database, actorId: string,
+  projectId: string): Promise<Readonly<SourceReference & {createdAt?: string}> | null> => {
+  const view = await readProjectContextStatus(database, actorId, projectId);
+  return view?.status === 'current' ? view.snapshot : null;
+};
+
+export const canonicalProjectContextKeys = Object.freeze([
+  'repo:AGENTS.md', 'repo:docs/AI_CONTEXT.md', 'repo:docs/adr/0006-thin-control-plane-authority.md',
+  'composition:project-process-policy'
+] as const);
+
+const boundedCapsule = (value: string, maximum = 4_000): string => {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength <= maximum) return value;
+  let output = '';
+  for (const character of value) {
+    if (encoder.encode(output + character).byteLength > maximum) break;
+    output += character;
+  }
+  return output;
+};
+
+/** Rebuilds only from the canonical project sources already recorded with provenance. */
+export const refreshProjectContext = async (database: Database, input: Readonly<{
+  workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; occurredAt: string;
+}>): Promise<Readonly<{id: string; version: string; status: 'completed' | 'duplicate'}>> => {
+  const sources = await database.query<{id: string; name: string; contentText: string; provenance: string}>(`select id,name,
+      content_text as "contentText",provenance from project_source_artifacts where project_id=$1 and kind=$2
+      and name=any($3::text[]) order by name,created_at desc,id desc`,
+  [input.projectId, projectContextSourceKind, canonicalProjectContextKeys]);
+  const current = new Map<string, {id: string; content: string}>();
+  for (const source of sources.rows) {
+    if (current.has(source.name)) continue;
+    if (source.provenance.startsWith('repo-file-removed:')) continue;
+    let decoded: unknown;
+    try { decoded = JSON.parse(source.contentText); } catch { continue; }
+    const parsed = parseProjectContextSource(decoded);
+    if (parsed !== null && parsed.key === source.name) current.set(source.name, {id: source.id, content: parsed.content});
+  }
+  if (canonicalProjectContextKeys.some((key) => !current.has(key))) throw new Error('project_context_not_configured');
+  const ordered = canonicalProjectContextKeys.map((key) => [key, current.get(key)!] as const);
+  // Four concise source slices make every canonical input visible in the
+  // ephemeral capsule; full source text remains in its provenance artifact.
+  const content = ordered.map(([key, source]) => `# ${key}\n${boundedCapsule(source.content, 920)}`).join('\n\n');
+  if (new TextEncoder().encode(content).byteLength === 0) throw new Error('project_context_not_configured');
+  const sourceIds = ordered.map(([,source]) => source.id);
+  // Bootstrap is safely repeatable while still activating changed repository
+  // sources after a reinstall or document update.
+  const idempotencyKey = input.idempotencyKey.startsWith('bootstrap-context:')
+    ? `${input.idempotencyKey}:${createHash('sha256').update(sourceIds.join('\0')).digest('hex').slice(0,32)}`
+    : input.idempotencyKey;
+  return activateProjectContextSnapshot(database, {...input, idempotencyKey, sourceIds, content});
 };
 
 export const appendIncomingEvent = async (database: Database, input: Readonly<{
@@ -596,6 +889,38 @@ export const resolveActiveHumanMember = async (database: Database, projectId: st
   return result.rows[0] ?? null;
 };
 
+export type ReceiptBoundRoleRun = Readonly<{
+  sessionId: string; actorId: string; projectId: string; requesterRole: ProjectRole;
+  role: 'manager' | 'developer' | 'qa'; itemId: string; observedVersion: string; occurredAt: string;
+}>;
+
+/** Resolves role-run authority only from the canonical submit receipt, matching audit, and live requester membership. */
+export const resolveReceiptBoundRoleRun = async (database: Database, sessionId: string,
+  projectId: string): Promise<ReceiptBoundRoleRun | null> => {
+  const match = /^browser:([a-f0-9]{64})$/.exec(sessionId);
+  if (match === null) return null;
+  const idempotencyKey = `agent.submit:${match[1]}`;
+  const result = await database.query<Readonly<{
+    actorId: string; projectId: string; requesterRole: ProjectRole; role: string;
+    itemId: string; observedVersion: string; occurredAt: Date;
+  }>>(`select r.actor_id as "actorId",r.project_id as "projectId",m.role as "requesterRole",
+      a.details->>'role' as role,a.target_reference as "itemId",
+      a.details->>'observedVersion' as "observedVersion",r.occurred_at as "occurredAt"
+    from command_receipts r
+    join audit_events a on a.project_id=r.project_id and a.actor_id=r.actor_id
+      and a.occurred_at=r.occurred_at and a.action='agent.submit' and a.correlation_id=$1
+    join actors actor on actor.id=r.actor_id and actor.kind='human' and actor.enabled=true
+    join project_memberships m on m.project_id=r.project_id and m.actor_id=r.actor_id and m.active=true
+    where r.project_id=$2 and r.idempotency_key=$3 and r.command_type='agent.submit'
+    limit 2`, [sessionId, projectId, idempotencyKey]);
+  const row = result.rows.length === 1 ? result.rows[0] : undefined;
+  if (row === undefined || !['project_owner', 'operator'].includes(row.requesterRole) ||
+    !['manager', 'developer', 'qa'].includes(row.role) || !/^[^\0\r\n]{1,256}$/.test(row.itemId) ||
+    !/^[^\0\r\n]{1,256}$/.test(row.observedVersion)) return null;
+  return {...row, sessionId, role: row.role as 'manager' | 'developer' | 'qa',
+    occurredAt: row.occurredAt.toISOString()};
+};
+
 export const canApprove = async (
   database: Database, actorId: string, projectId: string, kind: ApprovalKind
 ): Promise<boolean> => {
@@ -658,6 +983,7 @@ export const resolveAgentSourceReferences = async (database: Database, input: Re
 export const executeAgentSubmissionTransaction = async (database: Database, input: Readonly<{
   workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
   role: string; itemId: string; observedVersion: string; sourceCount: number;
+  notification: MessengerDeliveryInput;
 }>, submit: () => Promise<Readonly<{deliveryReference: string}>>): Promise<Readonly<{
   status: 'completed' | 'duplicate'; deliveryReference: string;
 }>> => {
@@ -683,6 +1009,10 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
        values($1,$2,$3,'agent.submit',$4,$5,$6,$7)`,
       [input.workspaceId,input.projectId,input.actorId,input.itemId,input.correlationId,
         JSON.stringify({role: input.role, observedVersion: input.observedVersion, sourceCount: input.sourceCount}),occurredAt]);
+    await client.query(
+      `insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
+       values($1,'messenger-notification',$2,$3,$4) on conflict(idempotency_key) do nothing`,
+      [input.projectId,input.notification.idempotencyKey,JSON.stringify({message: input.notification}),occurredAt]);
     await client.query('commit');
     return {status: 'completed', deliveryReference: delivered.deliveryReference};
   } catch (error) { await client.query('rollback'); throw error; }

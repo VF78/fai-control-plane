@@ -47,23 +47,17 @@ export const createWorker = (database: Database = createDatabase()) => {
   }};
   const telegram = createTelegramDeliveryAdapter({config: {projectId, chatId: env('TELEGRAM_INTERNAL_CHAT_ID'),
     tokenRef: secret('telegram', 'messenger_delivery', 'TELEGRAM_BOT_TOKEN_FILE')}, secrets});
-  const notification = async (
-    item: TrackerItemFact, reason: string, idempotencyKey: string
+  const statusChanged = async (
+    prior: TrackerItemFact, item: TrackerItemFact, idempotencyKey: string
   ): Promise<MessengerDeliveryInput> => ({projectId, contour: 'trusted-main', channelReference: 'telegram:internal',
-    text: `${reason}: ${item.title} — ${item.url}`, idempotencyKey});
-  const notificationSummary = async (
-    count: number, sourceUrl: string, idempotencyKey: string
-  ): Promise<MessengerDeliveryInput> => ({projectId, contour: 'trusted-main', channelReference: 'telegram:internal',
-    text: `action_required: ${count} tracker items changed — ${sourceUrl}`, idempotencyKey});
+    text: `Статус задачи изменён: ${prior.statusOptionName ?? 'Не указан'} → ${item.statusOptionName ?? 'Не указан'}\n${item.title} — ${item.url}`,
+    idempotencyKey});
   return {
     async reconcile() {
       const cursor = await database.query<{cursor: string | null}>('select cursor from tracker_bindings where id=$1', [bindingId]);
       await reconcileTracker({bindingId, workspaceId, projectId, cursor: cursor.rows[0]?.cursor ?? null,
-        statusMap: {backlog: env('STATUS_BACKLOG_ID'), ready: env('STATUS_READY_ID'),
-          development: env('STATUS_DEVELOPMENT_ID'), qa: env('STATUS_QA_ID'),
-          acceptance: env('STATUS_ACCEPTANCE_ID'), done: env('STATUS_DONE_ID')},
         ports: {tracker, snapshots: stores.snapshots, outbox: stores.outbox, audit: stores.audit,
-          compose: {notification, notificationSummary}}});
+          compose: {statusChanged}}});
     },
     async retry() {
       return deliverPending({limit: 20, ports: {internalMessenger: telegram,

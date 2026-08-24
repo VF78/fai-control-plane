@@ -1,0 +1,66 @@
+import {describe, expect, it} from 'vitest';
+import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, parseAgentRoutingPolicy, resolveAgentRoute,
+  type AgentRoutingPolicy} from './routing-policy.ts';
+
+const catalog = {['codex-cli']: {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']},
+  ['claude-code-cli']: {available: false, models: []}} as const;
+
+describe('Hermes routing policy', () => {
+  it('routes ordinary work to Codex CLI Terra medium', () => {
+    expect(resolveAgentRoute(defaultAgentRoutingPolicy, 'ordinary_implementation', catalog)).toMatchObject({
+      executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'medium'
+    });
+  });
+  it('denies unknown classes and unavailable future executors', () => {
+    expect(() => resolveAgentRoute(defaultAgentRoutingPolicy, 'unknown', catalog)).toThrow('agent_route_denied');
+    const future: AgentRoutingPolicy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map(
+      (route) => route.taskClass === 'ordinary_implementation'
+        ? {...route, executor: {kind: 'cli', id: 'claude-code-cli'}} : route)};
+    expect(() => resolveAgentRoute(future, 'ordinary_implementation', catalog))
+      .toThrow('agent_executor_unavailable');
+  });
+  it('denies the complete policy when any configured CLI route is unavailable', () => {
+    expect(() => assertAgentRoutingPolicyAvailable(defaultAgentRoutingPolicy, {...catalog,
+      'codex-cli': {available: false, models: []}})).toThrow('agent_executor_unavailable');
+    const claude: AgentRoutingPolicy = {...defaultAgentRoutingPolicy,
+      routes: defaultAgentRoutingPolicy.routes.map((route) => route.taskClass === 'ordinary_implementation'
+        ? {...route, executor: {kind: 'cli', id: 'claude-code-cli'}} : route)};
+    expect(() => assertAgentRoutingPolicyAvailable(claude, catalog)).toThrow('agent_executor_unavailable');
+  });
+  it('rejects duplicate or unknown task classes', () => {
+    const duplicate: AgentRoutingPolicy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map(
+      (route, index) => index === 1 ? {...route, taskClass: 'manager_project_ops'} : route)};
+    expect(parseAgentRoutingPolicy(duplicate)).toBeNull();
+  });
+  it('rejects models outside the bounded Control Plane catalog', () => {
+    const policy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route,index) =>
+      index === 0 ? {...route,model:'provider-injected'} : route)};
+    expect(parseAgentRoutingPolicy(policy)).toBeNull();
+  });
+  it('keeps implementation in CLI, protected operations direct, and exact gates bounded', () => {
+    const replace = (taskClass: AgentRoutingPolicy['routes'][number]['taskClass'], change: object) => ({
+      ...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route) =>
+        route.taskClass === taskClass ? {...route, ...change} : route)
+    });
+    expect(parseAgentRoutingPolicy(replace('ordinary_implementation', {executor: {kind: 'direct-agent'}})))
+      .toBeNull();
+    expect(parseAgentRoutingPolicy(replace('protected_operation', {
+      executor: {kind: 'cli', id: 'codex-cli'}}))).toBeNull();
+    expect(parseAgentRoutingPolicy(replace('release_preflight', {humanGate: 'production_exact'}))).toBeNull();
+    expect(defaultAgentRoutingPolicy.routes.find((route) => route.taskClass === 'release_preflight')?.humanGate)
+      .toBe('none');
+  });
+  it('allows non-implementation work to switch between Hermes and an available CLI', () => {
+    const replace = (taskClass: AgentRoutingPolicy['routes'][number]['taskClass'], executor: object) => ({
+      ...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route) =>
+        route.taskClass === taskClass ? {...route, executor} : route)
+    });
+    expect(parseAgentRoutingPolicy(replace('manager_project_ops', {kind: 'cli', id: 'codex-cli'})))
+      .not.toBeNull();
+    expect(parseAgentRoutingPolicy(replace('architecture_design', {kind: 'cli', id: 'codex-cli'})))
+      .not.toBeNull();
+    expect(parseAgentRoutingPolicy(replace('critical_decision', {kind: 'cli', id: 'codex-cli'})))
+      .not.toBeNull();
+    expect(parseAgentRoutingPolicy(replace('release_preflight', {kind: 'direct-agent'}))).not.toBeNull();
+  });
+});

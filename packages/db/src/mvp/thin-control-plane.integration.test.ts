@@ -25,8 +25,8 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
 
   it('deduplicates a GitHub delivery and exposes facts while a human notification retries', async () => {
     await database!.query(
-      `delete from outbox_events where payload->'message'->>'text'=
-       'approval_required: https://github.com/VF78/ascon/issues/901'`
+      `delete from outbox_events where payload->'message'->>'text' like
+       'Статус задачи изменён:%https://github.com/VF78/ascon/issues/901'`
     );
     const workspaceId = process.env.FCP_WORKSPACE_ID!;
     const projectId = process.env.FCP_PROJECT_ID!;
@@ -47,19 +47,15 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
     let snapshot = {bindingId, externalVersion: `github:updated-at:${observedAt}`, cursor: null,
       observedAt, sourceUrl: 'https://github.com/users/VF78/projects/1', items: [item]} as const;
     const stores = createStores(database!, workspaceId);
-    const notification = async (
-      fact: TrackerItemFact, reason: string, idempotencyKey: string
+    const statusChanged = async (
+      prior: TrackerItemFact, fact: TrackerItemFact, idempotencyKey: string
     ): Promise<MessengerDeliveryInput> => ({projectId: fact.projectId, contour: 'trusted-main',
-      channelReference: 'internal', text: `${reason}: ${fact.url}`, idempotencyKey});
-    const notificationSummary = async (
-      count: number, sourceUrl: string, idempotencyKey: string
-    ): Promise<MessengerDeliveryInput> => ({projectId, contour: 'trusted-main', channelReference: 'internal',
-      text: `action_required: ${count} tracker items changed — ${sourceUrl}`, idempotencyKey});
+      channelReference: 'internal',
+      text: `Статус задачи изменён: ${prior.statusOptionName} → ${fact.statusOptionName}\n${fact.url}`,
+      idempotencyKey});
     const input = {bindingId, workspaceId, projectId, cursor: null,
-      statusMap: {backlog: 'backlog-option', ready: 'ready-option', development: 'development-option',
-        qa: 'qa-option', acceptance: 'acceptance-option', done: 'done-option'},
       ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: stores.snapshots,
-        outbox: stores.outbox, audit: stores.audit, compose: {notification, notificationSummary}}};
+        outbox: stores.outbox, audit: stores.audit, compose: {statusChanged}}};
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 1});
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 0});
 
@@ -87,8 +83,8 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
       });
     const outbox = await database!.query<{count: string; attempts: number; errorCode: string}>(
       `select count(*)::text as count,max(attempts)::int as attempts,max(last_error_code) as "errorCode"
-       from outbox_events where payload->'message'->>'text'=
-       'approval_required: https://github.com/VF78/ascon/issues/901'`);
+       from outbox_events where payload->'message'->>'text' like
+       'Статус задачи изменён:%https://github.com/VF78/ascon/issues/901'`);
     expect(outbox.rows[0]).toEqual({count: '1', attempts: 1, errorCode: 'delivery_failed'});
 
     const failedAt = new Date(Date.parse(refreshedAt) + 1_000).toISOString();

@@ -89,3 +89,20 @@ Their historical execution plans are not current implementation instructions.
   external tool.
 - A new table, daemon or lifecycle requires an explicit authority analysis and
   Vladimir's approval that it does not recreate prohibited duplication.
+
+## 2026-08-24 amendment: project routing policy
+
+The Control Plane may retain one immutable, versioned Hermes routing policy as
+a `project_source_artifacts` configuration document. It maps bounded task
+classes to either direct Hermes reasoning or a composition-allowlisted CLI
+executor plus model/effort, mandatory Hermes result acceptance and an optional
+exact human gate. This is project configuration, not run/task lifecycle.
+
+Hermes still owns executor runtime, delegation and acceptance. `codex-cli` is
+the only currently configured CLI adapter; a later `claude-code-cli` adapter
+uses the same contract and UI structure without schema/workflow changes. There
+is no generic provider registry, and an unavailable adapter cannot become an
+active route. Repository-changing implementation always uses a CLI executor;
+direct Hermes may plan, decide, manage provider-native Project facts, or invoke
+an exact-approval broker. Merge, Actions, release, deploy and production never
+run inside a coding CLI.

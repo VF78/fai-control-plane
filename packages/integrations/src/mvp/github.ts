@@ -282,7 +282,7 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
     };
     return {projectId: project.id, owner: single('Owner'), status: single('Status')};
   };
-  const currentItem = async (credential: string, itemId: string, issueId: string, expectedVersion: string) => {
+  const currentItem = async (credential: string, itemId: string, issueId: string, expectedVersion: string | null) => {
     const root = await graph(credential, `query($id:ID!){node(id:$id){... on ProjectV2Item{id updatedAt project{id}
       statusValue:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId name}}
       ownerValue:fieldValueByName(name:"Owner"){... on ProjectV2ItemFieldSingleSelectValue{optionId name}}
@@ -295,7 +295,8 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       !Number.isSafeInteger(issueNumber) || (issueNumber as number) <= 0 ||
       content?.url !== `https://github.com/${input.binding.owner}/${input.binding.repository}/issues/${issueNumber as number}` ||
       !Array.isArray(object(content?.assignees)?.nodes)) throw new Error('github_response_invalid');
-    if (`github:updated-at:${item.updatedAt as string}` !== expectedVersion) throw new Error('github_version_conflict');
+    const version = `github:updated-at:${item.updatedAt as string}`;
+    if (expectedVersion !== null && version !== expectedVersion) throw new Error('github_version_conflict');
     const assigneeNodes = object(content.assignees)?.nodes;
     if (!Array.isArray(assigneeNodes)) throw new Error('github_response_invalid');
     const assignees = assigneeNodes.map(object).map((user) => {
@@ -304,7 +305,7 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       return {id: user.id, login: user.login, name: user.name === null || user.name === undefined ? null : user.name};
     });
     const value = (field: 'statusValue'|'ownerValue') => object(item[field]);
-    return {projectId: object(item.project)!.id as string, issueNumber: issueNumber as number,
+    return {projectId: object(item.project)!.id as string, issueNumber: issueNumber as number, version,
       status: value('statusValue'), owner: value('ownerValue'), assignees};
   };
   const setIssueAssignees = async (credential: string, issueNumber: number, assignees: readonly string[]) => {
@@ -414,6 +415,53 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       return {referenceId: String(number),
         url: `https://github.com/${input.binding.owner}/${input.binding.repository}/issues/${number}`,
         version: command.expectedVersion};
+    },
+    async updateIssue(command) {
+      const validValue = command.operation === 'state'
+        ? ['open', 'closed'].includes(command.value)
+        : bounded(command.value, command.operation === 'title' ? 160 : 4_000);
+      if (command.projectId !== input.binding.projectId ||
+        !['title', 'body', 'state'].includes(command.operation) || !validValue) {
+        throw new Error('github_mutation_denied');
+      }
+      const credential = await token();
+      const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
+      const issueUrl = `https://api.github.com/repos/${input.binding.owner}/${input.binding.repository}/issues/${current.issueNumber}`;
+      const response = await request(issueUrl, {method: 'PATCH', headers: apiHeaders(credential),
+        body: JSON.stringify({[command.operation]: command.value}), signal: AbortSignal.timeout(10_000)});
+      if (!response.ok) throw new Error('github_mutation_failed');
+      const readback = await request(issueUrl, {headers: apiHeaders(credential), signal: AbortSignal.timeout(10_000)});
+      const issue = readback.ok ? object(await readback.json()) : null;
+      const expectedUrl = `https://github.com/${input.binding.owner}/${input.binding.repository}/issues/${current.issueNumber}`;
+      if (issue?.html_url !== expectedUrl || issue.number !== current.issueNumber ||
+        issue[command.operation] !== command.value || !bounded(issue.updated_at, 64)) {
+        throw new Error('github_mutation_failed');
+      }
+      const verified = await currentItem(credential, command.itemId, command.issueId, null);
+      return {referenceId: String(current.issueNumber), url: expectedUrl, version: verified.version};
+    },
+    async setProjectItemStage(command) {
+      if (command.projectId !== input.binding.projectId ||
+        !['Backlog', 'Ready', 'In Dev', 'QA', 'Acceptance'].includes(command.stage)) {
+        throw new Error('github_mutation_denied');
+      }
+      const credential = await token();
+      const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
+      const fields = await projectFields(credential);
+      if (current.projectId !== fields.projectId) throw new Error('github_response_invalid');
+      const stage = fields.status.options.find((option) => option.name === command.stage);
+      if (stage === undefined) throw new Error('github_status_unavailable');
+      if (current.status?.optionId !== stage.id) {
+        await setSingleSelect(credential, fields.projectId, command.itemId, fields.status.id, stage.id);
+      }
+      const verified = current.status?.optionId === stage.id ? current :
+        await currentItem(credential, command.itemId, command.issueId, null);
+      if (verified.status?.optionId !== stage.id || verified.status?.name !== command.stage) {
+        throw new Error('github_mutation_failed');
+      }
+      return {referenceId: command.itemId,
+        url: `https://github.com/users/${input.binding.owner}/projects/${input.binding.projectNumber}`,
+        version: verified.version};
     },
     async listAssignableUsers() {
       return candidates(await token());

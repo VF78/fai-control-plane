@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import types
@@ -16,6 +17,7 @@ class Context:
     def __init__(self):
         self.tools = []
         self.hooks = {}
+        self.state = State()
 
     def register_tool(self, **kwargs):
         self.tools.append(kwargs)
@@ -24,16 +26,75 @@ class Context:
         self.hooks[name] = handler
 
 
+class State:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+    def set(self, key, value):
+        self.values[key] = value
+
+
 class PluginTest(unittest.TestCase):
     def setUp(self):
         PLUGIN.bridge_state.reset_for_test()
 
-    def test_registers_seven_bounded_tools_and_identity_hook(self):
+    def test_registers_nine_bounded_tools_and_identity_hooks(self):
         context = Context()
         PLUGIN.register(context)
-        self.assertEqual(len(context.tools), 7)
+        self.assertEqual(len(context.tools), 9)
         self.assertEqual({tool["toolset"] for tool in context.tools}, {"fai_internal", "fai_client"})
         self.assertIn("pre_gateway_dispatch", context.hooks)
+        self.assertIn("pre_llm_call", context.hooks)
+
+    def test_context_hook_injects_current_capsule_and_reuses_conditional_version(self):
+        context = Context()
+        PLUGIN.register(context)
+        PLUGIN.bridge_state.stage(platform="telegram", user_id="96211907", chat_id="-5540760630",
+                                  update_id="77", message_id="12")
+        self.assertTrue(PLUGIN.bridge_state.promote(platform="telegram", user_id="96211907",
+                                                    chat_id="-5540760630", session_id="s1"))
+        captured = []
+        original = PLUGIN._post
+        version = "a" * 64
+        responses = [json.dumps({"status": "completed", "version": version, "capsule": "Current rules",
+                                 "sourceCount": 4, "refreshedAt": "2026-08-24T10:00:00Z"}),
+                     json.dumps({"status": "duplicate", "version": version, "sourceCount": 4,
+                                 "refreshedAt": "2026-08-24T10:00:00Z"})]
+        PLUGIN._post = lambda profile, source, action, response_limit=4096: (
+            captured.append((profile, source, action, response_limit)) or responses.pop(0))
+        try:
+            first = context.hooks["pre_llm_call"](session_id="s1", platform="telegram")
+            second = context.hooks["pre_llm_call"](session_id="s1", platform="telegram")
+        finally:
+            PLUGIN._post = original
+        self.assertIn("Current rules", first["context"])
+        self.assertIn("Current rules", second["context"])
+        self.assertIsNone(captured[0][2]["ifVersion"])
+        self.assertEqual(captured[1][2]["ifVersion"], version)
+        self.assertEqual(captured[0][3], 8192)
+
+    def test_context_hook_fails_closed_then_marks_cached_context_stale(self):
+        context = Context()
+        PLUGIN.register(context)
+        PLUGIN.bridge_state.stage(platform="telegram", user_id="96211907", chat_id="-5540760630",
+                                  update_id="77", message_id="12")
+        self.assertTrue(PLUGIN.bridge_state.promote(platform="telegram", user_id="96211907",
+                                                    chat_id="-5540760630", session_id="s1"))
+        original = PLUGIN._post
+        PLUGIN._post = lambda *_args, **_kwargs: json.dumps({"error": "control_plane_unavailable"})
+        try:
+            empty = context.hooks["pre_llm_call"](session_id="s1", platform="telegram")
+            context.state.set("project_context_version", "b" * 64)
+            context.state.set("project_context_capsule", "Cached rules")
+            stale = context.hooks["pre_llm_call"](session_id="s1", platform="telegram")
+        finally:
+            PLUGIN._post = original
+        self.assertIn("unavailable", empty["context"])
+        self.assertIn("may be stale", stale["context"])
+        self.assertIn("Cached rules", stale["context"])
 
     def test_tool_injects_promoted_identity_not_model_arguments(self):
         source = types.SimpleNamespace(platform=types.SimpleNamespace(value="telegram"),
@@ -58,6 +119,26 @@ class PluginTest(unittest.TestCase):
     def test_client_tools_fail_closed_without_browser_identity(self):
         self.assertEqual(PLUGIN._client_handler("issue.create")({}, session_id="s1"),
                          '{"error": "authenticated_browser_identity_required"}')
+
+    def test_role_run_session_cannot_be_promoted_without_receipt_binding(self):
+        self.assertEqual(PLUGIN._handler("project_item.stage")({}, session_id="browser:unbound"),
+            '{"error": "authenticated_message_identity_required"}')
+
+    def test_exact_role_run_session_is_forwarded_for_server_side_receipt_resolution(self):
+        captured = {}
+        original = PLUGIN._post
+        PLUGIN._post = lambda profile, source, action: captured.update(
+            profile=profile, source=source, action=action) or '{"status":"completed"}'
+        session_id = "browser:" + "a" * 64
+        try:
+            result = PLUGIN._handler("project_item.stage")(
+                {"itemId": "PVTI_1", "issueId": "42", "expectedVersion": "v1", "stage": "QA"},
+                session_id=session_id)
+        finally:
+            PLUGIN._post = original
+        self.assertEqual(result, '{"status":"completed"}')
+        self.assertEqual(captured["profile"], "internal")
+        self.assertEqual(captured["source"], {"provider": "agent-role-run", "sessionId": session_id})
 
 
 if __name__ == "__main__":

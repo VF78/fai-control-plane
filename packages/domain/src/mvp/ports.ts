@@ -4,6 +4,7 @@ import type {
   SourceReference,
   TrackerSnapshot
 } from './model.ts';
+import type {AgentRoutingPolicy} from './routing-policy.ts';
 
 export type TrackerReadPort = Readonly<{
   readSnapshot(bindingId: string, cursor: string | null): Promise<TrackerSnapshot>;
@@ -20,6 +21,24 @@ export type TrackerMutationPort = Readonly<{
     referenceId: string;
     expectedVersion: string;
     statement: string;
+    idempotencyKey: string;
+  }>): Promise<Readonly<{referenceId: string; url: string; version: string}>>;
+  updateIssue(input: Readonly<{
+    projectId: string;
+    itemId: string;
+    issueId: string;
+    expectedVersion: string;
+    operation: 'title' | 'body' | 'state';
+    value: string;
+    idempotencyKey: string;
+  }>): Promise<Readonly<{referenceId: string; url: string; version: string}>>;
+  /** Mutates the same provider-native Project item; no local status lifecycle is created. */
+  setProjectItemStage(input: Readonly<{
+    projectId: string;
+    itemId: string;
+    issueId: string;
+    expectedVersion: string;
+    stage: 'Backlog' | 'Ready' | 'In Dev' | 'QA' | 'Acceptance';
     idempotencyKey: string;
   }>): Promise<Readonly<{referenceId: string; url: string; version: string}>>;
 }>;
@@ -71,6 +90,8 @@ export type AgentRoleRequest = Readonly<{
   constraints: readonly string[];
   acceptanceCriteria: readonly string[];
   approval: ApprovalEvidence | null;
+  routing: Readonly<{policyVersion: string; policy: AgentRoutingPolicy;
+    classification: 'runtime-classification-required'}>;
   correlationId: string;
   idempotencyKey: string;
 }>;

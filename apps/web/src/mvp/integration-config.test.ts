@@ -19,4 +19,5 @@ describe('integration configuration', () => {
     expect(integrationConfig({}, true).hermes).toBe(false);
     expect(integrationConfig({HERMES_ROLE_REQUEST_URL: 'https://hermes.example/v1/runs'}, true).hermes).toBe(true);
   });
+
 });

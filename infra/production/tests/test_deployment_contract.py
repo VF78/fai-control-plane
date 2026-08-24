@@ -1,3 +1,4 @@
+import hashlib
 import pathlib
 import subprocess
 import tempfile
@@ -8,6 +9,24 @@ ROOT = pathlib.Path(__file__).parents[3]
 
 
 class DeploymentContractTest(unittest.TestCase):
+    def test_web_mounts_only_root_produced_hermes_readiness_read_only(self):
+        compose = (ROOT / "infra/production/compose.yaml").read_text()
+        environment_file = ROOT / "infra/production/production.env.example"
+        environment = environment_file.read_text()
+        web = compose.split("  web:\n", 1)[1].split("  worker:\n", 1)[0]
+
+        self.assertIn(
+            "${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro",
+            web,
+        )
+        self.assertIn(
+            "FCP_HERMES_READINESS_HOST_DIR=/var/lib/fai-hermes-ascon/readiness\n",
+            environment,
+        )
+        digest = hashlib.sha256(environment_file.read_bytes()).hexdigest()
+        runbook = (ROOT / "docs/ops/PRODUCTION_RUNBOOK.md").read_text()
+        self.assertIn(digest, runbook)
+
     def test_root_only_host_secrets_are_copied_then_process_drops_privileges(self):
         compose = (ROOT / "infra/production/compose.yaml").read_text()
         dockerfile = (ROOT / "infra/compose/Dockerfile").read_text()

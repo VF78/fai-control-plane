@@ -1,18 +1,23 @@
 import {timingSafeEqual} from 'node:crypto';
-import type {ClientConversationEnvelope, InternalConversationEnvelope} from '@fai-control-plane/domain';
+import type {ClientConversationEnvelope, InternalConversationEnvelope, InternalMessengerInbound} from '@fai-control-plane/domain';
+import type {ReceiptBoundRoleRun} from '@fai-control-plane/application';
 import {bindHermesConversation, type HermesProfile} from './hermes-binding.ts';
 
 type DispatchResult = Readonly<{status: 'completed' | 'duplicate' | 'denied'; referenceId?: string}>;
 export type HermesActionDependencies = Readonly<{
   internalToken(): Promise<string>;
   clientToken(): Promise<string>;
-  dispatchInternal(envelope: InternalConversationEnvelope): Promise<DispatchResult>;
+  dispatchInternal(envelope: InternalConversationEnvelope, roleRun?: ReceiptBoundRoleRun): Promise<DispatchResult>;
   dispatchClient(envelope: ClientConversationEnvelope): Promise<DispatchResult>;
   projectId: string;
   telegramChatId: string;
   telegramUserIds: readonly string[];
   bitrixTaskId: string;
   clientActionsEnabled: boolean;
+  resolveRoleRun(sessionId: string): Promise<(ReceiptBoundRoleRun & Readonly<{occurredAt: string}>) | null>;
+  readInternalContext(input: Readonly<{message: InternalMessengerInbound; ifVersion: string | null}>): Promise<Readonly<{
+    status: 'completed' | 'duplicate'; version: string; capsule?: string; sourceCount: number; refreshedAt: string | null;
+  }>>;
 }>;
 
 const equal = (left: string, right: string): boolean => {
@@ -54,11 +59,26 @@ export const createHermesConversationActionHandler = (dependencies: HermesAction
       if (!Object.hasOwn(body, 'source') || !Object.hasOwn(body, 'action') || Object.keys(body).length !== 2) {
         throw new Error('body_invalid');
       }
-      const envelope = bindHermesConversation({profile, source: body.source as never, action: body.action,
+      const source = body.source as Record<string, unknown>;
+      const roleRun = profile === 'internal' && source.provider === 'agent-role-run' && typeof source.sessionId === 'string'
+        ? await dependencies.resolveRoleRun(source.sessionId) : undefined;
+      if (profile === 'internal' && source.provider === 'agent-role-run' && roleRun == null) {
+        throw new Error('identity_denied');
+      }
+      const envelope = bindHermesConversation({profile, source: source as never, action: body.action,
         projectId: dependencies.projectId, telegramChatId: dependencies.telegramChatId,
-        telegramUserIds: dependencies.telegramUserIds, bitrixTaskId: dependencies.bitrixTaskId});
+        telegramUserIds: dependencies.telegramUserIds, bitrixTaskId: dependencies.bitrixTaskId,
+        ...(roleRun == null ? {} : {roleRun})});
+      if (envelope.action.type === 'project_context.read') {
+        if (profile !== 'internal' || roleRun != null || envelope.message.contour !== 'trusted-main') {
+          throw new Error('action_denied');
+        }
+        const result = await dependencies.readInternalContext({message: envelope.message,
+          ifVersion: envelope.action.ifVersion});
+        return Response.json(result, {status: 200, headers: {'cache-control': 'no-store'}});
+      }
       const result = envelope.message.contour === 'trusted-main'
-        ? await dependencies.dispatchInternal(envelope as InternalConversationEnvelope)
+        ? await dependencies.dispatchInternal(envelope as InternalConversationEnvelope, roleRun ?? undefined)
         : await dependencies.dispatchClient(envelope as ClientConversationEnvelope);
       if (result.status === 'denied') throw new Error('action_denied');
       return Response.json(result, {status: result.status === 'completed' ? 200 : 202,

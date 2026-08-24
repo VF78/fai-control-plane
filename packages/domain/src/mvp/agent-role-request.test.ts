@@ -1,5 +1,7 @@
 import {describe, expect, it} from 'vitest';
+import {createHash} from 'node:crypto';
 import {renderAgentRoleRequest, validateAgentRoleRequest} from './agent-role-request.ts';
+import {defaultAgentRoutingPolicy} from './routing-policy.ts';
 import type {AgentRoleRequest} from './ports.ts';
 
 const request = (role: AgentRoleRequest['role'] = 'developer'): AgentRoleRequest => ({
@@ -12,6 +14,8 @@ const request = (role: AgentRoleRequest['role'] = 'developer'): AgentRoleRequest
   constraints: ['Do not merge'],
   acceptanceCriteria: ['Focused checks pass'],
   approval: null,
+  routing: {policyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'),
+    policy: defaultAgentRoutingPolicy, classification: 'runtime-classification-required'},
   correlationId: 'correlation-1',
   idempotencyKey: 'delivery-1'
 });
@@ -33,11 +37,24 @@ describe('MVP agent role request', () => {
     }})).toBe(true);
   });
 
-  it('renders one stable external contract without executor details', () => {
+  it('renders the immutable policy and deterministic Hermes classification/execution contract', () => {
     expect(JSON.parse(renderAgentRoleRequest(request()))).toMatchObject({
-      contract: 'fai.agent-role-request.v1', request: {role: 'developer'}
+      contract: 'fai.agent-role-request.v1', request: {role: 'developer', routing: {
+        classification: 'runtime-classification-required', policy: {contract: 'fai.agent-routing.v1'}}},
+      execution: {classification: {by: 'agent-runtime', unknown: 'deny', unavailableRoute: 'deny'},
+        cli: {routeFieldsAreExact: ['id', 'model', 'effort'], resultContract: 'fai.agent-executor-result.v1'},
+        acceptance: {evidenceRequired: true, stageMutation: 'only-after-accepted'}}
     });
-    expect(renderAgentRoleRequest(request())).not.toContain('codex-cli');
+    expect(renderAgentRoleRequest(request())).toContain('codex-cli');
+  });
+
+  it('rejects a stale policy version while allowing the manager work route to be configured', () => {
+    const value = request();
+    expect(validateAgentRoleRequest({...value, routing: {...value.routing, policyVersion: 'a'.repeat(64)}})).toBe(false);
+    const policy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route) =>
+      route.taskClass === 'manager_project_ops' ? {...route, model: 'gpt-5.6-sol' as const} : route)};
+    expect(validateAgentRoleRequest({...value, routing: {...value.routing, policy,
+      policyVersion: createHash('sha256').update(JSON.stringify(policy)).digest('hex')}})).toBe(true);
   });
 
   it('rejects more than 64 KiB of selected UTF-8 source text', () => {

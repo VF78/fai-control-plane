@@ -1,7 +1,10 @@
 import {describe, expect, it} from 'vitest';
-import {exclusiveRunner, workerActive, workerPollIntervalMs, workerReady} from './jobs.ts';
+import {exclusiveRunner, workerActive, workerRetryIntervalMs, workerTrackerPollIntervalMs, workerReady} from './jobs.ts';
 describe('worker readiness', () => {
-  it('polls the provider every five minutes', () => expect(workerPollIntervalMs).toBe(300_000));
+  it('polls GitHub every five minutes and retries the local outbox promptly', () => {
+    expect(workerTrackerPollIntervalMs).toBe(300_000);
+    expect(workerRetryIntervalMs).toBe(10_000);
+  });
   it('requires an exact activation gate', () => {
     expect(workerActive('false')).toBe(false);
     expect(workerActive('true')).toBe(true);

@@ -35,13 +35,3 @@ export const dashboardProjection = (tasks: readonly TrackerItemFact[]): Dashboar
     deadline: dates[0] ?? null, blocked: active.length === 0 && tasks.length > 0 ? 0 :
       hasBlockedFact ? active.filter((task) => task.blocked === true).length : null};
 };
-
-export type ProcessStage = Readonly<{name: typeof phaseAStages[number]; responsibility: string; gate: string; evidence: string; next: string}>;
-export const asconProcess: readonly ProcessStage[] = [
-  {name: 'Backlog', responsibility: 'Product Owner', gate: 'Уточнение', evidence: 'Цель, требования, риски', next: 'Ready'},
-  {name: 'Ready', responsibility: 'Product Owner', gate: 'PO Ready: требуется', evidence: 'Acceptance criteria, исполнитель, проверка', next: 'In Dev'},
-  {name: 'In Dev', responsibility: 'Разработчик или Hermes', gate: 'Явная команда оператора для Hermes', evidence: 'Branch/worktree, PR, локальная проверка', next: 'QA'},
-  {name: 'QA', responsibility: 'Hermes', gate: 'Явная команда оператора', evidence: 'PR, checks, QA evidence', next: 'Acceptance'},
-  {name: 'Acceptance', responsibility: 'Product Owner', gate: 'PO gate в Done: требуется', evidence: 'QA evidence, staging deploy, smoke-test', next: 'Done'},
-  {name: 'Done', responsibility: 'Product Owner', gate: 'Терминальное состояние', evidence: 'Явная приёмка результата', next: 'Завершение процесса'}
-];

@@ -1,17 +1,31 @@
 import {describe, expect, it, vi} from 'vitest';
-import type {TrackerSnapshot} from '@fai-control-plane/domain';
+import {createHash} from 'node:crypto';
+import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSnapshotVersion, projectContextSourceKind,
+  serializeProjectContextSnapshot, type TrackerSnapshot} from '@fai-control-plane/domain';
 import type {TaskExecutorAssignmentPorts} from './task-executor-assignment.ts';
 import {assignTaskExecutor} from './task-executor-assignment.ts';
 
 const base: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'v1', cursor: null, observedAt: '2026-08-24T00:00:00.000Z', sourceUrl: 'https://github.com/users/acme/projects/1', items: [{itemId: 'item', projectId: 'project', issueId: '219', title: 'Assign executor', url: 'https://github.com/acme/repo/issues/219', version: 'github:updated-at:v1', statusOptionId: 'ready', statusOptionName: 'Ready', ownerOptionId: null, blocked: false, targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [], observedAt: '2026-08-24T00:00:00.000Z'}]};
+const contextContent = serializeProjectContextSnapshot({contract:'fai.project-context.v1',
+  sources:[{id:'source',key:'requirements',kind:projectContextSourceKind,version:'a'.repeat(64),provenance:'operator'}],content:'Context'});
+const activeContext = {id:'context',sha256:projectContextSnapshotVersion(contextContent),
+  kind:projectContextSnapshotKind,provenance:'control-plane:context',content:contextContent};
 
 const ports = (failStart = false, initialStatus = 'Ready') => {
   let owner: string|null = null; let assignees: readonly {id: string; login: string; name: string|null}[] = []; let status = initialStatus; let version = 1; let delivered = false; let startFails = failStart;
   const snapshot = (): TrackerSnapshot => ({...base, items: [{...base.items[0]!, ownerOptionId: owner, assignees, assigneeIds: assignees.map((user) => user.id), statusOptionName: status, version: `github:updated-at:v${version}`}]});
   const value: TaskExecutorAssignmentPorts = {
-    resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done'}),
-    readFreshSnapshot: async () => snapshot(), persistSnapshot: async () => undefined, resolveSources: async () => [],
+    resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done', routingPolicyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'), routingPolicy: defaultAgentRoutingPolicy, executorCatalog: {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}}}),
+    readFreshSnapshot: async () => snapshot(), persistSnapshot: async () => undefined,
+    resolveActiveContext: async () => activeContext,
+    agentInstructions: (role) => role === 'developer'
+      ? {constraints: ['Do not merge, release, deploy, or access production.', 'Move this same Project item from In Dev to QA and verify it after implementation.'],
+        acceptanceCriteria: ['Record delivery evidence.', 'The same Project item is confirmed in QA.']}
+      : {constraints: ['Do not merge, release, deploy, or access production.', 'Move this same Project item from QA to In Dev for rework, otherwise QA to Acceptance, then verify it.'],
+        acceptanceCriteria: ['Record delivery evidence.', 'The same Project item is confirmed in In Dev or Acceptance.']},
     repository: {readRepository: async () => ({repositoryId: 'repo', url: 'https://github.com/acme/repo', defaultBranch: 'main', observedAt: '2026-08-24T00:00:00.000Z'})},
+    composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: item.projectId,
+      contour: 'trusted-main', channelReference: 'internal', text: `Hermes accepted: ${item.url}`, idempotencyKey}),
     delivery: {submit: vi.fn(async () => ({deliveryReference: 'hermes:receipt', sessionReference: 'hermes:session'}))},
     transaction: {execute: async (_input, submit) => delivered ? {status: 'duplicate', deliveryReference: 'hermes:receipt'} : (delivered = true, {status: 'completed', ...(await submit())})},
     tracker: {listAssignableUsers: async () => [{id: 'U_1', login: 'octo', name: 'Octo'}], assignHumanExecutor: async () => { owner = null; assignees = [{id: 'U_1', login: 'octo', name: 'Octo'}]; status = 'In Dev'; version += 1; },
@@ -48,6 +62,19 @@ describe('task executor assignment', () => {
     if (context === null) throw new Error('missing test context');
     const fresh = await value.value.readFreshSnapshot(context);
     expect(fresh.items[0]?.statusOptionName).toBe(stage);
+  });
+
+  it('delivers the ASCON developer and QA status-verification contract', async () => {
+    const developer = ports(false, 'In Dev');
+    await assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, developer.value);
+    expect(developer.delivery).toHaveBeenCalledWith(expect.objectContaining({role: 'developer', constraints: expect.arrayContaining([
+      expect.stringContaining('In Dev to QA'), expect.stringContaining('verify')
+    ])}));
+    const qa = ports(false, 'QA');
+    await assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, qa.value);
+    expect(qa.delivery).toHaveBeenCalledWith(expect.objectContaining({role: 'qa', constraints: expect.arrayContaining([
+      expect.stringContaining('QA to In Dev'), expect.stringContaining('QA to Acceptance')
+    ])}));
   });
 
   it('retries a failed status sync without delivering Hermes twice', async () => {

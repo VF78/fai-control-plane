@@ -1,7 +1,6 @@
 import {describe, expect, it, vi} from 'vitest';
 import {reconcileTracker} from './reconciliation.ts';
 
-const statusMap = {backlog: 'b', ready: 'r', development: 'd', qa: 'q', acceptance: 'a', done: 'z'};
 const snapshot = {
   bindingId: 'binding', externalVersion: 'github:updated-at:2026-08-13T00:00:00Z',
   cursor: 'cursor-2', observedAt: '2026-08-13T00:00:00.000Z',
@@ -18,12 +17,8 @@ const snapshot = {
   ]
 } as const;
 const compose = {
-  notification: async (item: typeof snapshot.items[number], _reason: string, idempotencyKey: string) => ({
+  statusChanged: async (_prior: typeof snapshot.items[number], item: typeof snapshot.items[number], idempotencyKey: string) => ({
     projectId: item.projectId, contour: 'trusted-main' as const, channelReference: 'internal', text: `Action required: ${item.url}`, idempotencyKey
-  }),
-  notificationSummary: async (count: number, sourceUrl: string, idempotencyKey: string) => ({
-    projectId: 'project', contour: 'trusted-main' as const, channelReference: 'internal',
-    text: `Action required: ${count} changes — ${sourceUrl}`, idempotencyKey
   })
 };
 
@@ -34,7 +29,7 @@ describe('MVP tracker reconciliation', () => {
     const enqueue = vi.fn(async (_record: unknown) => 'enqueued' as const);
     const append = vi.fn(async () => undefined);
     await expect(reconcileTracker({
-      bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null, statusMap,
+      bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,
       ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {readLatest: async () => null, replace, recordFailure}, compose,
         outbox: {enqueue, claim: async () => [], complete: async () => undefined, retry: async () => undefined},
         audit: {append}}
@@ -48,7 +43,7 @@ describe('MVP tracker reconciliation', () => {
     const enqueue = vi.fn(async () => 'enqueued' as const);
     const automatic = {...snapshot, items: [{...snapshot.items[0], statusOptionId: status}]};
     await reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,
-      statusMap, ports: {tracker: {readSnapshot: async () => automatic}, snapshots: {
+      ports: {tracker: {readSnapshot: async () => automatic}, snapshots: {
         readLatest: async () => null, replace: async () => undefined, recordFailure: async () => undefined
       }, compose, outbox: {enqueue, claim: async () => [], complete: async () => undefined,
         retry: async () => undefined}, audit: {append: async () => undefined}}});
@@ -59,7 +54,7 @@ describe('MVP tracker reconciliation', () => {
     const enqueue = vi.fn(async () => 'enqueued' as const);
     const historical = {...snapshot, items: [{...snapshot.items[0], statusOptionId: 'a'}]};
     await reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,
-      statusMap, ports: {tracker: {readSnapshot: async () => historical}, snapshots: {
+      ports: {tracker: {readSnapshot: async () => historical}, snapshots: {
         readLatest: async () => null, replace: async () => undefined, recordFailure: async () => undefined
       }, compose, outbox: {enqueue, claim: async () => [], complete: async () => undefined,
         retry: async () => undefined}, audit: {append: async () => undefined}}});
@@ -69,7 +64,7 @@ describe('MVP tracker reconciliation', () => {
   it('fails closed when the adapter crosses a project binding', async () => {
     const replace = vi.fn(async () => undefined);
     await expect(reconcileTracker({
-      bindingId: 'binding', workspaceId: 'workspace', projectId: 'other', cursor: null, statusMap,
+      bindingId: 'binding', workspaceId: 'workspace', projectId: 'other', cursor: null,
       ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {readLatest: async () => null, replace, recordFailure: async () => undefined}, compose,
         outbox: {enqueue: async () => 'enqueued', claim: async () => [], complete: async () => undefined, retry: async () => undefined},
         audit: {append: async () => undefined}}
@@ -79,7 +74,7 @@ describe('MVP tracker reconciliation', () => {
 
   it('does not inflate counts on duplicate delivery intent', async () => {
     const result = await reconcileTracker({
-      bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null, statusMap,
+      bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,
       ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {
         readLatest: async () => ({...snapshot, cursor: 'cursor-1', items: snapshot.items.map((item) =>
           item.itemId === 'two' ? {...item, version: 'v0'} : item)}),
@@ -95,7 +90,7 @@ describe('MVP tracker reconciliation', () => {
     const recordFailure = vi.fn(async () => undefined);
     const append = vi.fn(async () => undefined);
     await expect(reconcileTracker({
-      bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null, statusMap,
+      bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,
       ports: {tracker: {readSnapshot: async () => { throw new Error('github_read_failed'); }}, snapshots: {
         readLatest: async () => null, replace: async () => undefined, recordFailure
       }, compose, outbox: {enqueue: async () => 'enqueued', claim: async () => [],
@@ -114,21 +109,21 @@ describe('MVP tracker reconciliation', () => {
     const previous = {...snapshot, cursor: null, items: [{...snapshot.items[0], statusOptionId: 'a'}]};
     const transitioned = {...snapshot, items: [{...snapshot.items[0], statusOptionId: 'a', version: 'v2'}]};
     await reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,
-      statusMap, ports: {tracker: {readSnapshot: async () => transitioned}, snapshots: {
+      ports: {tracker: {readSnapshot: async () => transitioned}, snapshots: {
         readLatest: async () => previous, replace: async () => undefined, recordFailure: async () => undefined
       }, compose, outbox: {enqueue, claim: async () => [], complete: async () => undefined,
         retry: async () => undefined}, audit: {append: async () => undefined}}});
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('notifies only later version-different human items', async () => {
+  it('notifies a later provider-native Status transition', async () => {
     const enqueue = vi.fn(async () => 'enqueued' as const);
     const previous = {...snapshot, cursor: 'cursor-1', items: snapshot.items.map((item) => ({...item,
       statusOptionId: 'a' as const}))};
     const current = {...snapshot, items: previous.items.map((item) => item.itemId === 'two'
-      ? {...item, version: 'v2'} : item)};
+      ? {...item, version: 'v2', statusOptionId: 'd' as const} : item)};
     await reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: 'cursor-1',
-      statusMap, ports: {tracker: {readSnapshot: async () => current}, snapshots: {
+      ports: {tracker: {readSnapshot: async () => current}, snapshots: {
         readLatest: async () => previous, replace: async () => undefined, recordFailure: async () => undefined
       }, compose, outbox: {enqueue, claim: async () => [], complete: async () => undefined,
         retry: async () => undefined}, audit: {append: async () => undefined}}});
@@ -138,27 +133,24 @@ describe('MVP tracker reconciliation', () => {
     })}}));
   });
 
-  it('aggregates multiple genuine changes into exactly one deterministic notification', async () => {
+  it('notifies every genuine Status transition independently', async () => {
     const enqueue = vi.fn(async () => 'enqueued' as const);
     const append = vi.fn(async () => undefined);
     const items = Array.from({length: 12}, (_, index) => ({...snapshot.items[0], itemId: `item-${index}`,
       issueId: `${index}`, version: 'v2', statusOptionId: 'a' as const}));
     const current = {...snapshot, items};
-    const previous = {...current, cursor: 'cursor-1', items: items.map((item) => ({...item, version: 'v1'}))};
+    const previous = {...current, cursor: 'cursor-1', items: items.map((item) => ({...item, version: 'v1', statusOptionId: 'd' as const}))};
     await reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: 'cursor-1',
-      statusMap, ports: {tracker: {readSnapshot: async () => current}, snapshots: {
+      ports: {tracker: {readSnapshot: async () => current}, snapshots: {
         readLatest: async () => previous, replace: async () => undefined, recordFailure: async () => undefined
       }, compose, outbox: {enqueue, claim: async () => [], complete: async () => undefined,
         retry: async () => undefined}, audit: {append}}});
-    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledTimes(12);
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      idempotencyKey: expect.stringMatching(/^tracker-notification-summary:sha256:[a-f0-9]{64}$/),
-      payload: {message: expect.objectContaining({
-        text: 'Action required: 12 changes — https://example.test/project'
-      })}
+      idempotencyKey: expect.stringMatching(/^tracker-status-change:sha256:[a-f0-9]{64}$/)
     }));
     expect(append).toHaveBeenCalledWith(expect.objectContaining({details: expect.objectContaining({
-      notificationCandidateCount: 12, aggregatedNotificationCount: 12, queuedActions: 1
+      statusChangeCount: 12, queuedActions: 12
     })}));
   });
 
@@ -166,9 +158,9 @@ describe('MVP tracker reconciliation', () => {
     const replace = vi.fn(async () => undefined);
     const previous = {...snapshot, cursor: 'cursor-1', items: [{...snapshot.items[0]!,
       version: 'v1', statusOptionId: 'a' as const}]};
-    const current = {...snapshot, items: [{...previous.items[0]!, version: 'v2'}]};
+    const current = {...snapshot, items: [{...previous.items[0]!, version: 'v2', statusOptionId: 'd' as const}]};
     await expect(reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project',
-      cursor: 'cursor-1', statusMap, ports: {tracker: {readSnapshot: async () => current}, snapshots: {
+      cursor: 'cursor-1', ports: {tracker: {readSnapshot: async () => current}, snapshots: {
         readLatest: async () => previous, replace, recordFailure: async () => undefined
       }, compose, outbox: {enqueue: async () => { throw new Error('outbox_unavailable'); }, claim: async () => [],
         complete: async () => undefined, retry: async () => undefined}, audit: {append: async () => undefined}}}))

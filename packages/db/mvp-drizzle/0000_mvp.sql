@@ -81,7 +81,7 @@ CREATE TABLE "project_source_artifacts" (
   "source_url" text,
   "provenance" text NOT NULL,
   "created_at" timestamptz DEFAULT now() NOT NULL,
-  CONSTRAINT "project_source_artifacts_hash_unique" UNIQUE ("project_id", "sha256")
+  CONSTRAINT "project_source_artifacts_kind_hash_unique" UNIQUE ("project_id", "kind", "sha256")
 );
 
 CREATE TABLE "secret_refs" (

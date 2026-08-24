@@ -12,6 +12,14 @@ describe('Hermes identity binding', () => {
     expect(value.message.contour).toBe('trusted-main');
     expect(value.message.idempotencyKey).toMatch(/^conversation:[a-f0-9]{64}$/);
   });
+  it('allows conditional project-context reads only on the trusted internal profile', () => {
+    const source = {provider: 'telegram' as const, updateId: '78', messageId: '13', userId: '96211907',
+      chatId: '-5540760630', observedAt: '2026-08-14T10:00:00.000Z'};
+    const value = bindHermesConversation({...common, profile: 'internal', source,
+      action: {type: 'project_context.read', ifVersion: 'a'.repeat(64)}});
+    expect(value.action).toEqual({type: 'project_context.read', ifVersion: 'a'.repeat(64)});
+    expect(value.message.contour).toBe('trusted-main');
+  });
   it('allows only client issue actions for the fixed Bitrix task', () => {
     const source = {provider: 'bitrix-browser' as const, taskId: '154312', messageId: 'dom-9', authorId: 'client-2',
       observedAt: '2026-08-14T10:00:00.000Z'};
