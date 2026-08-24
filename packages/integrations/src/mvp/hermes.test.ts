@@ -11,7 +11,12 @@ const request = {
   approval: null, correlationId: 'correlation', idempotencyKey: 'delivery',
   routing: {policyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'),
     policy: defaultAgentRoutingPolicy, classification: 'runtime-classification-required' as const}
+  ,process: {policyVersion: 'b'.repeat(64), stageId: 'in-dev', stageTitle: 'In Dev',
+    successTargetTitle: 'QA', reworkTargetTitle: null}
 };
+const attestation = {execution: {taskClass: 'ordinary_implementation' as const,
+  executor: {kind: 'cli' as const, id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'medium' as const},
+outcome: 'success' as const, transition: {itemId: 'item', fromVersion: 'v1', targetStage: 'QA', toVersion: 'v2'}};
 
 describe('MVP Hermes adapter', () => {
   it('delivers the neutral role contract and returns opaque evidence', async () => {
@@ -36,6 +41,48 @@ describe('MVP Hermes adapter', () => {
       secrets: {resolve: async () => ({value: 'bearer'})}, fetch});
     await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'failed', failureCode: 'provider_failed'});
     expect(String(fetch.mock.calls[0]?.[0])).toBe('https://hermes.example/v1/runs/run_ref');
+  });
+
+  it('accepts only the bounded executor-result contract and preserves stable deliverable links', async () => {
+    const result = {contract: 'fai.agent-executor-result.v1', decision: 'accepted', ...attestation, reason: 'Ready for QA',
+      evidence: [{kind: 'checks', result: 'Focused tests passed'}],
+      deliverables: [{label: 'Review document', url: 'https://example.test/result.docx'}]};
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, fetch: vi.fn(async () =>
+        new Response(JSON.stringify({run_id: 'run_ref', status: 'completed', output: JSON.stringify(result)})))});
+    await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'completed', result});
+  });
+
+  it('maps a rejected executor result to failure', async () => {
+    const result = {contract: 'fai.agent-executor-result.v1', decision: 'rejected', ...attestation,
+      outcome: 'rework' as const, reason: 'Repository unavailable',
+      evidence: [{kind: 'source_access', result: 'No checkout'}]};
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, fetch: vi.fn(async () =>
+        new Response(JSON.stringify({run_id: 'run_ref', status: 'completed', output: JSON.stringify(result)})))});
+    await expect(adapter.observe('run_ref')).resolves.toMatchObject({status: 'failed',
+      failureCode: 'agent_result_rejected', result: {...result, deliverables: []}});
+  });
+
+  it.each([undefined, 'not-json', JSON.stringify({contract: 'other', decision: 'accepted'})])(
+    'fails closed when a completed run has no valid executor result %#', async (output) => {
+      const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
+        credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
+        secrets: {resolve: async () => ({value: 'bearer'})}, fetch: vi.fn(async () =>
+          new Response(JSON.stringify({run_id: 'run_ref', status: 'completed', ...(output === undefined ? {} : {output})})))});
+      await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'failed', failureCode: 'agent_result_invalid'});
+    });
+
+  it('fails closed when an accepted executor result has no evidence', async () => {
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, fetch: vi.fn(async () =>
+        new Response(JSON.stringify({run_id: 'run_ref', status: 'completed', output: JSON.stringify({
+          contract: 'fai.agent-executor-result.v1', decision: 'accepted', ...attestation, reason: 'done', evidence: []
+        })})))});
+    await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'failed', failureCode: 'agent_result_invalid'});
   });
 
   it('keeps an expired run unobservable instead of treating 404 as failure', async () => {

@@ -452,7 +452,7 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
     },
     async setProjectItemStage(command) {
       if (command.projectId !== input.binding.projectId ||
-        !['Backlog', 'Ready', 'In Dev', 'QA', 'Acceptance'].includes(command.stage)) {
+        !bounded(command.stage, 200)) {
         throw new Error('github_mutation_denied');
       }
       const credential = await token();
@@ -477,19 +477,19 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       return candidates(await token());
     },
     async startExecutor(command) {
+      if (!bounded(command.expectedStage, 200) || !bounded(command.targetStage, 200)) {
+        throw new Error('github_mutation_denied');
+      }
       const executor = command.executor;
       const credential = await token();
       const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
       if (current.status?.name !== command.expectedStage || current.blocked !== command.expectedBlocked) {
         throw new Error('github_version_conflict');
       }
-      const targetStage = command.expectedStage === 'Backlog' || command.expectedStage === 'Ready'
-        ? 'In Dev' : command.expectedStage;
-      if (!['In Dev','QA','Acceptance'].includes(targetStage)) throw new Error('github_mutation_denied');
       const fields = await projectFields(credential);
       if (current.projectId !== fields.projectId) throw new Error('github_response_invalid');
       const no = fields.blocked.options.find((option) => option.name === 'No');
-      const stage = fields.status.options.find((option) => option.name === targetStage);
+      const stage = fields.status.options.find((option) => option.name === command.targetStage);
       if (no === undefined || stage === undefined) throw new Error('github_status_unavailable');
       if (executor.kind === 'agent' &&
         !fields.owner.options.some((option) => option.id === executor.ownerOptionId)) {
@@ -513,7 +513,7 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
           }
         }
         if (current.blocked) { await setSingleSelect(credential, fields.projectId, command.itemId, fields.blocked.id, no.id); mutated = true; }
-        if (current.status?.name !== targetStage) {
+        if (current.status?.name !== command.targetStage) {
           await setSingleSelect(credential, fields.projectId, command.itemId, fields.status.id, stage.id); mutated = true;
         }
       } catch (error) {
@@ -524,7 +524,7 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       const exactExecutor = executor.kind === 'human'
         ? verified.owner === null && verified.assignees.length === 1 && verified.assignees[0]?.login === executor.candidate.login
         : verified.owner?.optionId === executor.ownerOptionId && verified.assignees.length === 0;
-      if (verified.blocked || verified.status?.name !== targetStage || !exactExecutor) throw new Error('github_assignment_partial');
+      if (verified.blocked || verified.status?.name !== command.targetStage || !exactExecutor) throw new Error('github_assignment_partial');
     }
   };
 };

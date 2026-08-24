@@ -106,7 +106,7 @@ describe('MVP GitHub adapter', () => {
 
   it('recovers an issue-create replay and repairs missing Project membership', async () => {
     const fetched: string[] = [];
-    const fetch = vi.fn(async (url: string | URL | Request) => {
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       fetched.push(String(url));
       if (String(url).includes('search/issues')) return new Response(JSON.stringify({items: [{number: 42,
         node_id: 'I_42', html_url: 'https://github.com/acme/repo/issues/42', updated_at: '2026-08-13T00:00:00Z'}]}));
@@ -190,7 +190,8 @@ describe('MVP GitHub adapter', () => {
       projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
       credentialRef: secretRef, secrets: secrets('token'), fetch});
     await expect(adapter.startExecutor({itemId: 'PVTI_1', issueId: '9001', expectedVersion: 'github:updated-at:2026-08-24T00:00:00Z',
-      expectedStage: 'Backlog', expectedBlocked: true, executor: {kind: 'human', candidate: {id: '7', login: 'octo'}}})).resolves.toBeUndefined();
+      expectedStage: 'Backlog', targetStage: 'In Dev', expectedBlocked: true,
+      executor: {kind: 'human', candidate: {id: '7', login: 'octo'}}})).resolves.toBeUndefined();
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith('/issues/42') && init?.method === 'PATCH')).toBe(true);
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/issues/9001'))).toBe(false);
   });

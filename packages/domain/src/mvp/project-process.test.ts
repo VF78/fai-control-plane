@@ -14,4 +14,16 @@ describe('project process policy', () => {
     expect(parseProjectProcessPolicy({contract:'fai.project-process.v1',stages:[stage]})).toBeNull();
     expect(parseProjectProcessPolicy({contract:'fai.project-process.v1',stages:[{...stage,nextStageId:null},{...stage,nextStageId:null}]})).toBeNull();
   });
+
+  it('parses bounded per-stage agent continuation settings', () => {
+    const policy = parseProjectProcessPolicy({contract:'fai.project-process.v1',stages:[
+      {id:'qa',title:'Review',responsibility:'Agent',gate:'Automatic',evidence:'Checks',nextStageId:null,
+        automation:{agentRole:'qa',afterRoles:['developer'],maxStarts:2}}
+    ]});
+    expect(policy?.stages[0]?.automation).toEqual({agentRole:'qa',afterRoles:['developer'],maxStarts:2,reworkStageId:null});
+    expect(parseProjectProcessPolicy({contract:'fai.project-process.v1',stages:[
+      {id:'qa',title:'Review',responsibility:'Agent',gate:'Automatic',evidence:'Checks',nextStageId:null,
+        automation:{agentRole:'qa',afterRoles:['developer'],maxStarts:0}}
+    ]})).toBeNull();
+  });
 });

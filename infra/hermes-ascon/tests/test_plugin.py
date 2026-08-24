@@ -41,10 +41,10 @@ class PluginTest(unittest.TestCase):
     def setUp(self):
         PLUGIN.bridge_state.reset_for_test()
 
-    def test_registers_nine_bounded_tools_and_identity_hooks(self):
+    def test_registers_bounded_tools_and_identity_hooks(self):
         context = Context()
         PLUGIN.register(context)
-        self.assertEqual(len(context.tools), 9)
+        self.assertEqual(len(context.tools), 12)
         self.assertEqual({tool["toolset"] for tool in context.tools}, {"fai_internal", "fai_client"})
         self.assertIn("pre_gateway_dispatch", context.hooks)
         self.assertIn("pre_llm_call", context.hooks)
@@ -116,6 +116,14 @@ class PluginTest(unittest.TestCase):
         self.assertEqual(captured["source"]["updateId"], "77")
         self.assertNotIn("userId", captured["action"])
 
+    def test_process_start_is_one_bounded_internal_tool(self):
+        context = Context()
+        PLUGIN.register(context)
+        tool = next(tool for tool in context.tools if tool["name"] == "fai_process_start")
+        self.assertEqual(tool["toolset"], "fai_internal")
+        self.assertEqual(tool["schema"]["parameters"]["required"], ["task"])
+        self.assertEqual(len(tool["schema"]["parameters"]["properties"]["task"]["oneOf"]), 2)
+
     def test_client_tools_fail_closed_without_browser_identity(self):
         self.assertEqual(PLUGIN._client_handler("issue.create")({}, session_id="s1"),
                          '{"error": "authenticated_browser_identity_required"}')
@@ -139,6 +147,13 @@ class PluginTest(unittest.TestCase):
         self.assertEqual(result, '{"status":"completed"}')
         self.assertEqual(captured["profile"], "internal")
         self.assertEqual(captured["source"], {"provider": "agent-role-run", "sessionId": session_id})
+
+    def test_repository_tool_requires_receipt_and_returns_typed_retry_when_socket_is_absent(self):
+        handler = PLUGIN._repository_handler("prepare")
+        blocked = json.loads(handler({}, session_id="telegram-session"))
+        self.assertEqual((blocked["status"], blocked["code"]), ("blocked", "authorization_denied"))
+        retry = json.loads(handler({}, session_id="browser:" + "a" * 64))
+        self.assertEqual((retry["status"], retry["code"]), ("retry", "bridge_unavailable"))
 
 
 if __name__ == "__main__":

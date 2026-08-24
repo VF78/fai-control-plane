@@ -30,6 +30,7 @@ services:
       TELEGRAM_GROUP_ALLOWED_CHATS: ${HERMES_TELEGRAM_CHAT_ID:?required}
     volumes:
       - /var/lib/fai-hermes-ascon:/opt/data
+      - /var/lib/fai-hermes-ascon/repository-broker:/run/fai-repository-broker
       - ${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro
       - ./extensions/fai-control-plane:/opt/data/plugins/fai-control-plane:ro
       - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
@@ -51,6 +52,42 @@ services:
     shm_size: 1g
     init: true
     stop_grace_period: 30s
+    restart: unless-stopped
+
+  repository-broker:
+    profiles: [repository-work]
+    image: fai-repository-broker:${FCP_REPOSITORY_BROKER_RELEASE:?required}
+    build:
+      context: ../..
+      dockerfile: infra/repository-broker/Dockerfile
+    user: "10000:10000"
+    environment:
+      FCP_REPOSITORY_AUTHORIZATION_URL: ${FCP_REPOSITORY_AUTHORIZATION_URL:?required}
+      FCP_REPOSITORY_BRIDGE_TOKEN_FILE: /run/secrets/internal-bridge-token
+      FCP_GITHUB_APP_ID: ${FCP_GITHUB_APP_ID:?required}
+      FCP_GITHUB_APP_INSTALLATION_ID: ${FCP_GITHUB_APP_INSTALLATION_ID:?required}
+      FCP_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app-private-key.pem
+      FCP_REPOSITORY_WORK_ROOT: /opt/data/work/project
+      FCP_REPOSITORY_BROKER_STATE_ROOT: /var/lib/fai-repository-broker
+      FCP_REPOSITORY_BROKER_SOCKET: /run/fai-repository-broker/broker.sock
+    volumes:
+      - /var/lib/fai-hermes-ascon/work/project:/opt/data/work/project
+      - /var/lib/fai-hermes-ascon/repository-broker:/run/fai-repository-broker
+      - /var/lib/fai-repository-broker-ascon:/var/lib/fai-repository-broker
+      - ${HERMES_INTERNAL_BRIDGE_TOKEN_FILE:?required}:/run/secrets/internal-bridge-token:ro
+      - ${FCP_GITHUB_APP_PRIVATE_KEY_FILE:?required}:/run/secrets/github-app-private-key.pem:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "const n=require('node:net').connect('/run/fai-repository-broker/broker.sock');n.on('connect',()=>{n.end();process.exit(0)});n.on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 64
+    init: true
     restart: unless-stopped
 
   codex-cli:

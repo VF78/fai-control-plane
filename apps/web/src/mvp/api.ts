@@ -13,12 +13,13 @@ import {
   onboardProjectMember,
   resolveAgentSubmissionBinding,
   readAgentRoutingPolicy,
+  readProjectProcessPolicy,
   readActiveProjectContext,
   refreshProjectContext,
   saveAgentRoutingPolicy,
   subjectHash
 } from '@fai-control-plane/db';
-import {assignTaskExecutor, decideApproval, reconcileAgentAttempt, type AgentSubmissionPorts} from '@fai-control-plane/application';
+import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, composeAgentTerminalNotification, decideApproval, reconcileAgentAttempt, type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
 import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeMembership, parseAgentRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
@@ -69,10 +70,13 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
     repositoryId: context.repositoryId, credentialRef: context.trackerCredentialRef, secrets: secretResolver});
   const stores = createStores(database, context.workspaceId);
   const routing = effectiveAgentRouting(await readAgentRoutingPolicy(database, actorId, projectId));
+  const processPolicy = await readProjectProcessPolicy(database, actorId, projectId);
+  if (processPolicy === null) throw new Error('project_process_policy_unavailable');
   return {context, tracker, ports: {resolveContext: async () => ({workspaceId: context.workspaceId, projectId: context.projectId,
       requesterRole: context.requesterRole, bindingId: context.bindingId, repository: {id: context.repositoryId, url: context.repositoryUrl},
       agentTrackerOwnerOptionId: process.env.HERMES_TRACKER_OWNER_OPTION_ID ?? '', doneStatusOptionId: process.env.STATUS_DONE_ID ?? '',
       routingPolicyVersion: routing.version, routingPolicy: routing.policy,
+      processPolicyVersion: processPolicy.version, processPolicy: processPolicy.policy,
       executorCatalog: hermesExecutorCatalog()}),
     readFreshSnapshot: () => read.readSnapshot(context.bindingId, context.cursor), persistSnapshot: stores.snapshots.replace,
     resolveActiveContext: ({actorId, projectId}: Readonly<{actorId: string; projectId: string}>) =>
@@ -80,9 +84,24 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
     composeAcceptedNotification: async (item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput> => ({projectId: context.projectId,
       contour: 'trusted-main', channelReference: 'telegram:internal',
       text: `Hermes принял задачу: ${item.title} — ${item.url}`, idempotencyKey}),
-    repository, delivery, tracker, agentInstructions: asconHermesInstructions, transaction: {execute: (
+    repository, delivery, tracker, agentInstructions: defaultAgentStageInstructions, transaction: {execute: (
       input: Parameters<AgentSubmissionPorts['transaction']['execute']>[0], submit: Parameters<AgentSubmissionPorts['transaction']['execute']>[1]
     ) => executeAgentSubmissionTransaction(database, input, submit)}}};
+};
+
+/** Shared UI/Telegram composition for the canonical process.start command. */
+export const startGitHubProcess = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
+  actorId: string; projectId: string; task: Readonly<{kind: 'existing'; itemId: string}> |
+    Readonly<{kind: 'create'; title: string; statement: string}>;
+  sourceReference: string; idempotencyKey: string;
+}>) => {
+  const endpoint = process.env.HERMES_ROLE_REQUEST_URL;
+  const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, input.actorId, input.projectId);
+  if (endpoint === undefined || binding?.agentCredentialRef == null) throw new Error('agent_provider_unavailable');
+  const delivery = createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048),
+    credentialRef: binding.agentCredentialRef, secrets: secretResolver});
+  const {ports} = await githubAssignment(database, input.actorId, input.projectId, delivery);
+  return startProcess(input, ports);
 };
 
 export const projects = async (request: Request): Promise<Response> => {
@@ -226,23 +245,6 @@ export const approval = async (request: Request, approvalId: string): Promise<Re
 const unavailableDelivery: AgentDeliveryPort = {submit: async () => { throw new Error('agent_provider_unavailable'); },
   observe: async () => { throw new Error('agent_provider_unavailable'); }};
 
-const asconHermesInstructions = (role: 'developer'|'qa') => role === 'developer'
-  ? {constraints: [
-    'Work only on the referenced GitHub Project item and repository.',
-    'Do not merge, release, deploy, or access production.',
-    'Best-effort status contract, requiring configured GitHub Project mutation capability: after implementation, move this same Project item from In Dev to QA and read it back to verify Status is QA.'
-  ], acceptanceCriteria: [
-    'Record delivery evidence in the referenced GitHub issue or pull request.',
-    'The same Project item is confirmed in QA after development.'
-  ]} : {constraints: [
-    'Work only on the referenced GitHub Project item and repository.',
-    'Do not merge, release, deploy, or access production.',
-    'Best-effort status contract, requiring configured GitHub Project mutation capability: after QA, move this same Project item from QA to In Dev when rework is needed; otherwise QA to Acceptance. Read it back and verify Status.'
-  ], acceptanceCriteria: [
-    'Record QA evidence in the referenced GitHub issue or pull request.',
-    'The same Project item is confirmed in In Dev or Acceptance after QA.'
-  ]};
-
 export const taskAssignableUsers = async (request: Request): Promise<Response> => {
   try {
     if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET'}});
@@ -270,9 +272,18 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery
       : createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048), credentialRef: binding.agentCredentialRef, secrets: secretResolver});
     if (action === 'refresh-attempt') {
+      const assignment = await githubAssignment(database, session.actorId, projectId, delivery);
       return Response.json(await reconcileAgentAttempt({actorId: session.actorId, projectId,
         itemId: string(body.projectItemId), deliveryReference: string(body.deliveryReference)},
-      {delivery, attempts: createAgentAttemptStore(database)}));
+      {delivery, attempts: createAgentAttemptStore(database), readFreshItem: async (attempt) => {
+        const context = await assignment.ports.resolveContext();
+        if (context === null) return null;
+        const snapshot = await assignment.ports.readFreshSnapshot();
+        await assignment.ports.persistSnapshot(snapshot);
+        return snapshot.items.find((candidate) => candidate.itemId === attempt.itemId &&
+          candidate.projectId === attempt.projectId) ?? null;
+      }, composeTerminalNotification: async (attempt, observed, key) =>
+        composeAgentTerminalNotification(projectId, attempt, observed, key)}));
     }
     if (action !== 'assign') throw new Error('body_invalid');
     const executor = body.executor;
@@ -291,9 +302,14 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
         confirmUnobservableFailure: value.confirmUnobservableFailure === true};
     })();
     if (retry !== undefined && kind !== 'hermes') throw new Error('body_invalid');
-    const result = await assignTaskExecutor({actorId: session.actorId, projectId, projectItemId: string(body.projectItemId),
-      executor: kind === 'hermes' ? {kind} : {kind, candidate: {id: string((candidate as Record<string, unknown>).id, 512), login: string((candidate as Record<string, unknown>).login, 256)}},
-      ...(retry === undefined ? {} : {retry})}, ports);
+    const projectItemId = string(body.projectItemId);
+    const result = kind === 'hermes' && retry === undefined
+      ? await startGitHubProcess(database, {actorId: session.actorId, projectId,
+        task: {kind: 'existing', itemId: projectItemId}, sourceReference: 'ui:task-executor',
+        idempotencyKey: `process.start:ui:${projectId}:${projectItemId}`})
+      : await assignTaskExecutor({actorId: session.actorId, projectId, projectItemId,
+        executor: kind === 'hermes' ? {kind} : {kind, candidate: {id: string((candidate as Record<string, unknown>).id, 512), login: string((candidate as Record<string, unknown>).login, 256)}},
+        ...(retry === undefined ? {} : {retry})}, ports);
     return Response.json(result);
   } catch (error) {
     const code = error instanceof Error ? error.message : 'request_failed';

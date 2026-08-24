@@ -7,6 +7,8 @@ export type ProjectProcessStage = Readonly<{
   gate: string;
   evidence: string;
   nextStageId: string | null;
+  automation: Readonly<{agentRole: 'manager'|'developer'|'qa'; afterRoles: readonly ('manager'|'developer'|'qa')[];
+    maxStarts: number; reworkStageId: string | null}> | null;
 }>;
 
 export type ProjectProcessPolicy = Readonly<{
@@ -29,11 +31,27 @@ export const parseProjectProcessPolicy = (value: unknown): ProjectProcessPolicy 
     if (!isBoundedId(stage.id) || !text(stage.title, 200) || !text(stage.responsibility, 500) ||
       !text(stage.gate, 500) || !text(stage.evidence, 1_000) ||
       (stage.nextStageId !== null && !isBoundedId(stage.nextStageId))) return null;
-    stages.push(stage as unknown as ProjectProcessStage);
+    let automation: ProjectProcessStage['automation'] = null;
+    if (stage.automation !== undefined && stage.automation !== null) {
+      if (typeof stage.automation !== 'object' || Array.isArray(stage.automation)) return null;
+      const configured = stage.automation as Record<string, unknown>;
+      if (!['manager','developer','qa'].includes(String(configured.agentRole)) ||
+        !Array.isArray(configured.afterRoles) || configured.afterRoles.length === 0 || configured.afterRoles.length > 2 ||
+        !configured.afterRoles.every((role) => ['manager','developer','qa'].includes(String(role))) ||
+        !Number.isInteger(configured.maxStarts) || (configured.maxStarts as number) < 1 || (configured.maxStarts as number) > 5) return null;
+      if (configured.reworkStageId !== undefined && configured.reworkStageId !== null &&
+        !isBoundedId(configured.reworkStageId)) return null;
+      automation = {agentRole: configured.agentRole as 'manager'|'developer'|'qa',
+        afterRoles: configured.afterRoles as ('manager'|'developer'|'qa')[],
+        maxStarts: configured.maxStarts as number, reworkStageId: configured.reworkStageId as string | null ?? null};
+    }
+    stages.push({...stage, automation} as unknown as ProjectProcessStage);
   }
   const ids = new Set(stages.map((stage) => stage.id));
   if (ids.size !== stages.length || stages.some((stage) => stage.nextStageId !== null && !ids.has(stage.nextStageId))) {
     return null;
   }
+  if (stages.some((stage) => stage.automation !== null && stage.automation.reworkStageId !== null &&
+    !ids.has(stage.automation.reworkStageId))) return null;
   return {contract: 'fai.project-process.v1', stages};
 };

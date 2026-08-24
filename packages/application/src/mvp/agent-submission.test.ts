@@ -9,13 +9,18 @@ const snapshot: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'snaps
   observedAt: '2026-08-15T10:00:00.000Z', sourceUrl: 'https://github.com/users/VF78/projects/1', items: [{
     itemId: 'PVTI_item', projectId: 'project', issueId: '210', title: 'GUI recovery',
     url: 'https://github.com/VF78/fai-control-plane/issues/210', version: 'github:updated-at:v1',
-    statusOptionId: 'ready', statusOptionName: 'Ready', ownerOptionId: 'owner-hermes', blocked: false, targetDate: null,
+    statusOptionId: 'in-dev', statusOptionName: 'In Dev', ownerOptionId: 'owner-hermes', blocked: false, targetDate: null,
     parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [],
     observedAt: '2026-08-15T10:00:00.000Z'}]};
 const task = snapshot.items[0]!;
 const routingPolicyVersion = createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex');
 const executorCatalog = {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']},
   'claude-code-cli': {available: false, models: []}} as const;
+const processPolicy = {contract: 'fai.project-process.v1' as const, stages: [
+  {id:'ready',title:'Ready',responsibility:'Owner',gate:'Explicit',evidence:'Task',nextStageId:'dev',automation:null},
+  {id:'dev',title:'In Dev',responsibility:'Agent',gate:'Work',evidence:'PR',nextStageId:null,
+    automation:{agentRole:'developer' as const,afterRoles:['qa' as const],maxStarts:1,reworkStageId:null}}
+]};
 const contextContent = serializeProjectContextSnapshot({contract:'fai.project-context.v1',
   sources:[{id:'source',key:'requirements',kind:projectContextSourceKind,version:'a'.repeat(64),provenance:'operator'}],
   content:'Approved project context'});
@@ -26,7 +31,8 @@ const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): Age
   resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: role,
     bindingId: 'binding', repository: {id: 'R_repo', url: 'https://github.com/VF78/fai-control-plane'},
     agentTrackerOwnerOptionId: 'owner-hermes', doneStatusOptionId: 'done',
-    routingPolicyVersion, routingPolicy: defaultAgentRoutingPolicy, executorCatalog}),
+    routingPolicyVersion, routingPolicy: defaultAgentRoutingPolicy, executorCatalog,
+    processPolicyVersion: 'b'.repeat(64), processPolicy}),
   readFreshSnapshot: async () => snapshot, persistSnapshot: async () => undefined,
   resolveActiveContext: async () => activeContext,
   repository: {readRepository: async () => ({repositoryId: 'R_repo',

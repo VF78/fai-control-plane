@@ -17,6 +17,7 @@ export type ConversationIdentityPort = Readonly<{
 export type ReceiptBoundRoleRun = Readonly<{
   sessionId: string; actorId: string; projectId: string; requesterRole: ProjectRole;
   role: 'manager' | 'developer' | 'qa'; itemId: string; observedVersion: string; occurredAt: string;
+  allowedStageTitles: readonly string[];
 }>;
 
 type SharedPorts = Readonly<{
@@ -37,6 +38,10 @@ type SharedPorts = Readonly<{
   identities: ConversationIdentityPort;
   receipts: ReceiptStore;
   completion: ConversationCompletionStore;
+  /** One canonical root command. The implementation pins provider facts and starts only that exact item. */
+  processStart?: Readonly<{execute(input: Readonly<{actorId: string; projectId: string;
+    task: Extract<InternalConversationEnvelope['action'], {type: 'process.start'}>['task'];
+    sourceReference: string; idempotencyKey: string}>): Promise<Readonly<{referenceId: string}>>}>;
 }>;
 
 export type ClientConversationPorts = SharedPorts;
@@ -54,6 +59,7 @@ const dispatch = async (input: Readonly<{
   if (envelope.message.contour === 'client-edge' && envelope.action.type === 'project_item.stage') {
     return {status: 'denied'};
   }
+  if (envelope.message.contour === 'client-edge' && envelope.action.type === 'process.start') return {status: 'denied'};
   const roleRun = input.roleRun;
   if (roleRun !== undefined && (envelope.message.contour !== 'trusted-main' ||
     envelope.message.correlationId !== roleRun.sessionId || envelope.message.projectId !== roleRun.projectId ||
@@ -67,13 +73,11 @@ const dispatch = async (input: Readonly<{
     const action = envelope.action;
     const exactTarget = 'itemId' in action && 'expectedVersion' in action &&
       action.itemId === roleRun.itemId && action.expectedVersion === roleRun.observedVersion;
-    const allowed = roleRun.role === 'developer'
-      ? action.type === 'project_item.stage' && exactTarget && action.stage === 'QA'
-      : roleRun.role === 'qa'
-        ? action.type === 'project_item.stage' && exactTarget && ['In Dev', 'Acceptance'].includes(action.stage)
-        : (action.type === 'issue.create' ||
-          (action.type === 'project_item.stage' && exactTarget && ['Backlog', 'Ready'].includes(action.stage)) ||
-          (action.type === 'issue.update' && exactTarget));
+    const configuredStage = action.type === 'project_item.stage' && exactTarget &&
+      roleRun.allowedStageTitles.includes(action.stage);
+    const allowed = roleRun.role === 'manager'
+      ? action.type === 'issue.create' || configuredStage || (action.type === 'issue.update' && exactTarget)
+      : configuredStage;
     if (!allowed) return {status: 'denied'};
   }
   if (envelope.action.type === 'issue.update' && roleRun === undefined &&
@@ -90,6 +94,14 @@ const dispatch = async (input: Readonly<{
     case 'issue.create': {
       referenceId = (await ports.tracker.createIssue({projectId: envelope.message.projectId,
         title: envelope.action.title, statement: envelope.action.statement,
+        idempotencyKey: envelope.message.idempotencyKey})).referenceId;
+      break;
+    }
+    case 'process.start': {
+      if (envelope.message.contour !== 'trusted-main' || roleRun !== undefined || ports.processStart === undefined ||
+        !['project_owner', 'operator'].includes(identity.role)) return {status: 'denied'};
+      referenceId = (await ports.processStart.execute({actorId, projectId: envelope.message.projectId,
+        task: envelope.action.task, sourceReference: envelope.message.messageReference,
         idempotencyKey: envelope.message.idempotencyKey})).referenceId;
       break;
     }

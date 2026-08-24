@@ -121,6 +121,8 @@ services:
         target: source-github-projects-token
       - source: telegram-bot-token
         target: source-telegram-bot-token
+      - source: hermes-token
+        target: source-hermes-token
     networks:
       - database
       - egress

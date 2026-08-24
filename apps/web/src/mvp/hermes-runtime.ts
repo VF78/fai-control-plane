@@ -10,14 +10,17 @@ import {
 } from '@fai-control-plane/db';
 import {decideApproval, dispatchClientConversationAction, dispatchConversationAction} from '@fai-control-plane/application';
 import {
+  createGitHubRepositoryReadAdapter,
   createGitHubTrackerMutationAdapter,
   createGitHubTrackerReadAdapter
 } from '@fai-control-plane/integrations';
 import {parseProjectContextSnapshot, type ApprovalKind, type ClientConversationEnvelope,
   type InternalConversationEnvelope, type OpaqueSecretRef} from '@fai-control-plane/domain';
 import {createHermesConversationActionHandler} from './hermes-actions.ts';
+import {createRepositoryAuthorizationHandler, type RepositoryAuthorization} from './repository-authorization.ts';
 import {bitrixClientActionsEnabled} from './integration-config.ts';
 import {getDatabase, readSecretFile, secretResolver} from './runtime.ts';
+import {startGitHubProcess} from './api.ts';
 
 const env = (name: string, maximum = 2_048): string => {
   const value = process.env[name];
@@ -79,7 +82,13 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
     }},
     identities: {resolveActiveHuman: ({projectId: targetProjectId, senderReference}: Readonly<{
       projectId: string; senderReference: string}>) => resolveActiveHumanMember(database, targetProjectId, senderReference)},
-    receipts: stores.receipts, completion: stores.completion
+    receipts: stores.receipts, completion: stores.completion,
+    processStart: {async execute(command: Readonly<{actorId: string; projectId: string;
+      task: Readonly<{kind: 'existing'; itemId: string}> | Readonly<{kind: 'create'; title: string; statement: string}>;
+      sourceReference: string; idempotencyKey: string}>) {
+      const result = await startGitHubProcess(database, command);
+      return {referenceId: result.chainReference};
+    }}
   };
   return createHermesConversationActionHandler({
     internalToken: () => readSecretFile(env('HERMES_INTERNAL_ACTION_TOKEN_FILE')),
@@ -110,3 +119,39 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
       envelope, ports: shared})
   })(request);
 };
+
+export const hermesRepositoryAuthorization = createRepositoryAuthorizationHandler({
+  token: () => readSecretFile(env('HERMES_INTERNAL_ACTION_TOKEN_FILE')),
+  authorize: async (input: RepositoryAuthorization) => {
+    const projectId = env('FCP_PROJECT_ID');
+    if (input.projectId !== projectId || !/^browser:[a-f0-9]{64}$/.test(input.receiptReference)) return null;
+    const database = getDatabase();
+    const roleRun = await resolveReceiptBoundRoleRun(database, input.receiptReference, projectId);
+    if (roleRun === null || roleRun.role !== 'developer') return null;
+    const owner = env('GITHUB_OWNER', 100); const repository = env('GITHUB_REPOSITORY', 100);
+    const repositoryUrl = `https://github.com/${owner}/${repository}`;
+    if (input.repository.id !== env('BOOTSTRAP_REPOSITORY_ID') || input.repository.url !== repositoryUrl) return null;
+    const bindingId = env('GITHUB_BINDING_ID'); const projectNumber = Number(env('GITHUB_PROJECT_NUMBER', 16));
+    const binding = {id: bindingId, owner, repository, projectId, projectNumber,
+      projectUrl: `https://github.com/users/${owner}/projects/${projectNumber}`,
+      credentialRef: secret('github-projects', 'tracker_read', 'GITHUB_PROJECTS_TOKEN_FILE')};
+    const snapshot = await createGitHubTrackerReadAdapter({binding, secrets: secretResolver}).readSnapshot(bindingId, null);
+    const item = snapshot.items.find((candidate) => candidate.itemId === roleRun.itemId &&
+      candidate.version === roleRun.observedVersion);
+    if (item === undefined || item.url !== `${repositoryUrl}/issues/${input.issueNumber}`) return null;
+    const repositoryFact = await createGitHubRepositoryReadAdapter({owner, repository,
+      repositoryId: input.repository.id, credentialRef: binding.credentialRef, secrets: secretResolver})
+      .readRepository({repositoryId: input.repository.id});
+    const baseRef = `refs/heads/${repositoryFact.defaultBranch}`;
+    if (input.base.ref !== baseRef) return null;
+    const providerToken = await readSecretFile(env('GITHUB_PROJECTS_TOKEN_FILE'));
+    const response = await fetch(`https://api.github.com/repos/${owner}/${repository}/git/ref/heads/${repositoryFact.defaultBranch.split('/').map(encodeURIComponent).join('/')}`, {
+      headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${providerToken}`,
+        'user-agent': 'fai-control-plane-mvp/0.1', 'x-github-api-version': '2022-11-28'},
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!response.ok) return null;
+    const payload = await response.json() as {object?: {sha?: unknown}};
+    return payload.object?.sha === input.base.sha && /^[a-f0-9]{40}$/.test(input.base.sha) ? input : null;
+  }
+});
