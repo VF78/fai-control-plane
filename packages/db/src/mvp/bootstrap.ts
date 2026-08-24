@@ -1,4 +1,5 @@
 import {createDatabase, subjectHash} from './runtime.ts';
+import type {PoolClient} from 'pg';
 
 const required = (name: string, max = 2_048): string => {
   const value = process.env[name];
@@ -6,6 +7,11 @@ const required = (name: string, max = 2_048): string => {
   return value;
 };
 const optional = (name: string): string | null => process.env[name]?.trim() || null;
+const secretPath = (name: string): string => {
+  const value = required(name);
+  if (!value.startsWith('/')) throw new Error(`${name}_invalid`);
+  return value;
+};
 const uuid = (name: string): string => {
   const value = required(name, 36);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new Error(`${name}_invalid`);
@@ -22,6 +28,7 @@ export const bootstrap = async (): Promise<void> => {
   const workspaceId = uuid('FCP_WORKSPACE_ID'); const projectId = uuid('FCP_PROJECT_ID');
   const ownerId = uuid('BOOTSTRAP_OWNER_ACTOR_ID'); const bindingId = uuid('GITHUB_BINDING_ID');
   const secretId = uuid('BOOTSTRAP_TRACKER_SECRET_REF_ID');
+  const agentSecretLocator = secretPath('HERMES_TOKEN_FILE');
   const workspace = {slug: required('BOOTSTRAP_WORKSPACE_SLUG', 100), name: required('BOOTSTRAP_WORKSPACE_NAME', 200)};
   const repositoryUrl = https('BOOTSTRAP_REPOSITORY_URL');
   try {
@@ -43,6 +50,7 @@ export const bootstrap = async (): Promise<void> => {
       on conflict(project_id,actor_id) do nothing`, [projectId,ownerId]);
     await client.query(`insert into secret_refs(id,workspace_id,purpose,locator) values($1,$2,'tracker_read',$3)
       on conflict(id) do nothing`, [secretId,workspaceId,required('GITHUB_PROJECTS_TOKEN_FILE')]);
+    await ensureAgentDeliverySecretRef(client, workspaceId, agentSecretLocator);
     await client.query(`insert into tracker_bindings(id,project_id,secret_ref_id,provider,external_project_id,project_url,
       repository_id,repository_url) values($1,$2,$3,'github',$4,$5,$6,$7) on conflict(id) do nothing`,
       [bindingId,projectId,secretId,required('GITHUB_PROJECT_ID',256),https('BOOTSTRAP_GITHUB_PROJECT_URL'),
@@ -57,6 +65,22 @@ export const bootstrap = async (): Promise<void> => {
     await client.query('commit');
   } catch (error) { await client.query('rollback'); throw error; }
   finally { client.release(); await database.end(); }
+};
+
+export const ensureAgentDeliverySecretRef = async (
+  client: Pick<PoolClient, 'query'>,
+  workspaceId: string,
+  locator: string
+): Promise<void> => {
+  if (!locator.startsWith('/') || locator.length > 2_048 || locator.includes('\0')) {
+    throw new Error('HERMES_TOKEN_FILE_invalid');
+  }
+  await client.query(`insert into secret_refs(workspace_id,purpose,locator) values($1,'agent_delivery',$2)
+    on conflict(workspace_id,purpose) do nothing`, [workspaceId, locator]);
+  const existing = await client.query<{locator: string}>(
+    `select locator from secret_refs where workspace_id=$1 and purpose='agent_delivery'`, [workspaceId]
+  );
+  if (existing.rows[0]?.locator !== locator) throw new Error('bootstrap_existing_state_conflict');
 };
 
 if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href) await bootstrap();

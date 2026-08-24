@@ -186,6 +186,20 @@ export const listProjects = async (database: Database, actorId: string): Promise
   return result.rows;
 };
 
+export const projectAgentDeliveryConfigured = async (
+  database: Database,
+  actorId: string,
+  projectId: string
+): Promise<boolean> => {
+  const result = await database.query<{configured: boolean}>(
+    `select exists(select 1 from projects p
+       join project_memberships m on m.project_id=p.id and m.actor_id=$1 and m.active=true
+       join secret_refs s on s.workspace_id=p.workspace_id and s.purpose='agent_delivery'
+       where p.id=$2 and s.locator like '/%') as configured`, [actorId, projectId]
+  );
+  return result.rows[0]?.configured === true;
+};
+
 export const listProjectTaskViews = async (
   database: Database,
   actorId: string,
