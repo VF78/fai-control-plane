@@ -20,6 +20,7 @@ readonly readiness_file="$readiness_directory/codex-cli.json"
 readonly runtime_secret_directory="$data_root/runtime-secrets"
 readonly runtime_internal_bridge_token="$runtime_secret_directory/internal-bridge-token"
 readonly runtime_client_bridge_token="$runtime_secret_directory/client-bridge-token"
+readonly gateway_pid_file="$data_root/gateway.pid"
 readonly project=fai-hermes-ascon
 readonly workload_uid=10000
 readonly workload_gid=10000
@@ -140,12 +141,12 @@ render_runtime_config() {
 }
 
 prepare_runtime() {
-  install -d -o root -g root -m 0755 "$data_root"
+  install -d -o "$workload_uid" -g "$workload_gid" -m 0755 "$data_root"
   render_runtime_config
   install -d -o root -g root -m 0755 "$readiness_directory"
   install -d -o "$workload_uid" -g "$workload_gid" -m 0700 \
     "$work_directory" "$project_work_directory" "$codex_home" "$runtime_secret_directory"
-  [[ $(stat -c '%U:%G:%a' "$data_root") == root:root:755 ]] ||
+  [[ $(stat -c '%u:%g:%a' "$data_root") == "$workload_uid:$workload_gid:755" ]] ||
     fail 'Hermes data root permissions are invalid'
   [[ $(stat -c '%u:%g:%a' "$runtime_secret_directory") == \
     "$workload_uid:$workload_gid:700" ]] || fail 'runtime secret directory permissions are invalid'
@@ -366,6 +367,9 @@ case "$action" in
       "${compose[@]}" run --rm --no-deps \
         --entrypoint /opt/hermes/bin/hermes gateway auth status openai-codex
     verify_codex_runtime
+    "${compose[@]}" down
+    rm -f "$gateway_pid_file"
+    [[ ! -e "$gateway_pid_file" ]] || fail 'stale gateway PID file could not be removed'
     "${compose[@]}" up -d gateway
     wait_for_gateway_health || fail 'gateway did not become healthy within 180 seconds'
     curl -fsS --max-time 15 \
