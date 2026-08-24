@@ -27,7 +27,9 @@ describe('Phase B operator surfaces', () => {
   it('keeps approvals as a selected-task command and Settings as evidence only', async () => {
     const page = await source('../../app/page.tsx');
     const view = await source('phase-b-ui.tsx');
-    expect(page).toMatch(/view === 'tasks'[\s\S]*<ApprovalControl[\s\S]*<TaskApprovalEvidence/);
+    expect(page).toContain("view === 'tasks'");
+    expect(page).not.toContain('ApprovalControl');
+    expect(page).not.toContain('TaskApprovalEvidence');
     expect(page).toContain('<PhaseB view={view}');
     expect(page).toContain('TaskExecutorControl');
     expect(page).toContain('evidence?.agentSubmissions.recent.find');
