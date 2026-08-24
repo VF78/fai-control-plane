@@ -85,6 +85,8 @@ class DeploymentContractTest(unittest.TestCase):
     def test_model_config_is_rendered_before_the_container_starts(self):
         config = (HERMES / "config.yaml").read_text()
         compose = (HERMES / "compose.yaml").read_text()
+        gateway = compose.split("  gateway:", 1)[1].split("\n  codex-cli:", 1)[0]
+        self.assertIn('entrypoint: ["/opt/hermes/bin/hermes"]', gateway)
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
         self.assertIn("default: __HERMES_MODEL__", config)
         self.assertNotIn("${HERMES_MODEL}", config)
