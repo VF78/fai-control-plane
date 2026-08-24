@@ -156,6 +156,20 @@ active_mvp_health
         ):
             self.assertNotIn(mutation, preflight + host_checks + preflight_case)
 
+    def test_private_release_bundle_is_bounded_and_verified(self):
+        script = (ROOT / "scripts/deploy-prod.sh").read_text()
+        source = script.split("release_source() {", 1)[1].split("\n}\n", 1)[0]
+        host_checks = script.split("check_host_contract() {", 1)[1].split(
+            "\n}\n", 1
+        )[0]
+
+        self.assertIn("/tmp/fai-control-plane-*.bundle", source)
+        self.assertIn("root:root:600", source)
+        self.assertIn('git bundle verify "$bundle"', source)
+        self.assertIn("source=$(release_source)", host_checks)
+        self.assertIn('git ls-remote --exit-code "$source"', host_checks)
+        self.assertIn('git fetch --no-tags "$release_source"', script)
+
     def test_environment_render_changes_only_release_and_bitrix_gate(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
         start = script.index("render_target_environment() {")
@@ -215,7 +229,7 @@ render_target_environment
         deploy = script[script.index("log 'deploy: fetching exact origin/main'") :]
 
         ordered = (
-            "git fetch --no-tags origin",
+            'git fetch --no-tags "$release_source"',
             'git merge --ff-only "$release_commit"',
             'docker build \\',
             'mv -f "$temporary_environment" "$environment_file"',

@@ -194,10 +194,18 @@ project label. Project containers rotate JSON logs at 10 MiB with three files.
 
 After local acceptance, merge approval and a separate production approval:
 
+Private GitHub access stays on the operator Mac. Create an exact bundle from
+the approved local `main`, transfer it to
+`/tmp/fai-control-plane-<release_commit>.bundle`, and install it as
+`root:root` mode `0600`. Pass that exact path as `FCP_RELEASE_BUNDLE` to both
+commands below; the script verifies the bundle and its `refs/heads/main` SHA.
+Remove the one-time bundle after the deploy.
+
 ```bash
 cd /opt/fai-control-plane-mvp
 release_commit=<approved-40-hex-origin-main>
-sudo scripts/deploy-prod.sh preflight "$release_commit"
+sudo env FCP_RELEASE_BUNDLE="/tmp/fai-control-plane-$release_commit.bundle" \
+  scripts/deploy-prod.sh preflight "$release_commit"
 ```
 
 `preflight` is read-only and prints the resulting configuration SHA-256.
@@ -209,6 +217,7 @@ cd /opt/fai-control-plane-mvp
 release_commit=<approved-40-hex-origin-main>
 config_digest=<approved-64-hex>
 sudo env \
+  FCP_RELEASE_BUNDLE="/tmp/fai-control-plane-$release_commit.bundle" \
   FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
   FCP_APPROVED_CONFIG_SHA256="$config_digest" \
   scripts/deploy-prod.sh deploy "$release_commit"
