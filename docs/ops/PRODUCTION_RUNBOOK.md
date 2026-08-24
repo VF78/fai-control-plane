@@ -92,6 +92,28 @@ network change.
 - GitHub Actions are not required for deployment; use approved local checks
   while the Actions spending limit is active.
 
+### Hermes GitHub credential boundary
+
+Reviewed non-secret Hermes environment example SHA-256:
+`2b9c8ee4eff9a2756af6161476c8edc4eb071a88e9ccb56adffc652105092a74`.
+
+- Never mount a GitHub PAT, App private key, deploy key or `GH_TOKEN` into the
+  Hermes gateway or its terminal. The ASCON repository cannot currently prove
+  protected-ref enforcement, so a standing `contents:write` credential would
+  also expose merge/release writes.
+- Routine Hermes Project mutations use the existing Control Plane GitHub
+  adapter. Hermes receives only its project-isolated internal bridge token;
+  Telegram identity is bound server-side, every command is idempotent/audited,
+  and provider versions are checked immediately before mutation.
+- The host-owned GitHub credential remains only at
+  `/etc/fai-control-plane-mvp/secrets/github-projects-token`, root-only mode
+  `0600`, and is resolved by the web/worker adapters. Never copy it to the
+  Hermes checkout, data root, environment, logs or approval evidence.
+- Merge, Actions mutation, release and production deploy are not standing
+  Hermes capabilities. Enabling any one requires a separately reviewed broker
+  operation that resolves approved evidence against the exact current provider
+  target/version; a prompt, role name or retained approval is insufficient.
+
 ## Supported release
 
 `scripts/deploy-prod.sh` is the source of truth. It accepts only exact current

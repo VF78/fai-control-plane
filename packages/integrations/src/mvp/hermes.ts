@@ -27,7 +27,9 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     const response = await request(endpoint, {
       method: 'POST',
       headers: {accept: 'application/json', authorization: `Bearer ${token}`, 'content-type': 'application/json'},
-      body: JSON.stringify({input: renderAgentRoleRequest(roleRequest), session_id: roleRequest.correlationId}),
+      body: JSON.stringify({input: renderAgentRoleRequest(roleRequest), session_id: roleRequest.correlationId,
+        provider: 'openai-codex', model: 'gpt-5.6-terra',
+        model_options: {reasoning_effort: 'medium'}}),
       signal: AbortSignal.timeout(15_000)
     });
     if (response.status !== 202) throw new Error('agent_delivery_failed');

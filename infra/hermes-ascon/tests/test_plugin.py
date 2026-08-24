@@ -28,10 +28,10 @@ class PluginTest(unittest.TestCase):
     def setUp(self):
         PLUGIN.bridge_state.reset_for_test()
 
-    def test_registers_seven_bounded_tools_and_identity_hook(self):
+    def test_registers_nine_bounded_tools_and_identity_hook(self):
         context = Context()
         PLUGIN.register(context)
-        self.assertEqual(len(context.tools), 7)
+        self.assertEqual(len(context.tools), 9)
         self.assertEqual({tool["toolset"] for tool in context.tools}, {"fai_internal", "fai_client"})
         self.assertIn("pre_gateway_dispatch", context.hooks)
 
@@ -58,6 +58,26 @@ class PluginTest(unittest.TestCase):
     def test_client_tools_fail_closed_without_browser_identity(self):
         self.assertEqual(PLUGIN._client_handler("issue.create")({}, session_id="s1"),
                          '{"error": "authenticated_browser_identity_required"}')
+
+    def test_role_run_session_cannot_be_promoted_without_receipt_binding(self):
+        self.assertEqual(PLUGIN._handler("project_item.stage")({}, session_id="browser:unbound"),
+            '{"error": "authenticated_message_identity_required"}')
+
+    def test_exact_role_run_session_is_forwarded_for_server_side_receipt_resolution(self):
+        captured = {}
+        original = PLUGIN._post
+        PLUGIN._post = lambda profile, source, action: captured.update(
+            profile=profile, source=source, action=action) or '{"status":"completed"}'
+        session_id = "browser:" + "a" * 64
+        try:
+            result = PLUGIN._handler("project_item.stage")(
+                {"itemId": "PVTI_1", "issueId": "42", "expectedVersion": "v1", "stage": "QA"},
+                session_id=session_id)
+        finally:
+            PLUGIN._post = original
+        self.assertEqual(result, '{"status":"completed"}')
+        self.assertEqual(captured["profile"], "internal")
+        self.assertEqual(captured["source"], {"provider": "agent-role-run", "sessionId": session_id})
 
 
 if __name__ == "__main__":

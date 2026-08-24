@@ -1,6 +1,7 @@
+import {createHash} from 'node:crypto';
 import {describe, expect, it, vi} from 'vitest';
-import {trackerPollIntervalMs, trackerStaleAfterMs} from '@fai-control-plane/domain';
-import {projectAgentDeliveryConfigured, trackerSnapshotFreshness, type Database} from './runtime.ts';
+import {defaultHermesRoutingPolicy, trackerPollIntervalMs, trackerStaleAfterMs} from '@fai-control-plane/domain';
+import {projectAgentDeliveryConfigured, readHermesRoutingPolicy, resolveReceiptBoundRoleRun, trackerSnapshotFreshness, type Database} from './runtime.ts';
 
 describe('tracker snapshot freshness', () => {
   const observedAt = new Date('2026-08-23T10:00:00.000Z');
@@ -30,6 +31,19 @@ describe('agent delivery readiness', () => {
   });
 });
 
+describe('versioned Hermes routing projection', () => {
+  it('reads the latest valid immutable source artifact with provenance', async () => {
+    const contentText = JSON.stringify(defaultHermesRoutingPolicy);
+    const query = vi.fn().mockResolvedValue({rows: [{id: 'version-id', projectId: 'project',
+      sha256: createHash('sha256').update(contentText).digest('hex'), provenance: 'control-plane:command',
+      createdAt: new Date('2026-08-24T10:00:00.000Z'), contentText}]});
+    await expect(readHermesRoutingPolicy({query} as unknown as Database, 'owner', 'project')).resolves.toMatchObject({
+      id: 'version-id', provenance: 'control-plane:command', policy: defaultHermesRoutingPolicy
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("s.kind='hermes_routing_policy_v1'"), ['owner', 'project']);
+  });
+});
+
 describe('agent submission evidence projection', () => {
   it('keeps task and delivery references in the same bounded DB projection', async () => {
     const source = await import('node:fs/promises').then(({readFile}) => readFile(new URL('./runtime.ts', import.meta.url), 'utf8'));
@@ -40,5 +54,36 @@ describe('agent submission evidence projection', () => {
     expect(source).toContain('r.occurred_at=a.occurred_at');
     expect(source).toContain("insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)");
     expect(source).toContain("values($1,'messenger-notification',$2,$3,$4)");
+  });
+});
+
+describe('receipt-bound role-run projection', () => {
+  it('derives the exact submit key and returns only one active operator receipt/audit match', async () => {
+    const query = vi.fn().mockResolvedValue({rows: [{actorId: 'actor', projectId: 'project',
+      requesterRole: 'operator', role: 'developer', itemId: 'PVTI_1', observedVersion: 'v1',
+      occurredAt: new Date('2026-08-24T10:00:00.000Z')}]});
+    const sessionId = `browser:${'a'.repeat(64)}`;
+    await expect(resolveReceiptBoundRoleRun({query} as unknown as Database, sessionId, 'project'))
+      .resolves.toMatchObject({sessionId, actorId: 'actor', role: 'developer', itemId: 'PVTI_1'});
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("r.command_type='agent.submit'"),
+      [sessionId, 'project', `agent.submit:${'a'.repeat(64)}`]);
+  });
+
+  it('fails closed for malformed ids, duplicate matches, clients, or malformed receipt details', async () => {
+    const query = vi.fn();
+    await expect(resolveReceiptBoundRoleRun({query} as unknown as Database, 'browser:nope', 'project'))
+      .resolves.toBeNull();
+    expect(query).not.toHaveBeenCalled();
+    for (const rows of [
+      [{actorId: 'a'}, {actorId: 'b'}],
+      [{actorId: 'a', projectId: 'project', requesterRole: 'client', role: 'developer', itemId: 'item',
+        observedVersion: 'v1', occurredAt: new Date()}],
+      [{actorId: 'a', projectId: 'project', requesterRole: 'operator', role: 'devops', itemId: 'item',
+        observedVersion: 'v1', occurredAt: new Date()}]
+    ]) {
+      query.mockResolvedValueOnce({rows});
+      await expect(resolveReceiptBoundRoleRun({query} as unknown as Database, `browser:${'a'.repeat(64)}`, 'project'))
+        .resolves.toBeNull();
+    }
   });
 });

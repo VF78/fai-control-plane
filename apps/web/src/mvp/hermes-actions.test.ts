@@ -6,6 +6,7 @@ const dependencies = (): HermesActionDependencies => ({internalToken: async () =
   clientToken: async () => clientToken, projectId: 'fd22736d-1879-47fe-9b8a-c51653a4b635',
   telegramChatId: '-5540760630', telegramUserIds: ['96211907', '355724486'], bitrixTaskId: '154312',
   clientActionsEnabled: true,
+  resolveRoleRun: vi.fn(async () => null),
   dispatchInternal: vi.fn(async () => ({status: 'completed' as const, referenceId: 'snapshot-1'})),
   dispatchClient: vi.fn(async () => ({status: 'completed' as const, referenceId: 'issue-1'}))});
 const request = (bearer: string, source: object, action: object) => new Request('https://app.f-ai.studio/api/hermes/conversation-actions', {
@@ -57,5 +58,33 @@ describe('Hermes conversation action HTTP boundary', () => {
       authorId: 'client-2', observedAt: '2026-08-14T10:00:00.000Z'}, {type: 'issue.create', title: 'Defect', statement: 'Steps'}));
     expect(response.status).toBe(403);
     expect(deps.dispatchClient).not.toHaveBeenCalled();
+  });
+  it('requires an exact canonical receipt binding for internal role-run sessions', async () => {
+    const sessionId = `browser:${'a'.repeat(64)}`; const deps = dependencies();
+    const source = {provider: 'agent-role-run', sessionId};
+    expect((await createHermesConversationActionHandler(deps)(request(internalToken, source,
+      {type: 'project_item.stage', itemId: 'item', issueId: '42', expectedVersion: 'v1', stage: 'QA'}))).status)
+      .toBe(403);
+    expect(deps.dispatchInternal).not.toHaveBeenCalled();
+
+    const bound = {...deps, resolveRoleRun: vi.fn(async () => ({sessionId, actorId: 'requester',
+      projectId: deps.projectId, requesterRole: 'operator' as const, role: 'developer' as const,
+      itemId: 'item', observedVersion: 'v1', occurredAt: '2026-08-14T10:00:00.000Z'}))};
+    expect((await createHermesConversationActionHandler(bound)(request(internalToken, source,
+      {type: 'project_item.stage', itemId: 'item', issueId: '42', expectedVersion: 'v1', stage: 'QA'}))).status)
+      .toBe(200);
+    expect(bound.dispatchInternal).toHaveBeenCalledWith(expect.objectContaining({message: expect.objectContaining({
+      projectId: deps.projectId, correlationId: sessionId
+    })}), expect.objectContaining({role: 'developer', itemId: 'item'}));
+  });
+
+  it('denies malformed or client-profile role-run sources', async () => {
+    const handler = createHermesConversationActionHandler(dependencies());
+    for (const [bearer, sessionId] of [[internalToken, 'browser:nope'],
+      [clientToken, `browser:${'a'.repeat(64)}`]] as const) {
+      const response = await handler(request(bearer, {provider: 'agent-role-run', sessionId},
+        {type: 'project_item.stage', itemId: 'item', issueId: '42', expectedVersion: 'v1', stage: 'QA'}));
+      expect(response.status).toBe(403);
+    }
   });
 });

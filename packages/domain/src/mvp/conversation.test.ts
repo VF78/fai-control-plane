@@ -28,5 +28,7 @@ describe('MVP conversation boundary', () => {
     }})).toBe(false);
     expect(validateConversationEnvelope({...value, action: {type: 'approval.decide', approvalId: 'a',
       kind: 'client_uat', targetReference: 't', decision: 'invalid' as 'approved'}})).toBe(false);
+    expect(validateConversationEnvelope({...value, action: {type: 'project_item.stage', itemId: 'item',
+      issueId: '42', expectedVersion: 'v1', stage: 'Done' as 'QA'}})).toBe(false);
   });
 });

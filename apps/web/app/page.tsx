@@ -1,8 +1,10 @@
-import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews, projectAgentDeliveryConfigured} from '@fai-control-plane/db';
+import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews, projectAgentDeliveryConfigured, readHermesRoutingPolicy} from '@fai-control-plane/db';
+import {defaultHermesRoutingPolicy} from '@fai-control-plane/domain';
 import {Dashboard, Process, Shell, Tasks} from '../src/mvp/phase-a-ui.tsx';
 import {executorFact} from '../src/mvp/phase-a-view.ts';
 import {ApprovalControl, TaskExecutorControl} from '../src/mvp/operator-controls.tsx';
 import {PhaseB, TaskApprovalEvidence, type PhaseBView} from '../src/mvp/phase-b-ui.tsx';
+import {hermesExecutorCatalog} from '../src/mvp/hermes-executor-readiness.ts';
 import {integrationConfig} from '../src/mvp/integration-config.ts';
 import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
 
@@ -29,10 +31,16 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
   const evidence = selected === null ? null : operatorEvidence.find((item) => item.projectId === selected.id) ?? null;
   const agentDeliveryConfigured = selected === null ? false
     : await projectAgentDeliveryConfigured(database, session.actorId, selected.id);
+  const hermesRouting = selected === null ? null
+    : await readHermesRoutingPolicy(database, session.actorId, selected.id);
+  const canManageRouting = evidence?.people.some((person) => person.actorId === session.actorId && person.active && person.role === 'project_owner') ?? false;
+  const executorCatalog = hermesExecutorCatalog();
+  const routing = {policy: hermesRouting?.policy ?? defaultHermesRoutingPolicy, version: hermesRouting?.version ?? null,
+    provenance: hermesRouting?.provenance ?? null, createdAt: hermesRouting?.createdAt ?? null, executorCatalog};
   const config = integrationConfig(process.env, agentDeliveryConfigured);
   const content = view === 'tasks'
     ? <Tasks project={selected} task={query.task} filter={query.filter} hermesOwnerOptionId={process.env.HERMES_TRACKER_OWNER_OPTION_ID} executorControl={(task) => selected === null ? null : <TaskExecutorControl projectId={selected.id} currentExecutor={executorFact(task, process.env.HERMES_TRACKER_OWNER_OPTION_ID)} confirmedRun={evidence?.agentSubmissions.recent.find((run) => run.targetReference === task.itemId) ?? null} task={{itemId: task.itemId, status: task.statusOptionName, blocked: task.blocked}}/>} approvalControl={(taskId) => selected === null ? null : <><ApprovalControl projectId={selected.id} taskId={taskId}/><TaskApprovalEvidence projectId={selected.id} taskId={taskId} approvals={approvals}/></>}/>
-    : view === 'process' ? <Process project={selected}/>
+    : view === 'process' ? <Process project={selected} filter={query.filter} routing={routing} canManageRouting={canManageRouting}/>
       : view === 'dashboard' ? <Dashboard projects={projects}/>
         : <PhaseB view={view} project={selected} evidence={evidence} sources={sources} approvals={approvals} actorId={session.actorId} config={config}/>;
 

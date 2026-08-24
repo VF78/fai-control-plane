@@ -1,4 +1,6 @@
+import {createHash} from 'node:crypto';
 import {describe, expect, it, vi} from 'vitest';
+import {defaultHermesRoutingPolicy} from '@fai-control-plane/domain';
 import {createHermesDeliveryAdapter} from './hermes.ts';
 
 const request = {
@@ -6,7 +8,9 @@ const request = {
   repository: {id: 'repo', url: 'https://example.test/repo'},
   projectItem: {id: 'item', projectId: 'project', issueId: 'issue', url: 'https://example.test/issues/1'},
   observedVersion: 'v1', sources: [], constraints: ['No merge'], acceptanceCriteria: ['Checks pass'],
-  approval: null, correlationId: 'correlation', idempotencyKey: 'delivery'
+  approval: null, correlationId: 'correlation', idempotencyKey: 'delivery',
+  routing: {policyVersion: createHash('sha256').update(JSON.stringify(defaultHermesRoutingPolicy)).digest('hex'),
+    policy: defaultHermesRoutingPolicy, classification: 'hermes-manager-required' as const}
 };
 
 describe('MVP Hermes adapter', () => {
@@ -16,9 +20,12 @@ describe('MVP Hermes adapter', () => {
       credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
       secrets: {resolve: async () => ({value: 'bearer'})}, fetch});
     await expect(adapter.submit(request)).resolves.toEqual({deliveryReference: 'run-ref', sessionReference: 'correlation'});
-    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as {input: string; session_id: string};
+    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as {input: string; session_id: string;
+      provider: string; model: string; model_options: {reasoning_effort: string}};
     expect(JSON.parse(body.input)).toMatchObject({contract: 'fai.agent-role-request.v1'});
     expect(body.session_id).toBe('correlation');
+    expect(body).toMatchObject({provider: 'openai-codex', model: 'gpt-5.6-terra',
+      model_options: {reasoning_effort: 'medium'}});
   });
 
   it('rejects a non-HTTPS agent endpoint at composition', () => {

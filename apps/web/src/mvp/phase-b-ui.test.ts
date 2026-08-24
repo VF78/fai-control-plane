@@ -14,6 +14,8 @@ describe('Phase B operator surfaces', () => {
     expect(view).toContain('SourceAddControl');
     expect(view).toContain('TaskApprovalEvidence');
     expect(view).toContain('Точные согласования');
+    expect(view).not.toContain('Маршрутизация ролей');
+    expect(view).not.toContain('HermesRoutingControl');
   });
 
   it('does not reintroduce deleted runtime, chat, or access-control surfaces', async () => {

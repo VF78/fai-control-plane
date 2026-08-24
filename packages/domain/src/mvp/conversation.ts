@@ -4,7 +4,11 @@ import {approvalKinds, isBoundedId, isInstant, type ApprovalDecision, type Appro
 export type ConversationAction =
   | Readonly<{type: 'project_facts.read'}>
   | Readonly<{type: 'issue.create'; title: string; statement: string}>
+  | Readonly<{type: 'issue.update'; itemId: string; issueId: string; expectedVersion: string;
+    operation: 'title' | 'body' | 'state'; value: string}>
   | Readonly<{type: 'issue.clarify'; referenceId: string; expectedVersion: string; statement: string}>
+  | Readonly<{type: 'project_item.stage'; itemId: string; issueId: string; expectedVersion: string;
+    stage: 'Backlog' | 'Ready' | 'In Dev' | 'QA' | 'Acceptance'}>
   | Readonly<{type: 'source.add'; name: string; content: string}>
   | Readonly<{type: 'approval.decide'; approvalId: string; kind: 'plan' | 'internal_operation' | 'production' | 'acceptance' | 'client_uat'; targetReference: string; decision: 'approved' | 'rejected'}>;
 
@@ -28,8 +32,16 @@ export const validateConversationEnvelope = (input: ConversationEnvelope): boole
   switch (input.action.type) {
     case 'project_facts.read': return true;
     case 'issue.create': return text(input.action.title, 160) && text(input.action.statement, 4_000);
+    case 'issue.update': return isBoundedId(input.action.itemId) && isBoundedId(input.action.issueId) &&
+      isBoundedId(input.action.expectedVersion) && ['title', 'body', 'state'].includes(input.action.operation) &&
+      (input.action.operation === 'state'
+        ? ['open', 'closed'].includes(input.action.value)
+        : text(input.action.value, input.action.operation === 'title' ? 160 : 4_000));
     case 'issue.clarify': return isBoundedId(input.action.referenceId) &&
       isBoundedId(input.action.expectedVersion) && text(input.action.statement, 4_000);
+    case 'project_item.stage': return isBoundedId(input.action.itemId) &&
+      isBoundedId(input.action.issueId) && isBoundedId(input.action.expectedVersion) &&
+      ['Backlog', 'Ready', 'In Dev', 'QA', 'Acceptance'].includes(input.action.stage);
     case 'source.add': return text(input.action.name, 200) && text(input.action.content, 4_000);
     case 'approval.decide': return isBoundedId(input.action.approvalId) && isBoundedId(input.action.targetReference) &&
       approvalKinds.includes(input.action.kind) &&
@@ -48,8 +60,15 @@ export const parseConversationEnvelope = (value: unknown): ConversationEnvelope 
   let parsedAction: ConversationAction | null = null;
   if (action.type === 'project_facts.read') parsedAction = {type: 'project_facts.read'};
   else if (action.type === 'issue.create') parsedAction = {type: 'issue.create', title: String(action.title ?? ''), statement: String(action.statement ?? '')};
+  else if (action.type === 'issue.update') parsedAction = {type: 'issue.update', itemId: String(action.itemId ?? ''),
+    issueId: String(action.issueId ?? ''), expectedVersion: String(action.expectedVersion ?? ''),
+    operation: action.operation as 'title' | 'body' | 'state', value: String(action.value ?? '')};
   else if (action.type === 'issue.clarify') parsedAction = {type: 'issue.clarify', referenceId: String(action.referenceId ?? ''),
     expectedVersion: String(action.expectedVersion ?? ''), statement: String(action.statement ?? '')};
+  else if (action.type === 'project_item.stage') parsedAction = {type: 'project_item.stage',
+    itemId: String(action.itemId ?? ''), issueId: String(action.issueId ?? ''),
+    expectedVersion: String(action.expectedVersion ?? ''),
+    stage: action.stage as 'Backlog' | 'Ready' | 'In Dev' | 'QA' | 'Acceptance'};
   else if (action.type === 'source.add') parsedAction = {type: 'source.add', name: String(action.name ?? ''),
     content: String(action.content ?? '')};
   else if (action.type === 'approval.decide') parsedAction = {type: 'approval.decide', approvalId: String(action.approvalId ?? ''),

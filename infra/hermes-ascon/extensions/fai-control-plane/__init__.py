@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -74,7 +75,9 @@ def _handler(action_type: str):
     def handle(args: dict, **kwargs) -> str:
         session_id = str(kwargs.get("session_id") or "")
         source = bridge_state.resolve(session_id)
-        if source is None or source.get("provider") != "telegram":
+        if source is None and re.fullmatch(r"browser:[a-f0-9]{64}", session_id):
+            source = {"provider": "agent-role-run", "sessionId": session_id}
+        if source is None or source.get("provider") not in ("telegram", "agent-role-run"):
             return json.dumps({"error": "authenticated_message_identity_required"})
         action = {"type": action_type, **args}
         return _post("internal", source, action)
@@ -99,8 +102,17 @@ _TOOLS = (
     ("fai_project_facts", "project_facts.read", "Read current provider-native project facts.", {}, []),
     ("fai_issue_create", "issue.create", "Create one issue in the bound repository and Project.",
      {"title": {"type": "string", "minLength": 1, "maxLength": 160}, "statement": _TEXT}, ["title", "statement"]),
+    ("fai_issue_update", "issue.update", "Update one exact issue and verify the provider result.",
+     {"itemId": _ID, "issueId": _ID, "expectedVersion": _ID,
+      "operation": {"type": "string", "enum": ["title", "body", "state"]}, "value": _TEXT},
+     ["itemId", "issueId", "expectedVersion", "operation", "value"]),
     ("fai_issue_clarify", "issue.clarify", "Add clarification to an exact issue version.",
      {"referenceId": _ID, "expectedVersion": _ID, "statement": _TEXT}, ["referenceId", "expectedVersion", "statement"]),
+    ("fai_project_item_stage", "project_item.stage",
+     "Change the stage of the exact GitHub Project item and verify the provider result. Done is approval-gated and unavailable here.",
+     {"itemId": _ID, "issueId": _ID, "expectedVersion": _ID,
+      "stage": {"type": "string", "enum": ["Backlog", "Ready", "In Dev", "QA", "Acceptance"]}},
+     ["itemId", "issueId", "expectedVersion", "stage"]),
     ("fai_source_add", "source.add", "Attach bounded source context to the project.",
      {"name": {"type": "string", "minLength": 1, "maxLength": 200}, "content": _TEXT}, ["name", "content"]),
     ("fai_approval_decide", "approval.decide", "Record an explicit human decision for an exact approval target.",
@@ -114,7 +126,7 @@ def register(ctx) -> None:
     for name, action_type, description, properties, required in _TOOLS:
         ctx.register_tool(name=name, toolset="fai_internal", schema=_schema(name, description, properties, required),
                           handler=_handler(action_type))
-    for name, action_type, description, properties, required in _TOOLS[1:3]:
+    for name, action_type, description, properties, required in (_TOOLS[1], _TOOLS[3]):
         client_name = name.replace("fai_", "fai_client_", 1)
         ctx.register_tool(name=client_name, toolset="fai_client",
                           schema=_schema(client_name, description, properties, required),

@@ -4,7 +4,8 @@ import {
   canApprove,
   createApprovalPersistence,
   createStores,
-  resolveActiveHumanMember
+  resolveActiveHumanMember,
+  resolveReceiptBoundRoleRun
 } from '@fai-control-plane/db';
 import {decideApproval, dispatchClientConversationAction, dispatchConversationAction} from '@fai-control-plane/application';
 import {
@@ -84,8 +85,9 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
     projectId, telegramChatId: env('TELEGRAM_INTERNAL_CHAT_ID'),
     telegramUserIds: env('TELEGRAM_INTERNAL_ALLOWED_USER_IDS').split(','),
     bitrixTaskId: clientActionsEnabled ? env('BITRIX24_TASK_ID') : '', clientActionsEnabled,
-    dispatchInternal: (envelope: InternalConversationEnvelope) => dispatchConversationAction({workspaceId, envelope,
-      ports: shared}),
+    resolveRoleRun: (sessionId) => resolveReceiptBoundRoleRun(database, sessionId, projectId),
+    dispatchInternal: (envelope: InternalConversationEnvelope, roleRun) => dispatchConversationAction({workspaceId,
+      envelope, ports: shared, ...(roleRun === undefined ? {} : {roleRun})}),
     dispatchClient: (envelope: ClientConversationEnvelope) => dispatchClientConversationAction({workspaceId,
       envelope, ports: shared})
   })(request);

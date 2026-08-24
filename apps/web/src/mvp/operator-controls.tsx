@@ -2,8 +2,9 @@
 
 import {useEffect, useRef, useState, type FormEvent} from 'react';
 import {useRouter} from 'next/navigation';
+import type {HermesExecutorCatalog, HermesRoutingPolicy} from '@fai-control-plane/domain';
 
-type Result = {error?: string; status?: string};
+type Result = {error?: string; status?: string; version?: string};
 const post = async (path: string, body: Record<string, unknown>): Promise<Result> => {
   const response = await fetch(path, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)});
   const value = await response.json().catch(() => ({})) as Result;
@@ -13,7 +14,7 @@ const post = async (path: string, body: Record<string, unknown>): Promise<Result
 const useCommand = () => {
   const [notice, setNotice] = useState<string | null>(null);
   const router = useRouter();
-  return {notice, run: async (request: () => Promise<Result>) => { try { const result = await request(); router.refresh(); setNotice(result.status ?? 'Сохранено'); } catch (error) { setNotice(error instanceof Error ? error.message : 'request_failed'); } }};
+  return {notice, run: async (request: () => Promise<Result>, success?: (result: Result) => string) => { try { const result = await request(); router.refresh(); setNotice(success?.(result) ?? result.status ?? 'Сохранено'); } catch (error) { setNotice(error instanceof Error ? error.message : 'request_failed'); } }};
 };
 const id = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 
@@ -29,6 +30,33 @@ export function SourceAddControl({projectId}: Readonly<{projectId: string}>) {
   const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); void run(() => post(`/api/projects/${projectId}/sources`, {kind: form.get('kind'), name: form.get('name'), mediaType: 'text/plain', contentText: form.get('contentText'), sourceUrl: empty(form.get('sourceUrl')), provenance: form.get('provenance')})); };
   return <details className="fcp-control"><summary>Добавить источник</summary><form onSubmit={submit}><label>Название<input name="name" required maxLength={200}/></label><label>Тип<input name="kind" defaultValue="operator_note" required maxLength={64}/></label><label>Ссылка на источник <input name="sourceUrl" type="url"/></label><label>Происхождение<input name="provenance" defaultValue="operator" required maxLength={500}/></label><label>Содержание<textarea name="contentText" required maxLength={200000}/></label><button className="fcp-primary">Сохранить источник</button></form><Notice value={notice}/></details>;
 }
+
+export function HermesRoutingControl({projectId, canManage, policy, executorCatalog}: Readonly<{
+  projectId: string; canManage: boolean; policy: HermesRoutingPolicy; executorCatalog: HermesExecutorCatalog;
+}>) {
+  const {notice, run} = useCommand();
+  if (!canManage) return <p className="fcp-control-note">Изменение исполнения доступно только владельцу проекта.</p>;
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); const form = new FormData(event.currentTarget);
+    const routes = policy.routes.map((route) => {
+      const prefix = route.taskClass;
+      const executor = String(form.get(`${prefix}:executor`));
+      return {...route,
+        executor: executor === 'direct-hermes' ? {kind: 'direct-hermes'} : {kind: 'cli', provider: executor},
+        model: String(form.get(`${prefix}:model`)), effort: String(form.get(`${prefix}:effort`)),
+        hermesAcceptance: 'required', humanGate: String(form.get(`${prefix}:humanGate`))};
+    });
+    void run(() => post(`/api/projects/${projectId}/hermes-routing`, {
+      policy: {contract: 'fai.hermes-routing.v1', routes}, idempotencyKey: `hermes-routing:${id()}`
+    }), (result) => result.version === undefined ? 'Исполнение сохранено.' : `Сохранена неизменяемая версия ${result.version.slice(0, 12)}.`);
+  };
+  const codexReady = executorCatalog['codex-cli'].available;
+  return <details className="fcp-control fcp-hermes-editor"><summary>Изменить исполнение и модель</summary><form onSubmit={submit}><p>Классы определяет Hermes; обязательная приёмка и контроль человека зафиксированы политикой.</p>{policy.routes.map((route) => { const executorEditable = editableExecutors.has(route.taskClass); const direct = route.executor.kind === 'direct-hermes'; const executor = direct ? 'direct-hermes' : route.executor.provider; return <fieldset key={route.taskClass}><legend>{routingClassLabel[route.taskClass]}</legend><input type="hidden" name={`${route.taskClass}:humanGate`} value={route.humanGate}/><label>Исполнитель{executorEditable ? <select name={`${route.taskClass}:executor`} defaultValue={executor}><option value="direct-hermes">Hermes</option><option value="codex-cli" disabled={!codexReady}>Codex CLI{codexReady ? '' : ' · runtime не подтверждён'}</option><option value="claude-code-cli" disabled>Claude Code CLI · недоступен</option></select> : <><span className="fcp-hermes-editor-fixed">{direct ? 'Hermes' : 'Codex CLI'}</span><input type="hidden" name={`${route.taskClass}:executor`} value={executor}/></>}</label><label>Модель<select name={`${route.taskClass}:model`} defaultValue={route.model}><option value="gpt-5.6-terra">GPT-5.6 Terra</option><option value="gpt-5.6-sol">GPT-5.6 Sol</option></select></label><label>Усилие<select name={`${route.taskClass}:effort`} defaultValue={route.effort}><option value="medium">Среднее</option><option value="high">Высокое</option></select></label><small>Приёмка Hermes обязательна · {routingGateLabel[route.humanGate]}</small></fieldset>; })}{codexReady ? null : <p className="fcp-control-note">Сохранение недоступно, пока Control Plane не подтвердит runtime Codex CLI.</p>}<button className="fcp-primary" disabled={!codexReady}>Сохранить неизменяемую версию</button></form><Notice value={notice}/></details>;
+}
+
+const editableExecutors = new Set(['manager_project_ops', 'architecture_design', 'critical_decision', 'release_preflight']);
+const routingClassLabel: Record<HermesRoutingPolicy['routes'][number]['taskClass'], string> = {manager_project_ops:'Управление проектом',ordinary_implementation:'Обычная реализация',ui_responsive:'Интерфейс и адаптивность',complex_implementation:'Сложная реализация',qa_audit:'Проверка и аудит',architecture_design:'Архитектура и дизайн',critical_decision:'Критическое решение',release_preflight:'Предрелизная проверка',protected_operation:'Защищённая операция'};
+const routingGateLabel: Record<HermesRoutingPolicy['routes'][number]['humanGate'], string> = {none:'контроль человека не требуется',product_visual:'нужно согласование UI/UX',architecture_decision:'нужно архитектурное решение',production_exact:'нужно точное production-подтверждение'};
 
 export function ApprovalControl({projectId, taskId}: Readonly<{projectId: string; taskId: string | null}>) {
   const {notice, run} = useCommand();

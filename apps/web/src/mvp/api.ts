@@ -12,13 +12,16 @@ import {
   onboardProjectMember,
   resolveAgentSourceReferences,
   resolveAgentSubmissionBinding,
+  readHermesRoutingPolicy,
+  saveHermesRoutingPolicy,
   subjectHash
 } from '@fai-control-plane/db';
 import {assignTaskExecutor, decideApproval, type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
-import {mayChangeMembership, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
+import {assertHermesRoutingPolicyAvailable, mayChangeMembership, parseHermesRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
+import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('media_type_invalid');
@@ -59,9 +62,13 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
   const repository = createGitHubRepositoryReadAdapter({owner: binding.owner, repository: binding.repository,
     repositoryId: context.repositoryId, credentialRef: context.trackerCredentialRef, secrets: secretResolver});
   const stores = createStores(database, context.workspaceId);
+  const routing = await readHermesRoutingPolicy(database, actorId, projectId);
+  if (routing === null) throw new Error('hermes_routing_policy_unavailable');
   return {context, tracker, ports: {resolveContext: async () => ({workspaceId: context.workspaceId, projectId: context.projectId,
       requesterRole: context.requesterRole, bindingId: context.bindingId, repository: {id: context.repositoryId, url: context.repositoryUrl},
-      agentTrackerOwnerOptionId: process.env.HERMES_TRACKER_OWNER_OPTION_ID ?? '', doneStatusOptionId: process.env.STATUS_DONE_ID ?? ''}),
+      agentTrackerOwnerOptionId: process.env.HERMES_TRACKER_OWNER_OPTION_ID ?? '', doneStatusOptionId: process.env.STATUS_DONE_ID ?? '',
+      routingPolicyVersion: routing.version, routingPolicy: routing.policy,
+      executorCatalog: hermesExecutorCatalog()}),
     readFreshSnapshot: () => read.readSnapshot(context.bindingId, context.cursor), persistSnapshot: stores.snapshots.replace,
     resolveSources: (input: Readonly<{actorId: string; projectId: string; sourceIds: readonly string[]}>) => resolveAgentSourceReferences(database, input),
     composeAcceptedNotification: async (item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput> => ({projectId: context.projectId,
@@ -144,6 +151,24 @@ export const source = async (request: Request, projectId: string): Promise<Respo
       sourceUrl: optionalHttps(body.sourceUrl), provenance: string(body.provenance, 500)
     });
     return Response.json({id: sourceId}, {status: 201});
+  } catch (error) { return jsonError(error); }
+};
+
+export const hermesRouting = async (request: Request, projectId: string): Promise<Response> => {
+  try {
+    const database = getDatabase(); const session = await requireSession();
+    if (request.method === 'GET') {
+      return Response.json({routing: await readHermesRoutingPolicy(database, session.actorId, projectId)},
+        {headers: {'cache-control': 'no-store'}});
+    }
+    if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'GET, POST'}});
+    requireCsrf(request); const body = await json(request); const policy = parseHermesRoutingPolicy(body.policy);
+    if (policy === null) throw new Error('body_invalid');
+    assertHermesRoutingPolicyAvailable(policy, hermesExecutorCatalog());
+    const result = await saveHermesRoutingPolicy(database, {workspaceId: session.workspaceId, projectId,
+      actorId: session.actorId, policy, idempotencyKey: string(body.idempotencyKey),
+      occurredAt: new Date().toISOString()});
+    return Response.json(result, {status: 201, headers: {'cache-control': 'no-store'}});
   } catch (error) { return jsonError(error); }
 };
 

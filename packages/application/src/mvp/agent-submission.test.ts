@@ -1,5 +1,6 @@
+import {createHash} from 'node:crypto';
 import {describe, expect, it, vi} from 'vitest';
-import type {TrackerSnapshot} from '@fai-control-plane/domain';
+import {defaultHermesRoutingPolicy, type TrackerSnapshot} from '@fai-control-plane/domain';
 import type {AgentSubmissionPorts} from './agent-submission.ts';
 import {submitExplicitAgent} from './agent-submission.ts';
 
@@ -11,11 +12,15 @@ const snapshot: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'snaps
     parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [],
     observedAt: '2026-08-15T10:00:00.000Z'}]};
 const task = snapshot.items[0]!;
+const routingPolicyVersion = createHash('sha256').update(JSON.stringify(defaultHermesRoutingPolicy)).digest('hex');
+const executorCatalog = {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']},
+  'claude-code-cli': {available: false, models: []}} as const;
 
 const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): AgentSubmissionPorts => ({
   resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: role,
     bindingId: 'binding', repository: {id: 'R_repo', url: 'https://github.com/VF78/fai-control-plane'},
-    agentTrackerOwnerOptionId: 'owner-hermes', doneStatusOptionId: 'done'}),
+    agentTrackerOwnerOptionId: 'owner-hermes', doneStatusOptionId: 'done',
+    routingPolicyVersion, routingPolicy: defaultHermesRoutingPolicy, executorCatalog}),
   readFreshSnapshot: async () => snapshot, persistSnapshot: async () => undefined,
   resolveSources: async () => [{id: 'source', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator',
     content: 'Approved source text'}],
@@ -52,6 +57,7 @@ describe('explicit agent submission', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(deliver.mock.calls[0]![0]).toMatchObject({projectItem: {id: 'PVTI_item', projectId: 'project'},
       observedVersion: 'github:updated-at:v1', constraints: ['Do not deploy'],
+      routing: {policyVersion: routingPolicyVersion, classification: 'hermes-manager-required'},
       sources: [{id: 'source', content: 'Approved source text'}]});
     expect(transactionInputs[0]).toMatchObject({notification: {projectId: 'project', contour: 'trusted-main',
       channelReference: 'internal', text: 'Hermes accepted: https://github.com/VF78/fai-control-plane/issues/210',
@@ -70,6 +76,31 @@ describe('explicit agent submission', () => {
   it('never exposes the devops/production role on this seam', async () => {
     await expect(submitExplicitAgent({...command, role: 'devops'}, ports('project_owner')))
       .rejects.toThrow('agent_submit_denied');
+  });
+
+  it('denies launch when the active routing policy version is missing or stale', async () => {
+    const base = ports(); const deliver = vi.spyOn(base.delivery, 'submit');
+    const value: AgentSubmissionPorts = {...base, resolveContext: async () => ({
+      ...(await base.resolveContext({actorId: 'actor', projectId: 'project'}))!, routingPolicyVersion: ''
+    })};
+    await expect(submitExplicitAgent(command, value)).rejects.toThrow('agent_request_invalid');
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('denies launch when Codex CLI or a configured Claude CLI route is unavailable', async () => {
+    for (const context of [
+      {...(await ports().resolveContext({actorId: 'actor', projectId: 'project'}))!,
+        executorCatalog: {...executorCatalog, 'codex-cli': {available: false, models: []}}},
+      {...(await ports().resolveContext({actorId: 'actor', projectId: 'project'}))!,
+        routingPolicy: {...defaultHermesRoutingPolicy, routes: defaultHermesRoutingPolicy.routes.map((route) =>
+          route.taskClass === 'ordinary_implementation'
+            ? {...route, executor: {kind: 'cli' as const, provider: 'claude-code-cli' as const}} : route)}}
+    ]) {
+      const base = ports(); const deliver = vi.spyOn(base.delivery, 'submit');
+      await expect(submitExplicitAgent(command, {...base, resolveContext: async () => context}))
+        .rejects.toThrow('agent_submit_denied');
+      expect(deliver).not.toHaveBeenCalled();
+    }
   });
 
   it('denies a Done task even when it is assigned exactly to Hermes', async () => {

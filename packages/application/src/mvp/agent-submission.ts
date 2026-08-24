@@ -1,12 +1,15 @@
 import {createHash} from 'node:crypto';
-import type {AgentDeliveryPort, AgentRole, AgentRoleRequest, MessengerDeliveryInput, ProjectRole, RepositoryReadPort, SourceReference, TrackerItemFact, TrackerSnapshot} from '@fai-control-plane/domain';
-import {validateAgentRoleRequest} from '@fai-control-plane/domain';
+import type {AgentDeliveryPort, AgentRole, AgentRoleRequest, HermesExecutorCatalog, HermesRoutingPolicy, MessengerDeliveryInput, ProjectRole, RepositoryReadPort, SourceReference, TrackerItemFact, TrackerSnapshot} from '@fai-control-plane/domain';
+import {assertHermesRoutingPolicyAvailable, validateAgentRoleRequest} from '@fai-control-plane/domain';
 
 export type AgentSubmissionContext = Readonly<{
   workspaceId: string; projectId: string; requesterRole: ProjectRole;
   bindingId: string; repository: Readonly<{id: string; url: string}>;
   agentTrackerOwnerOptionId: string;
   doneStatusOptionId: string;
+  routingPolicyVersion: string;
+  routingPolicy: HermesRoutingPolicy;
+  executorCatalog: HermesExecutorCatalog;
 }>;
 
 export type AgentSubmissionPorts = Readonly<{
@@ -58,6 +61,8 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   if (!bounded(context.agentTrackerOwnerOptionId, 512) || !bounded(context.doneStatusOptionId, 512)) {
     throw new Error('agent_submit_denied');
   }
+  try { assertHermesRoutingPolicyAvailable(context.routingPolicy, context.executorCatalog); }
+  catch { throw new Error('agent_submit_denied'); }
   const repository = await ports.repository.readRepository({repositoryId: context.repository.id});
   if (repository.repositoryId !== context.repository.id || repository.url !== context.repository.url) {
     throw new Error('repository_binding_mismatch');
@@ -91,7 +96,9 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   const request: AgentRoleRequest = {role: command.role, repository: {id: repository.repositoryId, url: repository.url},
     projectItem: {id: item.itemId, projectId: context.projectId, issueId: item.issueId, url: item.url},
     observedVersion: item.version, sources, constraints: command.constraints,
-    acceptanceCriteria: command.acceptanceCriteria, approval: null, correlationId, idempotencyKey};
+    acceptanceCriteria: command.acceptanceCriteria, approval: null,
+    routing: {policyVersion: context.routingPolicyVersion, policy: context.routingPolicy,
+      classification: 'hermes-manager-required'}, correlationId, idempotencyKey};
   if (!validateAgentRoleRequest(request)) throw new Error('agent_request_invalid');
   const notificationKey = `${idempotencyKey}:accepted`;
   const notification = await ports.composeAcceptedNotification(item, notificationKey);

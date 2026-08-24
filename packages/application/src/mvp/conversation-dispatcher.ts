@@ -14,6 +14,11 @@ export type ConversationIdentityPort = Readonly<{
   }> | null>;
 }>;
 
+export type ReceiptBoundRoleRun = Readonly<{
+  sessionId: string; actorId: string; projectId: string; requesterRole: ProjectRole;
+  role: 'manager' | 'developer' | 'qa'; itemId: string; observedVersion: string; occurredAt: string;
+}>;
+
 type SharedPorts = Readonly<{
   facts: Readonly<{read(projectId: string): Promise<Readonly<{referenceId: string}>>}>;
   tracker: TrackerMutationPort;
@@ -42,12 +47,37 @@ const dispatch = async (input: Readonly<{
   workspaceId: string;
   envelope: ClientConversationEnvelope | InternalConversationEnvelope;
   ports: ClientConversationPorts | InternalConversationPorts;
+  roleRun?: ReceiptBoundRoleRun;
 }>): Promise<Result> => {
   const {envelope, ports} = input;
   if (!authorizeConversation(envelope)) return {status: 'denied'};
-  const identity = await ports.identities.resolveActiveHuman({projectId: envelope.message.projectId,
-    senderReference: envelope.message.senderReference});
+  if (envelope.message.contour === 'client-edge' && envelope.action.type === 'project_item.stage') {
+    return {status: 'denied'};
+  }
+  const roleRun = input.roleRun;
+  if (roleRun !== undefined && (envelope.message.contour !== 'trusted-main' ||
+    envelope.message.correlationId !== roleRun.sessionId || envelope.message.projectId !== roleRun.projectId ||
+    roleRun.requesterRole === 'client')) return {status: 'denied'};
+  const identity = roleRun === undefined
+    ? await ports.identities.resolveActiveHuman({projectId: envelope.message.projectId,
+      senderReference: envelope.message.senderReference})
+    : {actorId: roleRun.actorId, role: roleRun.requesterRole};
   if (identity === null) return {status: 'denied'};
+  if (roleRun !== undefined) {
+    const action = envelope.action;
+    const exactTarget = 'itemId' in action && 'expectedVersion' in action &&
+      action.itemId === roleRun.itemId && action.expectedVersion === roleRun.observedVersion;
+    const allowed = roleRun.role === 'developer'
+      ? action.type === 'project_item.stage' && exactTarget && action.stage === 'QA'
+      : roleRun.role === 'qa'
+        ? action.type === 'project_item.stage' && exactTarget && ['In Dev', 'Acceptance'].includes(action.stage)
+        : (action.type === 'issue.create' ||
+          (action.type === 'project_item.stage' && exactTarget && ['Backlog', 'Ready'].includes(action.stage)) ||
+          (action.type === 'issue.update' && exactTarget));
+    if (!allowed) return {status: 'denied'};
+  }
+  if (envelope.action.type === 'issue.update' && roleRun === undefined &&
+    !['project_owner', 'operator'].includes(identity.role)) return {status: 'denied'};
   if (await ports.receipts.exists(envelope.message.idempotencyKey)) return {status: 'duplicate'};
   let referenceId: string;
   const actorId = identity.actorId;
@@ -61,9 +91,23 @@ const dispatch = async (input: Readonly<{
         idempotencyKey: envelope.message.idempotencyKey})).referenceId;
       break;
     }
+    case 'issue.update': {
+      referenceId = (await ports.tracker.updateIssue({projectId: envelope.message.projectId,
+        itemId: envelope.action.itemId, issueId: envelope.action.issueId,
+        expectedVersion: envelope.action.expectedVersion, operation: envelope.action.operation,
+        value: envelope.action.value, idempotencyKey: envelope.message.idempotencyKey})).referenceId;
+      break;
+    }
     case 'issue.clarify': {
       referenceId = (await ports.tracker.addIssueContext({referenceId: envelope.action.referenceId,
         expectedVersion: envelope.action.expectedVersion, statement: envelope.action.statement,
+        idempotencyKey: envelope.message.idempotencyKey})).referenceId;
+      break;
+    }
+    case 'project_item.stage': {
+      referenceId = (await ports.tracker.setProjectItemStage({projectId: envelope.message.projectId,
+        itemId: envelope.action.itemId, issueId: envelope.action.issueId,
+        expectedVersion: envelope.action.expectedVersion, stage: envelope.action.stage,
         idempotencyKey: envelope.message.idempotencyKey})).referenceId;
       break;
     }
@@ -96,4 +140,5 @@ export const dispatchClientConversationAction = (input: Readonly<{
 
 export const dispatchConversationAction = (input: Readonly<{
   workspaceId: string; envelope: InternalConversationEnvelope; ports: InternalConversationPorts;
+  roleRun?: ReceiptBoundRoleRun;
 }>): Promise<Result> => dispatch(input);

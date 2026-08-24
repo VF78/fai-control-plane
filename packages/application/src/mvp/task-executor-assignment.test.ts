@@ -1,5 +1,6 @@
 import {describe, expect, it, vi} from 'vitest';
-import type {TrackerSnapshot} from '@fai-control-plane/domain';
+import {createHash} from 'node:crypto';
+import {defaultHermesRoutingPolicy, type TrackerSnapshot} from '@fai-control-plane/domain';
 import type {TaskExecutorAssignmentPorts} from './task-executor-assignment.ts';
 import {assignTaskExecutor} from './task-executor-assignment.ts';
 
@@ -9,7 +10,7 @@ const ports = (failStart = false, initialStatus = 'Ready') => {
   let owner: string|null = null; let assignees: readonly {id: string; login: string; name: string|null}[] = []; let status = initialStatus; let version = 1; let delivered = false; let startFails = failStart;
   const snapshot = (): TrackerSnapshot => ({...base, items: [{...base.items[0]!, ownerOptionId: owner, assignees, assigneeIds: assignees.map((user) => user.id), statusOptionName: status, version: `github:updated-at:v${version}`}]});
   const value: TaskExecutorAssignmentPorts = {
-    resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done'}),
+    resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done', routingPolicyVersion: createHash('sha256').update(JSON.stringify(defaultHermesRoutingPolicy)).digest('hex'), routingPolicy: defaultHermesRoutingPolicy, executorCatalog: {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}}}),
     readFreshSnapshot: async () => snapshot(), persistSnapshot: async () => undefined, resolveSources: async () => [],
     agentInstructions: (role) => role === 'developer'
       ? {constraints: ['Do not merge, release, deploy, or access production.', 'Move this same Project item from In Dev to QA and verify it after implementation.'],

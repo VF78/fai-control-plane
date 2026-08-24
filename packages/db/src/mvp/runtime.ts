@@ -2,13 +2,14 @@ import {createHash, randomUUID} from 'node:crypto';
 import pg from 'pg';
 import type {
   ApprovalKind,
+  HermesRoutingPolicy,
   MessengerDeliveryInput,
   OpaqueSecretRef,
   ProjectRole,
   SourceReference,
   TrackerSnapshot
 } from '@fai-control-plane/domain';
-import {trackerStaleAfterMs, validateTrackerSnapshot} from '@fai-control-plane/domain';
+import {parseHermesRoutingPolicy, trackerStaleAfterMs, validateTrackerSnapshot} from '@fai-control-plane/domain';
 import type {
   ApprovalTransactionStore,
   AuditStore,
@@ -368,6 +369,79 @@ export const addSourceArtifact = async (database: Database, input: Readonly<{
   return result.rows[0]!.id;
 };
 
+export type HermesRoutingPolicyView = Readonly<{
+  id: string; projectId: string; version: string; provenance: string; createdAt: string;
+  policy: HermesRoutingPolicy;
+}>;
+
+/** Immutable project configuration versions; the latest valid artifact is active. */
+export const readHermesRoutingPolicy = async (database: Database, actorId: string,
+  projectId: string): Promise<HermesRoutingPolicyView | null> => {
+  const result = await database.query<Readonly<{
+    id: string; projectId: string; sha256: string; provenance: string; createdAt: Date; contentText: string;
+  }>>(`select s.id,s.project_id as "projectId",s.sha256,s.provenance,s.created_at as "createdAt",
+      s.content_text as "contentText" from project_source_artifacts s
+    join project_memberships m on m.project_id=s.project_id and m.actor_id=$1 and m.active=true
+    where s.project_id=$2 and s.kind='hermes_routing_policy_v1'
+    order by s.created_at desc,s.id desc limit 1`, [actorId, projectId]);
+  const row = result.rows[0]; if (row === undefined) return null;
+  let decoded: unknown;
+  try { decoded = JSON.parse(row.contentText); } catch { throw new Error('hermes_routing_policy_invalid'); }
+  const policy = parseHermesRoutingPolicy(decoded);
+  if (policy === null || createHash('sha256').update(row.contentText).digest('hex') !== row.sha256) {
+    throw new Error('hermes_routing_policy_invalid');
+  }
+  return {id: row.id, projectId: row.projectId, version: row.sha256,
+    provenance: row.provenance, createdAt: row.createdAt.toISOString(), policy};
+};
+
+export const saveHermesRoutingPolicy = async (database: Database, input: Readonly<{
+  workspaceId: string; projectId: string; actorId: string; policy: HermesRoutingPolicy;
+  idempotencyKey: string; occurredAt: string;
+}>): Promise<Readonly<{id: string; version: string}>> => {
+  const policy = parseHermesRoutingPolicy(input.policy);
+  if (policy === null || !/^[a-z0-9:_-]{1,256}$/.test(input.idempotencyKey) ||
+    !Number.isFinite(Date.parse(input.occurredAt))) throw new Error('hermes_routing_policy_invalid');
+  const content = JSON.stringify(policy); const version = createHash('sha256').update(content).digest('hex');
+  const client = await database.connect();
+  try {
+    await client.query('begin');
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [input.idempotencyKey]);
+    const owner = await client.query<{workspaceId: string}>(`select p.workspace_id as "workspaceId"
+      from project_memberships m join projects p on p.id=m.project_id
+      where m.project_id=$1 and m.actor_id=$2 and m.active=true and m.role='project_owner' for update`,
+    [input.projectId, input.actorId]);
+    if (owner.rows[0]?.workspaceId !== input.workspaceId) throw new Error('hermes_routing_policy_denied');
+    const prior = await client.query<{id: string}>(`select result_reference as id from command_receipts
+      where idempotency_key=$1 and command_type='hermes.routing.configure'`, [input.idempotencyKey]);
+    if (prior.rows[0] !== undefined) {
+      const priorArtifact = await client.query<{version: string}>(`select sha256 as version
+        from project_source_artifacts where id=$1 and project_id=$2`, [prior.rows[0].id, input.projectId]);
+      if (priorArtifact.rows[0] === undefined) throw new Error('hermes_routing_policy_invalid');
+      await client.query('rollback'); return {id: prior.rows[0].id, version: priorArtifact.rows[0].version};
+    }
+    const existing = await client.query<{id: string}>(`select id from project_source_artifacts
+      where project_id=$1 and sha256=$2`, [input.projectId, version]);
+    let id = existing.rows[0]?.id;
+    if (id === undefined) {
+      id = randomUUID();
+      await client.query(`insert into project_source_artifacts
+        (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance,created_at)
+        values($1,$2,$3,'hermes_routing_policy_v1','Hermes routing policy','application/json',$4,$5,null,$6,$7)`,
+      [id,input.projectId,input.actorId,version,content,`control-plane:${input.idempotencyKey}`,input.occurredAt]);
+    }
+    await client.query(`insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
+      values($1,$2,$3,'hermes.routing.configure',$4,$5) on conflict(idempotency_key) do nothing`,
+    [input.projectId,input.actorId,input.idempotencyKey,id,input.occurredAt]);
+    await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
+      values($1,$2,$3,'hermes.routing.configure',$4,$5,$6,$7)`,
+    [input.workspaceId,input.projectId,input.actorId,id,`ui:${input.idempotencyKey}`,
+      JSON.stringify({version}),input.occurredAt]);
+    await client.query('commit'); return {id, version};
+  } catch (error) { await client.query('rollback'); throw error; }
+  finally { client.release(); }
+};
+
 export const appendIncomingEvent = async (database: Database, input: Readonly<{
   projectId: string; provider: string; providerDeliveryId: string; eventType: string; payloadHash: string;
   receivedAt: string;
@@ -595,6 +669,38 @@ export const resolveActiveHumanMember = async (database: Database, projectId: st
      join project_memberships m on m.actor_id=a.id and m.project_id=$1
      where i.subject_hash=$2 and a.kind='human' and a.enabled=true and m.active=true`, [projectId, senderReference]);
   return result.rows[0] ?? null;
+};
+
+export type ReceiptBoundRoleRun = Readonly<{
+  sessionId: string; actorId: string; projectId: string; requesterRole: ProjectRole;
+  role: 'manager' | 'developer' | 'qa'; itemId: string; observedVersion: string; occurredAt: string;
+}>;
+
+/** Resolves role-run authority only from the canonical submit receipt, matching audit, and live requester membership. */
+export const resolveReceiptBoundRoleRun = async (database: Database, sessionId: string,
+  projectId: string): Promise<ReceiptBoundRoleRun | null> => {
+  const match = /^browser:([a-f0-9]{64})$/.exec(sessionId);
+  if (match === null) return null;
+  const idempotencyKey = `agent.submit:${match[1]}`;
+  const result = await database.query<Readonly<{
+    actorId: string; projectId: string; requesterRole: ProjectRole; role: string;
+    itemId: string; observedVersion: string; occurredAt: Date;
+  }>>(`select r.actor_id as "actorId",r.project_id as "projectId",m.role as "requesterRole",
+      a.details->>'role' as role,a.target_reference as "itemId",
+      a.details->>'observedVersion' as "observedVersion",r.occurred_at as "occurredAt"
+    from command_receipts r
+    join audit_events a on a.project_id=r.project_id and a.actor_id=r.actor_id
+      and a.occurred_at=r.occurred_at and a.action='agent.submit' and a.correlation_id=$1
+    join actors actor on actor.id=r.actor_id and actor.kind='human' and actor.enabled=true
+    join project_memberships m on m.project_id=r.project_id and m.actor_id=r.actor_id and m.active=true
+    where r.project_id=$2 and r.idempotency_key=$3 and r.command_type='agent.submit'
+    limit 2`, [sessionId, projectId, idempotencyKey]);
+  const row = result.rows.length === 1 ? result.rows[0] : undefined;
+  if (row === undefined || !['project_owner', 'operator'].includes(row.requesterRole) ||
+    !['manager', 'developer', 'qa'].includes(row.role) || !/^[^\0\r\n]{1,256}$/.test(row.itemId) ||
+    !/^[^\0\r\n]{1,256}$/.test(row.observedVersion)) return null;
+  return {...row, sessionId, role: row.role as 'manager' | 'developer' | 'qa',
+    occurredAt: row.occurredAt.toISOString()};
 };
 
 export const canApprove = async (
