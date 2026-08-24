@@ -3,6 +3,11 @@ name: fai-hermes-ascon
 services:
   gateway:
     image: ${HERMES_IMAGE:?required}
+    build:
+      context: ../..
+      dockerfile: infra/hermes-ascon/Dockerfile
+    user: "10000:10000"
+    working_dir: /opt/data/work/project
     command: ["gateway", "run"]
     env_file:
       - ${HERMES_API_SECRET_ENV_FILE:?required}
@@ -15,6 +20,8 @@ services:
       HERMES_GATEWAY_NO_SUPERVISE: "1"
       HERMES_PROVIDER: openai-codex
       HERMES_MODEL: ${HERMES_MODEL:?required}
+      CODEX_HOME: /opt/data/codex-home
+      HOME: /opt/data
       FCP_CONVERSATION_ACTION_URL: ${FCP_CONVERSATION_ACTION_URL:?required}
       TELEGRAM_ALLOWED_USERS: ${HERMES_TELEGRAM_ALLOWED_USERS:?required}
       TELEGRAM_ALLOWED_CHATS: ${HERMES_TELEGRAM_CHAT_ID:?required}
@@ -44,3 +51,21 @@ services:
     init: true
     stop_grace_period: 30s
     restart: unless-stopped
+
+  codex-cli:
+    image: ${HERMES_IMAGE:?required}
+    build:
+      context: ../..
+      dockerfile: infra/hermes-ascon/Dockerfile
+    user: "10000:10000"
+    working_dir: /opt/data/work/project
+    entrypoint: ["codex"]
+    command: ["--version"]
+    environment:
+      CODEX_HOME: /opt/data/codex-home
+      HOME: /opt/data
+    volumes:
+      - /var/lib/fai-hermes-ascon/codex-home:/opt/data/codex-home
+      - /var/lib/fai-hermes-ascon/work/project:/opt/data/work/project
+    init: true
+    restart: "no"

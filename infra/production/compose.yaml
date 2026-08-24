@@ -93,6 +93,8 @@ services:
       - egress
     ports:
       - "127.0.0.1:13010:3000"
+    volumes:
+      - ${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
