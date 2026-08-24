@@ -81,9 +81,9 @@ const seedCanonicalProjectContextSources = async (client: Pick<PoolClient, 'quer
 }>): Promise<void> => {
   if (!input.root.startsWith('/') || input.root.includes('\0')) throw new Error('FCP_CONTEXT_SOURCE_ROOT_invalid');
   const sources = [
-    ['repo:AGENTS.md', 'AGENTS.md'],
-    ['repo:docs/AI_CONTEXT.md', 'docs/AI_CONTEXT.md'],
-    ['repo:docs/adr/0006-thin-control-plane-authority.md', 'docs/adr/0006-thin-control-plane-authority.md'],
+    ['repo:agents', 'AGENTS.md'],
+    ['repo:ai-context', 'docs/AI_CONTEXT.md'],
+    ['repo:adr-0006', 'docs/adr/0006-thin-control-plane-authority.md'],
     ['composition:project-process-policy', input.processPolicyPath]
   ] as const;
   for (const [key, path] of sources) {

@@ -56,8 +56,8 @@ export function AgentRoutingControl({projectId, canManage, policy, executorCatal
 }
 
 const contextSourceLabel: Readonly<Record<string,string>> = {
-  'repo:AGENTS.md':'AGENTS.md', 'repo:docs/AI_CONTEXT.md':'docs/AI_CONTEXT.md',
-  'repo:docs/adr/0006-thin-control-plane-authority.md':'ADR 0006 · Lifecycle gates',
+  'repo:agents':'AGENTS.md', 'repo:ai-context':'docs/AI_CONTEXT.md',
+  'repo:adr-0006':'ADR 0006 · Lifecycle gates',
   'composition:project-process-policy':'ASCON process policy'
 };
 const contextTime = (value: string) => new Intl.DateTimeFormat('ru-RU', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'}).format(new Date(value));
