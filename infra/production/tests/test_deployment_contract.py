@@ -231,7 +231,7 @@ render_target_environment
         ordered = (
             'git fetch --no-tags "$release_source"',
             'git merge --ff-only "$release_commit"',
-            'docker build \\',
+            'DOCKER_BUILDKIT=1 docker build \\',
             'mv -f "$temporary_environment" "$environment_file"',
             '"${compose[@]}" run --rm migrate',
             '"${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap',
@@ -242,9 +242,14 @@ render_target_environment
         positions = [deploy.index(item) for item in ordered]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("git merge-base --is-ancestor HEAD", deploy)
-        self.assertEqual(deploy.count("docker build \\"), 1)
+        self.assertEqual(deploy.count("DOCKER_BUILDKIT=1 docker build \\"), 1)
         self.assertNotIn('"${candidate_compose[@]}" build', deploy)
         self.assertIn("prune_superseded_project_images", deploy)
+        dockerfile = (ROOT / "infra/compose/Dockerfile").read_text()
+        self.assertIn(
+            "LABEL com.docker.compose.project=fai-control-plane-mvp",
+            dockerfile,
+        )
         self.assertIn("FCP_APPROVED_CONFIG_SHA256", deploy)
         self.assertIn("BITRIX24_CLIENT_ACTIONS_ENABLED=false", deploy)
         self.assertNotIn("switch_upstream", deploy)

@@ -30,6 +30,8 @@ RUN pnpm build
 
 FROM base AS runtime
 
+LABEL com.docker.compose.project=fai-control-plane-mvp
+
 ENV NODE_ENV=production
 
 COPY --from=build /workspace /workspace
