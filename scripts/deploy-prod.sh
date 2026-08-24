@@ -15,6 +15,7 @@ usage() {
     'usage: scripts/deploy-prod.sh preflight <40-hex>' \
     '   or: FCP_APPROVED_RELEASE_COMMIT=<40-hex> FCP_APPROVED_CONFIG_SHA256=<64-hex> scripts/deploy-prod.sh deploy <40-hex>' \
     '   or: FCP_APPROVED_RELEASE_COMMIT=<40-hex> scripts/deploy-prod.sh rollback <40-hex>' \
+    'set FCP_RELEASE_BUNDLE=/tmp/fai-control-plane-<40-hex>.bundle to use an approved local-only private release source.' \
     'preflight is read-only and prints the exact resulting production.env SHA-256.' >&2
   exit 64
 }
@@ -26,6 +27,22 @@ fail() {
 
 log() {
   printf 'deploy-prod: %s\n' "$1"
+}
+
+release_source() {
+  local bundle=${FCP_RELEASE_BUNDLE:-}
+  if [[ -z "$bundle" ]]; then
+    printf '%s\n' "$repository"
+    return
+  fi
+  [[ "$bundle" == /tmp/fai-control-plane-*.bundle ]] ||
+    fail 'release bundle must use the bounded /tmp/fai-control-plane-*.bundle path'
+  [[ -f "$bundle" && ! -L "$bundle" && -r "$bundle" ]] ||
+    fail 'release bundle is missing or not a readable regular file'
+  [[ $(stat -c '%U:%G:%a' "$bundle") == root:root:600 ]] ||
+    fail 'release bundle must be root:root mode 0600'
+  git bundle verify "$bundle" >/dev/null 2>&1 || fail 'release bundle verification failed'
+  printf '%s\n' "$bundle"
 }
 
 [[ $# -eq 2 ]] || usage
@@ -164,12 +181,13 @@ render_target_environment() {
 }
 
 check_host_contract() {
-  local remote_main secret_name secret_path
+  local remote_main secret_name secret_path source
   local -a current_compose
   [[ $(git rev-parse --show-toplevel) == "$deploy_root" ]] || fail 'checkout is not the isolated MVP directory'
   [[ -z $(git status --porcelain) ]] || fail 'checkout is not clean'
   [[ $(git remote get-url origin) == "$repository" ]] || fail 'origin is not the approved repository'
-  remote_main=$(git ls-remote --exit-code "$repository" refs/heads/main | awk 'NR == 1 { print $1 }')
+  source=$(release_source)
+  remote_main=$(git ls-remote --exit-code "$source" refs/heads/main | awk 'NR == 1 { print $1 }')
   [[ "$remote_main" == "$release_commit" ]] || fail 'release commit is not exact origin/main'
   [[ -f "$environment_file" && ! -L "$environment_file" && -r "$environment_file" ]] ||
     fail 'production environment file is missing or not a regular file'
@@ -269,7 +287,8 @@ fi
 run_preflight
 
 log 'deploy: fetching exact origin/main'
-git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+release_source=$(release_source)
+git fetch --no-tags "$release_source" refs/heads/main:refs/remotes/origin/main
 [[ $(git rev-parse refs/remotes/origin/main) == "$release_commit" ]] || fail 'fetched origin/main changed'
 git merge-base --is-ancestor HEAD "$release_commit" || fail 'release is not a fast-forward'
 if [[ $(git rev-parse HEAD) != "$release_commit" ]]; then
