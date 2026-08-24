@@ -1,5 +1,11 @@
 name: fai-control-plane-mvp
 
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-app: &app
   image: fai-control-plane-mvp:${FCP_RELEASE_COMMIT:?required}
   build:
@@ -9,6 +15,7 @@ x-app: &app
   env_file:
     - ${FCP_RUNTIME_ENV_FILE:?required}
   user: "0:0"
+  logging: *bounded-logging
 
 x-database-environment: &database-environment
   PGHOST: postgres
@@ -35,6 +42,7 @@ services:
       timeout: 5s
       retries: 20
     restart: unless-stopped
+    logging: *bounded-logging
 
   migrate:
     <<: *app

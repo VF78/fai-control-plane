@@ -8,6 +8,21 @@ HERMES = ROOT / "infra/hermes-ascon"
 
 
 class DeploymentContractTest(unittest.TestCase):
+    def test_project_logs_are_bounded_and_stage_prunes_old_images(self):
+        compose = (HERMES / "compose.yaml").read_text()
+        script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
+
+        self.assertIn("x-logging: &bounded-logging", compose)
+        self.assertIn('max-size: "10m"', compose)
+        self.assertIn('max-file: "3"', compose)
+        self.assertEqual(compose.count("logging: *bounded-logging"), 3)
+        stage_action = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
+        self.assertIn("prune_superseded_project_images", stage_action)
+        self.assertIn(
+            "label=com.docker.compose.project=fai-hermes-ascon",
+            script,
+        )
+
     def test_all_hermes_configs_declare_exact_current_schema(self):
         configs = (
             HERMES / "config.yaml",

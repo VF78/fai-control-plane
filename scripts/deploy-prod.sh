@@ -81,6 +81,17 @@ active_upstream_unchanged() {
   [[ $(grep -Fxc "$legacy_upstream" "$nginx_file") -eq 0 ]]
 }
 
+prune_superseded_project_images() {
+  local image
+
+  docker image prune -f \
+    --filter label=com.docker.compose.project=fai-control-plane-mvp >/dev/null
+  while IFS= read -r image; do
+    [[ "$image" == "fai-control-plane-mvp:$release_commit" ]] && continue
+    docker image rm "$image" >/dev/null 2>&1 || true
+  done < <(docker image ls fai-control-plane-mvp --format '{{.Repository}}:{{.Tag}}')
+}
+
 wait_for_candidate_health() {
   local deadline=$1
   shift
@@ -288,7 +299,11 @@ chmod 0600 "$temporary_environment"
 candidate_compose=(docker compose --project-name fai-control-plane-mvp --env-file "$temporary_environment" -f "$compose_file")
 "${candidate_compose[@]}" config --quiet
 log 'deploy: building exact application images'
-"${candidate_compose[@]}" build web worker migrate bootstrap
+docker build \
+  --file "$deploy_root/infra/compose/Dockerfile" \
+  --target runtime \
+  --tag "fai-control-plane-mvp:$release_commit" \
+  "$deploy_root"
 
 mv -f "$temporary_environment" "$environment_file"
 trap - EXIT
@@ -320,5 +335,7 @@ curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
 curl -fsS --max-time 15 https://app.f-ai.studio/ >/dev/null
 protected_health || fail 'protected-neighbour health changed'
 active_upstream_unchanged || fail 'Nginx routing changed during deploy'
+log 'deploy: removing superseded project images'
+prune_superseded_project_images
 printf 'deploy-prod: deploy complete for %s config %s\n' \
   "$release_commit" "$FCP_APPROVED_CONFIG_SHA256"
