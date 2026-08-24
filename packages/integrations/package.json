@@ -10,7 +10,9 @@
     }
   },
   "scripts": {
-    "build": "tsup src/mvp/index.ts src/repository-broker-cli.ts --format esm --dts --external @fai-control-plane/domain --external @fai-control-plane/application",
+    "build": "pnpm run build:library && pnpm run build:broker",
+    "build:library": "tsup src/mvp/index.ts --format esm --dts --external @fai-control-plane/domain --external @fai-control-plane/application",
+    "build:broker": "tsup src/repository-broker-cli.ts --format esm --external @fai-control-plane/domain --external @fai-control-plane/application",
     "test": "vitest run --root ../.. packages/integrations/src",
     "typecheck": "tsc --noEmit"
   },
