@@ -10,8 +10,11 @@ type Environment = Readonly<Record<string, string | undefined>>;
 export const bitrixClientActionsEnabled = (environment: Environment = process.env): boolean =>
   environment.BITRIX24_CLIENT_ACTIONS_ENABLED === 'true';
 
-export const integrationConfig = (environment: Environment = process.env): IntegrationConfig => ({
-  hermes: Boolean(environment.HERMES_ROLE_REQUEST_URL && environment.HERMES_TOKEN_FILE),
+export const integrationConfig = (
+  environment: Environment = process.env,
+  agentDeliveryConfigured = false
+): IntegrationConfig => ({
+  hermes: Boolean(environment.HERMES_ROLE_REQUEST_URL) && agentDeliveryConfigured,
   telegram: {
     configured: Boolean(environment.TELEGRAM_INTERNAL_CHAT_ID && environment.TELEGRAM_INTERNAL_ALLOWED_USER_IDS &&
       environment.HERMES_INTERNAL_ACTION_TOKEN_FILE),

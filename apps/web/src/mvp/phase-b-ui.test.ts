@@ -28,7 +28,8 @@ describe('Phase B operator surfaces', () => {
     expect(page).toMatch(/view === 'tasks'[\s\S]*<ApprovalControl[\s\S]*<TaskApprovalEvidence/);
     expect(page).toContain('<PhaseB view={view}');
     expect(page).toContain('TaskExecutorControl');
-    expect(page).toContain('const config = integrationConfig()');
+    expect(page).toContain('projectAgentDeliveryConfigured(database, session.actorId, selected.id)');
+    expect(page).toContain('integrationConfig(process.env, agentDeliveryConfigured)');
     expect(view).not.toContain('integrationConfig(');
   });
 });

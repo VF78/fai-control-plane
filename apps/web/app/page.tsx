@@ -1,4 +1,4 @@
-import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews} from '@fai-control-plane/db';
+import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews, projectAgentDeliveryConfigured} from '@fai-control-plane/db';
 import {Dashboard, Process, Shell, Tasks} from '../src/mvp/phase-a-ui.tsx';
 import {executorFact} from '../src/mvp/phase-a-view.ts';
 import {ApprovalControl, TaskExecutorControl} from '../src/mvp/operator-controls.tsx';
@@ -27,7 +27,9 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
   ]);
   const selected = projects.find((project) => project.slug === query.project) ?? projects[0] ?? null;
   const evidence = selected === null ? null : operatorEvidence.find((item) => item.projectId === selected.id) ?? null;
-  const config = integrationConfig();
+  const agentDeliveryConfigured = selected === null ? false
+    : await projectAgentDeliveryConfigured(database, session.actorId, selected.id);
+  const config = integrationConfig(process.env, agentDeliveryConfigured);
   const content = view === 'tasks'
     ? <Tasks project={selected} task={query.task} filter={query.filter} hermesOwnerOptionId={process.env.HERMES_TRACKER_OWNER_OPTION_ID} executorControl={(task) => selected === null ? null : <TaskExecutorControl projectId={selected.id} currentExecutor={executorFact(task, process.env.HERMES_TRACKER_OWNER_OPTION_ID)} task={{itemId: task.itemId, status: task.statusOptionName, blocked: task.blocked}}/>} approvalControl={(taskId) => selected === null ? null : <><ApprovalControl projectId={selected.id} taskId={taskId}/><TaskApprovalEvidence projectId={selected.id} taskId={taskId} approvals={approvals}/></>}/>
     : view === 'process' ? <Process project={selected}/>
