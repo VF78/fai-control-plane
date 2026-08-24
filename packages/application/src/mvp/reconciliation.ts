@@ -16,6 +16,7 @@ export type ReconciliationPorts = Readonly<{
     statusChanged(prior: TrackerItemFact, current: TrackerItemFact,
       idempotencyKey: string): Promise<MessengerDeliveryInput>;
   }>;
+  continueAgentChain?(item: TrackerItemFact): Promise<'not-authorized' | 'started' | 'duplicate'>;
 }>;
 
 export type ReconciliationResult = Readonly<{
@@ -84,6 +85,13 @@ export const reconcileTracker = async (input: Readonly<{
       availableAt: snapshot.observedAt
     });
     if (result === 'enqueued') queuedActions += 1;
+  }
+  // Evaluate the current provider-native stage, not only a transition edge. Hermes can
+  // mutate Status before its terminal result becomes observable; the accepted receipt
+  // and submission idempotency make this repair pass safe on every poll.
+  if (input.ports.continueAgentChain !== undefined) for (const item of snapshot.items) {
+    const continuation = await input.ports.continueAgentChain(item);
+    if (continuation === 'started') queuedActions += 1;
   }
   // Advance the comparison baseline only after durable notification intent. A retry
   // after compose/outbox failure sees the same changes; idempotency handles partial success.

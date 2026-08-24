@@ -133,6 +133,18 @@ describe('MVP tracker reconciliation', () => {
     })}}));
   });
 
+  it('repairs the Hermes-to-QA race from the current authoritative snapshot without a new transition', async () => {
+    const continueAgentChain = vi.fn(async () => 'started' as const);
+    const current = {...snapshot, items: [{...snapshot.items[0], statusOptionId: 'q', statusOptionName: 'QA'}]};
+    const result = await reconcileTracker({bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: 'cursor-2',
+      ports: {tracker: {readSnapshot: async () => current}, snapshots: {
+        readLatest: async () => current, replace: async () => undefined, recordFailure: async () => undefined
+      }, compose, outbox: {enqueue: async () => 'duplicate', claim: async () => [], complete: async () => undefined,
+        retry: async () => undefined}, audit: {append: async () => undefined}, continueAgentChain}});
+    expect(continueAgentChain).toHaveBeenCalledWith(current.items[0]);
+    expect(result.queuedActions).toBe(1);
+  });
+
   it('notifies every genuine Status transition independently', async () => {
     const enqueue = vi.fn(async () => 'enqueued' as const);
     const append = vi.fn(async () => undefined);

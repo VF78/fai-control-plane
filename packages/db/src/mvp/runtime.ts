@@ -2,6 +2,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import pg from 'pg';
 import type {
   ApprovalKind,
+  AgentExecutorCatalog,
   AgentRoutingPolicy,
   MessengerDeliveryInput,
   OpaqueSecretRef,
@@ -15,6 +16,7 @@ import {isUuid, parseAgentRoutingPolicy, parseProjectContextSnapshot, parseProje
 import type {
   ApprovalTransactionStore,
   AgentAttemptStore,
+  AgentContinuationStore,
   AuditStore,
   ConversationCompletionStore,
   OutboxRecord,
@@ -456,6 +458,19 @@ export type ProjectProcessPolicyView = Readonly<{
   policy: ProjectProcessPolicy;
 }>;
 
+const projectProcessPolicyView = (row: Readonly<{id: string; projectId: string; sha256: string;
+  provenance: string; createdAt: Date; contentText: string}> | undefined): ProjectProcessPolicyView | null => {
+  if (row === undefined) return null;
+  let decoded: unknown;
+  try { decoded = JSON.parse(row.contentText); } catch { throw new Error('project_process_policy_invalid'); }
+  const policy = parseProjectProcessPolicy(decoded);
+  if (policy === null || createHash('sha256').update(row.contentText).digest('hex') !== row.sha256) {
+    throw new Error('project_process_policy_invalid');
+  }
+  return {id: row.id, projectId: row.projectId, version: row.sha256, provenance: row.provenance,
+    createdAt: row.createdAt.toISOString(), policy};
+};
+
 export const readProjectProcessPolicy = async (database: Database, actorId: string,
   projectId: string): Promise<ProjectProcessPolicyView | null> => {
   const result = await database.query<Readonly<{
@@ -466,15 +481,20 @@ export const readProjectProcessPolicy = async (database: Database, actorId: stri
     join lateral (select target_reference from audit_events where project_id=$2 and action='project.process.configure'
       order by occurred_at desc,created_at desc limit 1) active on active.target_reference=s.id::text
     where s.project_id=$2 and s.kind='project_process_policy_v1'`, [actorId, projectId]);
-  const row = result.rows[0]; if (row === undefined) return null;
-  let decoded: unknown;
-  try { decoded = JSON.parse(row.contentText); } catch { throw new Error('project_process_policy_invalid'); }
-  const policy = parseProjectProcessPolicy(decoded);
-  if (policy === null || createHash('sha256').update(row.contentText).digest('hex') !== row.sha256) {
-    throw new Error('project_process_policy_invalid');
-  }
-  return {id: row.id, projectId: row.projectId, version: row.sha256, provenance: row.provenance,
-    createdAt: row.createdAt.toISOString(), policy};
+  return projectProcessPolicyView(result.rows[0]);
+};
+
+/** Internal worker read of the same active project-scoped policy shown in Process. */
+export const readActiveProjectProcessPolicy = async (database: Database,
+  projectId: string): Promise<ProjectProcessPolicyView | null> => {
+  const result = await database.query<Readonly<{
+    id: string; projectId: string; sha256: string; provenance: string; createdAt: Date; contentText: string;
+  }>>(`select s.id,s.project_id as "projectId",s.sha256,s.provenance,s.created_at as "createdAt",
+      s.content_text as "contentText" from project_source_artifacts s
+    join lateral (select target_reference from audit_events where project_id=$1 and action='project.process.configure'
+      order by occurred_at desc,created_at desc limit 1) active on active.target_reference=s.id::text
+    where s.project_id=$1 and s.kind='project_process_policy_v1'`, [projectId]);
+  return projectProcessPolicyView(result.rows[0]);
 };
 
 export const saveProjectProcessPolicy = async (database: Database, input: Readonly<{
@@ -899,6 +919,7 @@ export const resolveActiveHumanMember = async (database: Database, projectId: st
 export type ReceiptBoundRoleRun = Readonly<{
   sessionId: string; actorId: string; projectId: string; requesterRole: ProjectRole;
   role: 'manager' | 'developer' | 'qa'; itemId: string; observedVersion: string; occurredAt: string;
+  allowedStageTitles: readonly string[];
 }>;
 
 /** Resolves role-run authority only from the canonical submit receipt, matching audit, and live requester membership. */
@@ -909,10 +930,12 @@ export const resolveReceiptBoundRoleRun = async (database: Database, sessionId: 
   const idempotencyKey = `agent.submit:${match[1]}`;
   const result = await database.query<Readonly<{
     actorId: string; projectId: string; requesterRole: ProjectRole; role: string;
-    itemId: string; observedVersion: string; occurredAt: Date;
+    itemId: string; observedVersion: string; successTargetTitle: string | null; reworkTargetTitle: string | null;
+    occurredAt: Date;
   }>>(`select r.actor_id as "actorId",r.project_id as "projectId",m.role as "requesterRole",
       a.details->>'role' as role,a.target_reference as "itemId",
-      a.details->>'observedVersion' as "observedVersion",r.occurred_at as "occurredAt"
+      a.details->>'observedVersion' as "observedVersion",a.details->>'successTargetTitle' as "successTargetTitle",
+      a.details->>'reworkTargetTitle' as "reworkTargetTitle",r.occurred_at as "occurredAt"
     from command_receipts r
     join audit_events a on a.project_id=r.project_id and a.actor_id=r.actor_id
       and a.occurred_at=r.occurred_at and a.action='agent.submit' and a.correlation_id=$1
@@ -924,7 +947,10 @@ export const resolveReceiptBoundRoleRun = async (database: Database, sessionId: 
   if (row === undefined || !['project_owner', 'operator'].includes(row.requesterRole) ||
     !['manager', 'developer', 'qa'].includes(row.role) || !/^[^\0\r\n]{1,256}$/.test(row.itemId) ||
     !/^[^\0\r\n]{1,256}$/.test(row.observedVersion)) return null;
-  return {...row, sessionId, role: row.role as 'manager' | 'developer' | 'qa',
+  const allowedStageTitles = [row.successTargetTitle,row.reworkTargetTitle].filter((value): value is string =>
+    value !== null && /^[^\0\r\n]{1,200}$/.test(value));
+  if (row.role !== 'manager' && allowedStageTitles.length === 0) return null;
+  return {...row, sessionId, role: row.role as 'manager' | 'developer' | 'qa', allowedStageTitles,
     occurredAt: row.occurredAt.toISOString()};
 };
 
@@ -990,6 +1016,10 @@ export const resolveAgentSourceReferences = async (database: Database, input: Re
 export const executeAgentSubmissionTransaction = async (database: Database, input: Readonly<{
   workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
   role: string; itemId: string; observedVersion: string; sourceCount: number;
+  processPolicyVersion: string; processStageId: string; processStageTitle: string;
+  successTargetTitle: string | null; reworkTargetTitle: string | null;
+  routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog; expectedOwnerOptionId: string;
+  rootSourceReference?: string; rootCommandIdempotencyKey?: string;
   retryOf: string | null; confirmUnobservableFailure: boolean;
   notification: MessengerDeliveryInput;
 }>, submit: () => Promise<Readonly<{deliveryReference: string}>>): Promise<Readonly<{
@@ -1039,6 +1069,12 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
        values($1,$2,$3,'agent.submit',$4,$5,$6,$7)`,
       [input.workspaceId,input.projectId,input.actorId,input.itemId,input.correlationId,
         JSON.stringify({role: input.role, observedVersion: input.observedVersion, sourceCount: input.sourceCount,
+          processPolicyVersion: input.processPolicyVersion, processStageId: input.processStageId,
+          processStageTitle: input.processStageTitle, successTargetTitle: input.successTargetTitle,
+          reworkTargetTitle: input.reworkTargetTitle, routingPolicy: input.routingPolicy,
+          executorCatalog: input.executorCatalog, expectedOwnerOptionId: input.expectedOwnerOptionId,
+          ...(input.rootSourceReference === undefined ? {} : {rootSourceReference: input.rootSourceReference}),
+          ...(input.rootCommandIdempotencyKey === undefined ? {} : {rootCommandIdempotencyKey: input.rootCommandIdempotencyKey}),
           status: 'started', ...(input.retryOf === null ? {} : {retryOf: input.retryOf})}),occurredAt]);
     await client.query(
       `insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
@@ -1053,20 +1089,58 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
 export const createAgentAttemptStore = (database: Database): AgentAttemptStore => ({
   async resolve(input) {
     const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
-      deliveryReference: string; correlationId: string; status: 'started'|'completed'|'failed'}>(
+      itemTitle: string | null; itemUrl: string | null; observedVersion: string;
+      successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
+      routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
+      deliveryReference: string; correlationId: string; status: 'started'|'completed'|'failed'; occurredAt: Date}>(
       `select a.workspace_id as "workspaceId",a.project_id as "projectId",m.actor_id as "actorId",
        a.target_reference as "itemId",r.result_reference as "deliveryReference",a.correlation_id as "correlationId",
+       a.occurred_at as "occurredAt",
+       item.title as "itemTitle",item.url as "itemUrl",a.details->>'observedVersion' as "observedVersion",
+       a.details->>'successTargetTitle' as "successTargetTitle",a.details->>'reworkTargetTitle' as "reworkTargetTitle",
+       a.details->>'expectedOwnerOptionId' as "expectedOwnerOptionId",a.details->'routingPolicy' as "routingPolicy",
+       a.details->'executorCatalog' as "executorCatalog",
        coalesce(terminal.details->>'status','started') as status
        from audit_events a join command_receipts r on r.project_id=a.project_id
          and r.actor_id is not distinct from a.actor_id and r.occurred_at=a.occurred_at and r.command_type='agent.submit'
        join project_memberships m on m.project_id=a.project_id and m.actor_id=$1 and m.active=true
          and m.role in ('project_owner','operator')
+       left join lateral (select fact->>'title' as title,fact->>'url' as url from tracker_bindings b
+         join tracker_snapshots s on s.binding_id=b.id cross join lateral jsonb_array_elements(s.facts->'items') fact
+         where b.project_id=a.project_id and fact->>'itemId'=a.target_reference and s.error_code is null
+         order by s.observed_at desc limit 1) item on true
        left join lateral (select t.details from audit_events t where t.project_id=a.project_id
          and t.correlation_id=a.correlation_id and t.action in ('agent.attempt.completed','agent.attempt.failed')
          order by t.occurred_at desc limit 1) terminal on true
        where a.project_id=$2 and a.target_reference=$3 and r.result_reference=$4 and a.action='agent.submit'`,
       [input.actorId,input.projectId,input.itemId,input.deliveryReference]);
-    return result.rows.length === 1 ? result.rows[0]! : null;
+    return result.rows.length === 1 ? {...result.rows[0]!, occurredAt: result.rows[0]!.occurredAt.toISOString()} : null;
+  },
+  async listActive(limit) {
+    const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
+      itemTitle: string | null; itemUrl: string | null; observedVersion: string;
+      successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
+      routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
+      deliveryReference: string; correlationId: string; status: 'started'; occurredAt: Date}>(
+      `select a.workspace_id as "workspaceId",a.project_id as "projectId",a.actor_id as "actorId",
+       a.target_reference as "itemId",r.result_reference as "deliveryReference",a.correlation_id as "correlationId",
+       a.occurred_at as "occurredAt",
+       item.title as "itemTitle",item.url as "itemUrl",a.details->>'observedVersion' as "observedVersion",
+       a.details->>'successTargetTitle' as "successTargetTitle",a.details->>'reworkTargetTitle' as "reworkTargetTitle",
+       a.details->>'expectedOwnerOptionId' as "expectedOwnerOptionId",a.details->'routingPolicy' as "routingPolicy",
+       a.details->'executorCatalog' as "executorCatalog",
+       'started'::text as status
+       from audit_events a join command_receipts r on r.project_id=a.project_id
+         and r.actor_id is not distinct from a.actor_id and r.occurred_at=a.occurred_at and r.command_type='agent.submit'
+       left join lateral (select fact->>'title' as title,fact->>'url' as url from tracker_bindings b
+         join tracker_snapshots s on s.binding_id=b.id cross join lateral jsonb_array_elements(s.facts->'items') fact
+         where b.project_id=a.project_id and fact->>'itemId'=a.target_reference and s.error_code is null
+         order by s.observed_at desc limit 1) item on true
+       where a.action='agent.submit' and a.actor_id is not null and not exists
+         (select 1 from audit_events t where t.project_id=a.project_id and t.correlation_id=a.correlation_id
+          and t.action in ('agent.attempt.completed','agent.attempt.failed'))
+       order by a.occurred_at asc limit $1`, [limit]);
+    return result.rows.map((row) => ({...row, occurredAt: row.occurredAt.toISOString()}));
   },
   async finish(input) {
     const client = await database.connect();
@@ -1081,9 +1155,34 @@ export const createAgentAttemptStore = (database: Database): AgentAttemptStore =
         values($1,$2,$3,$4,$5,$6,$7,$8)`, [input.workspaceId,input.projectId,input.actorId,
         `agent.attempt.${input.status}`,input.itemId,input.correlationId,
         JSON.stringify({status: input.status, deliveryReference: input.deliveryReference,
-          ...(input.failureCode === null ? {} : {failureCode: input.failureCode})}),occurredAt]);
+          ...(input.failureCode === null ? {} : {failureCode: input.failureCode}),
+          ...(input.result === null ? {} : {result: input.result})}),occurredAt]);
+      await client.query(
+        `insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
+         values($1,'messenger-notification',$2,$3,$4) on conflict(idempotency_key) do nothing`,
+        [input.projectId,input.notification.idempotencyKey,JSON.stringify({message: input.notification}),occurredAt]);
       await client.query('commit'); return 'recorded';
     } catch (error) { await client.query('rollback'); throw error; }
     finally { client.release(); }
+  }
+});
+
+export const createAgentContinuationStore = (database: Database): AgentContinuationStore => ({
+  async resolveActor(input) {
+    const result = await database.query<{actorId: string}>(
+      `select a.actor_id as "actorId" from audit_events a
+       join audit_events terminal on terminal.project_id=a.project_id and terminal.correlation_id=a.correlation_id
+         and terminal.action='agent.attempt.completed'
+       where a.project_id=$1 and a.target_reference=$2 and a.action='agent.submit'
+         and a.actor_id is not null and a.details->>'role'=any($4::text[])
+         and terminal.details->'result'->>'contract'='fai.agent-executor-result.v1'
+         and terminal.details->'result'->>'decision'='accepted'
+         and a.id=(select latest.id from audit_events latest where latest.project_id=$1
+           and latest.target_reference=$2 and latest.action='agent.submit' order by latest.occurred_at desc limit 1)
+         and (select count(*) from audit_events started where started.project_id=$1
+           and started.target_reference=$2 and started.action='agent.submit' and started.details->>'role'=$3) < $5
+       order by terminal.occurred_at desc limit 1`,
+      [input.projectId,input.itemId,input.role,input.afterRoles,input.maxStarts]);
+    return result.rows[0]?.actorId ?? null;
   }
 });

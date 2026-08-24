@@ -89,7 +89,8 @@ describe('Hermes conversation action HTTP boundary', () => {
 
     const bound = {...deps, resolveRoleRun: vi.fn(async () => ({sessionId, actorId: 'requester',
       projectId: deps.projectId, requesterRole: 'operator' as const, role: 'developer' as const,
-      itemId: 'item', observedVersion: 'v1', occurredAt: '2026-08-14T10:00:00.000Z'}))};
+      itemId: 'item', observedVersion: 'v1', allowedStageTitles: ['QA'],
+      occurredAt: '2026-08-14T10:00:00.000Z'}))};
     expect((await createHermesConversationActionHandler(bound)(request(internalToken, source,
       {type: 'project_item.stage', itemId: 'item', issueId: '42', expectedVersion: 'v1', stage: 'QA'}))).status)
       .toBe(200);
@@ -118,7 +119,8 @@ describe('Hermes conversation action HTTP boundary', () => {
     const sessionId = `browser:${'a'.repeat(64)}`;
     const bound = {...deps, resolveRoleRun: vi.fn(async () => ({sessionId, actorId: 'requester',
       projectId: deps.projectId, requesterRole: 'operator' as const, role: 'developer' as const,
-      itemId: 'item', observedVersion: 'v1', occurredAt: '2026-08-14T10:00:00.000Z'}))};
+      itemId: 'item', observedVersion: 'v1', allowedStageTitles: ['QA'],
+      occurredAt: '2026-08-14T10:00:00.000Z'}))};
     const roleRun = await createHermesConversationActionHandler(bound)(request(internalToken,
       {provider: 'agent-role-run', sessionId}, {type: 'project_context.read', ifVersion: null}));
     expect(roleRun.status).toBe(403);

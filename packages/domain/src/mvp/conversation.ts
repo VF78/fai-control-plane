@@ -5,6 +5,8 @@ export type ConversationAction =
   | Readonly<{type: 'project_facts.read'}>
   | Readonly<{type: 'project_context.read'; ifVersion: string | null}>
   | Readonly<{type: 'issue.create'; title: string; statement: string}>
+  | Readonly<{type: 'process.start'; task: Readonly<{kind: 'existing'; itemId: string}> |
+      Readonly<{kind: 'create'; title: string; statement: string}>}>
   | Readonly<{type: 'issue.update'; itemId: string; issueId: string; expectedVersion: string;
     operation: 'title' | 'body' | 'state'; value: string}>
   | Readonly<{type: 'issue.clarify'; referenceId: string; expectedVersion: string; statement: string}>
@@ -35,6 +37,10 @@ export const validateConversationEnvelope = (input: ConversationEnvelope): boole
     case 'project_context.read': return input.action.ifVersion === null ||
       /^[a-f0-9]{64}$/.test(input.action.ifVersion);
     case 'issue.create': return text(input.action.title, 160) && text(input.action.statement, 4_000);
+    case 'process.start': return input.message.contour === 'trusted-main' &&
+      (input.action.task.kind === 'existing' ? isBoundedId(input.action.task.itemId)
+        : input.action.task.kind === 'create' && text(input.action.task.title, 160) &&
+          text(input.action.task.statement, 4_000));
     case 'issue.update': return isBoundedId(input.action.itemId) && isBoundedId(input.action.issueId) &&
       isBoundedId(input.action.expectedVersion) && ['title', 'body', 'state'].includes(input.action.operation) &&
       (input.action.operation === 'state'
@@ -65,6 +71,15 @@ export const parseConversationEnvelope = (value: unknown): ConversationEnvelope 
   else if (action.type === 'project_context.read') parsedAction = {type: 'project_context.read',
     ifVersion: action.ifVersion === null || action.ifVersion === undefined ? null : String(action.ifVersion)};
   else if (action.type === 'issue.create') parsedAction = {type: 'issue.create', title: String(action.title ?? ''), statement: String(action.statement ?? '')};
+  else if (action.type === 'process.start' && action.task !== null && typeof action.task === 'object' &&
+    !Array.isArray(action.task)) {
+    const task = action.task as Record<string, unknown>;
+    if (task.kind === 'existing') parsedAction =
+      {type: 'process.start', task: {kind: 'existing', itemId: String(task.itemId ?? '')}};
+    else if (task.kind === 'create') parsedAction =
+      {type: 'process.start', task: {kind: 'create', title: String(task.title ?? ''),
+        statement: String(task.statement ?? '')}};
+  }
   else if (action.type === 'issue.update') parsedAction = {type: 'issue.update', itemId: String(action.itemId ?? ''),
     issueId: String(action.issueId ?? ''), expectedVersion: String(action.expectedVersion ?? ''),
     operation: action.operation as 'title' | 'body' | 'state', value: String(action.value ?? '')};

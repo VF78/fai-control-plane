@@ -3,13 +3,22 @@ import {createHash} from 'node:crypto';
 import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSnapshotVersion, projectContextSourceKind,
   serializeProjectContextSnapshot, type TrackerSnapshot} from '@fai-control-plane/domain';
 import type {TaskExecutorAssignmentPorts} from './task-executor-assignment.ts';
-import {assignTaskExecutor} from './task-executor-assignment.ts';
+import {assignTaskExecutor, startProcess} from './task-executor-assignment.ts';
 
 const base: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'v1', cursor: null, observedAt: '2026-08-24T00:00:00.000Z', sourceUrl: 'https://github.com/users/acme/projects/1', items: [{itemId: 'item', projectId: 'project', issueId: '219', title: 'Assign executor', url: 'https://github.com/acme/repo/issues/219', version: 'github:updated-at:v1', statusOptionId: 'ready', statusOptionName: 'Ready', ownerOptionId: null, blocked: false, targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [], observedAt: '2026-08-24T00:00:00.000Z'}]};
 const contextContent = serializeProjectContextSnapshot({contract:'fai.project-context.v1',
   sources:[{id:'source',key:'requirements',kind:projectContextSourceKind,version:'a'.repeat(64),provenance:'operator'}],content:'Context'});
 const activeContext = {id:'context',sha256:projectContextSnapshotVersion(contextContent),
   kind:projectContextSnapshotKind,provenance:'control-plane:context',content:contextContent};
+const processPolicy = {contract:'fai.project-process.v1' as const,stages:[
+  {id:'backlog',title:'Backlog',responsibility:'Owner',gate:'Triage',evidence:'Task',nextStageId:'ready',automation:null},
+  {id:'ready',title:'Ready',responsibility:'Owner',gate:'Explicit',evidence:'Task',nextStageId:'dev',automation:null},
+  {id:'dev',title:'In Dev',responsibility:'Agent',gate:'Work',evidence:'PR',nextStageId:'qa',
+    automation:{agentRole:'developer' as const,afterRoles:['qa' as const],maxStarts:2,reworkStageId:null}},
+  {id:'qa',title:'QA',responsibility:'Agent',gate:'Review',evidence:'Checks',nextStageId:'acceptance',
+    automation:{agentRole:'qa' as const,afterRoles:['developer' as const],maxStarts:2,reworkStageId:'dev'}},
+  {id:'acceptance',title:'Acceptance',responsibility:'Owner',gate:'Accept',evidence:'Approval',nextStageId:null,automation:null}
+]};
 
 const ports = (failStart = false, initialStatus = 'Ready', initialBlocked = false, initialOwner: string|null = null) => {
   let owner: string|null = initialOwner; let assignees: readonly {id: string; login: string; name: string|null}[] = [];
@@ -18,7 +27,7 @@ const ports = (failStart = false, initialStatus = 'Ready', initialBlocked = fals
   const snapshot = (): TrackerSnapshot => ({...base, items: [{...base.items[0]!, ownerOptionId: owner, blocked,
     assignees, assigneeIds: assignees.map((user) => user.id), statusOptionName: status, version: `github:updated-at:v${version}`}]});
   const value: TaskExecutorAssignmentPorts = {
-    resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done', routingPolicyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'), routingPolicy: defaultAgentRoutingPolicy, executorCatalog: {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}}}),
+    resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done', routingPolicyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'), routingPolicy: defaultAgentRoutingPolicy, executorCatalog: {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}}, processPolicyVersion:'b'.repeat(64), processPolicy}),
     readFreshSnapshot: async () => snapshot(), persistSnapshot: async () => undefined,
     resolveActiveContext: async () => activeContext,
     agentInstructions: (role) => role === 'developer'
@@ -44,7 +53,7 @@ const ports = (failStart = false, initialStatus = 'Ready', initialBlocked = fals
         if (command.executor.kind === 'human') {
           owner = null; assignees = [{id: command.executor.candidate.id, login: command.executor.candidate.login, name: 'Octo'}];
         } else { owner = command.executor.ownerOptionId; assignees = []; }
-        blocked = false; if (status === 'Backlog' || status === 'Ready') status = 'In Dev';
+        blocked = false; status = command.targetStage;
         if (JSON.stringify({owner, assignees, blocked, status}) !== prior) version += 1;
       }}
   };
@@ -52,6 +61,22 @@ const ports = (failStart = false, initialStatus = 'Ready', initialBlocked = fals
 };
 
 describe('task executor assignment', () => {
+  it('resolves a nonstandard entry and agent role entirely from the active process policy', async () => {
+    const value = ports(false, 'Intake');
+    const original = value.value.resolveContext;
+    const custom: TaskExecutorAssignmentPorts = {...value.value, resolveContext: async (input) => {
+      const context = await original(input); if (context === null) return null;
+      return {...context, processPolicyVersion: 'c'.repeat(64), processPolicy: {contract:'fai.project-process.v1',stages:[
+        {id:'intake',title:'Intake',responsibility:'Owner',gate:'Explicit',evidence:'Task',nextStageId:'build',automation:null},
+        {id:'build',title:'Build',responsibility:'Agent',gate:'Work',evidence:'Result',nextStageId:null,
+          automation:{agentRole:'developer',afterRoles:['qa'],maxStarts:1,reworkStageId:null}}
+      ]}};
+    }};
+    await expect(assignTaskExecutor({actorId:'actor',projectId:'project',projectItemId:'item',executor:{kind:'hermes'}}, custom))
+      .resolves.toMatchObject({status:'started'});
+    expect(value.delivery).toHaveBeenCalledWith(expect.objectContaining({role:'developer',
+      process:expect.objectContaining({policyVersion:'c'.repeat(64),stageId:'build',stageTitle:'Build',successTargetTitle:null})}));
+  });
   it('uses GitHub candidates for a human assignment without a Hermes submission', async () => {
     const value = ports();
     await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'human', candidate: {id: 'U_1', login: 'octo'}}}, value.value)).resolves.toEqual({status: 'assigned'});
@@ -148,6 +173,27 @@ describe('task executor assignment', () => {
     const value = ports(false, 'Done', true); const start = vi.spyOn(value.value.tracker, 'startExecutor');
     await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, value.value))
       .rejects.toThrow('task_executor_unavailable');
+    expect(start).not.toHaveBeenCalled(); expect(value.delivery).not.toHaveBeenCalled();
+  });
+
+  it('process.start create adopts only the exact provider readback and returns one chain reference', async () => {
+    const value = ports(false, 'In Dev');
+    const tracker = {...value.value.tracker, createIssue: vi.fn(async () => ({referenceId:'219',
+      url:'https://github.com/acme/repo/issues/219',version:'github:updated-at:v1'}))};
+    await expect(startProcess({actorId:'actor',projectId:'project',task:{kind:'create',title:'Task',statement:'Work'},
+      sourceReference:'telegram:message:12',idempotencyKey:'process.start:telegram:77'},
+    {...value.value,tracker})).resolves.toMatchObject({status:'started',itemId:'item',
+      chainReference:expect.stringMatching(/^browser:[a-f0-9]{64}$/)});
+    expect(tracker.createIssue).toHaveBeenCalledOnce();
+  });
+
+  it('process.start create refuses a non-exact tracker readback', async () => {
+    const value = ports(false, 'In Dev'); const start = vi.spyOn(value.value.tracker,'startExecutor');
+    const tracker = {...value.value.tracker, createIssue: vi.fn(async () => ({referenceId:'220',
+      url:'https://github.com/acme/repo/issues/220',version:'github:updated-at:v1'}))};
+    await expect(startProcess({actorId:'actor',projectId:'project',task:{kind:'create',title:'Task',statement:'Work'},
+      sourceReference:'telegram:message:12',idempotencyKey:'process.start:telegram:77'},
+    {...value.value,tracker})).rejects.toThrow('process_start_readback_conflict');
     expect(start).not.toHaveBeenCalled(); expect(value.delivery).not.toHaveBeenCalled();
   });
 });

@@ -4,7 +4,7 @@ import type {
   SourceReference,
   TrackerSnapshot
 } from './model.ts';
-import type {AgentRoutingPolicy} from './routing-policy.ts';
+import type {AgentRoute, AgentRoutingPolicy, AgentTaskClass} from './routing-policy.ts';
 
 export type TrackerReadPort = Readonly<{
   readSnapshot(bindingId: string, cursor: string | null): Promise<TrackerSnapshot>;
@@ -38,7 +38,7 @@ export type TrackerMutationPort = Readonly<{
     itemId: string;
     issueId: string;
     expectedVersion: string;
-    stage: 'Backlog' | 'Ready' | 'In Dev' | 'QA' | 'Acceptance';
+    stage: string;
     idempotencyKey: string;
   }>): Promise<Readonly<{referenceId: string; url: string; version: string}>>;
 }>;
@@ -50,7 +50,8 @@ export type TrackerExecutorAssignmentPort = Readonly<{
     itemId: string;
     issueId: string;
     expectedVersion: string;
-    expectedStage: 'Backlog' | 'Ready' | 'In Dev' | 'QA' | 'Acceptance';
+    expectedStage: string;
+    targetStage: string;
     expectedBlocked: boolean;
     executor: Readonly<{kind: 'human'; candidate: Readonly<{id: string; login: string}>}> |
       Readonly<{kind: 'agent'; ownerOptionId: string}>;
@@ -65,6 +66,47 @@ export type RepositoryReadPort = Readonly<{
     defaultBranch: string;
     observedAt: string;
   }>>;
+}>;
+
+export type RepositoryWorkFailure = Readonly<{
+  status: 'retry' | 'blocked';
+  code: 'bridge_unavailable' | 'github_unavailable' | 'checkout_busy' |
+    'authorization_denied' | 'binding_mismatch' | 'base_mismatch' |
+    'checkout_invalid' | 'change_missing' | 'policy_denied' | 'response_invalid';
+  /** Safe for the existing bounded terminal/Telegram notification surface. */
+  message: string;
+  retryAfterSeconds?: number;
+}>;
+
+/**
+ * Narrow repository capability handed to Hermes. Implementations must keep all
+ * provider credentials outside the Hermes/Codex process and workspace.
+ */
+export type RepositoryWorkPort = Readonly<{
+  prepare(input: Readonly<{
+    projectId: string;
+    receiptReference: string;
+    repository: Readonly<{id: string; url: string}>;
+    issueNumber: number;
+    base: Readonly<{ref: string; sha: string}>;
+  }>): Promise<Readonly<{
+    status: 'prepared';
+    workReference: string;
+    workspacePath: string;
+    reviewRef: string;
+  }> | RepositoryWorkFailure>;
+  publishReview(input: Readonly<{
+    workReference: string;
+    receiptReference: string;
+    headSha: string;
+    title: string;
+    body: string;
+  }>): Promise<Readonly<{
+    status: 'published';
+    workReference: string;
+    reviewRef: string;
+    deliverables: readonly Readonly<{label: 'branch' | 'pull_request'; url: string}>[];
+  }> | RepositoryWorkFailure>;
 }>;
 
 export type SecretResolverPort = Readonly<{
@@ -83,8 +125,23 @@ export type AgentRoleRequest = Readonly<{
   approval: ApprovalEvidence | null;
   routing: Readonly<{policyVersion: string; policy: AgentRoutingPolicy;
     classification: 'runtime-classification-required'}>;
+  process: Readonly<{policyVersion: string; stageId: string; stageTitle: string;
+    successTargetTitle: string | null; reworkTargetTitle: string | null}>;
   correlationId: string;
   idempotencyKey: string;
+}>;
+
+export type AgentExecutorResult = Readonly<{
+  contract: 'fai.agent-executor-result.v1';
+  decision: 'accepted' | 'rejected';
+  /** Hermes classifies once, then attests the exact policy route it actually used. */
+  execution: Readonly<{taskClass: AgentTaskClass; executor: AgentRoute['executor']; model: string;
+    effort: 'medium' | 'high'}>;
+  outcome: 'success' | 'rework';
+  transition: Readonly<{itemId: string; fromVersion: string; targetStage: string; toVersion: string}>;
+  reason: string;
+  evidence: readonly Readonly<{kind: string; result: string}>[];
+  deliverables: readonly Readonly<{label: string; url: string}>[];
 }>;
 
 export type AgentDeliveryPort = Readonly<{
@@ -95,7 +152,9 @@ export type AgentDeliveryPort = Readonly<{
   /** Provider-neutral, bounded observation of one previously accepted attempt. */
   observe(deliveryReference: string): Promise<Readonly<{
     status: 'started' | 'completed' | 'failed' | 'unknown';
-    failureCode?: 'provider_failed' | 'provider_cancelled';
+    failureCode?: 'provider_failed' | 'provider_cancelled' | 'provider_unavailable' | 'provider_timeout' |
+      'agent_result_rejected' | 'agent_result_invalid';
+    result?: AgentExecutorResult;
   }>>;
 }>;
 

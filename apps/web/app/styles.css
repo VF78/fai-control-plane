@@ -642,6 +642,24 @@ code { color: #4f5a4f; }
 
 .fcp-icon-button:disabled { cursor:not-allowed; opacity:.5; }
 
+/* Cards stay in the document flow so the shell never creates competing vertical scrollers. */
+.fcp-message-list, .fcp-board-column > div, .fcp-board-column--backlog > div, .fcp-board-column--done > div, .fcp-plan-source-selection { max-block-size:none; max-height:none; overflow:visible; }
+.fcp-plan-sources pre, .fcp-plan-help pre { max-height:none; }
+
+/* Desktop has one scrolling surface: the content pane. Keep cards in the normal flow. */
+@media (min-width:1024px) {
+  .fcp-workspace { height:100dvh; min-height:0; overflow:hidden; }
+  .fcp-shell-layout { grid-template-rows:64px minmax(0,1fr); height:100%; min-height:0; overflow:hidden; }
+  .fcp-sidebar { height:100%; min-height:0; overflow:hidden; position:static; }
+  .fcp-topbar { position:static; }
+  .fcp-main { min-height:0; overflow-y:auto; overscroll-behavior-y:contain; scrollbar-gutter:stable; }
+}
+
+@media (max-width:1023px) {
+  .fcp-workspace, .fcp-shell-layout { height:auto; min-height:100dvh; overflow:visible; overflow-x:clip; }
+  .fcp-main { min-height:0; overflow:visible; }
+}
+
 /* Task detail stays a concise operating surface: the tracker owns diagnostics and history. */
 .fcp-task-detail { background:#fff; border:1px solid var(--fcp-rule); border-radius:6px; margin-top:18px; overflow:hidden; }
 .fcp-task-detail > header { align-items:center; background:var(--fcp-soft); border-bottom:1px solid var(--fcp-rule); display:flex; gap:12px; justify-content:space-between; padding:10px 14px; }

@@ -95,7 +95,7 @@ network change.
 ### Hermes GitHub credential boundary
 
 Reviewed non-secret Hermes environment example SHA-256:
-`e4d34238d06866defd3fb6ceaa8364ed88129e83d628ee2abaf549337b115ac1`.
+`b5bd44a898278487146c6dd11b128a79369196e50b0b6e160800948aab709312`.
 
 Reviewed non-secret Control Plane environment example SHA-256:
 `703dbd9d4ec8d9373dcb0b70aee167ca5a9852e9cb2e257e69bbdd018153ebbe`.
@@ -116,6 +116,31 @@ Reviewed non-secret Control Plane environment example SHA-256:
   Hermes capabilities. Enabling any one requires a separately reviewed broker
   operation that resolves approved evidence against the exact current provider
   target/version; a prompt, role name or retained approval is insufficient.
+
+The optional `repository-work` Compose profile is deliberately inactive. Its
+sidecar is the sole holder of the ASCON GitHub App private key and installation
+tokens. Activation is blocked until all of the following are reviewed together:
+
+- a project-only GitHub App installation exists with metadata read,
+  contents read/write and pull-requests read/write, and no administration,
+  Actions, environments, deployments or secrets permission;
+- `/etc/fai-hermes-ascon/secrets/github-app-private-key.pem` is a regular,
+  non-symlink host-owned file, readable only by the broker runtime identity;
+- the Control Plane repository-authorization bridge proves the existing
+  canonical receipt, repository ID/URL, issue number and exact current default-branch SHA;
+- `/var/lib/fai-hermes-ascon/repository-broker` and the Unix socket are confined
+  to the ASCON gateway/broker composition, and the App key is absent from the
+  gateway, Codex container, checkout, environment, logs and readiness payload;
+- broker metadata, locks, bundles and temporary bare repositories live only in
+  `/var/lib/fai-repository-broker-ascon`, outside the gateway-visible
+  `/var/lib/fai-hermes-ascon` parent mount;
+- a root-generated `fai.repository-broker-readiness.v1` evidence file binds the
+  approved App/installation IDs, image digest, socket probe and configuration
+  digest without containing a secret.
+
+Missing or drifted evidence keeps the profile disabled. The existing Hermes
+stage/deploy command does not create the App, install it, copy its key, enable
+the profile or mutate GitHub. Those remain a separate exact production gate.
 
 ### Isolated Hermes Codex CLI credential
 

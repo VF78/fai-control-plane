@@ -193,6 +193,30 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertLess(stage.index("install_nginx_config"), stage.index("write_readiness"))
         self.assertLess(stage.index("write_readiness"), stage.index("commit_nginx_config"))
 
+    def test_repository_broker_is_an_inactive_secret_isolated_sidecar(self):
+        compose = (HERMES / "compose.yaml").read_text()
+        broker = compose.split("  repository-broker:\n", 1)[1].split("\n  codex-cli:", 1)[0]
+        gateway = compose.split("  gateway:\n", 1)[1].split("\n  repository-broker:", 1)[0]
+        codex = compose.split("  codex-cli:\n", 1)[1]
+        self.assertIn("profiles: [repository-work]", broker)
+        dockerfile = (ROOT / "infra/repository-broker/Dockerfile").read_text()
+        self.assertIn("repository-broker-cli.js", dockerfile)
+        self.assertIn("node:24-bookworm-slim@sha256:", dockerfile)
+        self.assertIn("github-app-private-key.pem:ro", broker)
+        self.assertIn("broker.sock", broker)
+        self.assertIn("cap_drop: [ALL]", broker)
+        self.assertIn("/run/fai-repository-broker", gateway)
+        self.assertIn(
+            "/var/lib/fai-repository-broker-ascon:/var/lib/fai-repository-broker",
+            broker,
+        )
+        self.assertNotIn("fai-hermes-ascon/repository-broker-state", broker)
+        self.assertNotIn("/var/lib/fai-repository-broker-ascon", gateway)
+        self.assertNotIn("github-app-private-key", gateway)
+        self.assertNotIn("github-app-private-key", codex)
+        self.assertNotIn("FCP_GITHUB_APP", codex)
+        self.assertNotIn("/var/lib/fai-repository-broker-ascon", codex)
+
 
 if __name__ == "__main__":
     unittest.main()

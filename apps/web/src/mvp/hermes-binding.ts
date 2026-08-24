@@ -49,7 +49,7 @@ export const bindHermesConversation = (input: Readonly<{profile: HermesProfile; 
     idempotencyKey: `conversation:${deliveryReference}`}, action: input.action});
   if (envelope === null) throw new Error('body_invalid');
   const allowed = input.profile === 'internal'
-    ? ['project_facts.read', 'project_context.read', 'issue.create', 'issue.update', 'issue.clarify', 'project_item.stage', 'source.add', 'approval.decide']
+    ? ['project_facts.read', 'project_context.read', 'process.start', 'issue.create', 'issue.update', 'issue.clarify', 'project_item.stage', 'source.add', 'approval.decide']
     : ['issue.create', 'issue.clarify'];
   if (!allowed.includes(envelope.action.type)) throw new Error('action_denied');
   return envelope;

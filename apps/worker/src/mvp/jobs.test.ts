@@ -1,4 +1,5 @@
 import {describe, expect, it} from 'vitest';
+import {readFileSync} from 'node:fs';
 import {exclusiveRunner, workerActive, workerRetryIntervalMs, workerTrackerPollIntervalMs, workerReady} from './jobs.ts';
 describe('worker readiness', () => {
   it('polls GitHub every five minutes and retries the local outbox promptly', () => {
@@ -23,5 +24,12 @@ describe('worker readiness', () => {
     const run = exclusiveRunner(async () => { calls += 1; await gate; });
     const first = run(); const second = run();
     expect(calls).toBe(1); release(); await Promise.all([first, second]); expect(calls).toBe(1);
+  });
+  it('records accepted terminal agent evidence before evaluating a QA status transition', () => {
+    const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
+    expect(source.indexOf('await reconcileActiveAgentAttempts')).toBeGreaterThan(-1);
+    expect(source.indexOf('await reconcileActiveAgentAttempts')).toBeLessThan(source.indexOf('await reconcileTracker'));
+    expect(source).toContain('readActiveProjectProcessPolicy(database, projectId)');
+    expect(source).not.toContain("item.statusOptionName === 'QA'");
   });
 });

@@ -106,3 +106,36 @@ active route. Repository-changing implementation always uses a CLI executor;
 direct Hermes may plan, decide, manage provider-native Project facts, or invoke
 an exact-approval broker. Merge, Actions, release, deploy and production never
 run inside a coding CLI.
+
+## 2026-08-24 amendment: repository work broker
+
+Repository-changing Hermes roles use one project-scoped `RepositoryWorkPort`
+implemented by a credential-isolated sidecar in the Hermes composition. This
+is a narrow capability boundary, not a new agent, task lifecycle or Control
+Plane runner. Hermes and its Codex executor receive only `prepare` and
+`publishReview` over a Unix socket and never receive a GitHub PAT, App private
+key or installation token.
+
+`prepare` must revalidate the existing canonical submission receipt, exact
+repository binding and exact configured default-branch base revision through the
+authenticated Control Plane bridge before it creates or reuses an isolated
+checkout. `publishReview` can only create or reuse
+`refs/heads/fai/<issue>/<receipt-hash>` without force and create or reuse one
+pull request back to that authorized default branch. Results contain only bounded HTTPS branch/PR
+links. Typed retry and terminal blocker results are safe for the existing
+Hermes terminal/Telegram notification surface.
+
+Executor-writable `.git/config`, remotes, helpers and hooks are untrusted. A
+publication exports a bounded credential-free bundle, imports and validates it
+in a fresh broker-owned bare repository, and runs every token-bearing fetch or
+push only there with system/global Git config disabled and an explicit bound
+HTTPS repository URL. Broker metadata and publication state are never mounted
+into the executor checkout.
+
+The broker has no operations for `main`, tags, deletion, force-push, merge,
+release, Actions or deployment. The App key and short-lived installation token
+exist only inside the broker. Activation requires a separately approved
+project installation with least-privilege metadata/contents/pull-request
+permissions, a host-owned private-key file, exact bridge authorization route,
+socket/readiness evidence and deployment review. Until those external facts
+exist, the Compose profile remains disabled and repository work fails closed.

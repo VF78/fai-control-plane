@@ -140,7 +140,7 @@ describe('active project context projection', () => {
 
   it('compares text audit references with artifact UUIDs explicitly', async () => {
     const source = await import('node:fs/promises').then(({readFile}) => readFile(new URL('./runtime.ts', import.meta.url), 'utf8'));
-    expect(source.match(/active\.target_reference=s\.id::text/g)).toHaveLength(2);
+    expect(source.match(/active\.target_reference=s\.id::text/g)).toHaveLength(3);
     expect(source).not.toContain('active.target_reference=s.id\n');
   });
 });
@@ -165,6 +165,10 @@ describe('agent submission evidence projection', () => {
 describe('agent attempt retry guard', () => {
   const input = {workspaceId: 'workspace', projectId: 'project', actorId: 'actor', idempotencyKey: 'new-key',
     correlationId: 'new-correlation', role: 'developer', itemId: 'item', observedVersion: 'v1', sourceCount: 1,
+    processPolicyVersion: 'b'.repeat(64), processStageId: 'in-dev', processStageTitle: 'In Dev',
+    successTargetTitle: 'QA', reworkTargetTitle: null,
+    routingPolicy: {contract: 'fai.agent-routing.v1', routes: []} as never, executorCatalog: {},
+    expectedOwnerOptionId: 'owner-hermes',
     retryOf: null as string|null, confirmUnobservableFailure: false,
     notification: {projectId: 'project', contour: 'trusted-main' as const, channelReference: 'internal',
       text: 'accepted', idempotencyKey: 'notice'}};
@@ -212,6 +216,7 @@ describe('receipt-bound role-run projection', () => {
   it('derives the exact submit key and returns only one active operator receipt/audit match', async () => {
     const query = vi.fn().mockResolvedValue({rows: [{actorId: 'actor', projectId: 'project',
       requesterRole: 'operator', role: 'developer', itemId: 'PVTI_1', observedVersion: 'v1',
+      successTargetTitle: 'QA', reworkTargetTitle: null,
       occurredAt: new Date('2026-08-24T10:00:00.000Z')}]});
     const sessionId = `browser:${'a'.repeat(64)}`;
     await expect(resolveReceiptBoundRoleRun({query} as unknown as Database, sessionId, 'project'))

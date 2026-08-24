@@ -16,7 +16,8 @@ describe('Process Hermes execution surface', () => {
   it('keeps the project process policy read-only and excludes manual task classification', async () => {
     const view = await source();
     expect(view).toContain('Проектная политика процесса · только чтение');
-    expect(view).toContain("{label:'Контекст Hermes'");
+    expect(view).toContain("{label:'Контекст ИИ агента'");
+    expect(view).toContain('Собранный контекст, который ИИ агент использует в новых задачах.');
     expect(view).toContain('Назначать класс вручную не требуется.');
     expect(view).not.toContain('Назначить класс задачи');
   });

@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {authorizeConversation, validateConversationEnvelope, type ConversationEnvelope} from './conversation.ts';
+import {authorizeConversation, parseConversationEnvelope, validateConversationEnvelope, type ConversationEnvelope} from './conversation.ts';
 
 const envelope = (contour: 'trusted-main' | 'client-edge' = 'client-edge'): ConversationEnvelope => ({
   message: {
@@ -24,6 +24,14 @@ describe('MVP conversation boundary', () => {
       action: {type: 'project_context.read', ifVersion: 'a'.repeat(64)}})).toBe(true);
     expect(validateConversationEnvelope({...value,
       action: {type: 'project_context.read', ifVersion: 'not-a-version'}})).toBe(false);
+  });
+
+  it('allows process.start only on the authenticated internal contour', () => {
+    const action = {type:'process.start' as const,task:{kind:'create' as const,title:'Task',statement:'Do it'}};
+    expect(validateConversationEnvelope({...envelope('trusted-main'),action})).toBe(true);
+    expect(validateConversationEnvelope({...envelope('client-edge'),action})).toBe(false);
+    expect(parseConversationEnvelope({...envelope('trusted-main'),action:{type:'process.start',
+      task:{kind:'surprise',title:'Task',statement:'Do it'}}})).toBeNull();
   });
 
   it('rejects message bodies over the persistence-free ingress limit', () => {

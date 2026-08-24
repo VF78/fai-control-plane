@@ -63,7 +63,7 @@ describe('receipt-bound role-run authority', () => {
   const sessionId = `browser:${'a'.repeat(64)}`;
   const roleRun: ReceiptBoundRoleRun = {sessionId, actorId: 'requester', projectId: 'project',
     requesterRole: 'operator', role: 'developer', itemId: 'item', observedVersion: 'v1',
-    occurredAt: '2026-08-13T00:00:00.000Z'};
+    occurredAt: '2026-08-13T00:00:00.000Z', allowedStageTitles: ['QA']};
   const internal = (action: InternalConversationEnvelope['action']): InternalConversationEnvelope => ({
     message: {...envelope.message, contour: 'trusted-main', correlationId: sessionId}, action});
 
@@ -82,7 +82,8 @@ describe('receipt-bound role-run authority', () => {
     ['other', 'item', 'v1', 'developer'],
     ['project', 'item', 'v1', 'manager']
   ] as const)('denies mismatched project/item/version/role', async (projectId, itemId, version, role) => {
-    const target = ports(); const bound = {...roleRun, projectId, role};
+    const target = ports(); const bound = {...roleRun, projectId, role,
+      ...(role === 'manager' ? {allowedStageTitles: []} : {})};
     await expect(dispatchConversationAction({workspaceId: 'workspace', ports: target, roleRun: bound,
       envelope: internal({type: 'project_item.stage', itemId, issueId: '42', expectedVersion: version, stage: 'QA'})}))
       .resolves.toEqual({status: 'denied'});
