@@ -5,6 +5,7 @@ import {
   canApprove,
   canGovernMembership,
   createApprovalPersistence,
+  createAgentAttemptStore,
   createStores,
   databaseMvpReady,
   executeAgentSubmissionTransaction,
@@ -17,7 +18,7 @@ import {
   saveAgentRoutingPolicy,
   subjectHash
 } from '@fai-control-plane/db';
-import {assignTaskExecutor, decideApproval, type AgentSubmissionPorts} from '@fai-control-plane/application';
+import {assignTaskExecutor, decideApproval, reconcileAgentAttempt, type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
 import {assertAgentRoutingPolicyAvailable, mayChangeMembership, parseAgentRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
@@ -219,7 +220,8 @@ export const approval = async (request: Request, approvalId: string): Promise<Re
   } catch (error) { return jsonError(error); }
 };
 
-const unavailableDelivery: AgentDeliveryPort = {submit: async () => { throw new Error('agent_provider_unavailable'); }};
+const unavailableDelivery: AgentDeliveryPort = {submit: async () => { throw new Error('agent_provider_unavailable'); },
+  observe: async () => { throw new Error('agent_provider_unavailable'); }};
 
 const asconHermesInstructions = (role: 'developer'|'qa') => role === 'developer'
   ? {constraints: [
@@ -258,21 +260,37 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
   try {
     if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'POST'}});
     const database = getDatabase(); const session = await requireSession(); requireCsrf(request);
-    const body = await json(request); const projectId = string(body.projectId); const executor = body.executor;
+    const body = await json(request); const projectId = string(body.projectId);
+    const action = body.action === undefined ? 'assign' : string(body.action, 32);
+    const endpoint = process.env.HERMES_ROLE_REQUEST_URL;
+    const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, session.actorId, projectId);
+    const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery
+      : createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048), credentialRef: binding.agentCredentialRef, secrets: secretResolver});
+    if (action === 'refresh-attempt') {
+      return Response.json(await reconcileAgentAttempt({actorId: session.actorId, projectId,
+        itemId: string(body.projectItemId), deliveryReference: string(body.deliveryReference)},
+      {delivery, attempts: createAgentAttemptStore(database)}));
+    }
+    if (action !== 'assign') throw new Error('body_invalid');
+    const executor = body.executor;
     if (executor === null || typeof executor !== 'object' || Array.isArray(executor)) throw new Error('body_invalid');
     const choice = executor as Record<string, unknown>;
     const kind = string(choice.kind, 16);
     if (kind !== 'human' && kind !== 'hermes') throw new Error('body_invalid');
     const candidate = kind === 'human' ? choice.candidate : undefined;
     if (kind === 'human' && (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))) throw new Error('body_invalid');
-    const agent = kind === 'hermes'
-      ? (() => { const credential = process.env.HERMES_ROLE_REQUEST_URL; if (credential === undefined) throw new Error('agent_provider_unavailable'); return credential; })()
-      : null;
-    const delivery = agent === null ? unavailableDelivery : createHermesDeliveryAdapter({endpoint: string(agent, 2_048),
-      credentialRef: (await resolveAgentSubmissionBinding(database, session.actorId, projectId))?.agentCredentialRef ?? (() => { throw new Error('agent_provider_unavailable'); })(), secrets: secretResolver});
-    const {ports} = await githubAssignment(database, session.actorId, projectId, delivery);
+    const {ports} = await githubAssignment(database, session.actorId, projectId, kind === 'hermes' ? delivery : unavailableDelivery);
+    const retryValue = body.retry;
+    const retry = retryValue === undefined ? undefined : (() => {
+      if (retryValue === null || typeof retryValue !== 'object' || Array.isArray(retryValue)) throw new Error('body_invalid');
+      const value = retryValue as Record<string, unknown>;
+      return {deliveryReference: string(value.deliveryReference), nonce: string(value.nonce, 128),
+        confirmUnobservableFailure: value.confirmUnobservableFailure === true};
+    })();
+    if (retry !== undefined && kind !== 'hermes') throw new Error('body_invalid');
     const result = await assignTaskExecutor({actorId: session.actorId, projectId, projectItemId: string(body.projectItemId),
-      executor: kind === 'hermes' ? {kind} : {kind, candidate: {id: string((candidate as Record<string, unknown>).id, 512), login: string((candidate as Record<string, unknown>).login, 256)}}}, ports);
+      executor: kind === 'hermes' ? {kind} : {kind, candidate: {id: string((candidate as Record<string, unknown>).id, 512), login: string((candidate as Record<string, unknown>).login, 256)}},
+      ...(retry === undefined ? {} : {retry})}, ports);
     return Response.json(result);
   } catch (error) {
     const code = error instanceof Error ? error.message : 'request_failed';
@@ -280,10 +298,11 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     if (['github_assignee_unavailable','task_executor_candidate_unavailable'].includes(code)) return Response.json({error: 'candidate_unavailable'}, {status: 409});
     if (code === 'github_assignment_partial') return Response.json({error: 'assignment_partial'}, {status: 409});
     if (['github_owner_unavailable','task_executor_unavailable'].includes(code)) return Response.json({error: 'operation_unavailable'}, {status: 409});
+    if (['agent_attempt_active','agent_retry_denied'].includes(code)) return Response.json({error: 'retry_unavailable'}, {status: 409});
     if (['agent_delivery_failed','agent_response_invalid'].includes(code)) return Response.json({error: 'delivery_failed'}, {status: 502});
     if (['tracker_provider_unsupported','github_binding_invalid','github_read_failed','github_response_invalid',
       'github_mutation_failed','github_status_unavailable','github_credential_invalid',
-      'agent_endpoint_invalid','agent_provider_unavailable','agent_credential_invalid',
+      'agent_endpoint_invalid','agent_provider_unavailable','agent_credential_invalid','agent_status_failed','agent_status_invalid',
       'secret_purpose_denied','secret_path_must_be_absolute','secret_invalid'].includes(code)) {
       return Response.json({error: 'provider_error'}, {status: 502});
     }

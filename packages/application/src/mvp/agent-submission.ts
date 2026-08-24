@@ -24,6 +24,7 @@ export type AgentSubmissionPorts = Readonly<{
   transaction: Readonly<{execute(input: Readonly<{
     workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
     role: AgentRole; itemId: string; observedVersion: string; sourceCount: number;
+    retryOf: string | null; confirmUnobservableFailure: boolean;
     notification: MessengerDeliveryInput;
   }>, submit: () => Promise<Readonly<{deliveryReference: string}>>): Promise<Readonly<{
     status: 'completed' | 'duplicate'; deliveryReference: string;
@@ -33,6 +34,7 @@ export type AgentSubmissionPorts = Readonly<{
 export type AgentSubmissionCommand = Readonly<{
   actorId: string; projectId: string; projectItemId: string; role: AgentRole;
   constraints: readonly string[]; acceptanceCriteria: readonly string[];
+  retry?: Readonly<{deliveryReference: string; nonce: string; confirmUnobservableFailure?: boolean}>;
 }>;
 
 const bounded = (value: unknown, maximum: number): value is string =>
@@ -50,6 +52,11 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
     command.constraints.length === 0 || command.constraints.length > 40 ||
     command.acceptanceCriteria.length === 0 || command.acceptanceCriteria.length > 40 ||
     ![...command.constraints, ...command.acceptanceCriteria].every((item) => bounded(item, 2_000))) {
+    throw new Error('agent_request_invalid');
+  }
+  if (command.retry !== undefined &&
+    (!bounded(command.retry.deliveryReference, 256) || !bounded(command.retry.nonce, 128) ||
+      (command.retry.confirmUnobservableFailure !== undefined && typeof command.retry.confirmUnobservableFailure !== 'boolean'))) {
     throw new Error('agent_request_invalid');
   }
   // Production execution remains behind exact approval and is not exposed by this browser seam.
@@ -94,7 +101,8 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   const normalized = {projectId: context.projectId, repositoryId: context.repository.id,
     itemId: item.itemId, observedVersion: item.version, role: command.role,
     contextVersion: activeContext.sha256, constraints: command.constraints,
-    acceptanceCriteria: command.acceptanceCriteria};
+    acceptanceCriteria: command.acceptanceCriteria,
+    ...(command.retry === undefined ? {} : {retryOf: command.retry.deliveryReference, retryNonce: command.retry.nonce})};
   const idempotencyKey = stableKey(normalized);
   const correlationId = `browser:${idempotencyKey.slice('agent.submit:'.length)}`;
   const request: AgentRoleRequest = {role: command.role, repository: {id: repository.repositoryId, url: repository.url},
@@ -109,9 +117,15 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   if (notification.projectId !== context.projectId || notification.contour !== 'trusted-main' ||
     notification.idempotencyKey !== notificationKey || !bounded(notification.channelReference, 512) ||
     !bounded(notification.text, 4_000)) throw new Error('agent_notification_invalid');
+  if (command.retry?.confirmUnobservableFailure === true) {
+    const observed = await ports.delivery.observe(command.retry.deliveryReference);
+    if (observed.status !== 'unknown') throw new Error('agent_retry_denied');
+  }
   return ports.transaction.execute({workspaceId: context.workspaceId, projectId: context.projectId,
     actorId: command.actorId, idempotencyKey, correlationId, role: command.role, itemId: item.itemId,
-    observedVersion: item.version, sourceCount: sources.length, notification}, async () => {
+    observedVersion: item.version, sourceCount: sources.length,
+    retryOf: command.retry?.deliveryReference ?? null,
+    confirmUnobservableFailure: command.retry?.confirmUnobservableFailure === true, notification}, async () => {
       const delivered = await ports.delivery.submit(request);
       return {deliveryReference: delivered.deliveryReference};
     });

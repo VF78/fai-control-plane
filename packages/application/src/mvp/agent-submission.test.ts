@@ -34,7 +34,7 @@ const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): Age
   composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: item.projectId,
     contour: 'trusted-main', channelReference: 'internal', text: `Hermes accepted: ${item.url}`, idempotencyKey}),
   delivery: {submit: async (request) => ({deliveryReference: `hermes:${request.idempotencyKey}`,
-    sessionReference: request.correlationId})},
+    sessionReference: request.correlationId}), observe: async () => ({status: 'started'})},
   transaction: {execute: async (_input, submit) => ({status: 'completed', ...(await submit())})}
 });
 const command = {actorId: 'actor', projectId: 'project', projectItemId: 'PVTI_item', role: 'developer' as const,
@@ -139,9 +139,33 @@ describe('explicit agent submission', () => {
       repository: {readRepository: async (input) => { order.push('repository'); return base.repository.readRepository(input); }},
       readFreshSnapshot: async () => { order.push('fresh-snapshot'); return snapshot; },
       persistSnapshot: async () => { order.push('persist-snapshot'); },
-      delivery: {submit: async (request) => { order.push('delivery'); return base.delivery.submit(request); }}
+      delivery: {submit: async (request) => { order.push('delivery'); return base.delivery.submit(request); },
+        observe: base.delivery.observe}
     };
     await expect(submitExplicitAgent(command, value)).resolves.toMatchObject({status: 'completed'});
     expect(order).toEqual(['repository', 'context', 'fresh-snapshot', 'persist-snapshot', 'delivery']);
+  });
+
+  it('creates a distinct key for an explicit retry and binds it to the failed receipt', async () => {
+    const base = ports(); let input: Parameters<AgentSubmissionPorts['transaction']['execute']>[0]|undefined;
+    const value: AgentSubmissionPorts = {...base, delivery: {...base.delivery, observe: async () => ({status: 'unknown'})},
+      transaction: {execute: async (next, submit) => {
+      input = next; return {status: 'completed', ...(await submit())};
+    }}};
+    const initial = await submitExplicitAgent(command, value);
+    const initialKey = input!.idempotencyKey;
+    await submitExplicitAgent({...command, retry: {deliveryReference: initial.deliveryReference,
+      nonce: 'operator-confirmation', confirmUnobservableFailure: true}}, value);
+    expect(input).toMatchObject({retryOf: initial.deliveryReference, confirmUnobservableFailure: true});
+    expect(input!.idempotencyKey).not.toBe(initialKey);
+  });
+
+  it.each(['started','completed','failed'] as const)('denies a direct unobservable-recovery bypass when Hermes reports %s', async (status) => {
+    const base = ports(); const execute = vi.spyOn(base.transaction, 'execute');
+    await expect(submitExplicitAgent({...command, retry: {deliveryReference: 'run_exact', nonce: 'direct-bypass',
+      confirmUnobservableFailure: true}}, {...base, delivery: {...base.delivery, observe: async (reference) => {
+        expect(reference).toBe('run_exact'); return {status};
+      }}})).rejects.toThrow('agent_retry_denied');
+    expect(execute).not.toHaveBeenCalled();
   });
 });

@@ -194,3 +194,4 @@ CREATE TABLE "audit_events" (
   "created_at" timestamptz DEFAULT now() NOT NULL
 );
 CREATE INDEX "audit_events_project_time_idx" ON "audit_events" ("project_id", "occurred_at");
+CREATE INDEX "audit_events_attempt_lifecycle_idx" ON "audit_events" ("project_id", "action", "target_reference", "occurred_at");

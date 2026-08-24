@@ -5,7 +5,8 @@ import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSna
   trackerPollIntervalMs, trackerStaleAfterMs} from '@fai-control-plane/domain';
 import {activateProjectContextSnapshot, addSourceArtifact, projectAgentDeliveryConfigured, readActiveProjectContext, readAgentRoutingPolicy,
   readProjectContextStatus,
-  readProjectProcessPolicy, resolveReceiptBoundRoleRun, trackerSnapshotFreshness, type Database} from './runtime.ts';
+  readProjectProcessPolicy, resolveReceiptBoundRoleRun, trackerSnapshotFreshness,
+  executeAgentSubmissionTransaction, type Database} from './runtime.ts';
 
 describe('tracker snapshot freshness', () => {
   const observedAt = new Date('2026-08-23T10:00:00.000Z');
@@ -152,8 +153,58 @@ describe('agent submission evidence projection', () => {
     expect(source).toContain('a.target_reference as "targetReference"');
     expect(source).toContain('r.result_reference as "deliveryReference"');
     expect(source).toContain('r.occurred_at=a.occurred_at');
+    expect(source).toContain("coalesce(terminal.details->>'status','started') as status");
+    expect(source).toContain("t.action in ('agent.attempt.completed','agent.attempt.failed')");
+    expect(source).toContain('agent-attempt:${input.projectId}:${input.itemId}');
+    expect(source).toContain("failureCode: 'operator_confirmed_unobservable'");
     expect(source).toContain("insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)");
     expect(source).toContain("values($1,'messenger-notification',$2,$3,$4)");
+  });
+});
+
+describe('agent attempt retry guard', () => {
+  const input = {workspaceId: 'workspace', projectId: 'project', actorId: 'actor', idempotencyKey: 'new-key',
+    correlationId: 'new-correlation', role: 'developer', itemId: 'item', observedVersion: 'v1', sourceCount: 1,
+    retryOf: null as string|null, confirmUnobservableFailure: false,
+    notification: {projectId: 'project', contour: 'trusted-main' as const, channelReference: 'internal',
+      text: 'accepted', idempotencyKey: 'notice'}};
+  const database = (latest: {deliveryReference: string; status: string; correlationId: string; actorId: string}|undefined) => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('select result_reference as "deliveryReference" from command_receipts')) return {rows: []};
+      if (sql.includes('coalesce(terminal.details')) return {rows: latest === undefined ? [] : [latest]};
+      return {rows: [], rowCount: 1};
+    });
+    return {database: {connect: async () => ({query, release: vi.fn()})} as unknown as Database, query};
+  };
+
+  it('blocks a second execution while the exact item has a started attempt', async () => {
+    const value = database({deliveryReference: 'run_active', status: 'started', correlationId: 'prior', actorId: 'actor'});
+    const submit = vi.fn(async () => ({deliveryReference: 'run_new'}));
+    await expect(executeAgentSubmissionTransaction(value.database, input, submit)).rejects.toThrow('agent_attempt_active');
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('allows only the latest exact failed run and rejects a stale double retry', async () => {
+    const failed = database({deliveryReference: 'run_failed', status: 'failed', correlationId: 'prior', actorId: 'actor'});
+    await expect(executeAgentSubmissionTransaction(failed.database,
+      {...input, retryOf: 'run_failed'}, async () => ({deliveryReference: 'run_new'}))).resolves.toMatchObject({deliveryReference: 'run_new'});
+    const afterRetry = database({deliveryReference: 'run_new', status: 'started', correlationId: 'new', actorId: 'actor'});
+    await expect(executeAgentSubmissionTransaction(afterRetry.database,
+      {...input, idempotencyKey: 'another-key', retryOf: 'run_failed'}, async () => ({deliveryReference: 'run_duplicate'})))
+      .rejects.toThrow('agent_retry_denied');
+  });
+
+  it('requires the explicit recovery flag before closing an unobservable started attempt', async () => {
+    const prior = {deliveryReference: 'run_expired', status: 'started', correlationId: 'prior', actorId: 'actor'};
+    const denied = database(prior);
+    await expect(executeAgentSubmissionTransaction(denied.database,
+      {...input, retryOf: 'run_expired'}, async () => ({deliveryReference: 'run_new'})))
+      .rejects.toThrow('agent_retry_denied');
+    const confirmed = database(prior);
+    await expect(executeAgentSubmissionTransaction(confirmed.database,
+      {...input, retryOf: 'run_expired', confirmUnobservableFailure: true}, async () => ({deliveryReference: 'run_new'})))
+      .resolves.toMatchObject({deliveryReference: 'run_new'});
+    expect(confirmed.query.mock.calls.some(([sql]) => String(sql).includes("'agent.attempt.failed'"))).toBe(true);
   });
 });
 

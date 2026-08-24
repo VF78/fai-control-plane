@@ -167,6 +167,16 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn('chmod 0644 "$temporary"', writer)
         self.assertIn('mv -f "$temporary" "$readiness_file"', writer)
 
+    def test_public_run_status_route_is_get_only_and_bounded(self):
+        nginx = (HERMES / "nginx/hermes-ascon.f-ai.studio.conf").read_text()
+        route = nginx.split(
+            'location ~ "^/v1/runs/run_[A-Za-z0-9_-]{1,250}$" {', 1
+        )[1].split("\n    }", 1)[0]
+        self.assertIn("limit_except GET { deny all; }", route)
+        self.assertIn("proxy_pass http://fai_hermes_ascon$request_uri;", route)
+        self.assertNotIn("/events", nginx)
+        self.assertNotIn("/stop", nginx)
+
 
 if __name__ == "__main__":
     unittest.main()
