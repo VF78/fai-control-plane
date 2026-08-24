@@ -1,3 +1,4 @@
+import {readFile} from 'node:fs/promises';
 import {describe, expect, it} from 'vitest';
 import {parseProjectProcessPolicy} from './project-process.ts';
 
@@ -25,5 +26,13 @@ describe('project process policy', () => {
       {id:'qa',title:'Review',responsibility:'Agent',gate:'Automatic',evidence:'Checks',nextStageId:null,
         automation:{agentRole:'qa',afterRoles:['developer'],maxStarts:0}}
     ]})).toBeNull();
+  });
+
+  it('keeps the deployed ASCON policy in canonical bootstrap form', async () => {
+    const content = (await readFile(new URL('../../../../infra/hermes-ascon/project-process-policy.json',
+      import.meta.url), 'utf8')).trim();
+    const policy = parseProjectProcessPolicy(JSON.parse(content));
+    expect(policy).not.toBeNull();
+    expect(JSON.stringify(policy)).toBe(content);
   });
 });
