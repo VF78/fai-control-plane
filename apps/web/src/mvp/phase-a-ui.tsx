@@ -42,7 +42,7 @@ function HermesExecution({project, routing, canManage}: Readonly<{project: Proje
 }
 
 function HermesContext({context, project, canManage}: Readonly<{context: ProjectContextStatusView|null; project: ProjectTaskView; canManage: boolean}>) {
-  return <div className="fcp-hermes-context-view"><div><h2>Контекст Hermes</h2><p>Собранный контекст для запусков Hermes</p></div><HermesContextControl projectId={project.id} canManage={canManage} context={context}/></div>;
+  return <div className="fcp-hermes-context-view"><div><h2>Контекст ИИ агента</h2><p>Собранный контекст, который ИИ агент использует в новых задачах.</p></div><HermesContextControl projectId={project.id} canManage={canManage} context={context}/></div>;
 }
 
 export function Process({project, filter, routing, processPolicy, activeContext, canManageRouting, canManageContext}: Readonly<{project: ProjectTaskView|null; filter: string|undefined; routing: AgentRoutingPresentation; processPolicy: ProjectProcessPolicyView|null; activeContext: ProjectContextStatusView|null; canManageRouting: boolean; canManageContext: boolean}>) {
@@ -55,5 +55,5 @@ export function Process({project, filter, routing, processPolicy, activeContext,
         const next = stage.nextStageId === null ? null : stages.find((candidate) => candidate.id === stage.nextStageId)?.title ?? 'Не настроено';
         return <li key={stage.id}><header><span>{String(index + 1).padStart(2, '0')}</span><span className="fcp-status neutral"><CircleDot aria-hidden="true" size={14}/>Этап</span></header><h3>{stage.title}</h3><dl><div><dt>Ответственный</dt><dd>{stage.responsibility}</dd></div><div><dt>Режим / gate</dt><dd>{stage.gate}</dd></div><div><dt>Подтверждающие материалы</dt><dd>{stage.evidence}</dd></div></dl><footer>{next === null ? <><FileCheck2 aria-hidden="true" size={15}/><span>Завершение процесса</span></> : <><ArrowRight aria-hidden="true" size={15}/><span>Далее: {next}</span></>}</footer>{next === null ? null : <span className="fcp-protocol-connector" aria-hidden="true"/>}</li>;
       })}</ol></section>;
-  return <><ProjectHeader project={project} title="Процесс"/><ContextTabs items={[{label:'Этапы',href:phaseHref('process',project.slug),active:tab === 'stages',count:stages.length},{label:'Настройка ИИ агента',href:phaseHref('process',project.slug,undefined,'hermes'),active:tab === 'hermes'},{label:'Контекст Hermes',href:phaseHref('process',project.slug,undefined,'context'),active:tab === 'context'}]}/>{body}</>;
+  return <><ProjectHeader project={project} title="Процесс"/><ContextTabs items={[{label:'Этапы',href:phaseHref('process',project.slug),active:tab === 'stages',count:stages.length},{label:'Настройка ИИ агента',href:phaseHref('process',project.slug,undefined,'hermes'),active:tab === 'hermes'},{label:'Контекст ИИ агента',href:phaseHref('process',project.slug,undefined,'context'),active:tab === 'context'}]}/>{body}</>;
 }

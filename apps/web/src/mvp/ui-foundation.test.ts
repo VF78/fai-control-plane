@@ -31,4 +31,12 @@ describe('operator UI foundation', () => {
     expect(css).toContain('@media (max-width:700px)');
     expect(css).toContain('--fcp-target: 44px');
   });
+
+  it('uses one desktop content scroller while mobile keeps a natural document flow', async () => {
+    const css = await read('../../app/styles.css');
+    expect(css).toContain('.fcp-workspace { height:100dvh; min-height:0; overflow:hidden; }');
+    expect(css).toContain('.fcp-main { min-height:0; overflow-y:auto;');
+    expect(css).toContain('.fcp-workspace, .fcp-shell-layout { height:auto; min-height:100dvh; overflow:visible; overflow-x:clip; }');
+    expect(css).toContain('.fcp-board-column > div, .fcp-board-column--backlog > div, .fcp-board-column--done > div, .fcp-plan-source-selection { max-block-size:none; max-height:none; overflow:visible; }');
+  });
 });
