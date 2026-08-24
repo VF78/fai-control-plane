@@ -191,6 +191,8 @@ image and keeps Bitrix client actions disabled. The application image is built
 once per release; after all health checks pass, the script removes only older
 `fai-control-plane-mvp` images and dangling images carrying that Compose
 project label. Project containers rotate JSON logs at 10 MiB with three files.
+Unused Docker build cache is removed after successful release checks; runtime
+images, containers and volumes are not pruned.
 
 After local acceptance, merge approval and a separate production approval:
 

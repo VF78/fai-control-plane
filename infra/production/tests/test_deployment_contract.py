@@ -245,6 +245,7 @@ render_target_environment
         self.assertEqual(deploy.count('"${candidate_compose[@]}" build web'), 1)
         self.assertNotIn("build web worker", deploy)
         self.assertIn("prune_superseded_project_images", deploy)
+        self.assertIn("docker builder prune -af", script)
         dockerfile = (ROOT / "infra/compose/Dockerfile").read_text()
         self.assertIn(
             "LABEL com.docker.compose.project=fai-control-plane-mvp",
