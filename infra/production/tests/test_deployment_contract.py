@@ -267,6 +267,18 @@ render_target_environment
         self.assertIn('max-file: "3"', compose)
         self.assertEqual(compose.count("logging: *bounded-logging"), 2)
 
+    def test_deploy_has_no_legacy_runtime_or_rollback_dependency(self):
+        script = (ROOT / "scripts/deploy-prod.sh").read_text()
+
+        self.assertNotIn("fai-control-plane-production", script)
+        self.assertNotIn("protected_image", script)
+        self.assertNotIn("legacy_upstream", script)
+        self.assertNotIn("run_rollback", script)
+        self.assertNotIn("switch_upstream", script)
+        self.assertNotIn('"$action" == rollback', script)
+        self.assertNotIn("fai-hermes-runner.service", script)
+        self.assertNotIn("fai-codex-executor.service", script)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,14 +7,11 @@ readonly compose_file="$deploy_root/infra/production/compose.yaml"
 readonly nginx_file=/etc/nginx/sites-available/app.f-ai.studio.conf
 readonly repository=https://github.com/VF78/fai-control-plane.git
 readonly active_upstream='    server 127.0.0.1:13010;'
-readonly legacy_upstream='    server 127.0.0.1:13000;'
-readonly protected_image='fai-control-plane:63cc41832bb216edfa5c29e270ce1394f45d9231'
 
 usage() {
   printf '%s\n' \
     'usage: scripts/deploy-prod.sh preflight <40-hex>' \
     '   or: FCP_APPROVED_RELEASE_COMMIT=<40-hex> FCP_APPROVED_CONFIG_SHA256=<64-hex> scripts/deploy-prod.sh deploy <40-hex>' \
-    '   or: FCP_APPROVED_RELEASE_COMMIT=<40-hex> scripts/deploy-prod.sh rollback <40-hex>' \
     'set FCP_RELEASE_BUNDLE=/tmp/fai-control-plane-<40-hex>.bundle to use an approved local-only private release source.' \
     'preflight is read-only and prints the exact resulting production.env SHA-256.' >&2
   exit 64
@@ -48,7 +45,7 @@ release_source() {
 [[ $# -eq 2 ]] || usage
 readonly action=$1
 readonly release_commit=$2
-[[ "$action" == preflight || "$action" == deploy || "$action" == rollback ]] || usage
+[[ "$action" == preflight || "$action" == deploy ]] || usage
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || fail 'release commit must be lowercase 40-hex'
 [[ $EUID -eq 0 ]] || fail 'must run as root on the approved host'
 
@@ -61,12 +58,8 @@ readonly secret_names=(
 protected_health() {
   systemctl is-active --quiet myshopai-website.service
   systemctl is-active --quiet fai-content-platform.service
-  systemctl is-active --quiet fai-hermes-runner.service
-  systemctl is-active --quiet fai-codex-executor.service
   systemctl is-active --quiet hermes-gateway.service
   [[ $(docker inspect --format '{{.State.Status}}' amnezia-awg2) == running ]]
-  [[ $(docker inspect --format '{{.State.Health.Status}}' fai-control-plane-production-web-1) == healthy ]]
-  [[ $(docker inspect --format '{{.Config.Image}}' fai-control-plane-production-web-1) == "$protected_image" ]]
 }
 
 active_mvp_health() {
@@ -95,7 +88,7 @@ active_mvp_health() {
 
 active_upstream_unchanged() {
   [[ $(grep -Fxc "$active_upstream" "$nginx_file") -eq 1 ]]
-  [[ $(grep -Fxc "$legacy_upstream" "$nginx_file") -eq 0 ]]
+  [[ $(grep -Fxc '    server 127.0.0.1:13000;' "$nginx_file") -eq 0 ]]
 }
 
 prune_superseded_project_images() {
@@ -229,53 +222,6 @@ run_preflight() {
   printf 'deploy-prod: resulting_config_sha256=%s\n' "$digest"
   printf 'deploy-prod: preflight complete for %s\n' "$release_commit"
 }
-
-switch_upstream() {
-  local from=$1 to=$2 temporary
-  [[ $(grep -Fxc "$from" "$nginx_file") -eq 1 ]] || fail 'unexpected current app upstream'
-  [[ $(grep -Fxc "$to" "$nginx_file") -eq 0 ]] || fail 'target app upstream already occurs in config'
-  temporary=$(mktemp /etc/nginx/sites-available/app.f-ai.studio.conf.XXXXXX)
-  trap 'rm -f "$temporary"' RETURN
-  awk -v from="$from" -v to="$to" '
-    $0 == from { print to; replaced += 1; next }
-    { print }
-    END { if (replaced != 1) exit 42 }
-  ' "$nginx_file" >"$temporary" || fail 'exact app upstream replacement failed'
-  install -o root -g root -m 0644 "$temporary" "$nginx_file"
-  if ! nginx -t || ! systemctl reload nginx; then
-    awk -v from="$to" -v to="$from" '$0 == from { print to; next } { print }' \
-      "$nginx_file" >"$temporary"
-    install -o root -g root -m 0644 "$temporary" "$nginx_file"
-    nginx -t && systemctl reload nginx || true
-    fail 'Nginx rollback switch failed; original route restored where possible'
-  fi
-  rm -f "$temporary"
-  trap - RETURN
-}
-
-run_rollback() {
-  local -a candidate_apps
-  [[ "${FCP_APPROVED_RELEASE_COMMIT:-}" == "$release_commit" ]] ||
-    fail 'exact rollback approval is missing or mismatched'
-  [[ $(git rev-parse --show-toplevel) == "$deploy_root" ]] || fail 'checkout is not the isolated MVP directory'
-  [[ $(git rev-parse HEAD) == "$release_commit" ]] || fail 'checkout does not match rollback source release'
-  [[ -z $(git status --porcelain) ]] || fail 'checkout is not clean'
-  protected_health || fail 'protected-neighbour health check failed'
-  active_mvp_health || fail 'active isolated MVP health check failed'
-  curl -fsS --max-time 10 http://127.0.0.1:13000/api/ready >/dev/null
-  switch_upstream "$active_upstream" "$legacy_upstream"
-  curl -fsS --max-time 15 https://app.f-ai.studio/api/ready >/dev/null
-  mapfile -t candidate_apps < <(docker ps --filter label=com.docker.compose.project=fai-control-plane-mvp \
-    --filter status=running --format '{{.Names}}' | grep -E -- '-(web|worker)-[0-9]+$' || true)
-  if [[ ${#candidate_apps[@]} -gt 0 ]]; then docker stop "${candidate_apps[@]}" >/dev/null; fi
-  protected_health || fail 'protected-neighbour health changed'
-  printf 'deploy-prod: rollback complete from %s\n' "$release_commit"
-}
-
-if [[ "$action" == rollback ]]; then
-  run_rollback
-  exit 0
-fi
 
 if [[ "$action" == preflight ]]; then
   run_preflight

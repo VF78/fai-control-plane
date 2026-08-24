@@ -245,21 +245,13 @@ Also verify DNS still matches the topology and AmneziaWG connects through
 Sprintbox. Do not send Telegram/Bitrix messages, submit Hermes work or mutate a
 real GitHub item merely as a health check.
 
-## Rollback
+## Recovery
 
-Rollback is a separate exact approval and requires the retained legacy app on
-`127.0.0.1:13000` to be ready. Use only the script:
-
-```bash
-cd /opt/fai-control-plane-mvp
-release_commit=<approved-current-release-40-hex>
-sudo env FCP_APPROVED_RELEASE_COMMIT="$release_commit" \
-  scripts/deploy-prod.sh rollback "$release_commit"
-```
-
-The rollback switches only the application route and stops candidate web/worker
-containers. It does not restore databases, secrets, Hermes, DNS, Sprintbox or
-other services. Never improvise a database restore or shared-host rollback.
+The non-working pre-MVP Control Plane and its `127.0.0.1:13000` rollback route
+are decommissioned. Production has one reachable runtime on `127.0.0.1:13010`.
+On release failure, keep the current healthy containers running and fix the
+reviewed release source. Database recovery is a separate exact operation from
+the isolated MVP backup; never restore another service or legacy volume.
 
 ## Incident rule
 
