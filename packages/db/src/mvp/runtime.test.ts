@@ -136,6 +136,12 @@ describe('active project context projection', () => {
     expect(source).toContain("update(sourceIds.join('\\0'))");
     expect(source).toContain('boundedCapsule(source.content, 600)');
   });
+
+  it('compares text audit references with artifact UUIDs explicitly', async () => {
+    const source = await import('node:fs/promises').then(({readFile}) => readFile(new URL('./runtime.ts', import.meta.url), 'utf8'));
+    expect(source.match(/active\.target_reference=s\.id::text/g)).toHaveLength(2);
+    expect(source).not.toContain('active.target_reference=s.id\n');
+  });
 });
 
 describe('agent submission evidence projection', () => {

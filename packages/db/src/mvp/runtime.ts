@@ -457,7 +457,7 @@ export const readProjectProcessPolicy = async (database: Database, actorId: stri
       s.content_text as "contentText" from project_source_artifacts s
     join project_memberships m on m.project_id=s.project_id and m.actor_id=$1 and m.active=true
     join lateral (select target_reference from audit_events where project_id=$2 and action='project.process.configure'
-      order by occurred_at desc,created_at desc limit 1) active on active.target_reference=s.id
+      order by occurred_at desc,created_at desc limit 1) active on active.target_reference=s.id::text
     where s.project_id=$2 and s.kind='project_process_policy_v1'`, [actorId, projectId]);
   const row = result.rows[0]; if (row === undefined) return null;
   let decoded: unknown;
@@ -585,7 +585,7 @@ export const readProjectContextStatus = async (database: Database, actorId: stri
       s.id,s.sha256,s.kind,s.provenance,s.content_text as content,s.created_at as "createdAt" from project_source_artifacts s
     join project_memberships m on m.project_id=s.project_id and m.actor_id=$1 and m.active=true
     join lateral (select target_reference from audit_events where project_id=$2 and action='project.context.activate'
-      order by occurred_at desc,created_at desc limit 1) active on active.target_reference=s.id
+      order by occurred_at desc,created_at desc limit 1) active on active.target_reference=s.id::text
     where s.project_id=$2 and s.kind=$3`, [actorId,projectId,projectContextSnapshotKind]);
   const row = result.rows[0]; if (row === undefined || projectContextSnapshotVersion(row.content) !== row.sha256) return null;
   let decoded: unknown;
