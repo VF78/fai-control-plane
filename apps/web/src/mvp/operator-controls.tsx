@@ -12,6 +12,17 @@ const post = async (path: string, body: Record<string, unknown>): Promise<Result
   if (!response.ok) throw new Error(value.error ?? 'request_failed');
   return value;
 };
+const taskExecutorErrorNotice = (code: string): string => ({
+  task_conflict: 'Команда не выполнена: задача уже изменилась в GitHub. Обновите страницу и проверьте исполнителя.',
+  candidate_unavailable: 'Команда не выполнена: пользователь больше не доступен. Выберите другого.',
+  operation_unavailable: 'Назначение недоступно для текущей стадии или конфигурации.',
+  retry_unavailable: 'Повтор отклонён: предыдущая попытка не подтверждена как завершившаяся.',
+  assignment_partial: 'GitHub применил операцию частично. Не повторяйте команду до проверки исполнителя и статуса.',
+  delivery_failed: 'GitHub назначил Hermes, но запуск не подтверждён. Не повторяйте команду до проверки квитанции.',
+  context_unavailable: 'Запуск Hermes недоступен: сначала актуализируйте контекст проекта в разделе «Процесс».',
+  execution_unavailable: 'Запуск Hermes недоступен: настройки исполнения проекта не готовы.',
+  provider_error: 'GitHub или Hermes не подтвердил операцию. Не повторяйте команду до проверки квитанции.'
+}[code] ?? 'Команда не подтверждена. Обновите задачу и проверьте её состояние перед повтором.');
 const useCommand = () => {
   const [notice, setNotice] = useState<string | null>(null);
   const router = useRouter();
@@ -132,12 +143,12 @@ export function TaskExecutorControl({projectId, task, currentExecutor, confirmed
     try { await post('/api/tasks/executor', {projectId, projectItemId: task.itemId, executor: {kind: 'hermes'}, retry: {
       deliveryReference: activeRun.deliveryReference, nonce: crypto.randomUUID(), confirmUnobservableFailure}}); setNoticeTone('success');
       setNotice('Новая попытка Hermes создана; предыдущая квитанция сохранена в истории.'); router.refresh();
-    } catch (error) { setNoticeTone('error'); setNotice(error instanceof Error && error.message === 'retry_unavailable' ? 'Повтор отклонён: предыдущая попытка не подтверждена как завершившаяся.' : 'Новая попытка не подтверждена.'); } finally { setPending(false); }
+    } catch (error) { setNoticeTone('error'); setNotice(taskExecutorErrorNotice(error instanceof Error ? error.message : 'request_failed')); } finally { setPending(false); }
   };
   const execute = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (pending || choice === undefined) return; setPending(true); setNotice(null); setNoticeTone(null);
     try { const result = await post('/api/tasks/executor', {projectId, projectItemId: task.itemId, executor: human === null ? {kind: 'hermes'} : {kind: 'human', candidate: {id: human.id, login: human.login}}}); setConfirming(false); setNoticeTone('success');
       setNotice(result.status === 'duplicate' ? 'Запуск уже был подтверждён: повторная команда Hermes не отправлена.' : human === null ? 'Запуск подтверждён: Hermes принял команду.' : 'Исполнитель назначен в GitHub.'); router.refresh();
-    } catch (error) { const code = error instanceof Error ? error.message : 'request_failed'; if (code === 'assignment_partial') router.refresh(); setNoticeTone('error'); setNotice(code === 'task_conflict' ? 'Команда не выполнена: задача уже изменилась в GitHub. Обновите страницу и проверьте исполнителя.' : code === 'candidate_unavailable' ? 'Команда не выполнена: пользователь больше не доступен. Выберите другого.' : code === 'operation_unavailable' ? 'Команда не выполнена: назначение недоступно для текущей стадии или конфигурации.' : code === 'assignment_partial' ? 'GitHub применил операцию частично. Не повторяйте команду до проверки исполнителя и статуса.' : code === 'delivery_failed' ? 'GitHub назначил Hermes, но запуск не подтверждён. Не повторяйте команду до проверки квитанции.' : code === 'provider_error' ? 'Запуск не подтверждён: GitHub или Hermes не ответил. Не повторяйте команду до проверки квитанции.' : 'Команда не подтверждена. Обновите задачу и проверьте её состояние перед повтором.');
+    } catch (error) { const code = error instanceof Error ? error.message : 'request_failed'; if (code === 'assignment_partial') router.refresh(); setNoticeTone('error'); setNotice(taskExecutorErrorNotice(code));
     } finally { setPending(false); }
   };
   if (unavailable) return <section className="fcp-task-executor"><header><div><h2>Исполнитель</h2><p>Назначение недоступно только для терминального или неизвестного этапа.</p></div></header><p className="fcp-control-note">Для текущего статуса GitHub Project назначение недоступно.</p></section>;

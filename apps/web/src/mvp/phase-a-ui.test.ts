@@ -39,3 +39,25 @@ describe('Process Hermes execution surface', () => {
     expect(control).toContain('Сохранение недоступно, пока Control Plane не подтвердит runtime Codex CLI.');
   });
 });
+
+describe('Task detail operator surface', () => {
+  it('keeps only task facts, the issue link, and the assignment action', async () => {
+    const [view, page] = await Promise.all([
+      source(),
+      readFile(new URL('../../app/page.tsx', import.meta.url), 'utf8')
+    ]);
+    const taskDetail = view.slice(view.indexOf('export function TaskDetail'), view.indexOf('export function Tasks'));
+    expect(taskDetail).toContain('className="fcp-task-detail"');
+    expect(taskDetail).toContain('showTrackerState={false}');
+    expect(taskDetail).toContain('Открыть issue в GitHub');
+    expect(taskDetail).toContain('Исполнитель');
+    expect(taskDetail).toContain('Состояние');
+    expect(taskDetail).not.toContain('Project item');
+    expect(taskDetail).not.toContain('Единственный источник task lifecycle');
+    expect(taskDetail).not.toContain('Провайдер');
+    expect(taskDetail).not.toContain('Свежесть');
+    expect(taskDetail).not.toContain('Ошибка');
+    expect(page).not.toContain('approvalControl=');
+    expect(page).not.toContain('TaskApprovalEvidence');
+  });
+});

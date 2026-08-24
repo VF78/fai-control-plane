@@ -2,8 +2,8 @@ import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProject
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import {Dashboard, Process, Shell, Tasks} from '../src/mvp/phase-a-ui.tsx';
 import {executorFact} from '../src/mvp/phase-a-view.ts';
-import {ApprovalControl, TaskExecutorControl} from '../src/mvp/operator-controls.tsx';
-import {PhaseB, TaskApprovalEvidence, type PhaseBView} from '../src/mvp/phase-b-ui.tsx';
+import {TaskExecutorControl} from '../src/mvp/operator-controls.tsx';
+import {PhaseB, type PhaseBView} from '../src/mvp/phase-b-ui.tsx';
 import {hermesExecutorCatalog} from '../src/mvp/hermes-executor-readiness.ts';
 import {integrationConfig} from '../src/mvp/integration-config.ts';
 import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
@@ -44,7 +44,7 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     provenance: agentRouting?.provenance ?? null, createdAt: agentRouting?.createdAt ?? null, executorCatalog};
   const config = integrationConfig(process.env, agentDeliveryConfigured);
   const content = view === 'tasks'
-    ? <Tasks project={selected} task={query.task} filter={query.filter} hermesOwnerOptionId={process.env.HERMES_TRACKER_OWNER_OPTION_ID} executorControl={(task) => { const run = evidence?.agentSubmissions.recent.find((item) => item.targetReference === task.itemId) ?? null; return selected === null ? null : <TaskExecutorControl key={`${run?.deliveryReference ?? task.itemId}:${run?.status ?? 'none'}`} projectId={selected.id} currentExecutor={executorFact(task, process.env.HERMES_TRACKER_OWNER_OPTION_ID)} confirmedRun={run} task={{itemId: task.itemId, status: task.statusOptionName, blocked: task.blocked}}/>; }} approvalControl={(taskId) => selected === null ? null : <><ApprovalControl projectId={selected.id} taskId={taskId}/><TaskApprovalEvidence projectId={selected.id} taskId={taskId} approvals={approvals}/></>}/>
+    ? <Tasks project={selected} task={query.task} filter={query.filter} hermesOwnerOptionId={process.env.HERMES_TRACKER_OWNER_OPTION_ID} executorControl={(task) => { const run = evidence?.agentSubmissions.recent.find((item) => item.targetReference === task.itemId) ?? null; return selected === null ? null : <TaskExecutorControl key={`${run?.deliveryReference ?? task.itemId}:${run?.status ?? 'none'}`} projectId={selected.id} currentExecutor={executorFact(task, process.env.HERMES_TRACKER_OWNER_OPTION_ID)} confirmedRun={run} task={{itemId: task.itemId, status: task.statusOptionName, blocked: task.blocked}}/>; }}/>
     : view === 'process' ? <Process project={selected} filter={query.filter} routing={routing} processPolicy={processPolicy} activeContext={activeContext} canManageRouting={canManageRouting} canManageContext={canManageContext}/>
       : view === 'dashboard' ? <Dashboard projects={projects}/>
         : <PhaseB view={view} project={selected} evidence={evidence} sources={sources} approvals={approvals} actorId={session.actorId} config={config}/>;

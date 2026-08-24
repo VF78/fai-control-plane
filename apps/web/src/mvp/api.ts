@@ -20,7 +20,7 @@ import {
 } from '@fai-control-plane/db';
 import {assignTaskExecutor, decideApproval, reconcileAgentAttempt, type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
-import {assertAgentRoutingPolicyAvailable, mayChangeMembership, parseAgentRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
+import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeMembership, parseAgentRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
@@ -45,6 +45,10 @@ const optionalHttps = (value: unknown): string | null => {
   if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') throw new Error('body_invalid');
   return parsed.toString();
 };
+export const effectiveAgentRouting = (routing: Awaited<ReturnType<typeof readAgentRoutingPolicy>>) => routing ?? {
+  policy: defaultAgentRoutingPolicy,
+  version: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex')
+};
 const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorId: string, projectId: string, delivery: AgentDeliveryPort) => {
   const context = await resolveAgentSubmissionBinding(database, actorId, projectId);
   if (context === null) throw new Error('task_executor_denied');
@@ -64,8 +68,7 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
   const repository = createGitHubRepositoryReadAdapter({owner: binding.owner, repository: binding.repository,
     repositoryId: context.repositoryId, credentialRef: context.trackerCredentialRef, secrets: secretResolver});
   const stores = createStores(database, context.workspaceId);
-  const routing = await readAgentRoutingPolicy(database, actorId, projectId);
-  if (routing === null) throw new Error('agent_routing_policy_unavailable');
+  const routing = effectiveAgentRouting(await readAgentRoutingPolicy(database, actorId, projectId));
   return {context, tracker, ports: {resolveContext: async () => ({workspaceId: context.workspaceId, projectId: context.projectId,
       requesterRole: context.requesterRole, bindingId: context.bindingId, repository: {id: context.repositoryId, url: context.repositoryUrl},
       agentTrackerOwnerOptionId: process.env.HERMES_TRACKER_OWNER_OPTION_ID ?? '', doneStatusOptionId: process.env.STATUS_DONE_ID ?? '',
@@ -299,6 +302,10 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     if (code === 'github_assignment_partial') return Response.json({error: 'assignment_partial'}, {status: 409});
     if (['github_owner_unavailable','task_executor_unavailable'].includes(code)) return Response.json({error: 'operation_unavailable'}, {status: 409});
     if (['agent_attempt_active','agent_retry_denied'].includes(code)) return Response.json({error: 'retry_unavailable'}, {status: 409});
+    if (code === 'agent_context_unavailable') return Response.json({error: 'context_unavailable'}, {status: 409});
+    if (['agent_submit_denied','agent_routing_policy_invalid','agent_request_invalid'].includes(code)) {
+      return Response.json({error: 'execution_unavailable'}, {status: 409});
+    }
     if (['agent_delivery_failed','agent_response_invalid'].includes(code)) return Response.json({error: 'delivery_failed'}, {status: 502});
     if (['tracker_provider_unsupported','github_binding_invalid','github_read_failed','github_response_invalid',
       'github_mutation_failed','github_status_unavailable','github_credential_invalid',

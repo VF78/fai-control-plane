@@ -21,5 +21,10 @@ describe('task executor control', () => {
     expect(source).toContain('tone={noticeTone}');
     expect(source).toContain('Отмена');
     expect(source).toContain('role="status"');
+    expect(source).toContain('taskExecutorErrorNotice');
+    expect(source).toContain('execution_unavailable');
+    expect(source).toContain('context_unavailable');
+    expect(source).toContain('delivery_failed');
+    expect(source).not.toContain("'Новая попытка не подтверждена.'");
   });
 });
