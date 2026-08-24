@@ -48,6 +48,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertEqual(readable_block.count('"$deploy_root/'), 9)
         self.assertIn('chmod 0644 "${readable_files[@]}"', script)
         self.assertIn('chmod 0755 "${readable_directories[@]}"', script)
+        self.assertIn('"$workload_uid:$workload_gid:755"', script)
         self.assertIn('"$workload_uid:$workload_gid:700"', script)
         self.assertIn('"$workload_uid:$workload_gid:600"', script)
         self.assertIn("run --rm --no-deps --user", script)
@@ -74,6 +75,8 @@ class DeploymentContractTest(unittest.TestCase):
             "--entrypoint /opt/hermes/bin/hermes gateway auth status openai-codex",
             stage_action,
         )
+        self.assertLess(stage_action.index('"${compose[@]}" down'), stage_action.index('rm -f "$gateway_pid_file"'))
+        self.assertLess(stage_action.index('rm -f "$gateway_pid_file"'), stage_action.index('"${compose[@]}" up -d gateway'))
         self.assertLess(
             stage_action.index("https://hermes-ascon.f-ai.studio/v1/capabilities"),
             stage_action.index("write_readiness"),
