@@ -177,6 +177,19 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertNotIn("/events", nginx)
         self.assertNotIn("/stop", nginx)
 
+        script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
+        self.assertIn('readonly nginx_file=/etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf', script)
+        self.assertIn('readlink -f "$nginx_enabled"', script)
+        self.assertIn("installed Hermes Nginx config permissions are invalid", script)
+        self.assertIn('install_nginx_config', script)
+        self.assertIn('nginx -t && systemctl reload nginx', script)
+        self.assertIn('automatic Hermes Nginx restore failed', script)
+        self.assertIn('run_fai_deploy_probe', script)
+        self.assertIn('"run_not_found"', script)
+        stage = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
+        self.assertLess(stage.index("install_nginx_config"), stage.index("write_readiness"))
+        self.assertLess(stage.index("write_readiness"), stage.index("commit_nginx_config"))
+
 
 if __name__ == "__main__":
     unittest.main()

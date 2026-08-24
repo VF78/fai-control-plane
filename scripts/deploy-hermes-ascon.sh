@@ -6,6 +6,9 @@ umask 077
 readonly deploy_root=/opt/fai-hermes-ascon
 readonly environment_file=/etc/fai-hermes-ascon/production.env
 readonly compose_file="$deploy_root/infra/hermes-ascon/compose.yaml"
+readonly nginx_source="$deploy_root/infra/hermes-ascon/nginx/hermes-ascon.f-ai.studio.conf"
+readonly nginx_file=/etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf
+readonly nginx_enabled=/etc/nginx/sites-enabled/hermes-ascon.f-ai.studio.conf
 readonly api_secret_file=/etc/fai-hermes-ascon/secrets/api-server.env
 readonly telegram_secret_file=/etc/fai-hermes-ascon/secrets/telegram.env
 readonly internal_bridge_token=/etc/fai-hermes-ascon/secrets/internal-bridge-token
@@ -305,9 +308,72 @@ wait_for_gateway_health() {
   return 1
 }
 
+nginx_backup=''
+nginx_candidate=''
+nginx_switch_applied=0
+run_status_response=''
+
+restore_nginx_config() {
+  (( nginx_switch_applied )) || return 0
+  nginx_candidate=$(mktemp /etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf.restore.XXXXXX)
+  install -o root -g root -m 0644 "$nginx_backup" "$nginx_candidate"
+  mv -f "$nginx_candidate" "$nginx_file"
+  nginx_candidate=''
+  nginx -t && systemctl reload nginx || return 1
+  nginx_switch_applied=0
+  rm -f "$nginx_backup"
+  nginx_backup=''
+}
+
+install_nginx_config() {
+  [[ -f "$nginx_source" && -r "$nginx_source" ]] || fail 'versioned Hermes Nginx config is unavailable'
+  [[ -f "$nginx_file" && -L "$nginx_enabled" ]] || fail 'Hermes Nginx topology is unavailable'
+  [[ $(readlink -f "$nginx_enabled") == "$nginx_file" ]] || fail 'Hermes Nginx enabled target is unexpected'
+  if cmp -s "$nginx_source" "$nginx_file"; then
+    [[ $(stat -c '%U:%G:%a' "$nginx_file") == root:root:644 ]] ||
+      fail 'installed Hermes Nginx config permissions are invalid'
+    return 0
+  fi
+
+  nginx_backup=$(mktemp /etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf.backup.XXXXXX)
+  install -o root -g root -m 0600 "$nginx_file" "$nginx_backup"
+  nginx_candidate=$(mktemp /etc/nginx/sites-available/hermes-ascon.f-ai.studio.conf.candidate.XXXXXX)
+  install -o root -g root -m 0644 "$nginx_source" "$nginx_candidate"
+  mv -f "$nginx_candidate" "$nginx_file"
+  nginx_candidate=''
+  nginx_switch_applied=1
+  if ! nginx -t || ! systemctl reload nginx; then
+    restore_nginx_config || true
+    fail 'Hermes Nginx switch failed; previous config restored where possible'
+  fi
+}
+
+commit_nginx_config() {
+  (( nginx_switch_applied )) || return 0
+  rm -f "$nginx_backup"
+  nginx_backup=''
+  nginx_switch_applied=0
+}
+
 stage_cleanup_required=0
 stage_exit_cleanup() {
   local status=$?
+  if [[ -n "$nginx_candidate" ]]; then
+    rm -f "$nginx_candidate"
+    nginx_candidate=''
+  fi
+  if [[ -n "$run_status_response" ]]; then
+    rm -f "$run_status_response"
+    run_status_response=''
+  fi
+  if (( nginx_switch_applied )) && ! restore_nginx_config; then
+    printf 'deploy-hermes-ascon: automatic Hermes Nginx restore failed\n' >&2
+    status=1
+  fi
+  if (( ! nginx_switch_applied )) && [[ -n "$nginx_backup" ]]; then
+    rm -f "$nginx_backup"
+    nginx_backup=''
+  fi
   if (( stage_cleanup_required )); then
     remove_readiness
     if "${compose[@]}" down >/dev/null 2>&1; then
@@ -379,8 +445,20 @@ case "$action" in
     printf 'header = "Authorization: Bearer %s"\n' "$api_key" | \
       curl -fsS --max-time 15 --config - \
       https://hermes-ascon.f-ai.studio/v1/capabilities >/dev/null
+    install_nginx_config
+    run_status_response=$(mktemp)
+    run_status_code=$(printf 'header = "Authorization: Bearer %s"\n' "$api_key" | \
+      curl -sS --max-time 15 --config - --output "$run_status_response" \
+      --write-out '%{http_code}' \
+      https://hermes-ascon.f-ai.studio/v1/runs/run_fai_deploy_probe)
+    [[ "$run_status_code" == 404 ]] || fail 'public Hermes run-status route returned an unexpected status'
+    grep -Eq '"code"[[:space:]]*:[[:space:]]*"run_not_found"' "$run_status_response" ||
+      fail 'public Hermes run-status route did not return the bounded provider response'
+    rm -f "$run_status_response"
+    run_status_response=''
     unset api_key
     write_readiness
+    commit_nginx_config
     stage_cleanup_required=0
     ;;
   rollback)
