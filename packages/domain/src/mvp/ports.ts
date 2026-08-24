@@ -46,24 +46,15 @@ export type TrackerMutationPort = Readonly<{
 /** Provider-native assignment is a bounded task fact, not a local roster or lifecycle. */
 export type TrackerExecutorAssignmentPort = Readonly<{
   listAssignableUsers(): Promise<readonly Readonly<{id: string; login: string; name: string | null}>[]>;
-  assignHumanExecutor(input: Readonly<{
+  startExecutor(input: Readonly<{
     itemId: string;
     issueId: string;
     expectedVersion: string;
-    candidate: Readonly<{id: string; login: string}>;
+    expectedStage: 'Backlog' | 'Ready' | 'In Dev' | 'QA' | 'Acceptance';
+    expectedBlocked: boolean;
+    executor: Readonly<{kind: 'human'; candidate: Readonly<{id: string; login: string}>}> |
+      Readonly<{kind: 'agent'; ownerOptionId: string}>;
   }>): Promise<void>;
-  assignHermesExecutor(input: Readonly<{
-    itemId: string;
-    issueId: string;
-    expectedVersion: string;
-    hermesOwnerOptionId: string;
-  }>): Promise<'assigned' | 'already_assigned'>;
-  startHermesExecutor(input: Readonly<{
-    itemId: string;
-    issueId: string;
-    expectedVersion: string;
-    hermesOwnerOptionId: string;
-  }>): Promise<'advanced' | 'already_started'>;
 }>;
 
 /** Provider-neutral observation of the repository named by a tracker binding. */

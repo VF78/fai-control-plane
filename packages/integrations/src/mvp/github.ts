@@ -285,12 +285,13 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       });
       return {id: field.id, options};
     };
-    return {projectId: project.id, owner: single('Owner'), status: single('Status')};
+    return {projectId: project.id, owner: single('Owner'), status: single('Status'), blocked: single('Blocked')};
   };
   const currentItem = async (credential: string, itemId: string, issueId: string, expectedVersion: string | null) => {
     const root = await graph(credential, `query($id:ID!){node(id:$id){... on ProjectV2Item{id updatedAt project{id}
       statusValue:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId name}}
       ownerValue:fieldValueByName(name:"Owner"){... on ProjectV2ItemFieldSingleSelectValue{optionId name}}
+      blockedValue:fieldValueByName(name:"Blocked"){... on ProjectV2ItemFieldSingleSelectValue{optionId name}}
       content{... on Issue{id databaseId number url assignees(first:20){nodes{id login name}}}}
     }}}`, {id: itemId});
     const item = object(object(root.data)?.node); const content = object(item?.content);
@@ -309,9 +310,13 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
         (user.name !== null && user.name !== undefined && !bounded(user.name, 256))) throw new Error('github_response_invalid');
       return {id: user.id, login: user.login, name: user.name === null || user.name === undefined ? null : user.name};
     });
-    const value = (field: 'statusValue'|'ownerValue') => object(item[field]);
+    const value = (field: 'statusValue'|'ownerValue'|'blockedValue') => object(item[field]);
+    const blocked = value('blockedValue');
+    if (blocked === null || !['Yes','No'].includes(String(blocked.name)) || !bounded(blocked.optionId, 512)) {
+      throw new Error('github_response_invalid');
+    }
     return {projectId: object(item.project)!.id as string, issueNumber: issueNumber as number, version,
-      status: value('statusValue'), owner: value('ownerValue'), assignees};
+      status: value('statusValue'), owner: value('ownerValue'), blocked: blocked.name === 'Yes', assignees};
   };
   const setIssueAssignees = async (credential: string, issueNumber: number, assignees: readonly string[]) => {
     const response = await request(`https://api.github.com/repos/${input.binding.owner}/${input.binding.repository}/issues/${issueNumber}`, {
@@ -471,61 +476,55 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
     async listAssignableUsers() {
       return candidates(await token());
     },
-    async assignHumanExecutor(command) {
+    async startExecutor(command) {
+      const executor = command.executor;
       const credential = await token();
       const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
-      const available = await candidates(credential);
-      if (!available.some((candidate) => candidate.id === command.candidate.id && candidate.login === command.candidate.login)) {
-        throw new Error('github_assignee_unavailable');
+      if (current.status?.name !== command.expectedStage || current.blocked !== command.expectedBlocked) {
+        throw new Error('github_version_conflict');
       }
+      const targetStage = command.expectedStage === 'Backlog' || command.expectedStage === 'Ready'
+        ? 'In Dev' : command.expectedStage;
+      if (!['In Dev','QA','Acceptance'].includes(targetStage)) throw new Error('github_mutation_denied');
       const fields = await projectFields(credential);
       if (current.projectId !== fields.projectId) throw new Error('github_response_invalid');
+      const no = fields.blocked.options.find((option) => option.name === 'No');
+      const stage = fields.status.options.find((option) => option.name === targetStage);
+      if (no === undefined || stage === undefined) throw new Error('github_status_unavailable');
+      if (executor.kind === 'agent' &&
+        !fields.owner.options.some((option) => option.id === executor.ownerOptionId)) {
+        throw new Error('github_owner_unavailable');
+      }
+      if (executor.kind === 'human') {
+        const available = await candidates(credential);
+        if (!available.some((candidate) => candidate.id === executor.candidate.id &&
+          candidate.login === executor.candidate.login)) throw new Error('github_assignee_unavailable');
+      }
       let mutated = false;
       try {
-        await setIssueAssignees(credential, current.issueNumber, [command.candidate.login]); mutated = true;
-        await clearField(credential, fields.projectId, command.itemId, fields.owner.id);
-        if (current.status?.name === 'Ready') {
-          const inDev = fields.status.options.find((option) => option.name === 'In Dev');
-          if (inDev === undefined) throw new Error('github_status_unavailable');
-          await setSingleSelect(credential, fields.projectId, command.itemId, fields.status.id, inDev.id);
+        if (executor.kind === 'human') {
+          await setIssueAssignees(credential, current.issueNumber, [executor.candidate.login]); mutated = true;
+          if (current.owner !== null) await clearField(credential, fields.projectId, command.itemId, fields.owner.id);
+        } else {
+          if (current.assignees.length > 0) { await setIssueAssignees(credential, current.issueNumber, []); mutated = true; }
+          if (current.owner?.optionId !== executor.ownerOptionId) {
+            await setSingleSelect(credential, fields.projectId, command.itemId, fields.owner.id, executor.ownerOptionId);
+            mutated = true;
+          }
+        }
+        if (current.blocked) { await setSingleSelect(credential, fields.projectId, command.itemId, fields.blocked.id, no.id); mutated = true; }
+        if (current.status?.name !== targetStage) {
+          await setSingleSelect(credential, fields.projectId, command.itemId, fields.status.id, stage.id); mutated = true;
         }
       } catch (error) {
         if (mutated) throw new Error('github_assignment_partial');
         throw error;
       }
-    },
-    async assignHermesExecutor(command) {
-      const credential = await token();
-      const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
-      if (current.owner?.optionId === command.hermesOwnerOptionId && current.assignees.length === 0) {
-        return 'already_assigned';
-      }
-      const fields = await projectFields(credential);
-      if (current.projectId !== fields.projectId || !fields.owner.options.some((option) => option.id === command.hermesOwnerOptionId)) {
-        throw new Error('github_owner_unavailable');
-      }
-      let mutated = false;
-      try {
-        await setIssueAssignees(credential, current.issueNumber, []); mutated = true;
-        await setSingleSelect(credential, fields.projectId, command.itemId, fields.owner.id, command.hermesOwnerOptionId);
-        return 'assigned';
-      } catch (error) {
-        if (mutated) throw new Error('github_assignment_partial');
-        throw error;
-      }
-    },
-    async startHermesExecutor(command) {
-      const credential = await token();
-      const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
-      if (current.owner?.optionId !== command.hermesOwnerOptionId || current.assignees.length !== 0) throw new Error('github_version_conflict');
-      if (current.status?.name === 'In Dev') return 'already_started';
-      if (current.status?.name !== 'Ready') throw new Error('github_version_conflict');
-      const fields = await projectFields(credential);
-      if (current.projectId !== fields.projectId) throw new Error('github_response_invalid');
-      const inDev = fields.status.options.find((option) => option.name === 'In Dev');
-      if (inDev === undefined) throw new Error('github_status_unavailable');
-      await setSingleSelect(credential, fields.projectId, command.itemId, fields.status.id, inDev.id);
-      return 'advanced';
+      const verified = await currentItem(credential, command.itemId, command.issueId, null);
+      const exactExecutor = executor.kind === 'human'
+        ? verified.owner === null && verified.assignees.length === 1 && verified.assignees[0]?.login === executor.candidate.login
+        : verified.owner?.optionId === executor.ownerOptionId && verified.assignees.length === 0;
+      if (verified.blocked || verified.status?.name !== targetStage || !exactExecutor) throw new Error('github_assignment_partial');
     }
   };
 };
