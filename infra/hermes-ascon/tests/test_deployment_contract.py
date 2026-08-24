@@ -70,6 +70,10 @@ class DeploymentContractTest(unittest.TestCase):
             script.index("production environment does not match approved digest"),
         )
         self.assertLess(stage_action.index("verify_codex_runtime"), stage_action.index("write_readiness"))
+        self.assertIn(
+            "--entrypoint /opt/hermes/bin/hermes gateway auth status openai-codex",
+            stage_action,
+        )
         self.assertLess(
             stage_action.index("https://hermes-ascon.f-ai.studio/v1/capabilities"),
             stage_action.index("write_readiness"),

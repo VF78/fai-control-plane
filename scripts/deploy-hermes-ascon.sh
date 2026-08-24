@@ -363,7 +363,8 @@ case "$action" in
     "${compose[@]}" build gateway
     probe_runtime
     quiet_checked 'Hermes provider OAuth status preflight' \
-      "${compose[@]}" run --rm --no-deps gateway auth status openai-codex
+      "${compose[@]}" run --rm --no-deps \
+        --entrypoint /opt/hermes/bin/hermes gateway auth status openai-codex
     verify_codex_runtime
     "${compose[@]}" up -d gateway
     wait_for_gateway_health || fail 'gateway did not become healthy within 180 seconds'
