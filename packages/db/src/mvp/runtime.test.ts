@@ -29,3 +29,14 @@ describe('agent delivery readiness', () => {
     await expect(projectAgentDeliveryConfigured({query} as unknown as Database, 'actor', 'project')).resolves.toBe(false);
   });
 });
+
+describe('agent submission evidence projection', () => {
+  it('keeps task and delivery references in the same bounded DB projection', async () => {
+    const source = await import('node:fs/promises').then(({readFile}) => readFile(new URL('./runtime.ts', import.meta.url), 'utf8'));
+    expect(source).toContain("a.action='agent.submit'");
+    expect(source).toContain("r.command_type='agent.submit'");
+    expect(source).toContain('a.target_reference as "targetReference"');
+    expect(source).toContain('r.result_reference as "deliveryReference"');
+    expect(source).toContain('r.occurred_at=a.occurred_at');
+  });
+});
