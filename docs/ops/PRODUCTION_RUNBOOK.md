@@ -98,7 +98,7 @@ Reviewed non-secret Hermes environment example SHA-256:
 `b5bd44a898278487146c6dd11b128a79369196e50b0b6e160800948aab709312`.
 
 Reviewed non-secret Control Plane environment example SHA-256:
-`703dbd9d4ec8d9373dcb0b70aee167ca5a9852e9cb2e257e69bbdd018153ebbe`.
+`d724c29b3e4dff276d7ed5d851224887817300d565f104a3d54b17744c78d58a`.
 
 - Never mount a GitHub PAT, App private key, deploy key or `GH_TOKEN` into the
   Hermes gateway or its terminal. The ASCON repository cannot currently prove
@@ -187,7 +187,10 @@ production authorization.
 `scripts/deploy-prod.sh` is the source of truth. It accepts only exact current
 `origin/main`, a clean isolated checkout, healthy neighbours and approved
 host-owned configuration. It builds/replaces only the MVP web/worker/migration
-images and keeps Bitrix client actions disabled.
+image and keeps Bitrix client actions disabled. The application image is built
+once per release; after all health checks pass, the script removes only older
+`fai-control-plane-mvp` images and dangling images carrying that Compose
+project label. Project containers rotate JSON logs at 10 MiB with three files.
 
 After local acceptance, merge approval and a separate production approval:
 

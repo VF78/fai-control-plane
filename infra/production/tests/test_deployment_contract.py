@@ -217,7 +217,7 @@ render_target_environment
         ordered = (
             "git fetch --no-tags origin",
             'git merge --ff-only "$release_commit"',
-            '"${candidate_compose[@]}" build web worker migrate bootstrap',
+            'docker build \\',
             'mv -f "$temporary_environment" "$environment_file"',
             '"${compose[@]}" run --rm migrate',
             '"${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap',
@@ -228,6 +228,9 @@ render_target_environment
         positions = [deploy.index(item) for item in ordered]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("git merge-base --is-ancestor HEAD", deploy)
+        self.assertEqual(deploy.count("docker build \\"), 1)
+        self.assertNotIn('"${candidate_compose[@]}" build', deploy)
+        self.assertIn("prune_superseded_project_images", deploy)
         self.assertIn("FCP_APPROVED_CONFIG_SHA256", deploy)
         self.assertIn("BITRIX24_CLIENT_ACTIONS_ENABLED=false", deploy)
         self.assertNotIn("switch_upstream", deploy)
@@ -235,7 +238,14 @@ render_target_environment
         self.assertNotIn('install -o root -g root -m 0644', deploy)
         self.assertNotIn("docker stop", deploy)
         self.assertNotIn(" down", deploy)
-        self.assertNotIn("prune", deploy)
+
+    def test_project_logs_are_bounded(self):
+        compose = (ROOT / "infra/production/compose.yaml").read_text()
+
+        self.assertIn("x-logging: &bounded-logging", compose)
+        self.assertIn('max-size: "10m"', compose)
+        self.assertIn('max-file: "3"', compose)
+        self.assertEqual(compose.count("logging: *bounded-logging"), 2)
 
 
 if __name__ == "__main__":

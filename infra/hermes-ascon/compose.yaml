@@ -1,5 +1,11 @@
 name: fai-hermes-ascon
 
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   gateway:
     image: ${HERMES_IMAGE:?required}
@@ -53,6 +59,7 @@ services:
     init: true
     stop_grace_period: 30s
     restart: unless-stopped
+    logging: *bounded-logging
 
   repository-broker:
     profiles: [repository-work]
@@ -89,6 +96,7 @@ services:
     pids_limit: 64
     init: true
     restart: unless-stopped
+    logging: *bounded-logging
 
   codex-cli:
     image: ${HERMES_IMAGE:?required}
@@ -107,3 +115,4 @@ services:
       - /var/lib/fai-hermes-ascon/work/project:/opt/data/work/project
     init: true
     restart: "no"
+    logging: *bounded-logging

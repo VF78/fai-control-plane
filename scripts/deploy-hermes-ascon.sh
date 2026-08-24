@@ -308,6 +308,13 @@ wait_for_gateway_health() {
   return 1
 }
 
+prune_superseded_project_images() {
+  if ! docker image prune -f \
+    --filter label=com.docker.compose.project=fai-hermes-ascon >/dev/null; then
+    printf 'deploy-hermes-ascon: warning: superseded project images were not removed\n' >&2
+  fi
+}
+
 nginx_backup=''
 nginx_candidate=''
 nginx_switch_applied=0
@@ -467,6 +474,7 @@ case "$action" in
     unset api_key
     write_readiness
     commit_nginx_config
+    prune_superseded_project_images
     stage_cleanup_required=0
     ;;
   rollback)
