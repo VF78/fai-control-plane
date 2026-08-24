@@ -199,6 +199,11 @@ class DeploymentContractTest(unittest.TestCase):
         gateway = compose.split("  gateway:\n", 1)[1].split("\n  repository-broker:", 1)[0]
         codex = compose.split("  codex-cli:\n", 1)[1]
         self.assertIn("profiles: [repository-work]", broker)
+        self.assertIn("FCP_REPOSITORY_BROKER_RELEASE:-disabled", broker)
+        self.assertIn("FCP_GITHUB_APP_ID:-0", broker)
+        self.assertIn("FCP_GITHUB_APP_INSTALLATION_ID:-0", broker)
+        self.assertIn("FCP_GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null", broker)
+        self.assertNotIn("FCP_GITHUB_APP_ID:?required", broker)
         dockerfile = (ROOT / "infra/repository-broker/Dockerfile").read_text()
         self.assertIn("repository-broker-cli.js", dockerfile)
         self.assertIn("node:24-bookworm-slim@sha256:", dockerfile)
