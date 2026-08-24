@@ -5,3 +5,5 @@ export * from './agent-role-request.ts';
 export * from './ascon-next-action.ts';
 export * from './conversation.ts';
 export * from './membership-governance.ts';
+export * from './project-process.ts';
+export * from './project-context.ts';

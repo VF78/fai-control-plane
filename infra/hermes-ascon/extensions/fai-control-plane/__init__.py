@@ -51,7 +51,7 @@ def _token(profile: str) -> str:
     return value
 
 
-def _post(profile: str, source: dict[str, str], action: dict) -> str:
+def _post(profile: str, source: dict[str, str], action: dict, response_limit: int = 4_096) -> str:
     payload = json.dumps({"source": source, "action": action}, separators=(",", ":")).encode("utf-8")
     if len(payload) > 32_000:
         return json.dumps({"error": "bridge_payload_invalid"})
@@ -60,8 +60,8 @@ def _post(profile: str, source: dict[str, str], action: dict) -> str:
     })
     try:
         with urlopen(request, timeout=15) as response:
-            body = response.read(4_097)
-            if len(body) > 4_096:
+            body = response.read(response_limit + 1)
+            if len(body) > response_limit:
                 raise ValueError("bridge_response_too_large")
             value = json.loads(body)
             if response.status not in (200, 202) or value.get("status") not in ("completed", "duplicate"):
@@ -69,6 +69,49 @@ def _post(profile: str, source: dict[str, str], action: dict) -> str:
             return json.dumps(value, separators=(",", ":"))
     except (HTTPError, URLError, OSError, ValueError, json.JSONDecodeError):
         return json.dumps({"error": "control_plane_unavailable"})
+
+
+def _context_hook(state, **kwargs):
+    session_id = str(kwargs.get("session_id") or "")
+    platform_value = kwargs.get("platform")
+    platform = str(getattr(platform_value, "value", platform_value or ""))
+    if platform != "telegram":
+        return None
+    source = bridge_state.resolve(session_id)
+    if source is None or source.get("provider") != "telegram":
+        return {"context": "Project context is unavailable. Do not mutate project systems until identity and current context are confirmed."}
+    try:
+        cached_version = str(state.get("project_context_version", "") or "")
+        cached_capsule = str(state.get("project_context_capsule", "") or "")
+    except (RuntimeError, ValueError, OSError):
+        cached_version = ""
+        cached_capsule = ""
+    if not re.fullmatch(r"[a-f0-9]{64}", cached_version):
+        cached_version = ""
+    if not cached_capsule or "\x00" in cached_capsule or len(cached_capsule.encode("utf-8")) > 4_000:
+        cached_capsule = ""
+    action = {"type": "project_context.read", "ifVersion": cached_version or None}
+    raw = _post("internal", source, action, response_limit=8_192)
+    try:
+        result = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        result = {"error": "control_plane_unavailable"}
+    version = str(result.get("version") or "") if isinstance(result, dict) else ""
+    status = result.get("status") if isinstance(result, dict) else None
+    if status == "completed" and re.fullmatch(r"[a-f0-9]{64}", version):
+        capsule = str(result.get("capsule") or "")
+        if capsule and "\x00" not in capsule and len(capsule.encode("utf-8")) <= 4_000:
+            try:
+                state.set("project_context_version", version)
+                state.set("project_context_capsule", capsule)
+            except (RuntimeError, ValueError, OSError):
+                pass
+            return {"context": f"Active project context {version[:12]} (current):\n{capsule}"}
+    if status == "duplicate" and version == cached_version and cached_capsule:
+        return {"context": f"Active project context {cached_version[:12]} (current):\n{cached_capsule}"}
+    if cached_capsule:
+        return {"context": f"WARNING: project context service is unavailable; cached version {cached_version[:12]} may be stale. Do not mutate project systems until live facts are re-read.\n{cached_capsule}"}
+    return {"context": "Project context is unavailable. Do not mutate project systems until the current context is loaded from Control Plane."}
 
 
 def _handler(action_type: str):
@@ -132,3 +175,4 @@ def register(ctx) -> None:
                           schema=_schema(client_name, description, properties, required),
                           handler=_client_handler(action_type))
     ctx.register_hook("pre_gateway_dispatch", _pre_dispatch)
+    ctx.register_hook("pre_llm_call", lambda **kwargs: _context_hook(ctx.state, **kwargs))

@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
-import type {AgentDeliveryPort, AgentRole, AgentRoleRequest, HermesExecutorCatalog, HermesRoutingPolicy, MessengerDeliveryInput, ProjectRole, RepositoryReadPort, SourceReference, TrackerItemFact, TrackerSnapshot} from '@fai-control-plane/domain';
-import {assertHermesRoutingPolicyAvailable, validateAgentRoleRequest} from '@fai-control-plane/domain';
+import type {AgentDeliveryPort, AgentExecutorCatalog, AgentRole, AgentRoleRequest, AgentRoutingPolicy, MessengerDeliveryInput, ProjectRole, RepositoryReadPort, SourceReference, TrackerItemFact, TrackerSnapshot} from '@fai-control-plane/domain';
+import {assertAgentRoutingPolicyAvailable, parseProjectContextSnapshot, projectContextSnapshotKind,
+  projectContextSnapshotMaxBytes, validateAgentRoleRequest} from '@fai-control-plane/domain';
 
 export type AgentSubmissionContext = Readonly<{
   workspaceId: string; projectId: string; requesterRole: ProjectRole;
@@ -8,15 +9,15 @@ export type AgentSubmissionContext = Readonly<{
   agentTrackerOwnerOptionId: string;
   doneStatusOptionId: string;
   routingPolicyVersion: string;
-  routingPolicy: HermesRoutingPolicy;
-  executorCatalog: HermesExecutorCatalog;
+  routingPolicy: AgentRoutingPolicy;
+  executorCatalog: AgentExecutorCatalog;
 }>;
 
 export type AgentSubmissionPorts = Readonly<{
   resolveContext(input: Readonly<{actorId: string; projectId: string}>): Promise<AgentSubmissionContext | null>;
   readFreshSnapshot(context: AgentSubmissionContext): Promise<TrackerSnapshot>;
   persistSnapshot(snapshot: TrackerSnapshot): Promise<void>;
-  resolveSources(input: Readonly<{actorId: string; projectId: string; sourceIds: readonly string[]}>): Promise<readonly SourceReference[]>;
+  resolveActiveContext(input: Readonly<{actorId: string; projectId: string}>): Promise<SourceReference | null>;
   repository: RepositoryReadPort;
   delivery: AgentDeliveryPort;
   composeAcceptedNotification(item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput>;
@@ -31,7 +32,7 @@ export type AgentSubmissionPorts = Readonly<{
 
 export type AgentSubmissionCommand = Readonly<{
   actorId: string; projectId: string; projectItemId: string; role: AgentRole;
-  sourceIds: readonly string[]; constraints: readonly string[]; acceptanceCriteria: readonly string[];
+  constraints: readonly string[]; acceptanceCriteria: readonly string[];
 }>;
 
 const bounded = (value: unknown, maximum: number): value is string =>
@@ -46,9 +47,8 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
 }>> => {
   if (!bounded(command.actorId, 256) || !bounded(command.projectId, 256) ||
     !bounded(command.projectItemId, 256) || !['manager', 'developer', 'qa', 'devops'].includes(command.role) ||
-    command.sourceIds.length > 20 || new Set(command.sourceIds).size !== command.sourceIds.length ||
-    !command.sourceIds.every((id) => bounded(id, 256)) || command.constraints.length === 0 ||
-    command.constraints.length > 40 || command.acceptanceCriteria.length === 0 || command.acceptanceCriteria.length > 40 ||
+    command.constraints.length === 0 || command.constraints.length > 40 ||
+    command.acceptanceCriteria.length === 0 || command.acceptanceCriteria.length > 40 ||
     ![...command.constraints, ...command.acceptanceCriteria].every((item) => bounded(item, 2_000))) {
     throw new Error('agent_request_invalid');
   }
@@ -61,18 +61,22 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   if (!bounded(context.agentTrackerOwnerOptionId, 512) || !bounded(context.doneStatusOptionId, 512)) {
     throw new Error('agent_submit_denied');
   }
-  try { assertHermesRoutingPolicyAvailable(context.routingPolicy, context.executorCatalog); }
+  try { assertAgentRoutingPolicyAvailable(context.routingPolicy, context.executorCatalog); }
   catch { throw new Error('agent_submit_denied'); }
   const repository = await ports.repository.readRepository({repositoryId: context.repository.id});
   if (repository.repositoryId !== context.repository.id || repository.url !== context.repository.url) {
     throw new Error('repository_binding_mismatch');
   }
-  const sources = await ports.resolveSources({actorId: command.actorId, projectId: context.projectId,
-    sourceIds: command.sourceIds});
-  if (sources.length !== command.sourceIds.length) throw new Error('agent_source_denied');
-  if (sources.reduce((total, source) => total + utf8Size(source.content), 0) > 65_536) {
-    throw new Error('agent_source_payload_too_large');
+  const activeContext = await ports.resolveActiveContext({actorId: command.actorId, projectId: context.projectId});
+  if (activeContext === null || activeContext.kind !== projectContextSnapshotKind ||
+    utf8Size(activeContext.content) > projectContextSnapshotMaxBytes ||
+    createHash('sha256').update(activeContext.content).digest('hex') !== activeContext.sha256) {
+    throw new Error('agent_context_unavailable');
   }
+  let decodedContext: unknown;
+  try { decodedContext = JSON.parse(activeContext.content); } catch { throw new Error('agent_context_unavailable'); }
+  if (parseProjectContextSnapshot(decodedContext) === null) throw new Error('agent_context_unavailable');
+  const sources = [activeContext];
   // Read the provider-native task fact only after all other request material is ready,
   // immediately before the canonical delivery transaction. The configured exact
   // provider Owner option is composition-owned and cannot be supplied by the caller.
@@ -89,7 +93,7 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   }
   const normalized = {projectId: context.projectId, repositoryId: context.repository.id,
     itemId: item.itemId, observedVersion: item.version, role: command.role,
-    sourceIds: sources.map((source) => source.id).sort(), constraints: command.constraints,
+    contextVersion: activeContext.sha256, constraints: command.constraints,
     acceptanceCriteria: command.acceptanceCriteria};
   const idempotencyKey = stableKey(normalized);
   const correlationId = `browser:${idempotencyKey.slice('agent.submit:'.length)}`;
@@ -98,7 +102,7 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
     observedVersion: item.version, sources, constraints: command.constraints,
     acceptanceCriteria: command.acceptanceCriteria, approval: null,
     routing: {policyVersion: context.routingPolicyVersion, policy: context.routingPolicy,
-      classification: 'hermes-manager-required'}, correlationId, idempotencyKey};
+      classification: 'runtime-classification-required'}, correlationId, idempotencyKey};
   if (!validateAgentRoleRequest(request)) throw new Error('agent_request_invalid');
   const notificationKey = `${idempotencyKey}:accepted`;
   const notification = await ports.composeAcceptedNotification(item, notificationKey);

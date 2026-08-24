@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import type {HermesExecutorCatalog} from '@fai-control-plane/domain';
+import type {AgentExecutorCatalog} from '@fai-control-plane/domain';
 
 export const codexReadiness = {
   contract: 'fai.hermes-codex-readiness.v1',
@@ -36,7 +36,7 @@ export const parseCodexReadiness = (value: unknown): Evidence | null => {
   return candidate.evidenceSha256 === expected ? candidate : null;
 };
 
-export const hermesExecutorCatalog = (path = '/run/fai-readiness/codex-cli.json'): HermesExecutorCatalog => {
+export const hermesExecutorCatalog = (path = '/run/fai-readiness/codex-cli.json'): AgentExecutorCatalog => {
   let parsed: unknown;
   try {
     const content = readFileSync(path, {encoding: 'utf8'});
@@ -46,11 +46,10 @@ export const hermesExecutorCatalog = (path = '/run/fai-readiness/codex-cli.json'
   return parseCodexReadiness(parsed) === null ? unavailable : available;
 };
 
-const available: HermesExecutorCatalog = {
+const available: AgentExecutorCatalog = {
   'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']},
   'claude-code-cli': {available: false, models: []}
 };
-const unavailable: HermesExecutorCatalog = {
+const unavailable: AgentExecutorCatalog = {
   'codex-cli': {available: false, models: []}, 'claude-code-cli': {available: false, models: []}
 };
-

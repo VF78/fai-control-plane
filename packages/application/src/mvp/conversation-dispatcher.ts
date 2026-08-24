@@ -85,6 +85,8 @@ const dispatch = async (input: Readonly<{
     case 'project_facts.read':
       referenceId = (await ports.facts.read(envelope.message.projectId)).referenceId;
       break;
+    case 'project_context.read':
+      return {status: 'denied'};
     case 'issue.create': {
       referenceId = (await ports.tracker.createIssue({projectId: envelope.message.projectId,
         title: envelope.action.title, statement: envelope.action.statement,

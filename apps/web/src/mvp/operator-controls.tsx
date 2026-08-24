@@ -2,7 +2,8 @@
 
 import {useEffect, useRef, useState, type FormEvent} from 'react';
 import {useRouter} from 'next/navigation';
-import type {HermesExecutorCatalog, HermesRoutingPolicy} from '@fai-control-plane/domain';
+import type {ProjectContextStatusView} from '@fai-control-plane/db';
+import type {AgentExecutorCatalog, AgentRoutingPolicy} from '@fai-control-plane/domain';
 
 type Result = {error?: string; status?: string; version?: string};
 const post = async (path: string, body: Record<string, unknown>): Promise<Result> => {
@@ -31,8 +32,8 @@ export function SourceAddControl({projectId}: Readonly<{projectId: string}>) {
   return <details className="fcp-control"><summary>Добавить источник</summary><form onSubmit={submit}><label>Название<input name="name" required maxLength={200}/></label><label>Тип<input name="kind" defaultValue="operator_note" required maxLength={64}/></label><label>Ссылка на источник <input name="sourceUrl" type="url"/></label><label>Происхождение<input name="provenance" defaultValue="operator" required maxLength={500}/></label><label>Содержание<textarea name="contentText" required maxLength={200000}/></label><button className="fcp-primary">Сохранить источник</button></form><Notice value={notice}/></details>;
 }
 
-export function HermesRoutingControl({projectId, canManage, policy, executorCatalog}: Readonly<{
-  projectId: string; canManage: boolean; policy: HermesRoutingPolicy; executorCatalog: HermesExecutorCatalog;
+export function AgentRoutingControl({projectId, canManage, policy, executorCatalog}: Readonly<{
+  projectId: string; canManage: boolean; policy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
 }>) {
   const {notice, run} = useCommand();
   if (!canManage) return <p className="fcp-control-note">Изменение исполнения доступно только владельцу проекта.</p>;
@@ -42,21 +43,48 @@ export function HermesRoutingControl({projectId, canManage, policy, executorCata
       const prefix = route.taskClass;
       const executor = String(form.get(`${prefix}:executor`));
       return {...route,
-        executor: executor === 'direct-hermes' ? {kind: 'direct-hermes'} : {kind: 'cli', provider: executor},
+        executor: executor === 'direct-agent' ? {kind: 'direct-agent'} : {kind: 'cli', id: executor},
         model: String(form.get(`${prefix}:model`)), effort: String(form.get(`${prefix}:effort`)),
-        hermesAcceptance: 'required', humanGate: String(form.get(`${prefix}:humanGate`))};
+        runtimeAcceptance: 'required', humanGate: String(form.get(`${prefix}:humanGate`))};
     });
-    void run(() => post(`/api/projects/${projectId}/hermes-routing`, {
-      policy: {contract: 'fai.hermes-routing.v1', routes}, idempotencyKey: `hermes-routing:${id()}`
+    void run(() => post(`/api/projects/${projectId}/agent-routing`, {
+      policy: {contract: 'fai.agent-routing.v1', routes}, idempotencyKey: `agent-routing:${id()}`
     }), (result) => result.version === undefined ? 'Исполнение сохранено.' : `Сохранена неизменяемая версия ${result.version.slice(0, 12)}.`);
   };
-  const codexReady = executorCatalog['codex-cli'].available;
-  return <details className="fcp-control fcp-hermes-editor"><summary>Изменить исполнение и модель</summary><form onSubmit={submit}><p>Классы определяет Hermes; обязательная приёмка и контроль человека зафиксированы политикой.</p>{policy.routes.map((route) => { const executorEditable = editableExecutors.has(route.taskClass); const direct = route.executor.kind === 'direct-hermes'; const executor = direct ? 'direct-hermes' : route.executor.provider; return <fieldset key={route.taskClass}><legend>{routingClassLabel[route.taskClass]}</legend><input type="hidden" name={`${route.taskClass}:humanGate`} value={route.humanGate}/><label>Исполнитель{executorEditable ? <select name={`${route.taskClass}:executor`} defaultValue={executor}><option value="direct-hermes">Hermes</option><option value="codex-cli" disabled={!codexReady}>Codex CLI{codexReady ? '' : ' · runtime не подтверждён'}</option><option value="claude-code-cli" disabled>Claude Code CLI · недоступен</option></select> : <><span className="fcp-hermes-editor-fixed">{direct ? 'Hermes' : 'Codex CLI'}</span><input type="hidden" name={`${route.taskClass}:executor`} value={executor}/></>}</label><label>Модель<select name={`${route.taskClass}:model`} defaultValue={route.model}><option value="gpt-5.6-terra">GPT-5.6 Terra</option><option value="gpt-5.6-sol">GPT-5.6 Sol</option></select></label><label>Усилие<select name={`${route.taskClass}:effort`} defaultValue={route.effort}><option value="medium">Среднее</option><option value="high">Высокое</option></select></label><small>Приёмка Hermes обязательна · {routingGateLabel[route.humanGate]}</small></fieldset>; })}{codexReady ? null : <p className="fcp-control-note">Сохранение недоступно, пока Control Plane не подтвердит runtime Codex CLI.</p>}<button className="fcp-primary" disabled={!codexReady}>Сохранить неизменяемую версию</button></form><Notice value={notice}/></details>;
+  const codexReady = executorCatalog['codex-cli']?.available ?? false;
+  return <details className="fcp-control fcp-hermes-editor"><summary>Изменить исполнение и модель</summary><form onSubmit={submit}><p>Классы определяет Hermes; обязательная приёмка и контроль человека зафиксированы политикой.</p>{policy.routes.map((route) => { const executorEditable = editableExecutors.has(route.taskClass); const direct = route.executor.kind === 'direct-agent'; const executor = direct ? 'direct-agent' : route.executor.id; return <fieldset key={route.taskClass}><legend>{routingClassLabel[route.taskClass]}</legend><input type="hidden" name={`${route.taskClass}:humanGate`} value={route.humanGate}/><label>Исполнитель{executorEditable ? <select name={`${route.taskClass}:executor`} defaultValue={executor}><option value="direct-agent">Hermes</option><option value="codex-cli" disabled={!codexReady}>Codex CLI{codexReady ? '' : ' · runtime не подтверждён'}</option><option value="claude-code-cli" disabled>Claude Code CLI · недоступен</option></select> : <><span className="fcp-hermes-editor-fixed">{direct ? 'Hermes' : 'Codex CLI'}</span><input type="hidden" name={`${route.taskClass}:executor`} value={executor}/></>}</label><label>Модель<select name={`${route.taskClass}:model`} defaultValue={route.model}><option value="gpt-5.6-terra">GPT-5.6 Terra</option><option value="gpt-5.6-sol">GPT-5.6 Sol</option></select></label><label>Усилие<select name={`${route.taskClass}:effort`} defaultValue={route.effort}><option value="medium">Среднее</option><option value="high">Высокое</option></select></label><small>Приёмка Hermes обязательна · {routingGateLabel[route.humanGate]}</small></fieldset>; })}{codexReady ? null : <p className="fcp-control-note">Сохранение недоступно, пока Control Plane не подтвердит runtime Codex CLI.</p>}<button className="fcp-primary" disabled={!codexReady}>Сохранить неизменяемую версию</button></form><Notice value={notice}/></details>;
+}
+
+const contextSourceLabel: Readonly<Record<string,string>> = {
+  'repo:AGENTS.md':'AGENTS.md', 'repo:docs/AI_CONTEXT.md':'docs/AI_CONTEXT.md',
+  'repo:docs/adr/0006-thin-control-plane-authority.md':'ADR 0006 · Lifecycle gates',
+  'composition:project-process-policy':'ASCON process policy'
+};
+const contextTime = (value: string) => new Intl.DateTimeFormat('ru-RU', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'}).format(new Date(value));
+
+export function HermesContextControl({projectId, canManage, context}: Readonly<{
+  projectId: string; canManage: boolean; context: ProjectContextStatusView|null;
+}>) {
+  const router = useRouter(); const [pending,setPending] = useState(false);
+  const [outcome,setOutcome] = useState<Readonly<{tone:'success'|'error';text:string}>|null>(null);
+  const snapshot = context?.snapshot ?? null; const size = snapshot === null ? 0 : new TextEncoder().encode(snapshot.content).byteLength;
+  const status = outcome?.tone === 'error' ? 'Ошибка' : context === null ? 'Не настроен' : context.status === 'stale' ? 'Требуется обновление' : 'Актуален';
+  const tone = outcome?.tone === 'error' ? 'error' : context?.status === 'current' ? 'success' : 'warning';
+  const refresh = async () => { if (pending) return; setPending(true); setOutcome(null);
+    try { const result = await post(`/api/projects/${projectId}/context/refresh`, {idempotencyKey:`project-context:${id()}`});
+      setOutcome({tone:'success',text:result.status === 'duplicate'
+        ? `Контекст уже актуален · sha256:${result.version?.slice(0,12) ?? 'подтверждён'}.`
+        : `Контекст актуализирован · sha256:${result.version?.slice(0,12) ?? 'подтверждён'} активна для новых задач.`});
+      router.refresh();
+    } catch { setOutcome({tone:'error',text:'Не удалось актуализировать контекст. Активная версия сохранена; повторите после устранения ошибки источника.'}); }
+    finally { setPending(false); }
+  };
+  return <section className="fcp-context-card"><header><div><strong>АКТИВНАЯ ВЕРСИЯ КОНТЕКСТА</strong><p>Canonical sources Control Plane · точная версия выдаётся исполнителю.</p></div><span className={`fcp-context-state ${tone}`}><i aria-hidden="true"/>{status}</span></header><dl className="fcp-context-facts"><div><dt>АКТИВНАЯ ВЕРСИЯ</dt><dd>{snapshot === null ? 'Не настроена' : `sha256:${snapshot.sha256.slice(0,8)}…${snapshot.sha256.slice(-4)}`}<small>{context?.status === 'stale' ? 'последняя версия сохранена' : 'активна для Hermes'}</small></dd></div><div><dt>ПОСЛЕДНЕЕ ОБНОВЛЕНИЕ</dt><dd>{snapshot === null ? 'Не настроено' : contextTime(snapshot.createdAt)}<small>{snapshot?.provenance.startsWith('control-plane:') ? 'МСК · owner command' : snapshot?.provenance ?? ''}</small></dd></div><div><dt>ИСТОЧНИКОВ</dt><dd>{context?.sources.length ?? 0}<small>canonical</small></dd></div><div><dt>РАЗМЕР КОНТЕКСТА</dt><dd>{size.toLocaleString('ru-RU')} / 4 000<small>байт</small></dd></div></dl><div className="fcp-context-sources-head"><span>Канонические источники</span><span>Доставка: Hermes</span></div><ul className="fcp-context-source-list" aria-label="Канонические источники контекста">{context?.sources.map((source) => <li key={source.key}><div><strong>{contextSourceLabel[source.key] ?? source.key}</strong><small>{source.provenance} · sha256:{source.version.slice(0,8)}…{source.version.slice(-4)}</small></div><span>Источник</span></li>) ?? <li><div><strong>Источники не настроены</strong><small>Сборка недоступна</small></div></li>}</ul><div className="fcp-context-application"><span>Применение контекста</span><p>Новые задачи получают точный контекст сразу. В активном чате он применяется со следующего сообщения — без сброса чата.</p></div><div className="fcp-context-action"><p>{canManage ? 'Владелец или оператор проекта может запустить сборку. Редактирование, история версий и сброс контекста не предусмотрены.' : 'Актуализация доступна владельцу или оператору проекта.'}</p>{canManage ? <button type="button" className="fcp-primary" disabled={pending} onClick={() => void refresh()}>{pending ? 'Актуализируем…' : 'Актуализировать контекст'}</button> : null}</div>{outcome === null ? null : <p className={`fcp-context-outcome ${outcome.tone}`} role="status">{outcome.tone === 'error' ? '! ' : ''}{outcome.text}</p>}</section>;
 }
 
 const editableExecutors = new Set(['manager_project_ops', 'architecture_design', 'critical_decision', 'release_preflight']);
-const routingClassLabel: Record<HermesRoutingPolicy['routes'][number]['taskClass'], string> = {manager_project_ops:'Управление проектом',ordinary_implementation:'Обычная реализация',ui_responsive:'Интерфейс и адаптивность',complex_implementation:'Сложная реализация',qa_audit:'Проверка и аудит',architecture_design:'Архитектура и дизайн',critical_decision:'Критическое решение',release_preflight:'Предрелизная проверка',protected_operation:'Защищённая операция'};
-const routingGateLabel: Record<HermesRoutingPolicy['routes'][number]['humanGate'], string> = {none:'контроль человека не требуется',product_visual:'нужно согласование UI/UX',architecture_decision:'нужно архитектурное решение',production_exact:'нужно точное production-подтверждение'};
+const routingClassLabel: Record<AgentRoutingPolicy['routes'][number]['taskClass'], string> = {manager_project_ops:'Управление проектом',ordinary_implementation:'Обычная реализация',ui_responsive:'Интерфейс и адаптивность',complex_implementation:'Сложная реализация',qa_audit:'Проверка и аудит',architecture_design:'Архитектура и дизайн',critical_decision:'Критическое решение',release_preflight:'Предрелизная проверка',protected_operation:'Защищённая операция'};
+const routingGateLabel: Record<AgentRoutingPolicy['routes'][number]['humanGate'], string> = {none:'контроль человека не требуется',product_visual:'нужно согласование UI/UX',architecture_decision:'нужно архитектурное решение',production_exact:'нужно точное production-подтверждение'};
 
 export function ApprovalControl({projectId, taskId}: Readonly<{projectId: string; taskId: string | null}>) {
   const {notice, run} = useCommand();

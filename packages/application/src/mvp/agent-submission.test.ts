@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {describe, expect, it, vi} from 'vitest';
-import {defaultHermesRoutingPolicy, type TrackerSnapshot} from '@fai-control-plane/domain';
+import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSnapshotVersion, projectContextSourceKind,
+  serializeProjectContextSnapshot, type TrackerSnapshot} from '@fai-control-plane/domain';
 import type {AgentSubmissionPorts} from './agent-submission.ts';
 import {submitExplicitAgent} from './agent-submission.ts';
 
@@ -12,18 +13,22 @@ const snapshot: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'snaps
     parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [],
     observedAt: '2026-08-15T10:00:00.000Z'}]};
 const task = snapshot.items[0]!;
-const routingPolicyVersion = createHash('sha256').update(JSON.stringify(defaultHermesRoutingPolicy)).digest('hex');
+const routingPolicyVersion = createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex');
 const executorCatalog = {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']},
   'claude-code-cli': {available: false, models: []}} as const;
+const contextContent = serializeProjectContextSnapshot({contract:'fai.project-context.v1',
+  sources:[{id:'source',key:'requirements',kind:projectContextSourceKind,version:'a'.repeat(64),provenance:'operator'}],
+  content:'Approved project context'});
+const activeContext = {id:'context',sha256:projectContextSnapshotVersion(contextContent),
+  kind:projectContextSnapshotKind,provenance:'control-plane:context',content:contextContent};
 
 const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): AgentSubmissionPorts => ({
   resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: role,
     bindingId: 'binding', repository: {id: 'R_repo', url: 'https://github.com/VF78/fai-control-plane'},
     agentTrackerOwnerOptionId: 'owner-hermes', doneStatusOptionId: 'done',
-    routingPolicyVersion, routingPolicy: defaultHermesRoutingPolicy, executorCatalog}),
+    routingPolicyVersion, routingPolicy: defaultAgentRoutingPolicy, executorCatalog}),
   readFreshSnapshot: async () => snapshot, persistSnapshot: async () => undefined,
-  resolveSources: async () => [{id: 'source', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator',
-    content: 'Approved source text'}],
+  resolveActiveContext: async () => activeContext,
   repository: {readRepository: async () => ({repositoryId: 'R_repo',
     url: 'https://github.com/VF78/fai-control-plane', defaultBranch: 'main', observedAt: '2026-08-15T10:00:00.000Z'})},
   composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: item.projectId,
@@ -33,7 +38,7 @@ const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): Age
   transaction: {execute: async (_input, submit) => ({status: 'completed', ...(await submit())})}
 });
 const command = {actorId: 'actor', projectId: 'project', projectItemId: 'PVTI_item', role: 'developer' as const,
-  sourceIds: ['source'], constraints: ['Do not deploy'], acceptanceCriteria: ['Focused tests pass']};
+  constraints: ['Do not deploy'], acceptanceCriteria: ['Focused tests pass']};
 
 describe('explicit agent submission', () => {
   it('denies inactive/disallowed membership before reading a provider or delivering', async () => {
@@ -57,20 +62,21 @@ describe('explicit agent submission', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(deliver.mock.calls[0]![0]).toMatchObject({projectItem: {id: 'PVTI_item', projectId: 'project'},
       observedVersion: 'github:updated-at:v1', constraints: ['Do not deploy'],
-      routing: {policyVersion: routingPolicyVersion, classification: 'hermes-manager-required'},
-      sources: [{id: 'source', content: 'Approved source text'}]});
+      routing: {policyVersion: routingPolicyVersion, classification: 'runtime-classification-required'},
+      sources: [{id: 'context', content: contextContent}]});
     expect(transactionInputs[0]).toMatchObject({notification: {projectId: 'project', contour: 'trusted-main',
       channelReference: 'internal', text: 'Hermes accepted: https://github.com/VF78/fai-control-plane/issues/210',
       idempotencyKey: expect.stringMatching(/^agent\.submit:[a-f0-9]{64}:accepted$/)}});
   });
 
-  it('rejects aggregate selected source text above 64 KiB before delivery', async () => {
+  it('rejects a missing, stale, or malformed active context before delivery', async () => {
     const base = ports();
-    const value: AgentSubmissionPorts = {...base, resolveSources: async () => [{id: 'source',
-      sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator', content: 'я'.repeat(32_769)}]};
-    const deliver = vi.spyOn(value.delivery, 'submit');
-    await expect(submitExplicitAgent(command, value)).rejects.toThrow('agent_source_payload_too_large');
-    expect(deliver).not.toHaveBeenCalled();
+    for (const context of [null,{...activeContext,sha256:'b'.repeat(64)},{...activeContext,content:'not-json'}]) {
+      const value: AgentSubmissionPorts = {...base, resolveActiveContext: async () => context};
+      const deliver = vi.spyOn(value.delivery, 'submit');
+      await expect(submitExplicitAgent(command, value)).rejects.toThrow('agent_context_unavailable');
+      expect(deliver).not.toHaveBeenCalled();
+    }
   });
 
   it('never exposes the devops/production role on this seam', async () => {
@@ -92,9 +98,9 @@ describe('explicit agent submission', () => {
       {...(await ports().resolveContext({actorId: 'actor', projectId: 'project'}))!,
         executorCatalog: {...executorCatalog, 'codex-cli': {available: false, models: []}}},
       {...(await ports().resolveContext({actorId: 'actor', projectId: 'project'}))!,
-        routingPolicy: {...defaultHermesRoutingPolicy, routes: defaultHermesRoutingPolicy.routes.map((route) =>
+        routingPolicy: {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route) =>
           route.taskClass === 'ordinary_implementation'
-            ? {...route, executor: {kind: 'cli' as const, provider: 'claude-code-cli' as const}} : route)}}
+            ? {...route, executor: {kind: 'cli' as const, id: 'claude-code-cli'}} : route)}}
     ]) {
       const base = ports(); const deliver = vi.spyOn(base.delivery, 'submit');
       await expect(submitExplicitAgent(command, {...base, resolveContext: async () => context}))
@@ -129,13 +135,13 @@ describe('explicit agent submission', () => {
     const order: string[] = [];
     const base = ports();
     const value: AgentSubmissionPorts = {...base,
-      resolveSources: async (input) => { order.push('sources'); return base.resolveSources(input); },
+      resolveActiveContext: async (input) => { order.push('context'); return base.resolveActiveContext(input); },
       repository: {readRepository: async (input) => { order.push('repository'); return base.repository.readRepository(input); }},
       readFreshSnapshot: async () => { order.push('fresh-snapshot'); return snapshot; },
       persistSnapshot: async () => { order.push('persist-snapshot'); },
       delivery: {submit: async (request) => { order.push('delivery'); return base.delivery.submit(request); }}
     };
     await expect(submitExplicitAgent(command, value)).resolves.toMatchObject({status: 'completed'});
-    expect(order).toEqual(['repository', 'sources', 'fresh-snapshot', 'persist-snapshot', 'delivery']);
+    expect(order).toEqual(['repository', 'context', 'fresh-snapshot', 'persist-snapshot', 'delivery']);
   });
 });

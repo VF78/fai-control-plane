@@ -19,6 +19,10 @@ export const migrate = async (): Promise<void> => {
       ? new URL('../mvp-drizzle/0001_remove_legacy_agent_outbox.sql', import.meta.url)
       : new URL('../../mvp-drizzle/0001_remove_legacy_agent_outbox.sql', import.meta.url);
     const cleanup = await readFile(fileURLToPath(migration), 'utf8');
+    const artifactIdentityMigration = import.meta.url.includes('/dist/')
+      ? new URL('../mvp-drizzle/0002_source_artifact_kind_identity.sql', import.meta.url)
+      : new URL('../../mvp-drizzle/0002_source_artifact_kind_identity.sql', import.meta.url);
+    const artifactIdentity = await readFile(fileURLToPath(artifactIdentityMigration), 'utf8');
     const applyCleanup = async (): Promise<void> => {
       const constraint = await database.query<{definition: string}>(
         `select pg_get_constraintdef(oid) as definition from pg_constraint
@@ -29,6 +33,7 @@ export const migrate = async (): Promise<void> => {
         throw new Error('database_schema_not_mvp');
       }
       if (definition.includes('agent-role-request')) await database.query(`begin;\n${cleanup}\ncommit;`);
+      await database.query(`begin;\n${artifactIdentity}\ncommit;`);
     };
     if (names.length > 0) {
       if (JSON.stringify(names) !== JSON.stringify(expected) || !await databaseMvpReady(database)) {

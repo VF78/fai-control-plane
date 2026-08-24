@@ -16,6 +16,16 @@ describe('MVP conversation boundary', () => {
     expect(authorizeConversation(envelope())).toBe(true);
   });
 
+  it('accepts a conditional project-context read and rejects malformed versions', () => {
+    const value = envelope('trusted-main');
+    expect(validateConversationEnvelope({...value,
+      action: {type: 'project_context.read', ifVersion: null}})).toBe(true);
+    expect(validateConversationEnvelope({...value,
+      action: {type: 'project_context.read', ifVersion: 'a'.repeat(64)}})).toBe(true);
+    expect(validateConversationEnvelope({...value,
+      action: {type: 'project_context.read', ifVersion: 'not-a-version'}})).toBe(false);
+  });
+
   it('rejects message bodies over the persistence-free ingress limit', () => {
     const value = envelope();
     expect(validateConversationEnvelope({...value, message: {...value.message, text: 'x'.repeat(4_001)}})).toBe(false);

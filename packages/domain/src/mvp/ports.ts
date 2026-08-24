@@ -4,7 +4,7 @@ import type {
   SourceReference,
   TrackerSnapshot
 } from './model.ts';
-import type {HermesRoutingPolicy} from './routing-policy.ts';
+import type {AgentRoutingPolicy} from './routing-policy.ts';
 
 export type TrackerReadPort = Readonly<{
   readSnapshot(bindingId: string, cursor: string | null): Promise<TrackerSnapshot>;
@@ -90,8 +90,8 @@ export type AgentRoleRequest = Readonly<{
   constraints: readonly string[];
   acceptanceCriteria: readonly string[];
   approval: ApprovalEvidence | null;
-  routing: Readonly<{policyVersion: string; policy: HermesRoutingPolicy;
-    classification: 'hermes-manager-required'}>;
+  routing: Readonly<{policyVersion: string; policy: AgentRoutingPolicy;
+    classification: 'runtime-classification-required'}>;
   correlationId: string;
   idempotencyKey: string;
 }>;

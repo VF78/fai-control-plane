@@ -98,7 +98,7 @@ export const assignTaskExecutor = async (
   }
   const instructions = ports.agentInstructions(role);
   const delivery = await submitExplicitAgent({actorId: command.actorId, projectId: command.projectId,
-    projectItemId: verified.itemId, role, sourceIds: [],
+    projectItemId: verified.itemId, role,
     constraints: instructions.constraints, acceptanceCriteria: instructions.acceptanceCriteria}, ports);
   // In Dev and QA already express the active stage in GitHub. Starting Hermes
   // must preserve it; only Ready needs the post-receipt transition to In Dev.
@@ -111,7 +111,7 @@ export const assignTaskExecutor = async (
   try {
     await ports.tracker.startHermesExecutor({itemId: started.itemId, issueId: started.issueId,
       expectedVersion: started.version, hermesOwnerOptionId: context.agentTrackerOwnerOptionId});
-  } catch (error) {
+  } catch {
     // A receipt makes this retry status-only: exact Hermes assignment is a no-op
     // and submitExplicitAgent returns its existing delivery reference.
     return {status: 'status_sync_failed', deliveryReference: delivery.deliveryReference};

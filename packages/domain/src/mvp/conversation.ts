@@ -3,6 +3,7 @@ import {approvalKinds, isBoundedId, isInstant, type ApprovalDecision, type Appro
 
 export type ConversationAction =
   | Readonly<{type: 'project_facts.read'}>
+  | Readonly<{type: 'project_context.read'; ifVersion: string | null}>
   | Readonly<{type: 'issue.create'; title: string; statement: string}>
   | Readonly<{type: 'issue.update'; itemId: string; issueId: string; expectedVersion: string;
     operation: 'title' | 'body' | 'state'; value: string}>
@@ -31,6 +32,8 @@ export const validateConversationEnvelope = (input: ConversationEnvelope): boole
     !isBoundedId(message.correlationId) || !isBoundedId(message.idempotencyKey)) return false;
   switch (input.action.type) {
     case 'project_facts.read': return true;
+    case 'project_context.read': return input.action.ifVersion === null ||
+      /^[a-f0-9]{64}$/.test(input.action.ifVersion);
     case 'issue.create': return text(input.action.title, 160) && text(input.action.statement, 4_000);
     case 'issue.update': return isBoundedId(input.action.itemId) && isBoundedId(input.action.issueId) &&
       isBoundedId(input.action.expectedVersion) && ['title', 'body', 'state'].includes(input.action.operation) &&
@@ -59,6 +62,8 @@ export const parseConversationEnvelope = (value: unknown): ConversationEnvelope 
   if (contour !== 'trusted-main' && contour !== 'client-edge') return null;
   let parsedAction: ConversationAction | null = null;
   if (action.type === 'project_facts.read') parsedAction = {type: 'project_facts.read'};
+  else if (action.type === 'project_context.read') parsedAction = {type: 'project_context.read',
+    ifVersion: action.ifVersion === null || action.ifVersion === undefined ? null : String(action.ifVersion)};
   else if (action.type === 'issue.create') parsedAction = {type: 'issue.create', title: String(action.title ?? ''), statement: String(action.statement ?? '')};
   else if (action.type === 'issue.update') parsedAction = {type: 'issue.update', itemId: String(action.itemId ?? ''),
     issueId: String(action.issueId ?? ''), expectedVersion: String(action.expectedVersion ?? ''),

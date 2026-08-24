@@ -9,13 +9,14 @@ describe('Process Hermes execution surface', () => {
     expect(view).toContain("{label:'Этапы'");
     expect(view).toContain("{label:'Исполнение Hermes'");
     expect(view).toContain("filter === 'hermes'");
-    expect(view).toContain('HermesRoutingControl');
+    expect(view).toContain('AgentRoutingControl');
     expect(view).toContain('Hermes сам определяет класс задачи');
   });
 
-  it('keeps the ASCON stage policy read-only and excludes manual task classification', async () => {
+  it('keeps the project process policy read-only and excludes manual task classification', async () => {
     const view = await source();
-    expect(view).toContain('ASCON policy · read-only');
+    expect(view).toContain('Проектная политика процесса · только чтение');
+    expect(view).toContain("{label:'Контекст Hermes'");
     expect(view).toContain('Назначать класс вручную не требуется.');
     expect(view).not.toContain('Назначить класс задачи');
   });
@@ -25,9 +26,9 @@ describe('Process Hermes execution surface', () => {
       readFile(new URL('../../app/page.tsx', import.meta.url), 'utf8'),
       readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8')
     ]);
-    expect(page).toContain('readHermesRoutingPolicy(database, session.actorId, selected.id)');
-    expect(page).toContain('<Process project={selected} filter={query.filter} routing={routing} canManageRouting={canManageRouting}/>');
-    expect(control).not.toContain('readHermesRoutingPolicy(');
+    expect(page).toContain('readAgentRoutingPolicy(database, session.actorId, selected.id)');
+    expect(page).toContain('<Process project={selected} filter={query.filter} routing={routing} processPolicy={processPolicy} activeContext={activeContext} canManageRouting={canManageRouting} canManageContext={canManageContext}/>');
+    expect(control).not.toContain('readAgentRoutingPolicy(');
   });
 
   it('keeps only the permitted execution classes editable and Claude unavailable', async () => {

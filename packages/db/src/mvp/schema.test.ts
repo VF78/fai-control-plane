@@ -13,6 +13,8 @@ const expected = [
 const sql = readFileSync(fileURLToPath(new URL('../../mvp-drizzle/0000_mvp.sql', import.meta.url)), 'utf8');
 const cleanup = readFileSync(fileURLToPath(
   new URL('../../mvp-drizzle/0001_remove_legacy_agent_outbox.sql', import.meta.url)), 'utf8');
+const artifactIdentity = readFileSync(fileURLToPath(
+  new URL('../../mvp-drizzle/0002_source_artifact_kind_identity.sql', import.meta.url)), 'utf8');
 
 describe('MVP fresh schema', () => {
   it('declares exactly the approved 16 tables', () => {
@@ -39,6 +41,12 @@ describe('MVP fresh schema', () => {
   it('keeps snapshot binding and provider inbox identities distinct', () => {
     expect(sql).toMatch(/CREATE TABLE "tracker_snapshots"[\s\S]*?"binding_id" uuid NOT NULL REFERENCES "tracker_bindings"/);
     expect(sql).toMatch(/CREATE TABLE "incoming_events"[\s\S]*?"project_id" uuid NOT NULL REFERENCES "projects"[\s\S]*?"provider" text NOT NULL/);
+  });
+
+  it('identifies immutable artifacts by project, semantic kind and content hash', () => {
+    expect(sql).toContain('"project_source_artifacts_kind_hash_unique" UNIQUE ("project_id", "kind", "sha256")');
+    expect(artifactIdentity).toContain('("project_id", "kind", "sha256")');
+    expect(artifactIdentity).not.toMatch(/DROP\s+(?:TABLE|TYPE)|CASCADE|TRUNCATE|DELETE/i);
   });
 
   it('stores references and hashes, not secret values or chat transcripts', () => {

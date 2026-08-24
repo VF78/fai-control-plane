@@ -1,61 +1,66 @@
 import {describe, expect, it} from 'vitest';
-import {assertHermesRoutingPolicyAvailable, defaultHermesRoutingPolicy, parseHermesRoutingPolicy, resolveHermesRoute,
-  type HermesRoutingPolicy} from './routing-policy.ts';
+import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, parseAgentRoutingPolicy, resolveAgentRoute,
+  type AgentRoutingPolicy} from './routing-policy.ts';
 
 const catalog = {['codex-cli']: {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']},
   ['claude-code-cli']: {available: false, models: []}} as const;
 
 describe('Hermes routing policy', () => {
   it('routes ordinary work to Codex CLI Terra medium', () => {
-    expect(resolveHermesRoute(defaultHermesRoutingPolicy, 'ordinary_implementation', catalog)).toMatchObject({
-      executor: {kind: 'cli', provider: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'medium'
+    expect(resolveAgentRoute(defaultAgentRoutingPolicy, 'ordinary_implementation', catalog)).toMatchObject({
+      executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'medium'
     });
   });
   it('denies unknown classes and unavailable future executors', () => {
-    expect(() => resolveHermesRoute(defaultHermesRoutingPolicy, 'unknown', catalog)).toThrow('hermes_route_denied');
-    const future: HermesRoutingPolicy = {...defaultHermesRoutingPolicy, routes: defaultHermesRoutingPolicy.routes.map(
+    expect(() => resolveAgentRoute(defaultAgentRoutingPolicy, 'unknown', catalog)).toThrow('agent_route_denied');
+    const future: AgentRoutingPolicy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map(
       (route) => route.taskClass === 'ordinary_implementation'
-        ? {...route, executor: {kind: 'cli', provider: 'claude-code-cli'}} : route)};
-    expect(() => resolveHermesRoute(future, 'ordinary_implementation', catalog))
-      .toThrow('hermes_executor_unavailable');
+        ? {...route, executor: {kind: 'cli', id: 'claude-code-cli'}} : route)};
+    expect(() => resolveAgentRoute(future, 'ordinary_implementation', catalog))
+      .toThrow('agent_executor_unavailable');
   });
   it('denies the complete policy when any configured CLI route is unavailable', () => {
-    expect(() => assertHermesRoutingPolicyAvailable(defaultHermesRoutingPolicy, {...catalog,
-      'codex-cli': {available: false, models: []}})).toThrow('hermes_executor_unavailable');
-    const claude: HermesRoutingPolicy = {...defaultHermesRoutingPolicy,
-      routes: defaultHermesRoutingPolicy.routes.map((route) => route.taskClass === 'ordinary_implementation'
-        ? {...route, executor: {kind: 'cli', provider: 'claude-code-cli'}} : route)};
-    expect(() => assertHermesRoutingPolicyAvailable(claude, catalog)).toThrow('hermes_executor_unavailable');
+    expect(() => assertAgentRoutingPolicyAvailable(defaultAgentRoutingPolicy, {...catalog,
+      'codex-cli': {available: false, models: []}})).toThrow('agent_executor_unavailable');
+    const claude: AgentRoutingPolicy = {...defaultAgentRoutingPolicy,
+      routes: defaultAgentRoutingPolicy.routes.map((route) => route.taskClass === 'ordinary_implementation'
+        ? {...route, executor: {kind: 'cli', id: 'claude-code-cli'}} : route)};
+    expect(() => assertAgentRoutingPolicyAvailable(claude, catalog)).toThrow('agent_executor_unavailable');
   });
   it('rejects duplicate or unknown task classes', () => {
-    const duplicate: HermesRoutingPolicy = {...defaultHermesRoutingPolicy, routes: defaultHermesRoutingPolicy.routes.map(
+    const duplicate: AgentRoutingPolicy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map(
       (route, index) => index === 1 ? {...route, taskClass: 'manager_project_ops'} : route)};
-    expect(parseHermesRoutingPolicy(duplicate)).toBeNull();
+    expect(parseAgentRoutingPolicy(duplicate)).toBeNull();
+  });
+  it('rejects models outside the bounded Control Plane catalog', () => {
+    const policy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route,index) =>
+      index === 0 ? {...route,model:'provider-injected'} : route)};
+    expect(parseAgentRoutingPolicy(policy)).toBeNull();
   });
   it('keeps implementation in CLI, protected operations direct, and exact gates bounded', () => {
-    const replace = (taskClass: HermesRoutingPolicy['routes'][number]['taskClass'], change: object) => ({
-      ...defaultHermesRoutingPolicy, routes: defaultHermesRoutingPolicy.routes.map((route) =>
+    const replace = (taskClass: AgentRoutingPolicy['routes'][number]['taskClass'], change: object) => ({
+      ...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route) =>
         route.taskClass === taskClass ? {...route, ...change} : route)
     });
-    expect(parseHermesRoutingPolicy(replace('ordinary_implementation', {executor: {kind: 'direct-hermes'}})))
+    expect(parseAgentRoutingPolicy(replace('ordinary_implementation', {executor: {kind: 'direct-agent'}})))
       .toBeNull();
-    expect(parseHermesRoutingPolicy(replace('protected_operation', {
-      executor: {kind: 'cli', provider: 'codex-cli'}}))).toBeNull();
-    expect(parseHermesRoutingPolicy(replace('release_preflight', {humanGate: 'production_exact'}))).toBeNull();
-    expect(defaultHermesRoutingPolicy.routes.find((route) => route.taskClass === 'release_preflight')?.humanGate)
+    expect(parseAgentRoutingPolicy(replace('protected_operation', {
+      executor: {kind: 'cli', id: 'codex-cli'}}))).toBeNull();
+    expect(parseAgentRoutingPolicy(replace('release_preflight', {humanGate: 'production_exact'}))).toBeNull();
+    expect(defaultAgentRoutingPolicy.routes.find((route) => route.taskClass === 'release_preflight')?.humanGate)
       .toBe('none');
   });
   it('allows non-implementation work to switch between Hermes and an available CLI', () => {
-    const replace = (taskClass: HermesRoutingPolicy['routes'][number]['taskClass'], executor: object) => ({
-      ...defaultHermesRoutingPolicy, routes: defaultHermesRoutingPolicy.routes.map((route) =>
+    const replace = (taskClass: AgentRoutingPolicy['routes'][number]['taskClass'], executor: object) => ({
+      ...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route) =>
         route.taskClass === taskClass ? {...route, executor} : route)
     });
-    expect(parseHermesRoutingPolicy(replace('manager_project_ops', {kind: 'cli', provider: 'codex-cli'})))
+    expect(parseAgentRoutingPolicy(replace('manager_project_ops', {kind: 'cli', id: 'codex-cli'})))
       .not.toBeNull();
-    expect(parseHermesRoutingPolicy(replace('architecture_design', {kind: 'cli', provider: 'codex-cli'})))
+    expect(parseAgentRoutingPolicy(replace('architecture_design', {kind: 'cli', id: 'codex-cli'})))
       .not.toBeNull();
-    expect(parseHermesRoutingPolicy(replace('critical_decision', {kind: 'cli', provider: 'codex-cli'})))
+    expect(parseAgentRoutingPolicy(replace('critical_decision', {kind: 'cli', id: 'codex-cli'})))
       .not.toBeNull();
-    expect(parseHermesRoutingPolicy(replace('release_preflight', {kind: 'direct-hermes'}))).not.toBeNull();
+    expect(parseAgentRoutingPolicy(replace('release_preflight', {kind: 'direct-agent'}))).not.toBeNull();
   });
 });

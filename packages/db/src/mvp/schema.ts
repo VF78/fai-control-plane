@@ -96,7 +96,7 @@ export const projectSourceArtifacts = pgTable('project_source_artifacts', {
   sourceUrl: text('source_url'),
   provenance: text('provenance').notNull(),
   createdAt: createdAt()
-}, (table) => [uniqueIndex('project_source_artifacts_hash_unique').on(table.projectId, table.sha256)]);
+}, (table) => [uniqueIndex('project_source_artifacts_kind_hash_unique').on(table.projectId, table.kind, table.sha256)]);
 
 export const secretRefs = pgTable('secret_refs', {
   id: uuid('id').primaryKey().defaultRandom(),

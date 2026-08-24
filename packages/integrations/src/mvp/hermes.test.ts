@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {describe, expect, it, vi} from 'vitest';
-import {defaultHermesRoutingPolicy} from '@fai-control-plane/domain';
+import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import {createHermesDeliveryAdapter} from './hermes.ts';
 
 const request = {
@@ -9,8 +9,8 @@ const request = {
   projectItem: {id: 'item', projectId: 'project', issueId: 'issue', url: 'https://example.test/issues/1'},
   observedVersion: 'v1', sources: [], constraints: ['No merge'], acceptanceCriteria: ['Checks pass'],
   approval: null, correlationId: 'correlation', idempotencyKey: 'delivery',
-  routing: {policyVersion: createHash('sha256').update(JSON.stringify(defaultHermesRoutingPolicy)).digest('hex'),
-    policy: defaultHermesRoutingPolicy, classification: 'hermes-manager-required' as const}
+  routing: {policyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'),
+    policy: defaultAgentRoutingPolicy, classification: 'runtime-classification-required' as const}
 };
 
 describe('MVP Hermes adapter', () => {

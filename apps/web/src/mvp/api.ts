@@ -10,15 +10,16 @@ import {
   executeAgentSubmissionTransaction,
   listProjects,
   onboardProjectMember,
-  resolveAgentSourceReferences,
   resolveAgentSubmissionBinding,
-  readHermesRoutingPolicy,
-  saveHermesRoutingPolicy,
+  readAgentRoutingPolicy,
+  readActiveProjectContext,
+  refreshProjectContext,
+  saveAgentRoutingPolicy,
   subjectHash
 } from '@fai-control-plane/db';
 import {assignTaskExecutor, decideApproval, type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
-import {assertHermesRoutingPolicyAvailable, mayChangeMembership, parseHermesRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
+import {assertAgentRoutingPolicyAvailable, mayChangeMembership, parseAgentRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
@@ -62,15 +63,16 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
   const repository = createGitHubRepositoryReadAdapter({owner: binding.owner, repository: binding.repository,
     repositoryId: context.repositoryId, credentialRef: context.trackerCredentialRef, secrets: secretResolver});
   const stores = createStores(database, context.workspaceId);
-  const routing = await readHermesRoutingPolicy(database, actorId, projectId);
-  if (routing === null) throw new Error('hermes_routing_policy_unavailable');
+  const routing = await readAgentRoutingPolicy(database, actorId, projectId);
+  if (routing === null) throw new Error('agent_routing_policy_unavailable');
   return {context, tracker, ports: {resolveContext: async () => ({workspaceId: context.workspaceId, projectId: context.projectId,
       requesterRole: context.requesterRole, bindingId: context.bindingId, repository: {id: context.repositoryId, url: context.repositoryUrl},
       agentTrackerOwnerOptionId: process.env.HERMES_TRACKER_OWNER_OPTION_ID ?? '', doneStatusOptionId: process.env.STATUS_DONE_ID ?? '',
       routingPolicyVersion: routing.version, routingPolicy: routing.policy,
       executorCatalog: hermesExecutorCatalog()}),
     readFreshSnapshot: () => read.readSnapshot(context.bindingId, context.cursor), persistSnapshot: stores.snapshots.replace,
-    resolveSources: (input: Readonly<{actorId: string; projectId: string; sourceIds: readonly string[]}>) => resolveAgentSourceReferences(database, input),
+    resolveActiveContext: ({actorId, projectId}: Readonly<{actorId: string; projectId: string}>) =>
+      readActiveProjectContext(database, actorId, projectId),
     composeAcceptedNotification: async (item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput> => ({projectId: context.projectId,
       contour: 'trusted-main', channelReference: 'telegram:internal',
       text: `Hermes принял задачу: ${item.title} — ${item.url}`, idempotencyKey}),
@@ -154,21 +156,32 @@ export const source = async (request: Request, projectId: string): Promise<Respo
   } catch (error) { return jsonError(error); }
 };
 
-export const hermesRouting = async (request: Request, projectId: string): Promise<Response> => {
+export const agentRouting = async (request: Request, projectId: string): Promise<Response> => {
   try {
     const database = getDatabase(); const session = await requireSession();
     if (request.method === 'GET') {
-      return Response.json({routing: await readHermesRoutingPolicy(database, session.actorId, projectId)},
+      return Response.json({routing: await readAgentRoutingPolicy(database, session.actorId, projectId)},
         {headers: {'cache-control': 'no-store'}});
     }
     if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'GET, POST'}});
-    requireCsrf(request); const body = await json(request); const policy = parseHermesRoutingPolicy(body.policy);
+    requireCsrf(request); const body = await json(request); const policy = parseAgentRoutingPolicy(body.policy);
     if (policy === null) throw new Error('body_invalid');
-    assertHermesRoutingPolicyAvailable(policy, hermesExecutorCatalog());
-    const result = await saveHermesRoutingPolicy(database, {workspaceId: session.workspaceId, projectId,
+    assertAgentRoutingPolicyAvailable(policy, hermesExecutorCatalog());
+    const result = await saveAgentRoutingPolicy(database, {workspaceId: session.workspaceId, projectId,
       actorId: session.actorId, policy, idempotencyKey: string(body.idempotencyKey),
       occurredAt: new Date().toISOString()});
     return Response.json(result, {status: 201, headers: {'cache-control': 'no-store'}});
+  } catch (error) { return jsonError(error); }
+};
+
+export const refreshContext = async (request: Request, projectId: string): Promise<Response> => {
+  try {
+    if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'POST'}});
+    const database = getDatabase(); const session = await requireSession(); requireCsrf(request);
+    const body = await json(request);
+    const result = await refreshProjectContext(database, {workspaceId: session.workspaceId, projectId, actorId: session.actorId,
+      idempotencyKey: string(body.idempotencyKey), occurredAt: new Date().toISOString()});
+    return Response.json(result, {headers: {'cache-control': 'no-store'}});
   } catch (error) { return jsonError(error); }
 };
 
@@ -282,6 +295,75 @@ const envSecret = (prefix: string, purpose: string): OpaqueSecretRef => ({
   id: prefix, purpose, locator: string(process.env[`${prefix}_FILE`], 1_024)
 });
 
+const watchedContextPaths = new Map([
+  ['AGENTS.md', 'repo:AGENTS.md'],
+  ['docs/AI_CONTEXT.md', 'repo:docs/AI_CONTEXT.md'],
+  ['docs/adr/0006-thin-control-plane-authority.md', 'repo:docs/adr/0006-thin-control-plane-authority.md']
+]);
+export const pushChangedPaths = (body: Uint8Array, expected: Readonly<{repository: string; branch: string}>):
+  Readonly<{after: string; paths: readonly string[]; removed: readonly string[]}> | null => {
+  let payload: unknown;
+  try { payload = JSON.parse(Buffer.from(body).toString('utf8')); } catch { return null; }
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const value = payload as Record<string, unknown>; const after = typeof value.after === 'string' ? value.after : '';
+  const repository = value.repository as Record<string,unknown>|undefined;
+  const expectedRepository = expected.repository; const expectedRef = `refs/heads/${expected.branch}`;
+  if (!/^[a-f0-9]{40}$/i.test(after) || /^0{40}$/.test(after) || value.ref !== expectedRef ||
+    repository?.full_name !== expectedRepository || !Array.isArray(value.commits)) return null;
+  const paths = new Set<string>(); const removed = new Set<string>();
+  for (const commit of value.commits) {
+    if (commit === null || typeof commit !== 'object') continue;
+    for (const field of ['added', 'modified'] as const) {
+      const entries = (commit as Record<string, unknown>)[field];
+      if (Array.isArray(entries)) for (const path of entries) if (typeof path === 'string' && watchedContextPaths.has(path)) {
+        paths.add(path); removed.delete(path);
+      }
+    }
+    const entries = (commit as Record<string, unknown>).removed;
+    if (Array.isArray(entries)) for (const path of entries) if (typeof path === 'string' && watchedContextPaths.has(path)) {
+      paths.delete(path); removed.add(path);
+    }
+  }
+  return {after: after.toLowerCase(), paths: [...paths].sort(), removed: [...removed].sort()};
+};
+const refreshGitHubContextSources = async (database: ReturnType<typeof getDatabase>, projectId: string,
+  after: string, paths: readonly string[]): Promise<void> => {
+  const owner = string(process.env.GITHUB_OWNER, 100); const repository = string(process.env.GITHUB_REPOSITORY, 100);
+  const token = (await secretResolver.resolve(envSecret('GITHUB_PROJECTS_TOKEN', 'tracker_read'), 'tracker_read')).value;
+  if (token.length === 0 || token.length > 65_536 || token.includes('\0')) throw new Error('github_credential_invalid');
+  for (const path of paths) {
+    const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${after}`, {
+      headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28'},
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (!response.ok) throw new Error('github_context_read_failed');
+    const value = await response.json() as Record<string, unknown>;
+    if (value.type !== 'file' || typeof value.content !== 'string' || value.encoding !== 'base64') throw new Error('github_context_read_invalid');
+    const content = Buffer.from(value.content.replace(/\s/g, ''), 'base64').toString('utf8');
+    if (content.length === 0 || content.length > 200_000 || content.includes('\0')) throw new Error('github_context_read_invalid');
+    const key = watchedContextPaths.get(path);
+    if (key === undefined) throw new Error('github_context_read_invalid');
+    const serialized = JSON.stringify({contract:'fai.project-context-source.v1', key, content});
+    await addSourceArtifact(database, {projectId, actorId: string(process.env.BOOTSTRAP_OWNER_ACTOR_ID),
+      kind: 'project_context_source_v1', name: key, mediaType: 'application/json', contentText: serialized,
+      sha256: createHash('sha256').update(serialized).digest('hex'), sourceUrl: `https://github.com/${owner}/${repository}/blob/${after}/${path}`,
+      provenance: `repo-file:${path}@${after}`});
+  }
+};
+
+const invalidateRemovedGitHubContextSources = async (database: ReturnType<typeof getDatabase>, projectId: string,
+  after: string, paths: readonly string[]): Promise<void> => {
+  for (const path of paths) {
+    const key = watchedContextPaths.get(path); if (key === undefined) continue;
+    const serialized = JSON.stringify({contract:'fai.project-context-source.v1',key,
+      content:`Source removed from the configured repository at ${after}.`});
+    await addSourceArtifact(database,{projectId,actorId:string(process.env.BOOTSTRAP_OWNER_ACTOR_ID),
+      kind:'project_context_source_v1',name:key,mediaType:'application/json',contentText:serialized,
+      sha256:createHash('sha256').update(serialized).digest('hex'),sourceUrl:null,
+      provenance:`repo-file-removed:${path}@${after}`});
+  }
+};
+
 export const githubWebhook = async (request: Request): Promise<Response> => {
   try {
     const database = getDatabase();
@@ -296,6 +378,23 @@ export const githubWebhook = async (request: Request): Promise<Response> => {
     const result = await appendIncomingEvent(database, {projectId, provider: 'github',
       providerDeliveryId: verified.deliveryId, eventType: verified.eventType, payloadHash: verified.payloadHash,
       receivedAt: new Date().toISOString()});
+    const push = verified.eventType === 'push' ? pushChangedPaths(body,{
+      repository:`${string(process.env.GITHUB_OWNER,100)}/${string(process.env.GITHUB_REPOSITORY,100)}`,
+      branch:string(process.env.GITHUB_DEFAULT_BRANCH,100)
+    }) : null;
+    if (push !== null && (push.paths.length > 0 || push.removed.length > 0)) {
+      if (result === 'duplicate') {
+        const processed = await database.query(`select 1 from command_receipts
+          where project_id=$1 and idempotency_key=$2 and command_type='project.context.activate'`,
+        [projectId,`project-context:webhook:${verified.deliveryId}`]);
+        if (processed.rowCount === 1) return Response.json({status:'duplicate'}, {status:200});
+      }
+      await refreshGitHubContextSources(database, projectId, push.after, push.paths);
+      await invalidateRemovedGitHubContextSources(database,projectId,push.after,push.removed);
+      if (push.removed.length === 0) await refreshProjectContext(database, {workspaceId: string(process.env.FCP_WORKSPACE_ID), projectId,
+          actorId: string(process.env.BOOTSTRAP_OWNER_ACTOR_ID), idempotencyKey: `project-context:webhook:${verified.deliveryId}`,
+          occurredAt: new Date().toISOString()});
+    }
     return Response.json({status: result}, {status: result === 'recorded' ? 202 : 200});
   } catch (error) { return jsonError(error); }
 };

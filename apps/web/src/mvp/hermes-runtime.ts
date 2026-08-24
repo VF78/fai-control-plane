@@ -4,6 +4,7 @@ import {
   canApprove,
   createApprovalPersistence,
   createStores,
+  readActiveProjectContext,
   resolveActiveHumanMember,
   resolveReceiptBoundRoleRun
 } from '@fai-control-plane/db';
@@ -12,7 +13,8 @@ import {
   createGitHubTrackerMutationAdapter,
   createGitHubTrackerReadAdapter
 } from '@fai-control-plane/integrations';
-import type {ApprovalKind, ClientConversationEnvelope, InternalConversationEnvelope, OpaqueSecretRef} from '@fai-control-plane/domain';
+import {parseProjectContextSnapshot, type ApprovalKind, type ClientConversationEnvelope,
+  type InternalConversationEnvelope, type OpaqueSecretRef} from '@fai-control-plane/domain';
 import {createHermesConversationActionHandler} from './hermes-actions.ts';
 import {bitrixClientActionsEnabled} from './integration-config.ts';
 import {getDatabase, readSecretFile, secretResolver} from './runtime.ts';
@@ -86,6 +88,22 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
     telegramUserIds: env('TELEGRAM_INTERNAL_ALLOWED_USER_IDS').split(','),
     bitrixTaskId: clientActionsEnabled ? env('BITRIX24_TASK_ID') : '', clientActionsEnabled,
     resolveRoleRun: (sessionId) => resolveReceiptBoundRoleRun(database, sessionId, projectId),
+    readInternalContext: async ({message, ifVersion}) => {
+      if (message.projectId !== projectId || message.contour !== 'trusted-main') throw new Error('project_denied');
+      const identity = await resolveActiveHumanMember(database, projectId, message.senderReference);
+      if (identity === null || identity.role === 'client') throw new Error('identity_denied');
+      const source = await readActiveProjectContext(database, identity.actorId, projectId);
+      if (source === null) throw new Error('project_context_unavailable');
+      let decoded: unknown;
+      try { decoded = JSON.parse(source.content); } catch { throw new Error('project_context_unavailable'); }
+      const snapshot = parseProjectContextSnapshot(decoded);
+      if (snapshot === null) throw new Error('project_context_unavailable');
+      const refreshedAt = 'createdAt' in source && typeof source.createdAt === 'string' ? source.createdAt : null;
+      return ifVersion === source.sha256
+        ? {status: 'duplicate' as const, version: source.sha256, sourceCount: snapshot.sources.length, refreshedAt}
+        : {status: 'completed' as const, version: source.sha256, capsule: snapshot.content,
+          sourceCount: snapshot.sources.length, refreshedAt};
+    },
     dispatchInternal: (envelope: InternalConversationEnvelope, roleRun) => dispatchConversationAction({workspaceId,
       envelope, ports: shared, ...(roleRun === undefined ? {} : {roleRun})}),
     dispatchClient: (envelope: ClientConversationEnvelope) => dispatchClientConversationAction({workspaceId,
