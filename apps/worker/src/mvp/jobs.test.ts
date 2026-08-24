@@ -30,6 +30,8 @@ describe('worker readiness', () => {
     expect(source.indexOf('await reconcileActiveAgentAttempts')).toBeGreaterThan(-1);
     expect(source.indexOf('await reconcileActiveAgentAttempts')).toBeLessThan(source.indexOf('await reconcileTracker'));
     expect(source).toContain('readActiveProjectProcessPolicy(database, projectId)');
+    expect(source).toContain("env('BOOTSTRAP_REPOSITORY_ID')");
+    expect(source).not.toContain('GITHUB_REPOSITORY_ID');
     expect(source).not.toContain("item.statusOptionName === 'QA'");
   });
 });

@@ -44,6 +44,7 @@ export const createWorker = (database: Database = createDatabase()) => {
   const bindingId = env('GITHUB_BINDING_ID');
   const owner = env('GITHUB_OWNER');
   const repository = env('GITHUB_REPOSITORY');
+  const repositoryId = env('BOOTSTRAP_REPOSITORY_ID');
   const projectNumber = Number(env('GITHUB_PROJECT_NUMBER'));
   const stores = createStores(database, workspaceId);
   const attempts = createAgentAttemptStore(database);
@@ -53,7 +54,7 @@ export const createWorker = (database: Database = createDatabase()) => {
     projectUrl: `https://github.com/users/${owner}/projects/${projectNumber}`,
     credentialRef: secret('github-projects', 'tracker_read', 'GITHUB_PROJECTS_TOKEN_FILE')
   }, secrets});
-  const repositoryRead = createGitHubRepositoryReadAdapter({owner, repository, repositoryId: env('GITHUB_REPOSITORY_ID'),
+  const repositoryRead = createGitHubRepositoryReadAdapter({owner, repository, repositoryId,
     credentialRef: secret('github-projects', 'tracker_read', 'GITHUB_PROJECTS_TOKEN_FILE'), secrets});
   const clientMessenger = {async send() {
     throw new Error('client_messenger_not_configured');
@@ -73,7 +74,7 @@ export const createWorker = (database: Database = createDatabase()) => {
     async resolveContext({actorId, projectId: requestedProjectId}) {
       const binding = await resolveAgentSubmissionBinding(database, actorId, requestedProjectId);
       if (binding === null || binding.bindingId !== bindingId ||
-        binding.projectId !== projectId || binding.repositoryId !== env('GITHUB_REPOSITORY_ID')) return null;
+        binding.projectId !== projectId || binding.repositoryId !== repositoryId) return null;
       const configured = await readAgentRoutingPolicy(database, actorId, requestedProjectId);
       const processPolicy = await readActiveProjectProcessPolicy(database, requestedProjectId);
       if (processPolicy === null) return null;
