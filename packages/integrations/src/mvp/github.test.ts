@@ -30,12 +30,15 @@ describe('MVP GitHub adapter', () => {
         statusValue: {optionId: 'status', name: 'Ready'}, blockedValue: {optionId: 'not-blocked', name: 'No'},
         ownerValue: {optionId: 'owner-hermes'},
         targetDateValue: {date: '2026-08-31'},
-        content: {id: 'I_1', databaseId: 42, number: 42, title: 'Deliver feature',
+        content: {__typename: 'Issue', id: 'I_1', databaseId: 42, number: 42, title: 'Deliver feature',
           repository: {nameWithOwner: 'acme/repo'},
           url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: [{id: 'U_1', login: 'octo', name: 'Octo Cat'}]},
           parent: {databaseId: 40, repository: {nameWithOwner: 'acme/repo'}},
           subIssues: {nodes: [{databaseId: 43, repository: {nameWithOwner: 'acme/repo'}}], pageInfo: {hasNextPage: false}},
-          blockedBy: {nodes: [{databaseId: 41, repository: {nameWithOwner: 'acme/repo'}}], pageInfo: {hasNextPage: false}}}}],
+          blockedBy: {nodes: [{databaseId: 41, repository: {nameWithOwner: 'acme/repo'}}], pageInfo: {hasNextPage: false}}}},
+        {id: 'PVTI_other', updatedAt: '2026-08-13T00:00:00Z', content: {__typename: 'Issue',
+          repository: {nameWithOwner: 'acme/other'}}},
+        {id: 'PVTI_pr', updatedAt: '2026-08-13T00:00:00Z', content: {__typename: 'PullRequest'}}],
         pageInfo: {endCursor: 'cursor', hasNextPage: false}}
     }}}}), {status: 200}));
     const adapter = createGitHubTrackerReadAdapter({
@@ -52,6 +55,7 @@ describe('MVP GitHub adapter', () => {
         subIssueIds: ['43'], dependencyIssueIds: ['41']}]
     });
     expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({authorization: 'Bearer token'});
+    expect(String(fetch.mock.calls[0]?.[1]?.body)).toContain('__typename');
   });
 
   it('repeats a full repair read instead of treating a page cursor as sync state', async () => {

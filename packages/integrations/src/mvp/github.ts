@@ -86,7 +86,7 @@ const projectQuery = `query MvpProject($owner: String!, $number: Int!, $after: S
       targetDateValue: fieldValueByName(name: "Target date") {
         ... on ProjectV2ItemFieldDateValue { date }
       }
-      content { ... on Issue {
+      content { __typename ... on Issue {
         id databaseId number title url repository { nameWithOwner }
         assignees(first: 20) { nodes { id login name } }
         parent { databaseId repository { nameWithOwner } }
@@ -150,21 +150,26 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
       if (new Set(ids).size !== ids.length) throw new Error('github_response_invalid');
       return ids.sort((left, right) => Number(left) - Number(right));
     };
-    const items: TrackerItemFact[] = itemNodes.map((entry) => {
+    const items: TrackerItemFact[] = itemNodes.flatMap((entry) => {
       const item = object(entry);
       const content = object(item?.content);
+      if (!bounded(item?.id, 512) || !bounded(item?.updatedAt, 64) ||
+        content === null || !bounded(content.__typename, 64)) throw new Error('github_response_invalid');
+      if (content.__typename !== 'Issue') return [];
+      const contentRepository = object(content.repository)?.nameWithOwner;
+      if (!bounded(contentRepository, 201)) throw new Error('github_response_invalid');
+      if (contentRepository !== `${input.binding.owner}/${input.binding.repository}`) return [];
       const status = object(item?.statusValue);
       const ownerValue = object(item?.ownerValue);
       const blockedValue = object(item?.blockedValue);
       const targetDateValue = object(item?.targetDateValue);
       const assignees = object(content?.assignees);
       const issueNumber = positiveInteger(content?.number);
-      if (!bounded(item?.id, 512) || !bounded(item?.updatedAt, 64) || !bounded(content?.id, 512) ||
+      if (!bounded(content?.id, 512) ||
         !bounded(content?.title, 512) || !bounded(content?.url) || !Array.isArray(assignees?.nodes)) {
         throw new Error('github_response_invalid');
       }
-      if (object(content.repository)?.nameWithOwner !== `${input.binding.owner}/${input.binding.repository}` ||
-        content.url !== `https://github.com/${input.binding.owner}/${input.binding.repository}/issues/${issueNumber}`) {
+      if (content.url !== `https://github.com/${input.binding.owner}/${input.binding.repository}/issues/${issueNumber}`) {
         throw new Error('github_response_invalid');
       }
       const targetDate = targetDateValue === null || targetDateValue.date === null
@@ -177,7 +182,7 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
       const parent = content.parent === null ? null : object(content.parent);
       if (parent !== null && object(parent.repository)?.nameWithOwner !==
         `${input.binding.owner}/${input.binding.repository}`) throw new Error('github_response_invalid');
-      return {
+      return [{
         itemId: item.id as string, projectId: input.binding.projectId,
         issueId: String(positiveInteger(content.databaseId)), title: content.title as string,
         url: content.url as string,
@@ -202,7 +207,7 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
           return {id: value.id as string, login: value.login as string,
             name: value.name === null || value.name === undefined ? null : value.name as string};
         }), observedAt
-      };
+      }];
     });
     const snapshot: TrackerSnapshot = {
       bindingId, externalVersion: `github:updated-at:${projectVersion}`,
