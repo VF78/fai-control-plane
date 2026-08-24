@@ -106,7 +106,7 @@ describe('MVP GitHub adapter', () => {
 
   it('recovers an issue-create replay and repairs missing Project membership', async () => {
     const fetched: string[] = [];
-    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
       fetched.push(String(url));
       if (String(url).includes('search/issues')) return new Response(JSON.stringify({items: [{number: 42,
         node_id: 'I_42', html_url: 'https://github.com/acme/repo/issues/42', updated_at: '2026-08-13T00:00:00Z'}]}));
@@ -146,43 +146,51 @@ describe('MVP GitHub adapter', () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
-  it('reads assignable people from GitHub and treats an exact Hermes assignment as a no-op', async () => {
-    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+  it('reads assignable people from GitHub', async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
       if (String(url).includes('/assignees')) return new Response(JSON.stringify([{id: 7, login: 'octo', name: 'Octo Cat'}]));
-      if (String(init?.body).includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {id: 'PVTI_1', updatedAt: '2026-08-24T00:00:00Z', project: {id: 'PVT_1'},
-        statusValue: {optionId: 'ready', name: 'Ready'}, ownerValue: {optionId: 'owner-hermes', name: 'Hermes'},
-        content: {id: 'I_42', databaseId: 9001, number: 42, url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: []}}}}}));
       throw new Error(`unexpected request ${String(url)}`);
     });
     const adapter = createGitHubTrackerMutationAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
       projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
       credentialRef: secretRef, secrets: secrets('token'), fetch});
     await expect(adapter.listAssignableUsers()).resolves.toEqual([{id: '7', login: 'octo', name: 'Octo Cat'}]);
-    await expect(adapter.assignHermesExecutor({itemId: 'PVTI_1', issueId: '9001', expectedVersion: 'github:updated-at:2026-08-24T00:00:00Z', hermesOwnerOptionId: 'owner-hermes'})).resolves.toBe('already_assigned');
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('uses the provider issue number, not the stored database id, for human Assignee mutation', async () => {
+  it('starts one exact blocked Backlog item for a human and reads every provider fact back', async () => {
+    let stage = {optionId: 'backlog', name: 'Backlog'}; let blocked = {optionId: 'blocked-yes', name: 'Yes'};
+    let owner: {optionId: string; name: string}|null = {optionId: 'owner-chatgpt', name: 'ChatGPT Work'};
+    let assignees: readonly {id: string; login: string; name: null}[] = []; let updatedAt = '2026-08-24T00:00:00Z';
     const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const body = String(init?.body ?? '');
-      if (body.includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {id: 'PVTI_1', updatedAt: '2026-08-24T00:00:00Z', project: {id: 'PVT_1'},
-        statusValue: {optionId: 'ready', name: 'Ready'}, ownerValue: {optionId: 'owner-hermes', name: 'Hermes'},
-        content: {id: 'I_42', databaseId: 9001, number: 42, url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: []}}}}}));
+      if (body.includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {id: 'PVTI_1', updatedAt, project: {id: 'PVT_1'},
+        statusValue: stage, ownerValue: owner, blockedValue: blocked,
+        content: {id: 'I_42', databaseId: 9001, number: 42, url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: assignees}}}}}));
       if (String(url).includes('/assignees')) return new Response(JSON.stringify([{id: 7, login: 'octo', name: null}]));
       if (body.includes('fields(first:100)')) return new Response(JSON.stringify({data: {user: {projectV2: {id: 'PVT_1', fields: {nodes: [
         {id: 'owner-field', name: 'Owner', options: [{id: 'owner-hermes', name: 'Hermes'}]},
-        {id: 'status-field', name: 'Status', options: [{id: 'in-dev', name: 'In Dev'}]}
+        {id: 'status-field', name: 'Status', options: [{id: 'backlog', name: 'Backlog'}, {id: 'in-dev', name: 'In Dev'}]},
+        {id: 'blocked-field', name: 'Blocked', options: [{id: 'blocked-yes', name: 'Yes'}, {id: 'blocked-no', name: 'No'}]}
       ], pageInfo: {hasNextPage: false}}}}}}));
-      if (String(url).endsWith('/issues/42') && init?.method === 'PATCH') return new Response(JSON.stringify({number: 42}));
-      if (body.includes('clearProjectV2ItemFieldValue')) return new Response(JSON.stringify({data: {clearProjectV2ItemFieldValue: {projectV2Item: {id: 'PVTI_1'}}}}));
-      if (body.includes('updateProjectV2ItemFieldValue')) return new Response(JSON.stringify({data: {updateProjectV2ItemFieldValue: {projectV2Item: {id: 'PVTI_1'}}}}));
+      if (String(url).endsWith('/issues/42') && init?.method === 'PATCH') {
+        assignees = [{id: '7', login: 'octo', name: null}]; updatedAt = '2026-08-24T00:01:00Z';
+        return new Response(JSON.stringify({number: 42}));
+      }
+      if (body.includes('clearProjectV2ItemFieldValue')) { owner = null; return new Response(JSON.stringify({data: {clearProjectV2ItemFieldValue: {projectV2Item: {id: 'PVTI_1'}}}})); }
+      if (body.includes('updateProjectV2ItemFieldValue')) {
+        const variables = (JSON.parse(body) as {variables: {field: string}}).variables;
+        if (variables.field === 'blocked-field') blocked = {optionId: 'blocked-no', name: 'No'};
+        if (variables.field === 'status-field') stage = {optionId: 'in-dev', name: 'In Dev'};
+        return new Response(JSON.stringify({data: {updateProjectV2ItemFieldValue: {projectV2Item: {id: 'PVTI_1'}}}}));
+      }
       throw new Error(`unexpected request ${String(url)} ${body}`);
     });
     const adapter = createGitHubTrackerMutationAdapter({binding: {id: 'binding', owner: 'acme', repository: 'repo',
       projectId: 'project', projectNumber: 1, projectUrl: 'https://github.com/users/acme/projects/1', credentialRef: secretRef},
       credentialRef: secretRef, secrets: secrets('token'), fetch});
-    await expect(adapter.assignHumanExecutor({itemId: 'PVTI_1', issueId: '9001', expectedVersion: 'github:updated-at:2026-08-24T00:00:00Z',
-      candidate: {id: '7', login: 'octo'}})).resolves.toBeUndefined();
+    await expect(adapter.startExecutor({itemId: 'PVTI_1', issueId: '9001', expectedVersion: 'github:updated-at:2026-08-24T00:00:00Z',
+      expectedStage: 'Backlog', expectedBlocked: true, executor: {kind: 'human', candidate: {id: '7', login: 'octo'}}})).resolves.toBeUndefined();
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith('/issues/42') && init?.method === 'PATCH')).toBe(true);
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/issues/9001'))).toBe(false);
   });
@@ -193,13 +201,15 @@ describe('MVP GitHub adapter', () => {
       const body = String(init?.body ?? '');
       if (body.includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {
         id: 'PVTI_1', updatedAt, project: {id: 'PVT_1'}, statusValue: stage, ownerValue: null,
+        blockedValue: {optionId: 'blocked-no', name: 'No'},
         content: {id: 'I_42', databaseId: 9001, number: 42,
           url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: []}}
       }}}));
       if (body.includes('fields(first:100)')) return new Response(JSON.stringify({data: {user: {projectV2: {
         id: 'PVT_1', fields: {nodes: [
           {id: 'owner-field', name: 'Owner', options: []},
-          {id: 'status-field', name: 'Status', options: [{id: 'ready', name: 'Ready'}, {id: 'qa', name: 'QA'}]}
+          {id: 'status-field', name: 'Status', options: [{id: 'ready', name: 'Ready'}, {id: 'qa', name: 'QA'}]},
+          {id: 'blocked-field', name: 'Blocked', options: [{id: 'blocked-no', name: 'No'}]}
         ], pageInfo: {hasNextPage: false}}
       }}}}));
       if (body.includes('updateProjectV2ItemFieldValue')) {
@@ -224,6 +234,7 @@ describe('MVP GitHub adapter', () => {
       const graphql = String(init?.body ?? '');
       if (graphql.includes('node(id:$id)')) return new Response(JSON.stringify({data: {node: {
         id: 'PVTI_1', updatedAt, project: {id: 'PVT_1'}, statusValue: {optionId: 'ready', name: 'Ready'}, ownerValue: null,
+        blockedValue: {optionId: 'blocked-no', name: 'No'},
         content: {id: 'I_42', databaseId: 9001, number: 42,
           url: 'https://github.com/acme/repo/issues/42', assignees: {nodes: []}}
       }}}));

@@ -11,9 +11,12 @@ const contextContent = serializeProjectContextSnapshot({contract:'fai.project-co
 const activeContext = {id:'context',sha256:projectContextSnapshotVersion(contextContent),
   kind:projectContextSnapshotKind,provenance:'control-plane:context',content:contextContent};
 
-const ports = (failStart = false, initialStatus = 'Ready') => {
-  let owner: string|null = null; let assignees: readonly {id: string; login: string; name: string|null}[] = []; let status = initialStatus; let version = 1; let delivered = false; let startFails = failStart;
-  const snapshot = (): TrackerSnapshot => ({...base, items: [{...base.items[0]!, ownerOptionId: owner, assignees, assigneeIds: assignees.map((user) => user.id), statusOptionName: status, version: `github:updated-at:v${version}`}]});
+const ports = (failStart = false, initialStatus = 'Ready', initialBlocked = false, initialOwner: string|null = null) => {
+  let owner: string|null = initialOwner; let assignees: readonly {id: string; login: string; name: string|null}[] = [];
+  let status = initialStatus; let blocked = initialBlocked; let version = 1;
+  const deliveries = new Map<string,string>();
+  const snapshot = (): TrackerSnapshot => ({...base, items: [{...base.items[0]!, ownerOptionId: owner, blocked,
+    assignees, assigneeIds: assignees.map((user) => user.id), statusOptionName: status, version: `github:updated-at:v${version}`}]});
   const value: TaskExecutorAssignmentPorts = {
     resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done', routingPolicyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'), routingPolicy: defaultAgentRoutingPolicy, executorCatalog: {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}}}),
     readFreshSnapshot: async () => snapshot(), persistSnapshot: async () => undefined,
@@ -28,10 +31,22 @@ const ports = (failStart = false, initialStatus = 'Ready') => {
       contour: 'trusted-main', channelReference: 'internal', text: `Hermes accepted: ${item.url}`, idempotencyKey}),
     delivery: {submit: vi.fn(async () => ({deliveryReference: 'hermes:receipt', sessionReference: 'hermes:session'})),
       observe: vi.fn(async () => ({status: 'started' as const}))},
-    transaction: {execute: async (_input, submit) => delivered ? {status: 'duplicate', deliveryReference: 'hermes:receipt'} : (delivered = true, {status: 'completed', ...(await submit())})},
-    tracker: {listAssignableUsers: async () => [{id: 'U_1', login: 'octo', name: 'Octo'}], assignHumanExecutor: async () => { owner = null; assignees = [{id: 'U_1', login: 'octo', name: 'Octo'}]; status = 'In Dev'; version += 1; },
-      assignHermesExecutor: async () => { if (owner === 'hermes') return 'already_assigned'; owner = 'hermes'; assignees = []; version += 1; return 'assigned'; },
-      startHermesExecutor: async () => { if (startFails) { startFails = false; throw new Error('github_mutation_failed'); } status = 'In Dev'; version += 1; return 'advanced'; }}
+    transaction: {execute: async (input, submit) => { const prior = deliveries.get(input.idempotencyKey);
+      if (prior !== undefined) return {status: 'duplicate', deliveryReference: prior};
+      const result = await submit(); deliveries.set(input.idempotencyKey, result.deliveryReference);
+      return {status: 'completed', ...result}; }},
+    tracker: {listAssignableUsers: async () => [{id: 'U_1', login: 'octo', name: 'Octo'}],
+      startExecutor: async (command) => {
+        if (failStart) throw new Error('github_mutation_failed');
+        if (command.expectedVersion !== `github:updated-at:v${version}` || command.expectedStage !== status ||
+          command.expectedBlocked !== blocked) throw new Error('github_version_conflict');
+        const prior = JSON.stringify({owner, assignees, blocked, status});
+        if (command.executor.kind === 'human') {
+          owner = null; assignees = [{id: command.executor.candidate.id, login: command.executor.candidate.login, name: 'Octo'}];
+        } else { owner = command.executor.ownerOptionId; assignees = []; }
+        blocked = false; if (status === 'Backlog' || status === 'Ready') status = 'In Dev';
+        if (JSON.stringify({owner, assignees, blocked, status}) !== prior) version += 1;
+      }}
   };
   return {value, delivery: value.delivery.submit};
 };
@@ -44,7 +59,7 @@ describe('task executor assignment', () => {
   });
 
   it('fails closed when the fresh human assignment does not match the requested GitHub login', async () => {
-    const value = ports(); const broken: TaskExecutorAssignmentPorts = {...value.value, tracker: {...value.value.tracker, assignHumanExecutor: async () => undefined}};
+    const value = ports(); const broken: TaskExecutorAssignmentPorts = {...value.value, tracker: {...value.value.tracker, startExecutor: async () => undefined}};
     await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'human', candidate: {id: 'U_1', login: 'octo'}}}, broken)).rejects.toThrow('task_executor_conflict');
   });
 
@@ -78,10 +93,61 @@ describe('task executor assignment', () => {
     ])}));
   });
 
-  it('retries a failed status sync without delivering Hermes twice', async () => {
-    const value = ports(true); const command = {actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'} as const};
-    await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'status_sync_failed', deliveryReference: 'hermes:receipt'});
+  it('does not deliver Hermes twice when the confirmed start command is replayed', async () => {
+    const value = ports(); const command = {actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'} as const};
+    await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'started', deliveryReference: 'hermes:receipt'});
     await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'duplicate', deliveryReference: 'hermes:receipt'});
     expect(value.delivery).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['human','hermes'] as const)('starts a blocked Backlog item with one explicit %s command', async (kind) => {
+    const value = ports(false, 'Backlog', true, 'chatgpt-work');
+    const start = vi.spyOn(value.value.tracker, 'startExecutor');
+    const executor = kind === 'human' ? {kind, candidate: {id: 'U_1', login: 'octo'}} as const : {kind} as const;
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor}, value.value))
+      .resolves.toMatchObject({status: kind === 'human' ? 'assigned' : 'started'});
+    const context = await value.value.resolveContext({actorId: 'actor', projectId: 'project'});
+    const item = (await value.value.readFreshSnapshot(context!)).items[0]!;
+    expect(item).toMatchObject({statusOptionName: 'In Dev', blocked: false,
+      ownerOptionId: kind === 'human' ? null : 'hermes'});
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({expectedStage: 'Backlog', expectedBlocked: true,
+      executor: kind === 'human' ? {kind: 'human', candidate: {id: 'U_1', login: 'octo'}} : {kind: 'agent', ownerOptionId: 'hermes'}}));
+    expect(value.delivery).toHaveBeenCalledTimes(kind === 'human' ? 0 : 1);
+  });
+
+  it('checks an exact unknown prior run before changing GitHub, then recovers and starts', async () => {
+    const value = ports(false, 'Backlog', true, 'chatgpt-work'); const order: string[] = [];
+    const tracker = value.value.tracker;
+    const recovered: TaskExecutorAssignmentPorts = {...value.value,
+      delivery: {...value.value.delivery, observe: vi.fn(async (reference) => { order.push(`observe:${reference}`); return {status: 'unknown' as const}; })},
+      tracker: {...tracker, startExecutor: async (command) => { order.push('github:start'); return tracker.startExecutor(command); }}};
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'},
+      retry: {deliveryReference: 'run_old', nonce: 'confirmed', confirmUnobservableFailure: true}}, recovered))
+      .resolves.toMatchObject({status: 'started'});
+    expect(order.slice(0,2)).toEqual(['observe:run_old','github:start']);
+  });
+
+  it('denies a claimed unknown recovery before GitHub when the exact prior run is still active', async () => {
+    const value = ports(false, 'Backlog', true, 'chatgpt-work'); const start = vi.spyOn(value.value.tracker, 'startExecutor');
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'},
+      retry: {deliveryReference: 'run_active', nonce: 'claimed', confirmUnobservableFailure: true}}, value.value))
+      .rejects.toThrow('agent_retry_denied');
+    expect(value.value.delivery.observe).toHaveBeenCalledWith('run_active');
+    expect(start).not.toHaveBeenCalled(); expect(value.delivery).not.toHaveBeenCalled();
+  });
+
+  it('preserves Acceptance while assigning a human', async () => {
+    const value = ports(false, 'Acceptance', true, 'chatgpt-work');
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item',
+      executor: {kind: 'human', candidate: {id: 'U_1', login: 'octo'}}}, value.value)).resolves.toEqual({status: 'assigned'});
+    const context = await value.value.resolveContext({actorId: 'actor', projectId: 'project'});
+    expect((await value.value.readFreshSnapshot(context!)).items[0]).toMatchObject({statusOptionName: 'Acceptance', blocked: false});
+  });
+
+  it('denies Done before any tracker mutation or delivery', async () => {
+    const value = ports(false, 'Done', true); const start = vi.spyOn(value.value.tracker, 'startExecutor');
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, value.value))
+      .rejects.toThrow('task_executor_unavailable');
+    expect(start).not.toHaveBeenCalled(); expect(value.delivery).not.toHaveBeenCalled();
   });
 });

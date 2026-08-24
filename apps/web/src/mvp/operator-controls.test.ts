@@ -13,7 +13,9 @@ describe('task executor control', () => {
     expect(source).toContain('Проверить статус');
     expect(source).toContain('Подтвердить завершение и повтор');
     expect(source).toContain('confirmUnobservableFailure');
-    expect(source).toContain("currentExecutor === 'Hermes' ? confirmedRun : null");
+    expect(source).toContain('const activeRun = confirmedRun');
+    expect(source).toContain("task.status === 'Backlog' || task.status === 'Ready'");
+    expect(source).toContain('Blocked станет No');
     expect(source).toContain('Квитанция {activeRun.deliveryReference}');
     expect(source).toContain("runStatus === 'completed' ? 'Начать текущий этап или сменить исполнителя' : 'Сменить исполнителя'");
     expect(source).toContain('tone={noticeTone}');
