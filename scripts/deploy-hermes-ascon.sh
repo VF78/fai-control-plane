@@ -313,6 +313,9 @@ prune_superseded_project_images() {
     --filter label=com.docker.compose.project=fai-hermes-ascon >/dev/null; then
     printf 'deploy-hermes-ascon: warning: superseded project images were not removed\n' >&2
   fi
+  if ! docker builder prune -af >/dev/null; then
+    printf 'deploy-hermes-ascon: warning: unused build cache was not removed\n' >&2
+  fi
 }
 
 nginx_backup=''

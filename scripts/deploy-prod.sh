@@ -107,6 +107,9 @@ prune_superseded_project_images() {
     [[ "$image" == "fai-control-plane-mvp:$release_commit" ]] && continue
     docker image rm "$image" >/dev/null 2>&1 || true
   done < <(docker image ls fai-control-plane-mvp --format '{{.Repository}}:{{.Tag}}')
+  if ! docker builder prune -af >/dev/null; then
+    log 'warning: unused build cache was not removed'
+  fi
 }
 
 wait_for_candidate_health() {

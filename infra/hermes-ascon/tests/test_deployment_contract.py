@@ -22,6 +22,7 @@ class DeploymentContractTest(unittest.TestCase):
             "label=com.docker.compose.project=fai-hermes-ascon",
             script,
         )
+        self.assertIn("docker builder prune -af", script)
 
     def test_all_hermes_configs_declare_exact_current_schema(self):
         configs = (
