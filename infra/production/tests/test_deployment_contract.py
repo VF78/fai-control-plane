@@ -9,15 +9,20 @@ ROOT = pathlib.Path(__file__).parents[3]
 
 
 class DeploymentContractTest(unittest.TestCase):
-    def test_web_mounts_only_root_produced_hermes_readiness_read_only(self):
+    def test_web_and_worker_mount_only_root_produced_hermes_readiness_read_only(self):
         compose = (ROOT / "infra/production/compose.yaml").read_text()
         environment_file = ROOT / "infra/production/production.env.example"
         environment = environment_file.read_text()
         web = compose.split("  web:\n", 1)[1].split("  worker:\n", 1)[0]
+        worker = compose.split("  worker:\n", 1)[1].split("\nnetworks:", 1)[0]
 
         self.assertIn(
             "${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro",
             web,
+        )
+        self.assertIn(
+            "${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro",
+            worker,
         )
         self.assertIn(
             "FCP_HERMES_READINESS_HOST_DIR=/var/lib/fai-hermes-ascon/readiness\n",

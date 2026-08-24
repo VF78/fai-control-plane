@@ -137,6 +137,12 @@ export type AgentExecutorResult = Readonly<{
   /** Hermes classifies once, then attests the exact policy route it actually used. */
   execution: Readonly<{taskClass: AgentTaskClass; executor: AgentRoute['executor']; model: string;
     effort: 'medium' | 'high'}>;
+  /** Composition-signed proof of the CLI invocation. Required for CLI routes, absent for direct-agent routes. */
+  executorReceipt?: Readonly<{
+    contract: 'fai.executor-invocation-receipt.v1'; invocationId: string; receiptReference: string;
+    executorId: string; model: string; effort: 'medium' | 'high'; outputSha256: string;
+    completedAt: string; signature: string;
+  }>;
   outcome: 'success' | 'rework';
   transition: Readonly<{itemId: string; fromVersion: string; targetStage: string; toVersion: string}>;
   reason: string;

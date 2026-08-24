@@ -15,7 +15,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("x-logging: &bounded-logging", compose)
         self.assertIn('max-size: "10m"', compose)
         self.assertIn('max-file: "3"', compose)
-        self.assertEqual(compose.count("logging: *bounded-logging"), 3)
+        self.assertEqual(compose.count("logging: *bounded-logging"), 4)
         stage_action = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
         self.assertIn("prune_superseded_project_images", stage_action)
         self.assertIn(
@@ -61,7 +61,7 @@ class DeploymentContractTest(unittest.TestCase):
     def test_stage_prepares_uid_boundary_and_fails_closed(self):
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
         readable_block = script.split("readonly -a readable_files=(", 1)[1].split(")", 1)[0]
-        self.assertEqual(readable_block.count('"$deploy_root/'), 9)
+        self.assertEqual(readable_block.count('"$deploy_root/'), 10)
         self.assertIn('chmod 0644 "${readable_files[@]}"', script)
         self.assertIn('chmod 0755 "${readable_directories[@]}"', script)
         self.assertIn('"$workload_uid:$workload_gid:755"', script)
@@ -141,7 +141,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertNotIn('command: ["gateway", "run"]', codex_service)
         self.assertNotIn("/var/lib/fai-hermes-ascon:/opt/data", codex_service)
         self.assertIn(
-            "/var/lib/fai-hermes-ascon/codex-home:/opt/data/codex-home",
+            "/var/lib/fai-codex-ascon/home:/opt/data/codex-home",
             codex_service,
         )
         self.assertIn(
@@ -211,7 +211,7 @@ class DeploymentContractTest(unittest.TestCase):
 
     def test_repository_broker_is_an_inactive_secret_isolated_sidecar(self):
         compose = (HERMES / "compose.yaml").read_text()
-        broker = compose.split("  repository-broker:\n", 1)[1].split("\n  codex-cli:", 1)[0]
+        broker = compose.split("  repository-broker:\n", 1)[1].split("\n  executor-broker:", 1)[0]
         gateway = compose.split("  gateway:\n", 1)[1].split("\n  repository-broker:", 1)[0]
         codex = compose.split("  codex-cli:\n", 1)[1]
         self.assertIn("profiles: [repository-work]", broker)
@@ -237,6 +237,32 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertNotIn("github-app-private-key", codex)
         self.assertNotIn("FCP_GITHUB_APP", codex)
         self.assertNotIn("/var/lib/fai-repository-broker-ascon", codex)
+
+    def test_executor_broker_is_the_only_cli_credential_and_signing_boundary(self):
+        compose = (HERMES / "compose.yaml").read_text()
+        gateway = compose.split("  gateway:\n", 1)[1].split("\n  repository-broker:", 1)[0]
+        executor = compose.split("  executor-broker:\n", 1)[1].split("\n  codex-cli:", 1)[0]
+        plugin = (HERMES / "extensions/fai-control-plane/__init__.py").read_text()
+        script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
+        broker_code = (HERMES / "executor-broker.mjs").read_text()
+        self.assertIn("profiles: [repository-work]", executor)
+        self.assertIn('/opt/fai/executor-broker.mjs', executor)
+        self.assertIn('/var/lib/fai-codex-ascon/home:/opt/data/codex-home', executor)
+        self.assertIn('executor-attestation-private-key.pem:ro', executor)
+        self.assertNotIn('executor-attestation-private-key', gateway)
+        self.assertIn('codex-home-mask:/opt/data/codex-home:ro', gateway)
+        self.assertIn('fai_executor_run', plugin)
+        self.assertIn('session_id = str(kwargs.get("session_id")', plugin)
+        self.assertIn('activate_trusted_execution', script)
+        self.assertIn('remove_trusted_readiness', script)
+        activate = script.split("  activate)", 1)[1].split("    ;;", 1)[0]
+        self.assertIn('activate_trusted_execution', activate)
+        self.assertIn("const codex = '/usr/local/bin/codex'", broker_code)
+        self.assertIn("'--model', model", broker_code)
+        self.assertIn('model_reasoning_effort=', broker_code)
+        self.assertIn("sign(null, Buffer.from(canonical), privateKey)", broker_code)
+        self.assertNotIn('payload.command', broker_code)
+        self.assertNotIn('payload.args', broker_code)
 
 
 if __name__ == "__main__":
