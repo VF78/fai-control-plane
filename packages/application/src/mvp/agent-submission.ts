@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import type {AgentDeliveryPort, AgentRole, AgentRoleRequest, ProjectRole, RepositoryReadPort, SourceReference, TrackerSnapshot} from '@fai-control-plane/domain';
+import type {AgentDeliveryPort, AgentRole, AgentRoleRequest, MessengerDeliveryInput, ProjectRole, RepositoryReadPort, SourceReference, TrackerItemFact, TrackerSnapshot} from '@fai-control-plane/domain';
 import {validateAgentRoleRequest} from '@fai-control-plane/domain';
 
 export type AgentSubmissionContext = Readonly<{
@@ -16,9 +16,11 @@ export type AgentSubmissionPorts = Readonly<{
   resolveSources(input: Readonly<{actorId: string; projectId: string; sourceIds: readonly string[]}>): Promise<readonly SourceReference[]>;
   repository: RepositoryReadPort;
   delivery: AgentDeliveryPort;
+  composeAcceptedNotification(item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput>;
   transaction: Readonly<{execute(input: Readonly<{
     workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
     role: AgentRole; itemId: string; observedVersion: string; sourceCount: number;
+    notification: MessengerDeliveryInput;
   }>, submit: () => Promise<Readonly<{deliveryReference: string}>>): Promise<Readonly<{
     status: 'completed' | 'duplicate'; deliveryReference: string;
   }>>}>;
@@ -91,9 +93,14 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
     observedVersion: item.version, sources, constraints: command.constraints,
     acceptanceCriteria: command.acceptanceCriteria, approval: null, correlationId, idempotencyKey};
   if (!validateAgentRoleRequest(request)) throw new Error('agent_request_invalid');
+  const notificationKey = `${idempotencyKey}:accepted`;
+  const notification = await ports.composeAcceptedNotification(item, notificationKey);
+  if (notification.projectId !== context.projectId || notification.contour !== 'trusted-main' ||
+    notification.idempotencyKey !== notificationKey || !bounded(notification.channelReference, 512) ||
+    !bounded(notification.text, 4_000)) throw new Error('agent_notification_invalid');
   return ports.transaction.execute({workspaceId: context.workspaceId, projectId: context.projectId,
     actorId: command.actorId, idempotencyKey, correlationId, role: command.role, itemId: item.itemId,
-    observedVersion: item.version, sourceCount: sources.length}, async () => {
+    observedVersion: item.version, sourceCount: sources.length, notification}, async () => {
       const delivered = await ports.delivery.submit(request);
       return {deliveryReference: delivered.deliveryReference};
     });

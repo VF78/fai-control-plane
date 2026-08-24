@@ -1,8 +1,6 @@
 import {createHash} from 'node:crypto';
 import {
-  decideNextAction,
   type MessengerDeliveryInput,
-  type StatusMap,
   type TrackerReadPort,
   type TrackerItemFact,
   type TrackerSnapshot
@@ -15,8 +13,8 @@ export type ReconciliationPorts = Readonly<{
   outbox: OutboxStore;
   audit: AuditStore;
   compose: Readonly<{
-    notification(item: TrackerItemFact, reason: string, idempotencyKey: string): Promise<MessengerDeliveryInput>;
-    notificationSummary(count: number, sourceUrl: string, idempotencyKey: string): Promise<MessengerDeliveryInput>;
+    statusChanged(prior: TrackerItemFact, current: TrackerItemFact,
+      idempotencyKey: string): Promise<MessengerDeliveryInput>;
   }>;
 }>;
 
@@ -26,16 +24,17 @@ export type ReconciliationResult = Readonly<{
   cursor: string | null;
 }>;
 
-const summaryKey = (bindingId: string, externalVersion: string): string =>
-  `tracker-notification-summary:sha256:${createHash('sha256').update(`${bindingId}\n${externalVersion}`).digest('hex')}`;
+const statusChangeKey = (bindingId: string, prior: TrackerItemFact, current: TrackerItemFact): string =>
+  `tracker-status-change:sha256:${createHash('sha256').update([
+    bindingId, prior.itemId, prior.statusOptionId ?? 'missing', current.statusOptionId ?? 'missing', current.version
+  ].join('\n')).digest('hex')}`;
 
-/** One provider read, one factual snapshot, and notifications only for human-owned action. */
+/** One provider read, one factual snapshot, and one notification per observed Status transition. */
 export const reconcileTracker = async (input: Readonly<{
   bindingId: string;
   workspaceId: string;
   projectId: string;
   cursor: string | null;
-  statusMap: StatusMap;
   ports: ReconciliationPorts;
 }>): Promise<ReconciliationResult> => {
   const previous = await input.ports.snapshots.readLatest(input.bindingId);
@@ -67,35 +66,23 @@ export const reconcileTracker = async (input: Readonly<{
   // a baseline; neither is evidence that every historical item changed.
   const establishesBaseline = previous === null || (previous.cursor === null && snapshot.cursor !== null);
   const previousItems = new Map(previous?.items.map((item) => [item.itemId, item]));
-  const changedItems = establishesBaseline ? [] : snapshot.items.filter((item) => {
+  const statusChanges = establishesBaseline ? [] : snapshot.items.flatMap((item) => {
     const prior = previousItems.get(item.itemId);
-    return prior === undefined || prior.version !== item.version;
+    return prior !== undefined && prior.statusOptionId !== item.statusOptionId ? [{prior, item}] : [];
   });
-  const notificationItems = changedItems.filter((item) => decideNextAction(item, input.statusMap).kind === 'human');
   let queuedActions = 0;
-  if (notificationItems.length === 1) {
-    const item = notificationItems[0]!;
-    const decision = decideNextAction(item, input.statusMap);
-    // Tracker state is factual input, never authority to start an agent. Agent execution
-    // is available only through an authenticated human conversation command. The first
-    // provider read establishes a baseline, so historical human-status items cannot
-    // flood the internal chat; only version-different facts can notify a person.
+  for (const {prior, item} of statusChanges) {
+    const idempotencyKey = statusChangeKey(input.bindingId, prior, item);
+    // A version/title/owner change without a Status transition is merely refreshed
+    // factual context. Status is still never authority to start Hermes.
     const delivery = {topic: 'messenger-notification' as const, payload: {message:
-      await input.ports.compose.notification(item, decision.reason, decision.idempotencyKey)}};
+      await input.ports.compose.statusChanged(prior, item, idempotencyKey)}};
     const result = await input.ports.outbox.enqueue({
       projectId: input.projectId,
       ...delivery,
-      idempotencyKey: decision.idempotencyKey,
+      idempotencyKey,
       availableAt: snapshot.observedAt
     });
-    if (result === 'enqueued') queuedActions += 1;
-  } else if (notificationItems.length > 1) {
-    const idempotencyKey = summaryKey(input.bindingId, snapshot.externalVersion);
-    const message = await input.ports.compose.notificationSummary(
-      notificationItems.length, snapshot.sourceUrl, idempotencyKey
-    );
-    const result = await input.ports.outbox.enqueue({projectId: input.projectId,
-      topic: 'messenger-notification', payload: {message}, idempotencyKey, availableAt: snapshot.observedAt});
     if (result === 'enqueued') queuedActions += 1;
   }
   // Advance the comparison baseline only after durable notification intent. A retry
@@ -109,9 +96,7 @@ export const reconcileTracker = async (input: Readonly<{
     targetReference: input.bindingId,
     correlationId: `reconcile:${input.bindingId}:${snapshot.cursor ?? snapshot.observedAt}`,
     occurredAt: snapshot.observedAt,
-    details: {itemCount: snapshot.items.length, changedItemCount: changedItems.length,
-      notificationCandidateCount: notificationItems.length,
-      aggregatedNotificationCount: notificationItems.length > 1 ? notificationItems.length : 0,
+    details: {itemCount: snapshot.items.length, statusChangeCount: statusChanges.length,
       baselineEstablished: establishesBaseline, queuedActions, sourceUrl: snapshot.sourceUrl}
   });
   return {observedItems: snapshot.items.length, queuedActions, cursor: snapshot.cursor};

@@ -2,6 +2,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import pg from 'pg';
 import type {
   ApprovalKind,
+  MessengerDeliveryInput,
   OpaqueSecretRef,
   ProjectRole,
   SourceReference,
@@ -658,6 +659,7 @@ export const resolveAgentSourceReferences = async (database: Database, input: Re
 export const executeAgentSubmissionTransaction = async (database: Database, input: Readonly<{
   workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
   role: string; itemId: string; observedVersion: string; sourceCount: number;
+  notification: MessengerDeliveryInput;
 }>, submit: () => Promise<Readonly<{deliveryReference: string}>>): Promise<Readonly<{
   status: 'completed' | 'duplicate'; deliveryReference: string;
 }>> => {
@@ -683,6 +685,10 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
        values($1,$2,$3,'agent.submit',$4,$5,$6,$7)`,
       [input.workspaceId,input.projectId,input.actorId,input.itemId,input.correlationId,
         JSON.stringify({role: input.role, observedVersion: input.observedVersion, sourceCount: input.sourceCount}),occurredAt]);
+    await client.query(
+      `insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
+       values($1,'messenger-notification',$2,$3,$4) on conflict(idempotency_key) do nothing`,
+      [input.projectId,input.notification.idempotencyKey,JSON.stringify({message: input.notification}),occurredAt]);
     await client.query('commit');
     return {status: 'completed', deliveryReference: delivered.deliveryReference};
   } catch (error) { await client.query('rollback'); throw error; }

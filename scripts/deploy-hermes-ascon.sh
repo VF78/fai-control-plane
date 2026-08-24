@@ -11,6 +11,7 @@ readonly telegram_secret_file=/etc/fai-hermes-ascon/secrets/telegram.env
 readonly internal_bridge_token=/etc/fai-hermes-ascon/secrets/internal-bridge-token
 readonly client_bridge_token=/etc/fai-hermes-ascon/secrets/client-bridge-token
 readonly data_root=/var/lib/fai-hermes-ascon
+readonly runtime_config_file="$data_root/runtime-config.yaml"
 readonly work_directory="$data_root/work"
 readonly runtime_secret_directory="$data_root/runtime-secrets"
 readonly runtime_internal_bridge_token="$runtime_secret_directory/internal-bridge-token"
@@ -65,6 +66,12 @@ done
 [[ $(sed -n 's/^HERMES_CLIENT_BRIDGE_TOKEN_FILE=//p' "$environment_file") == \
   "$runtime_client_bridge_token" ]] ||
   fail 'client bridge token must use the isolated runtime copy'
+[[ $(sed -n 's/^HERMES_RENDERED_CONFIG_FILE=//p' "$environment_file") == \
+  "$runtime_config_file" ]] ||
+  fail 'Hermes must use the isolated rendered config'
+readonly hermes_model=$(sed -n 's/^HERMES_MODEL=//p' "$environment_file")
+[[ "$hermes_model" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
+  fail 'Hermes model is invalid'
 
 [[ $(sha256sum "$environment_file" | cut -d ' ' -f 1) == "$HERMES_APPROVED_CONFIG_SHA256" ]] ||
   fail 'production environment does not match approved digest'
@@ -102,8 +109,22 @@ remove_runtime_secrets() {
   rm -f "$runtime_internal_bridge_token" "$runtime_client_bridge_token"
 }
 
+render_runtime_config() {
+  local rendered
+  [[ $(grep -Foc '__HERMES_MODEL__' "$deploy_root/infra/hermes-ascon/config.yaml") -eq 1 ]] ||
+    fail 'Hermes config template must contain exactly one model placeholder'
+  rendered=$(mktemp)
+  trap 'rm -f "$rendered"' RETURN
+  sed "s/__HERMES_MODEL__/$hermes_model/" "$deploy_root/infra/hermes-ascon/config.yaml" >"$rendered"
+  grep -Fq '__HERMES_MODEL__' "$rendered" && fail 'Hermes config model was not rendered'
+  install -o root -g root -m 0644 "$rendered" "$runtime_config_file"
+  trap - RETURN
+  rm -f "$rendered"
+}
+
 prepare_runtime() {
   install -d -o root -g root -m 0755 "$data_root"
+  render_runtime_config
   install -d -o "$workload_uid" -g "$workload_gid" -m 0700 \
     "$work_directory" "$runtime_secret_directory"
   [[ $(stat -c '%U:%G:%a' "$data_root") == root:root:755 ]] ||

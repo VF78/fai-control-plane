@@ -21,6 +21,8 @@ const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): Age
     content: 'Approved source text'}],
   repository: {readRepository: async () => ({repositoryId: 'R_repo',
     url: 'https://github.com/VF78/fai-control-plane', defaultBranch: 'main', observedAt: '2026-08-15T10:00:00.000Z'})},
+  composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: item.projectId,
+    contour: 'trusted-main', channelReference: 'internal', text: `Hermes accepted: ${item.url}`, idempotencyKey}),
   delivery: {submit: async (request) => ({deliveryReference: `hermes:${request.idempotencyKey}`,
     sessionReference: request.correlationId})},
   transaction: {execute: async (_input, submit) => ({status: 'completed', ...(await submit())})}
@@ -36,8 +38,9 @@ describe('explicit agent submission', () => {
   });
 
   it('derives stable request idempotency and lets the canonical transaction return a duplicate', async () => {
-    const seen = new Map<string, string>(); const base = ports();
+    const seen = new Map<string, string>(); const transactionInputs: unknown[] = []; const base = ports();
     const value: AgentSubmissionPorts = {...base, transaction: {execute: async (input, submit) => {
+      transactionInputs.push(input);
       const prior = seen.get(input.idempotencyKey);
       if (prior !== undefined) return {status: 'duplicate', deliveryReference: prior};
       const delivered = await submit(); seen.set(input.idempotencyKey, delivered.deliveryReference);
@@ -50,6 +53,9 @@ describe('explicit agent submission', () => {
     expect(deliver.mock.calls[0]![0]).toMatchObject({projectItem: {id: 'PVTI_item', projectId: 'project'},
       observedVersion: 'github:updated-at:v1', constraints: ['Do not deploy'],
       sources: [{id: 'source', content: 'Approved source text'}]});
+    expect(transactionInputs[0]).toMatchObject({notification: {projectId: 'project', contour: 'trusted-main',
+      channelReference: 'internal', text: 'Hermes accepted: https://github.com/VF78/fai-control-plane/issues/210',
+      idempotencyKey: expect.stringMatching(/^agent\.submit:[a-f0-9]{64}:accepted$/)}});
   });
 
   it('rejects aggregate selected source text above 64 KiB before delivery', async () => {

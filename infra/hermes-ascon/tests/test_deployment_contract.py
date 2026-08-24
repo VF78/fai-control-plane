@@ -33,6 +33,11 @@ class DeploymentContractTest(unittest.TestCase):
             environment,
         )
         self.assertNotIn("TOKEN_FILE=/etc/fai-hermes-ascon/secrets/", environment)
+        self.assertIn(
+            "HERMES_RENDERED_CONFIG_FILE="
+            "/var/lib/fai-hermes-ascon/runtime-config.yaml\n",
+            environment,
+        )
         digest = hashlib.sha256(environment_file.read_bytes()).hexdigest()
         runbook = (ROOT / "docs/ops/PRODUCTION_RUNBOOK.md").read_text()
         self.assertIn(digest, runbook)
@@ -58,6 +63,17 @@ class DeploymentContractTest(unittest.TestCase):
         auth_action = script.split("  auth)", 1)[1].split("    ;;", 1)[0]
         self.assertIn("remove_runtime_secrets", auth_action)
         self.assertIn("set +x", script)
+
+    def test_model_config_is_rendered_before_the_container_starts(self):
+        config = (HERMES / "config.yaml").read_text()
+        compose = (HERMES / "compose.yaml").read_text()
+        script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
+        self.assertIn("default: __HERMES_MODEL__", config)
+        self.assertNotIn("${HERMES_MODEL}", config)
+        self.assertIn("free_only: true", config)
+        self.assertIn("${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro", compose)
+        self.assertIn("render_runtime_config", script)
+        self.assertIn("Hermes model is invalid", script)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ import {
 } from '@fai-control-plane/db';
 import {assignTaskExecutor, decideApproval, type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
-import {mayChangeMembership, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type OpaqueSecretRef, type ProjectRole} from '@fai-control-plane/domain';
+import {mayChangeMembership, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 
@@ -64,7 +64,10 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
       agentTrackerOwnerOptionId: process.env.HERMES_TRACKER_OWNER_OPTION_ID ?? '', doneStatusOptionId: process.env.STATUS_DONE_ID ?? ''}),
     readFreshSnapshot: () => read.readSnapshot(context.bindingId, context.cursor), persistSnapshot: stores.snapshots.replace,
     resolveSources: (input: Readonly<{actorId: string; projectId: string; sourceIds: readonly string[]}>) => resolveAgentSourceReferences(database, input),
-    repository, delivery, tracker, transaction: {execute: (
+    composeAcceptedNotification: async (item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput> => ({projectId: context.projectId,
+      contour: 'trusted-main', channelReference: 'telegram:internal',
+      text: `Hermes принял задачу: ${item.title} — ${item.url}`, idempotencyKey}),
+    repository, delivery, tracker, agentInstructions: asconHermesInstructions, transaction: {execute: (
       input: Parameters<AgentSubmissionPorts['transaction']['execute']>[0], submit: Parameters<AgentSubmissionPorts['transaction']['execute']>[1]
     ) => executeAgentSubmissionTransaction(database, input, submit)}}};
 };
@@ -179,6 +182,23 @@ export const approval = async (request: Request, approvalId: string): Promise<Re
 };
 
 const unavailableDelivery: AgentDeliveryPort = {submit: async () => { throw new Error('agent_provider_unavailable'); }};
+
+const asconHermesInstructions = (role: 'developer'|'qa') => role === 'developer'
+  ? {constraints: [
+    'Work only on the referenced GitHub Project item and repository.',
+    'Do not merge, release, deploy, or access production.',
+    'Best-effort status contract, requiring configured GitHub Project mutation capability: after implementation, move this same Project item from In Dev to QA and read it back to verify Status is QA.'
+  ], acceptanceCriteria: [
+    'Record delivery evidence in the referenced GitHub issue or pull request.',
+    'The same Project item is confirmed in QA after development.'
+  ]} : {constraints: [
+    'Work only on the referenced GitHub Project item and repository.',
+    'Do not merge, release, deploy, or access production.',
+    'Best-effort status contract, requiring configured GitHub Project mutation capability: after QA, move this same Project item from QA to In Dev when rework is needed; otherwise QA to Acceptance. Read it back and verify Status.'
+  ], acceptanceCriteria: [
+    'Record QA evidence in the referenced GitHub issue or pull request.',
+    'The same Project item is confirmed in In Dev or Acceptance after QA.'
+  ]};
 
 export const taskAssignableUsers = async (request: Request): Promise<Response> => {
   try {

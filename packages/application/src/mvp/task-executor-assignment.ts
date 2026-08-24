@@ -3,9 +3,11 @@ import type {AgentSubmissionContext, AgentSubmissionPorts} from './agent-submiss
 import {submitExplicitAgent} from './agent-submission.ts';
 
 export type TaskExecutor = Readonly<{kind: 'human'; candidate: Readonly<{id: string; login: string}>}> | Readonly<{kind: 'hermes'}>;
+type HermesTaskRole = Extract<AgentRole, 'developer' | 'qa'>;
 export type TaskExecutorAssignmentCommand = Readonly<{actorId: string; projectId: string; projectItemId: string; executor: TaskExecutor}>;
 export type TaskExecutorAssignmentPorts = AgentSubmissionPorts & Readonly<{
   tracker: TrackerExecutorAssignmentPort;
+  agentInstructions(role: HermesTaskRole): Readonly<{constraints: readonly string[]; acceptanceCriteria: readonly string[]}>;
 }>;
 
 export type TaskExecutorAssignmentResult = Readonly<{
@@ -15,7 +17,7 @@ export type TaskExecutorAssignmentResult = Readonly<{
 
 const bounded = (value: unknown, maximum = 256): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
-const roleFor = (stage: string | null): AgentRole | null => stage === 'Ready' || stage === 'In Dev' ? 'developer' : stage === 'QA' ? 'qa' : null;
+const roleFor = (stage: string | null): HermesTaskRole | null => stage === 'Ready' || stage === 'In Dev' ? 'developer' : stage === 'QA' ? 'qa' : null;
 const allowed = (stage: string | null, blocked: boolean | null, executor: TaskExecutor): boolean =>
   blocked !== true && stage !== null && !['Backlog', 'Blocked', 'Done'].includes(stage) &&
   (executor.kind === 'human' || (stage !== 'Acceptance' && roleFor(stage) !== null));
@@ -94,10 +96,10 @@ export const assignTaskExecutor = async (
   if (verified.ownerOptionId !== context.agentTrackerOwnerOptionId || verified.assigneeIds.length !== 0 || role === null) {
     throw new Error('task_executor_conflict');
   }
+  const instructions = ports.agentInstructions(role);
   const delivery = await submitExplicitAgent({actorId: command.actorId, projectId: command.projectId,
     projectItemId: verified.itemId, role, sourceIds: [],
-    constraints: ['Work only on the referenced GitHub issue.', 'Do not merge, release, deploy, or access production.'],
-    acceptanceCriteria: ['Record delivery evidence in the referenced GitHub issue or pull request.']}, ports);
+    constraints: instructions.constraints, acceptanceCriteria: instructions.acceptanceCriteria}, ports);
   // In Dev and QA already express the active stage in GitHub. Starting Hermes
   // must preserve it; only Ready needs the post-receipt transition to In Dev.
   if (verified.statusOptionName !== 'Ready') {

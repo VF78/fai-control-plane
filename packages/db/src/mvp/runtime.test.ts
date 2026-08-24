@@ -38,5 +38,7 @@ describe('agent submission evidence projection', () => {
     expect(source).toContain('a.target_reference as "targetReference"');
     expect(source).toContain('r.result_reference as "deliveryReference"');
     expect(source).toContain('r.occurred_at=a.occurred_at');
+    expect(source).toContain("insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)");
+    expect(source).toContain("values($1,'messenger-notification',$2,$3,$4)");
   });
 });

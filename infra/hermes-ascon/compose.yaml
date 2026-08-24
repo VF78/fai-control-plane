@@ -22,7 +22,7 @@ services:
       TELEGRAM_GROUP_ALLOWED_CHATS: ${HERMES_TELEGRAM_CHAT_ID:?required}
     volumes:
       - /var/lib/fai-hermes-ascon:/opt/data
-      - ./config.yaml:/opt/data/config.yaml:ro
+      - ${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro
       - ./extensions/fai-control-plane:/opt/data/plugins/fai-control-plane:ro
       - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
       - ./profiles/internal/config.yaml:/opt/data/profiles/internal/config.yaml:ro

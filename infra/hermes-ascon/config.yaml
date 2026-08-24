@@ -2,7 +2,11 @@ _config_version: 34
 
 model:
   provider: openai-codex
-  default: ${HERMES_MODEL}
+  default: __HERMES_MODEL__
+
+# Hermes v2026.8.13: never use a paid OpenRouter auxiliary model.
+auxiliary:
+  free_only: true
 
 terminal:
   backend: local
