@@ -1,5 +1,7 @@
 import {describe, expect, it} from 'vitest';
-import {projects, pushChangedPaths, taskAssignableUsers, taskExecutor} from './api.ts';
+import {createHash} from 'node:crypto';
+import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
+import {effectiveAgentRouting, projects, pushChangedPaths, taskAssignableUsers, taskExecutor} from './api.ts';
 
 describe('projects HTTP boundary', () => {
   it('is a read-only endpoint and rejects creation before opening a session or database', async () => {
@@ -13,6 +15,13 @@ describe('task executor HTTP boundary', () => {
   it('exposes only GET candidates and POST assignment', async () => {
     await expect(taskAssignableUsers(new Request('https://app.f-ai.studio/api/tasks/executor', {method: 'POST'}))).resolves.toMatchObject({status: 405});
     await expect(taskExecutor(new Request('https://app.f-ai.studio/api/tasks/executor', {method: 'GET'}))).resolves.toMatchObject({status: 405});
+  });
+
+  it('uses the canonical base routing policy when a project has no saved override', () => {
+    expect(effectiveAgentRouting(null)).toEqual({
+      policy: defaultAgentRoutingPolicy,
+      version: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex')
+    });
   });
 });
 
