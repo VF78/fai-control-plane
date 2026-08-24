@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {parseProjectContextSnapshot, projectContextSnapshotVersion, projectContextSourceKind,
+import {parseProjectContextSnapshot, parseProjectContextSource, projectContextSnapshotVersion, projectContextSourceKind,
   serializeProjectContextSnapshot, serializeProjectContextSource} from './project-context.ts';
 
 describe('project context snapshot', () => {
@@ -9,6 +9,13 @@ describe('project context snapshot', () => {
   it('validates a canonical logical source envelope', () => {
     expect(serializeProjectContextSource({contract:'fai.project-context-source.v1',key:'requirements',content:'Exact source'}))
       .toBe('{"contract":"fai.project-context-source.v1","key":"requirements","content":"Exact source"}');
+  });
+
+  it('uses normalized source IDs and keeps repository paths in provenance', () => {
+    expect(parseProjectContextSource({contract:'fai.project-context-source.v1',key:'repo:agents',content:'Policy'}))
+      .toMatchObject({key:'repo:agents'});
+    expect(parseProjectContextSource({contract:'fai.project-context-source.v1',key:'repo:AGENTS.md',content:'Policy'}))
+      .toBeNull();
   });
 
   it('normalizes source order and hashes deterministic content without time', () => {

@@ -613,7 +613,7 @@ export const readActiveProjectContext = async (database: Database, actorId: stri
 };
 
 export const canonicalProjectContextKeys = Object.freeze([
-  'repo:AGENTS.md', 'repo:docs/AI_CONTEXT.md', 'repo:docs/adr/0006-thin-control-plane-authority.md',
+  'repo:agents', 'repo:ai-context', 'repo:adr-0006',
   'composition:project-process-policy'
 ] as const);
 

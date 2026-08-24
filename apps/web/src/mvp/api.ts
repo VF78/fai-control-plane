@@ -296,9 +296,9 @@ const envSecret = (prefix: string, purpose: string): OpaqueSecretRef => ({
 });
 
 const watchedContextPaths = new Map([
-  ['AGENTS.md', 'repo:AGENTS.md'],
-  ['docs/AI_CONTEXT.md', 'repo:docs/AI_CONTEXT.md'],
-  ['docs/adr/0006-thin-control-plane-authority.md', 'repo:docs/adr/0006-thin-control-plane-authority.md']
+  ['AGENTS.md', 'repo:agents'],
+  ['docs/AI_CONTEXT.md', 'repo:ai-context'],
+  ['docs/adr/0006-thin-control-plane-authority.md', 'repo:adr-0006']
 ]);
 export const pushChangedPaths = (body: Uint8Array, expected: Readonly<{repository: string; branch: string}>):
   Readonly<{after: string; paths: readonly string[]; removed: readonly string[]}> | null => {
