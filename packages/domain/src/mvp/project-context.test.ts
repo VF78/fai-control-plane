@@ -30,4 +30,14 @@ describe('project context snapshot', () => {
     expect(parseProjectContextSnapshot({contract:'fai.project-context.v1',sources:[source('a'),source('a')],content:'x'})).toBeNull();
     expect(parseProjectContextSnapshot({contract:'fai.project-context.v1',sources:[source('a')],content:'я'.repeat(2_001)})).toBeNull();
   });
+
+  it('fits four canonical 600-byte slices together with their exact manifest', () => {
+    const keys = ['repo:agents','repo:ai-context','repo:adr-0006','composition:project-process-policy'];
+    const sources = keys.map((key,index) => ({id:`00000000-0000-4000-8000-00000000000${index + 1}`,key,
+      kind:projectContextSourceKind,version:String(index + 1).repeat(64),
+      provenance:index < 3 ? `repo-file:docs/source-${index}@${'a'.repeat(40)}` : 'composition-file'} as const));
+    const content = keys.map((key) => `# ${key}\n${'x'.repeat(600)}`).join('\n\n');
+    const serialized = serializeProjectContextSnapshot({contract:'fai.project-context.v1',sources,content});
+    expect(new TextEncoder().encode(serialized).byteLength).toBeLessThanOrEqual(4_000);
+  });
 });

@@ -134,6 +134,7 @@ describe('active project context projection', () => {
     const source = await import('node:fs/promises').then(({readFile}) => readFile(new URL('./runtime.ts', import.meta.url), 'utf8'));
     expect(source).toContain("input.idempotencyKey.startsWith('bootstrap-context:')");
     expect(source).toContain("update(sourceIds.join('\\0'))");
+    expect(source).toContain('boundedCapsule(source.content, 600)');
   });
 });
 

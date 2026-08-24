@@ -649,7 +649,7 @@ export const refreshProjectContext = async (database: Database, input: Readonly<
   const ordered = canonicalProjectContextKeys.map((key) => [key, current.get(key)!] as const);
   // Four concise source slices make every canonical input visible in the
   // ephemeral capsule; full source text remains in its provenance artifact.
-  const content = ordered.map(([key, source]) => `# ${key}\n${boundedCapsule(source.content, 920)}`).join('\n\n');
+  const content = ordered.map(([key, source]) => `# ${key}\n${boundedCapsule(source.content, 600)}`).join('\n\n');
   if (new TextEncoder().encode(content).byteLength === 0) throw new Error('project_context_not_configured');
   const sourceIds = ordered.map(([,source]) => source.id);
   // Bootstrap is safely repeatable while still activating changed repository
