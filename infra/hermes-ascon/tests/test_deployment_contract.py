@@ -186,6 +186,9 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn('automatic Hermes Nginx restore failed', script)
         self.assertIn('run_fai_deploy_probe', script)
         self.assertIn('"run_not_found"', script)
+        self.assertIn('for attempt in {1..10}; do', script)
+        self.assertIn("run_status_ready=1", script)
+        self.assertIn("sleep 1", script)
         stage = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
         self.assertLess(stage.index("install_nginx_config"), stage.index("write_readiness"))
         self.assertLess(stage.index("write_readiness"), stage.index("commit_nginx_config"))

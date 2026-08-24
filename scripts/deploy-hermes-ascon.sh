@@ -447,13 +447,21 @@ case "$action" in
       https://hermes-ascon.f-ai.studio/v1/capabilities >/dev/null
     install_nginx_config
     run_status_response=$(mktemp)
-    run_status_code=$(printf 'header = "Authorization: Bearer %s"\n' "$api_key" | \
-      curl -sS --max-time 15 --config - --output "$run_status_response" \
-      --write-out '%{http_code}' \
-      https://hermes-ascon.f-ai.studio/v1/runs/run_fai_deploy_probe)
-    [[ "$run_status_code" == 404 ]] || fail 'public Hermes run-status route returned an unexpected status'
-    grep -Eq '"code"[[:space:]]*:[[:space:]]*"run_not_found"' "$run_status_response" ||
-      fail 'public Hermes run-status route did not return the bounded provider response'
+    run_status_ready=0
+    for attempt in {1..10}; do
+      : >"$run_status_response"
+      run_status_code=$(printf 'header = "Authorization: Bearer %s"\n' "$api_key" | \
+        curl -sS --max-time 3 --config - --output "$run_status_response" \
+        --write-out '%{http_code}' \
+        https://hermes-ascon.f-ai.studio/v1/runs/run_fai_deploy_probe || true)
+      if [[ "$run_status_code" == 404 ]] &&
+        grep -Eq '"code"[[:space:]]*:[[:space:]]*"run_not_found"' "$run_status_response"; then
+        run_status_ready=1
+        break
+      fi
+      sleep 1
+    done
+    (( run_status_ready )) || fail 'public Hermes run-status route did not reach the bounded provider response'
     rm -f "$run_status_response"
     run_status_response=''
     unset api_key
