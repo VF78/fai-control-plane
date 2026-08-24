@@ -231,7 +231,7 @@ render_target_environment
         ordered = (
             'git fetch --no-tags "$release_source"',
             'git merge --ff-only "$release_commit"',
-            'DOCKER_BUILDKIT=1 docker build \\',
+            '"${candidate_compose[@]}" build web',
             'mv -f "$temporary_environment" "$environment_file"',
             '"${compose[@]}" run --rm migrate',
             '"${compose[@]}" --profile bootstrap run --rm --no-deps bootstrap',
@@ -242,8 +242,8 @@ render_target_environment
         positions = [deploy.index(item) for item in ordered]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("git merge-base --is-ancestor HEAD", deploy)
-        self.assertEqual(deploy.count("DOCKER_BUILDKIT=1 docker build \\"), 1)
-        self.assertNotIn('"${candidate_compose[@]}" build', deploy)
+        self.assertEqual(deploy.count('"${candidate_compose[@]}" build web'), 1)
+        self.assertNotIn("build web worker", deploy)
         self.assertIn("prune_superseded_project_images", deploy)
         dockerfile = (ROOT / "infra/compose/Dockerfile").read_text()
         self.assertIn(
