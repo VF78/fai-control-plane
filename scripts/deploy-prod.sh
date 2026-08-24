@@ -318,7 +318,7 @@ chmod 0600 "$temporary_environment"
 candidate_compose=(docker compose --project-name fai-control-plane-mvp --env-file "$temporary_environment" -f "$compose_file")
 "${candidate_compose[@]}" config --quiet
 log 'deploy: building exact application images'
-docker build \
+DOCKER_BUILDKIT=1 docker build \
   --file "$deploy_root/infra/compose/Dockerfile" \
   --target runtime \
   --tag "fai-control-plane-mvp:$release_commit" \
