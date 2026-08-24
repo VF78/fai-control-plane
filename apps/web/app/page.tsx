@@ -1,6 +1,7 @@
 import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews} from '@fai-control-plane/db';
 import {Dashboard, Process, Shell, Tasks} from '../src/mvp/phase-a-ui.tsx';
-import {ApprovalControl} from '../src/mvp/operator-controls.tsx';
+import {executorFact} from '../src/mvp/phase-a-view.ts';
+import {ApprovalControl, TaskExecutorControl} from '../src/mvp/operator-controls.tsx';
 import {PhaseB, TaskApprovalEvidence, type PhaseBView} from '../src/mvp/phase-b-ui.tsx';
 import {integrationConfig} from '../src/mvp/integration-config.ts';
 import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
@@ -28,7 +29,7 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
   const evidence = selected === null ? null : operatorEvidence.find((item) => item.projectId === selected.id) ?? null;
   const config = integrationConfig();
   const content = view === 'tasks'
-    ? <Tasks project={selected} task={query.task} filter={query.filter} approvalControl={(taskId) => selected === null ? null : <><ApprovalControl projectId={selected.id} taskId={taskId}/><TaskApprovalEvidence projectId={selected.id} taskId={taskId} approvals={approvals}/></>}/>
+    ? <Tasks project={selected} task={query.task} filter={query.filter} hermesOwnerOptionId={process.env.HERMES_TRACKER_OWNER_OPTION_ID} executorControl={(task) => selected === null ? null : <TaskExecutorControl projectId={selected.id} currentExecutor={executorFact(task, process.env.HERMES_TRACKER_OWNER_OPTION_ID)} task={{itemId: task.itemId, status: task.statusOptionName, blocked: task.blocked}}/>} approvalControl={(taskId) => selected === null ? null : <><ApprovalControl projectId={selected.id} taskId={taskId}/><TaskApprovalEvidence projectId={selected.id} taskId={taskId} approvals={approvals}/></>}/>
     : view === 'process' ? <Process project={selected}/>
       : view === 'dashboard' ? <Dashboard projects={projects}/>
         : <PhaseB view={view} project={selected} evidence={evidence} sources={sources} approvals={approvals} actorId={session.actorId} config={config}/>;

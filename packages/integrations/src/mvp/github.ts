@@ -3,6 +3,7 @@ import type {
   OpaqueSecretRef,
   RepositoryReadPort,
   SecretResolverPort,
+  TrackerExecutorAssignmentPort,
   TrackerMutationPort,
   TrackerItemFact,
   TrackerReadPort,
@@ -241,7 +242,7 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
   credentialRef: OpaqueSecretRef;
   secrets: SecretResolverPort;
   fetch?: Fetch;
-}>): TrackerMutationPort => {
+}>): TrackerMutationPort & TrackerExecutorAssignmentPort => {
   if (!validBinding(input.binding)) throw new Error('github_binding_invalid');
   const request = input.fetch ?? globalThis.fetch;
   const token = async (): Promise<string> => {
@@ -253,6 +254,91 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
     const number = Number(referenceId);
     if (!Number.isSafeInteger(number) || number <= 0) throw new Error('github_issue_reference_invalid');
     return number;
+  };
+  const graph = async (credential: string, query: string, variables: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const response = await request('https://api.github.com/graphql', {method: 'POST', headers: apiHeaders(credential),
+      body: JSON.stringify({query, variables}), signal: AbortSignal.timeout(10_000)});
+    const value = response.ok ? object(await response.json()) : null;
+    if (value === null || (Array.isArray(value.errors) && value.errors.length > 0)) throw new Error('github_mutation_failed');
+    return value;
+  };
+  const projectFields = async (credential: string) => {
+    const root = await graph(credential, `query($owner:String!,$number:Int!){user(login:$owner){projectV2(number:$number){id fields(first:100){nodes{
+      ... on ProjectV2SingleSelectField{id name options{id name}}
+    } pageInfo{hasNextPage}}}}}`, {owner: input.binding.owner, number: input.binding.projectNumber});
+    const project = object(object(object(root.data)?.user)?.projectV2);
+    const fields = object(project?.fields); const nodes = fields?.nodes;
+    if (fields === null || !bounded(project?.id, 512) || !Array.isArray(nodes) || object(fields.pageInfo)?.hasNextPage === true) {
+      throw new Error('github_mutation_failed');
+    }
+    const single = (name: string): Readonly<{id: string; options: readonly Readonly<{id: string; name: string}>[]}> => {
+      const field = nodes.map(object).find((value) => value?.name === name);
+      if (field === undefined || field === null || !bounded(field.id, 512) || !Array.isArray(field.options)) throw new Error('github_mutation_failed');
+      const options = field.options.map(object).map((option) => {
+        if (option === null || !bounded(option.id, 512) || !bounded(option.name, 512)) throw new Error('github_mutation_failed');
+        return {id: option.id, name: option.name};
+      });
+      return {id: field.id, options};
+    };
+    return {projectId: project.id, owner: single('Owner'), status: single('Status')};
+  };
+  const currentItem = async (credential: string, itemId: string, issueId: string, expectedVersion: string) => {
+    const root = await graph(credential, `query($id:ID!){node(id:$id){... on ProjectV2Item{id updatedAt project{id}
+      statusValue:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId name}}
+      ownerValue:fieldValueByName(name:"Owner"){... on ProjectV2ItemFieldSingleSelectValue{optionId name}}
+      content{... on Issue{id databaseId number url assignees(first:20){nodes{id login name}}}}
+    }}}`, {id: itemId});
+    const item = object(object(root.data)?.node); const content = object(item?.content);
+    const databaseId = content?.databaseId; const issueNumber = content?.number;
+    if (item?.id !== itemId || !bounded(item?.updatedAt, 64) || !bounded(object(item?.project)?.id, 512) ||
+      !bounded(content?.id, 512) || !Number.isSafeInteger(databaseId) || String(databaseId) !== issueId ||
+      !Number.isSafeInteger(issueNumber) || (issueNumber as number) <= 0 ||
+      content?.url !== `https://github.com/${input.binding.owner}/${input.binding.repository}/issues/${issueNumber as number}` ||
+      !Array.isArray(object(content?.assignees)?.nodes)) throw new Error('github_response_invalid');
+    if (`github:updated-at:${item.updatedAt as string}` !== expectedVersion) throw new Error('github_version_conflict');
+    const assigneeNodes = object(content.assignees)?.nodes;
+    if (!Array.isArray(assigneeNodes)) throw new Error('github_response_invalid');
+    const assignees = assigneeNodes.map(object).map((user) => {
+      if (user === null || !bounded(user.id, 512) || !bounded(user.login, 256) ||
+        (user.name !== null && user.name !== undefined && !bounded(user.name, 256))) throw new Error('github_response_invalid');
+      return {id: user.id, login: user.login, name: user.name === null || user.name === undefined ? null : user.name};
+    });
+    const value = (field: 'statusValue'|'ownerValue') => object(item[field]);
+    return {projectId: object(item.project)!.id as string, issueNumber: issueNumber as number,
+      status: value('statusValue'), owner: value('ownerValue'), assignees};
+  };
+  const setIssueAssignees = async (credential: string, issueNumber: number, assignees: readonly string[]) => {
+    const response = await request(`https://api.github.com/repos/${input.binding.owner}/${input.binding.repository}/issues/${issueNumber}`, {
+      method: 'PATCH', headers: apiHeaders(credential), body: JSON.stringify({assignees}), signal: AbortSignal.timeout(10_000)});
+    if (!response.ok) throw new Error('github_mutation_failed');
+  };
+  const setSingleSelect = async (credential: string, projectId: string, itemId: string, fieldId: string, optionId: string) => {
+    await graph(credential, `mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`,
+      {project: projectId, item: itemId, field: fieldId, option: optionId});
+  };
+  const clearField = async (credential: string, projectId: string, itemId: string, fieldId: string) => {
+    await graph(credential, `mutation($project:ID!,$item:ID!,$field:ID!){clearProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field}){projectV2Item{id}}}`,
+      {project: projectId, item: itemId, field: fieldId});
+  };
+  const candidates = async (credential: string) => {
+    const users: {id: string; login: string; name: string | null}[] = [];
+    let page = 1;
+    for (; page <= 10; page += 1) {
+      const response = await request(`https://api.github.com/repos/${input.binding.owner}/${input.binding.repository}/assignees?per_page=100&page=${page}`,
+        {headers: apiHeaders(credential), signal: AbortSignal.timeout(10_000)});
+      const value = response.ok ? await response.json() as unknown : null;
+      if (!Array.isArray(value)) throw new Error('github_read_failed');
+      for (const entry of value) {
+        const user = object(entry);
+        const id = user === null ? null : String(user.id ?? '');
+        if (user === null || !bounded(id, 512) || !bounded(user.login, 256) ||
+          (user.name !== null && user.name !== undefined && !bounded(user.name, 256))) throw new Error('github_response_invalid');
+        users.push({id, login: user.login, name: user.name === null || user.name === undefined ? null : user.name});
+      }
+      if (value.length < 100) break;
+    }
+    if (page > 10 && users.length >= 1_000) throw new Error('github_project_over_limit');
+    return users;
   };
   return {
     async createIssue(command) {
@@ -328,6 +414,65 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       return {referenceId: String(number),
         url: `https://github.com/${input.binding.owner}/${input.binding.repository}/issues/${number}`,
         version: command.expectedVersion};
+    },
+    async listAssignableUsers() {
+      return candidates(await token());
+    },
+    async assignHumanExecutor(command) {
+      const credential = await token();
+      const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
+      const available = await candidates(credential);
+      if (!available.some((candidate) => candidate.id === command.candidate.id && candidate.login === command.candidate.login)) {
+        throw new Error('github_assignee_unavailable');
+      }
+      const fields = await projectFields(credential);
+      if (current.projectId !== fields.projectId) throw new Error('github_response_invalid');
+      let mutated = false;
+      try {
+        await setIssueAssignees(credential, current.issueNumber, [command.candidate.login]); mutated = true;
+        await clearField(credential, fields.projectId, command.itemId, fields.owner.id);
+        if (current.status?.name === 'Ready') {
+          const inDev = fields.status.options.find((option) => option.name === 'In Dev');
+          if (inDev === undefined) throw new Error('github_status_unavailable');
+          await setSingleSelect(credential, fields.projectId, command.itemId, fields.status.id, inDev.id);
+        }
+      } catch (error) {
+        if (mutated) throw new Error('github_assignment_partial');
+        throw error;
+      }
+    },
+    async assignHermesExecutor(command) {
+      const credential = await token();
+      const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
+      if (current.owner?.optionId === command.hermesOwnerOptionId && current.assignees.length === 0) {
+        return 'already_assigned';
+      }
+      const fields = await projectFields(credential);
+      if (current.projectId !== fields.projectId || !fields.owner.options.some((option) => option.id === command.hermesOwnerOptionId)) {
+        throw new Error('github_owner_unavailable');
+      }
+      let mutated = false;
+      try {
+        await setIssueAssignees(credential, current.issueNumber, []); mutated = true;
+        await setSingleSelect(credential, fields.projectId, command.itemId, fields.owner.id, command.hermesOwnerOptionId);
+        return 'assigned';
+      } catch (error) {
+        if (mutated) throw new Error('github_assignment_partial');
+        throw error;
+      }
+    },
+    async startHermesExecutor(command) {
+      const credential = await token();
+      const current = await currentItem(credential, command.itemId, command.issueId, command.expectedVersion);
+      if (current.owner?.optionId !== command.hermesOwnerOptionId || current.assignees.length !== 0) throw new Error('github_version_conflict');
+      if (current.status?.name === 'In Dev') return 'already_started';
+      if (current.status?.name !== 'Ready') throw new Error('github_version_conflict');
+      const fields = await projectFields(credential);
+      if (current.projectId !== fields.projectId) throw new Error('github_response_invalid');
+      const inDev = fields.status.options.find((option) => option.name === 'In Dev');
+      if (inDev === undefined) throw new Error('github_status_unavailable');
+      await setSingleSelect(credential, fields.projectId, command.itemId, fields.status.id, inDev.id);
+      return 'advanced';
     }
   };
 };

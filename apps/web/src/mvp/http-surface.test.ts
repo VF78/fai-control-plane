@@ -5,7 +5,7 @@ describe('MVP HTTP surface contract', () => {
   it('contains exactly the approved 12 API routes, including explicit Hermes submission', () => {
     expect(mvpApiRoutes).toHaveLength(12);
     expect(new Set(mvpApiRoutes).size).toBe(12);
-    expect(mvpApiRoutes).toContain('/api/agents/submit');
+    expect(mvpApiRoutes).toContain('/api/tasks/executor');
   });
 
   it('keeps OAuth callback outside the API route count', () => {

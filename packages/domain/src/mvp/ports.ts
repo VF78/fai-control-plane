@@ -24,6 +24,29 @@ export type TrackerMutationPort = Readonly<{
   }>): Promise<Readonly<{referenceId: string; url: string; version: string}>>;
 }>;
 
+/** Provider-native assignment is a bounded task fact, not a local roster or lifecycle. */
+export type TrackerExecutorAssignmentPort = Readonly<{
+  listAssignableUsers(): Promise<readonly Readonly<{id: string; login: string; name: string | null}>[]>;
+  assignHumanExecutor(input: Readonly<{
+    itemId: string;
+    issueId: string;
+    expectedVersion: string;
+    candidate: Readonly<{id: string; login: string}>;
+  }>): Promise<void>;
+  assignHermesExecutor(input: Readonly<{
+    itemId: string;
+    issueId: string;
+    expectedVersion: string;
+    hermesOwnerOptionId: string;
+  }>): Promise<'assigned' | 'already_assigned'>;
+  startHermesExecutor(input: Readonly<{
+    itemId: string;
+    issueId: string;
+    expectedVersion: string;
+    hermesOwnerOptionId: string;
+  }>): Promise<'advanced' | 'already_started'>;
+}>;
+
 /** Provider-neutral observation of the repository named by a tracker binding. */
 export type RepositoryReadPort = Readonly<{
   readRepository(input: Readonly<{repositoryId: string}>): Promise<Readonly<{

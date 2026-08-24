@@ -1,7 +1,6 @@
 import type {ApprovalEvidenceView, ProjectOperatorEvidenceView, ProjectSourceView, ProjectTaskView} from '@fai-control-plane/db';
 import type {ReactNode} from 'react';
 import {Bot, CheckCircle2, CircleDot, FileText, Link2, ShieldCheck, UsersRound} from 'lucide-react';
-import {AgentSubmitControl} from './agent-submit-control.tsx';
 import {AccessControls, SourceAddControl} from './operator-controls.tsx';
 import type {IntegrationConfig} from './integration-config.ts';
 import {phaseHref} from './phase-a-ui.tsx';
@@ -26,11 +25,11 @@ export function TaskApprovalEvidence({projectId, taskId, approvals}: Readonly<{p
   return <EvidenceList title="Зафиксированные согласования" rows={approvals.filter((approval) => approval.projectId === projectId && approval.targetReference === taskId).map((approval) => ({id: approval.id, title: approval.decision === 'approved' ? 'Согласовано' : 'Отклонено', detail: `${approval.kind} · ${approval.targetVersion}`, at: approval.decidedAt, url: approval.targetUrl}))}/>;
 }
 
-function Systems({project, evidence, sources, config}: Readonly<Pick<Props, 'project'|'evidence'|'sources'|'config'>>) {
+function Systems({project, evidence, config}: Readonly<Pick<Props, 'project'|'evidence'|'config'>>) {
   if (project === null) return empty('Нет доступных проектов');
   const submissions = evidence?.agentSubmissions ?? {count: 0, lastOccurredAt: null};
   const records = [...(evidence?.receipts ?? []).map((item, index) => ({id: `receipt-${index}`, title: item.commandType, detail: item.resultReference, at: item.occurredAt})), ...(evidence?.audit ?? []).map((item, index) => ({id: `audit-${index}`, title: item.action, detail: item.targetReference, at: item.occurredAt}))];
-  return <div className="fcp-phase-b"><Header title="Агенты и системы" detail="Hermes: готовность, явная команда и подтверждённые квитанции."/><section className="fcp-phase-b-panel fcp-phase-b-agent"><header><div><span>ASCON Hermes</span><h2>AgentDeliveryPort · только явная команда оператора</h2></div><b className={config.hermes ? 'ready' : 'danger'}><CircleDot aria-hidden="true" size={14}/>{config.hermes ? 'Настроено' : 'Не настроено'}</b></header><div className="fcp-phase-b-agent-name"><i><Bot aria-hidden="true" size={22}/></i><div><strong>Hermes</strong><small>Провайдер-независимый адаптер доставки · секретная ссылка скрыта</small></div><b className={config.hermes ? 'ready' : 'danger'}><CircleDot aria-hidden="true" size={14}/>{config.hermes ? 'Готов' : 'Нет готовности'}</b></div><Facts><Fact label="Готовность интеграции"><strong>{config.hermes ? 'Точка подключения и ссылка на credential' : 'Требуется composition'}</strong></Fact><Fact label="Допустимая отправка"><strong>Незавершённая задача + Owner = Hermes</strong><small>Свежий снимок GitHub Project</small></Fact><Fact label="Последняя квитанция"><strong>{submissions.lastOccurredAt === null ? 'Нет подтверждённого факта' : instant(submissions.lastOccurredAt)}</strong><small>{submissions.count} явных команд</small></Fact></Facts><footer><span>● GitHub snapshot</span><span>● Hermes delivery</span><span>● receipts / audit</span></footer></section><AgentSubmitControl projectId={project.id} tasks={project.tasks} sources={sources.filter((source) => source.projectId === project.id)}/><p className="fcp-phase-b-note">Внешняя команда фиксирует только receipt/audit; задача и её статус остаются в GitHub Project.</p><EvidenceList title="Подтверждённые receipts и интеграции" rows={records}/></div>;
+  return <div className="fcp-phase-b"><Header title="Агенты и системы" detail="Готовность Hermes и подтверждённые receipts/audit без отдельного запуска."/><section className="fcp-phase-b-panel fcp-phase-b-agent"><header><div><span>ASCON Hermes</span><h2>AgentDeliveryPort · диагностика</h2></div><b className={config.hermes ? 'ready' : 'danger'}><CircleDot aria-hidden="true" size={14}/>{config.hermes ? 'Настроено' : 'Не настроено'}</b></header><div className="fcp-phase-b-agent-name"><i><Bot aria-hidden="true" size={22}/></i><div><strong>Hermes</strong><small>Провайдер-независимый адаптер доставки · секретная ссылка скрыта</small></div><b className={config.hermes ? 'ready' : 'danger'}><CircleDot aria-hidden="true" size={14}/>{config.hermes ? 'Готов' : 'Нет готовности'}</b></div><Facts><Fact label="Готовность интеграции"><strong>{config.hermes ? 'Точка подключения и ссылка на credential' : 'Требуется composition'}</strong></Fact><Fact label="Допустимый запуск"><strong>Только из карточки GitHub Project</strong><small>Явное назначение исполнителя</small></Fact><Fact label="Последняя квитанция"><strong>{submissions.lastOccurredAt === null ? 'Нет подтверждённого факта' : instant(submissions.lastOccurredAt)}</strong><small>{submissions.count} явных команд</small></Fact></Facts><footer><span>● GitHub snapshot</span><span>● Hermes delivery</span><span>● receipts / audit</span></footer></section><p className="fcp-phase-b-note">Чтобы назначить человека или Hermes, откройте <a href={phaseHref('tasks', project.slug)}>задачу GitHub Project</a>.</p><EvidenceList title="Подтверждённые receipts и интеграции" rows={records}/></div>;
 }
 
 function Conversations({project, evidence, config}: Readonly<Pick<Props, 'project'|'evidence'|'config'>>) {
@@ -60,9 +59,9 @@ function Settings({project, sources, approvals}: Readonly<Pick<Props, 'project'|
 
 export function PhaseB(props: Props) {
   switch (props.view) {
-    case 'systems': return <Systems {...props}/>;
     case 'conversations': return <Conversations {...props}/>;
     case 'people': return <People {...props}/>;
+    case 'systems': return <Systems {...props}/>;
     case 'settings': return <Settings {...props}/>;
   }
 }

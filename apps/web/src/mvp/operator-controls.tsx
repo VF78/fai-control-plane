@@ -1,6 +1,6 @@
 'use client';
 
-import {useState, type FormEvent} from 'react';
+import {useEffect, useRef, useState, type FormEvent} from 'react';
 import {useRouter} from 'next/navigation';
 
 type Result = {error?: string; status?: string};
@@ -45,28 +45,28 @@ export function AccessControls({projectId, canManage, members}: Readonly<{projec
   return <section className="fcp-controls"><details className="fcp-control"><summary>Добавить участника</summary><form onSubmit={onboard}><label>Имя<input name="displayName" required maxLength={200}/></label><label>Роль<select name="role"><option value="operator">operator</option><option value="contributor">contributor</option><option value="client">client</option></select></label><label>GitHub numeric ID <input name="githubUserId" inputMode="numeric" pattern="[1-9][0-9]*"/></label><label>Telegram ID <input name="telegramUserId" inputMode="numeric"/></label><label>Bitrix24 ID <input name="bitrix24UserId"/></label><small>Для команды нужен GitHub ID; клиенту достаточно GitHub или Bitrix24. Доступ к чат-комнатам здесь не меняется.</small><button className="fcp-primary">Добавить</button></form></details><details className="fcp-control"><summary>Изменить членство</summary><form onSubmit={membership}><label>Участник<select name="membershipId">{members.map((member) => <option key={member.membershipId} value={member.membershipId}>{member.displayName} · {member.role}</option>)}</select></label><label>Новая роль<select name="role" defaultValue="" required><option value="" disabled>Выберите роль</option><option value="project_owner">project owner</option><option value="operator">operator</option><option value="contributor">contributor</option><option value="client">client</option></select></label><label className="fcp-check"><input name="active" type="checkbox" defaultChecked/> Активен</label><button className="fcp-primary">Сохранить доступ</button></form></details><Notice value={notice}/></section>;
 }
 
-export function AgentSubmitControlClient({projectId, tasks, sources}: Readonly<{
-  projectId: string; tasks: readonly {itemId: string; issueId: string; title: string}[];
-  sources: readonly {id: string; name: string; kind: string}[];
-}>) {
-  const [notice, setNotice] = useState<string | null>(null); const [pending, setPending] = useState(false); const router = useRouter();
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setPending(true); setNotice(null); const form = new FormData(event.currentTarget);
-    const lines = (name: string) => String(form.get(name) ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    try {
-      const result = await post('/api/agents/submit', {projectId, projectItemId: form.get('projectItemId'), role: form.get('role'),
-        sourceIds: form.getAll('sourceIds'), constraints: lines('constraints'), acceptanceCriteria: lines('acceptanceCriteria')});
-      router.refresh();
-      setNotice(result.status === 'duplicate' ? 'Дубликат: эта точная команда уже была передана Hermes.'
-        : 'Команда принята: Hermes начал внешнюю работу. Receipt и audit зафиксированы.');
-    } catch (error) { const code = error instanceof Error ? error.message : 'request_failed'; setNotice(code.endsWith('_denied')
-      ? 'Отказано: нужны активное членство и роль project owner или operator.' : code === 'agent_source_payload_too_large'
-        ? 'Выбранные источники превышают 64 KiB. Выберите меньше источников или сократите их текст.' : code === 'provider_error'
-        ? 'Ошибка провайдера: Hermes или GitHub не подтвердил операцию.' : `Команда не отправлена: ${code}`);
+type AssignableUser = Readonly<{id: string; login: string; name: string|null}>;
+export function TaskExecutorControl({projectId, task, currentExecutor}: Readonly<{projectId: string; currentExecutor: string; task: {itemId: string; status: string|null; blocked: boolean|null}}>) {
+  const [users, setUsers] = useState<readonly AssignableUser[]|null>(null); const [selected, setSelected] = useState('');
+  const [confirming, setConfirming] = useState(false); const [notice, setNotice] = useState<string|null>(null); const [pending, setPending] = useState(false);
+  const confirmRef = useRef<HTMLDivElement>(null); const actionRef = useRef<HTMLButtonElement>(null); const router = useRouter();
+  useEffect(() => { let active = true; void fetch(`/api/tasks/executor?projectId=${encodeURIComponent(projectId)}`).then(async (response) => {
+    const value = await response.json().catch(() => ({})) as {users?: AssignableUser[]; error?: string}; if (!response.ok) throw new Error(value.error ?? 'provider_error');
+    if (active) setUsers(value.users ?? []);
+  }).catch(() => { if (active) setNotice('GitHub не подтвердил список доступных пользователей. Обновите задачу.'); }); return () => { active = false; }; }, [projectId]);
+  const choice = selected === 'hermes' ? 'hermes' : users?.find((user) => `human:${user.id}` === selected);
+  const human = choice !== undefined && choice !== 'hermes' ? choice : null;
+  const unavailable = task.blocked === true || task.status === null || ['Backlog', 'Blocked', 'Done'].includes(task.status);
+  const effects = human === null ? task.status === 'Ready' ? 'GitHub: Owner станет Hermes, Assignee очистится; Hermes получит явную команду, статус перейдёт в In Dev.' : `GitHub: Owner станет Hermes, Assignee очистится; Hermes получит явную команду, статус ${task.status} сохранится.` : `GitHub: Assignee станет @${human.login}, Owner очистится${task.status === 'Ready' ? ', статус перейдёт в In Dev' : `; статус ${task.status} сохранится`}; уведомление человеку не отправляется.`;
+  useEffect(() => { if (confirming) requestAnimationFrame(() => confirmRef.current?.focus()); }, [confirming]);
+  const execute = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (pending || choice === undefined) return; setPending(true); setNotice(null);
+    try { const result = await post('/api/tasks/executor', {projectId, projectItemId: task.itemId, executor: human === null ? {kind: 'hermes'} : {kind: 'human', candidate: {id: human.id, login: human.login}}}); router.refresh(); setConfirming(false);
+      setNotice(result.status === 'status_sync_failed' ? 'Hermes получил команду, но GitHub не подтвердил In Dev. Повторите: вторая отправка не произойдёт.' : result.status === 'duplicate' ? 'Повтор подтверждён: Hermes уже получил эту точную команду.' : human === null ? 'Hermes назначен. GitHub и доставка подтверждены.' : 'Исполнитель назначен в GitHub.');
+    } catch (error) { const code = error instanceof Error ? error.message : 'request_failed'; if (code === 'assignment_partial') router.refresh(); setNotice(code === 'task_conflict' ? 'Задача уже изменилась в GitHub. Обновите страницу и проверьте исполнителя.' : code === 'candidate_unavailable' ? 'Пользователь больше не доступен для назначения. Выберите другого.' : code === 'operation_unavailable' ? 'Назначение недоступно для текущей стадии или конфигурации.' : code === 'assignment_partial' ? 'GitHub применил операцию только частично. Данные обновлены — проверьте исполнителя и статус перед повтором.' : code === 'delivery_failed' ? 'Hermes назначен в GitHub, но запуск не подтверждён. Повторите запуск из этой задачи.' : code === 'provider_error' ? 'GitHub или Hermes недоступен. Повторите позже.' : 'Не удалось сохранить назначение. Обновите задачу и повторите.');
     } finally { setPending(false); }
   };
-  if (tasks.length === 0) return <p className="fcp-control-note">Для явной команды нужна не-Done задача свежего GitHub Project snapshot с Owner = Hermes.</p>;
-  return <details className="fcp-control fcp-agent-submit"><summary>Передать роль Hermes</summary><p className="fcp-warning"><b>Внимание:</b> отправка сразу запускает внешнюю работу Hermes. Это не меняет статус задачи, не публикует, не развёртывает и не даёт production-доступ.</p><form onSubmit={(event) => void submit(event)}><label>Задача GitHub Project<select name="projectItemId" required>{tasks.map((task) => <option key={task.itemId} value={task.itemId}>#{task.issueId} · {task.title}</option>)}</select></label><label>Роль<select name="role" defaultValue="developer"><option value="manager">manager</option><option value="developer">developer</option><option value="qa">qa</option></select></label><label>Ограничения — по одному на строку<textarea name="constraints" required maxLength={8000}/></label><label>Критерии приёмки — по одному на строку<textarea name="acceptanceCriteria" required maxLength={8000}/></label>{sources.length === 0 ? <p className="fcp-control-note">Без дополнительных Control Plane sources.</p> : <fieldset><legend>Передать выбранный текст Hermes (всего до 64 KiB)</legend>{sources.map((source) => <label className="fcp-check" key={source.id}><input type="checkbox" name="sourceIds" value={source.id}/>{source.name} · {source.kind}</label>)}</fieldset>}<label className="fcp-check fcp-confirm"><input type="checkbox" required/> Я понимаю, что это явный внешний запуск Hermes</label><button className="fcp-primary" disabled={pending}>{pending ? 'Передача…' : 'Запустить Hermes'}</button></form><Notice value={notice}/></details>;
+  if (unavailable) return <section className="fcp-task-executor"><header><div><h2>Исполнитель</h2><p>Назначение доступно после Ready и до Done.</p></div></header><p className="fcp-control-note">Для текущего статуса GitHub Project назначение недоступно.</p></section>;
+  return <section className="fcp-task-executor"><header><div><h2>Исполнитель</h2><p>GitHub остаётся источником назначения и статуса.</p></div><span>{currentExecutor}</span></header><form onSubmit={(event) => void execute(event)}><label>Кому назначить<select value={selected} onChange={(event) => { setSelected(event.target.value); setConfirming(false); }} disabled={pending}><option value="">{users === null ? 'Загружаем пользователей GitHub…' : 'Выберите исполнителя'}</option><optgroup label="Люди">{users?.map((user) => <option key={user.id} value={`human:${user.id}`}>{user.name === null ? `@${user.login}` : `${user.name} · @${user.login}`}</option>)}</optgroup>{task.status === 'Acceptance' ? null : <optgroup label="Агенты"><option value="hermes">Hermes</option></optgroup>}</select></label>{confirming ? <div className="fcp-task-confirm" role="status" tabIndex={-1} ref={confirmRef}><strong>{human === null ? 'Hermes' : `${human.name ?? human.login} · @${human.login}`}</strong><p>{effects}</p>{human === null ? <small>Hermes delivery — явная внешняя операция; merge, release, deploy и production недоступны.</small> : null}<div><button className="fcp-primary" disabled={pending}>{pending ? 'Сохраняем…' : 'Подтвердить и начать'}</button><button type="button" onClick={() => { setConfirming(false); actionRef.current?.focus(); }} disabled={pending}>Отмена</button></div></div> : <button type="button" className="fcp-primary" ref={actionRef} disabled={pending || choice === undefined} onClick={() => setConfirming(true)}>Назначить и начать</button>}</form><Notice value={notice}/></section>;
 }
 
 function empty(value: FormDataEntryValue | null): string | null { return typeof value === 'string' && value.trim().length > 0 ? value : null; }
