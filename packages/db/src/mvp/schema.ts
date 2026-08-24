@@ -203,7 +203,8 @@ export const auditEvents = pgTable('audit_events', {
   details: jsonb('details').$type<Readonly<Record<string, unknown>>>().notNull(),
   occurredAt: timestamp('occurred_at', {withTimezone: true}).notNull(),
   createdAt: createdAt()
-}, (table) => [index('audit_events_project_time_idx').on(table.projectId, table.occurredAt)]);
+}, (table) => [index('audit_events_project_time_idx').on(table.projectId, table.occurredAt),
+  index('audit_events_attempt_lifecycle_idx').on(table.projectId, table.action, table.targetReference, table.occurredAt)]);
 
 export const mvpTables = Object.freeze({
   workspaces,

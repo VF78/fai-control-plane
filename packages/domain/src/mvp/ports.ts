@@ -101,6 +101,11 @@ export type AgentDeliveryPort = Readonly<{
     deliveryReference: string;
     sessionReference: string;
   }>>;
+  /** Provider-neutral, bounded observation of one previously accepted attempt. */
+  observe(deliveryReference: string): Promise<Readonly<{
+    status: 'started' | 'completed' | 'failed' | 'unknown';
+    failureCode?: 'provider_failed' | 'provider_cancelled';
+  }>>;
 }>;
 
 type MessengerInboundBase = Readonly<{

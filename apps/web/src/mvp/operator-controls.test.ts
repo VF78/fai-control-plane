@@ -9,10 +9,13 @@ describe('task executor control', () => {
     expect(source).toContain('<optgroup label="Агенты">');
     expect(source).toContain('Назначить и начать');
     expect(source).toContain('Подтвердить и начать');
-    expect(source).toContain('Запуск Hermes подтверждён');
+    expect(source).toContain('Запуск Hermes выполняется');
+    expect(source).toContain('Проверить статус');
+    expect(source).toContain('Подтвердить завершение и повтор');
+    expect(source).toContain('confirmUnobservableFailure');
     expect(source).toContain("currentExecutor === 'Hermes' ? confirmedRun : null");
     expect(source).toContain('Квитанция {activeRun.deliveryReference}');
-    expect(source).toContain('<summary>Сменить исполнителя</summary>');
+    expect(source).toContain("runStatus === 'completed' ? 'Начать текущий этап или сменить исполнителя' : 'Сменить исполнителя'");
     expect(source).toContain('tone={noticeTone}');
     expect(source).toContain('Отмена');
     expect(source).toContain('role="status"');

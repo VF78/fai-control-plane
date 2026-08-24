@@ -4,7 +4,8 @@ import {submitExplicitAgent} from './agent-submission.ts';
 
 export type TaskExecutor = Readonly<{kind: 'human'; candidate: Readonly<{id: string; login: string}>}> | Readonly<{kind: 'hermes'}>;
 type HermesTaskRole = Extract<AgentRole, 'developer' | 'qa'>;
-export type TaskExecutorAssignmentCommand = Readonly<{actorId: string; projectId: string; projectItemId: string; executor: TaskExecutor}>;
+export type TaskExecutorAssignmentCommand = Readonly<{actorId: string; projectId: string; projectItemId: string; executor: TaskExecutor;
+  retry?: Readonly<{deliveryReference: string; nonce: string; confirmUnobservableFailure?: boolean}>}>;
 export type TaskExecutorAssignmentPorts = AgentSubmissionPorts & Readonly<{
   tracker: TrackerExecutorAssignmentPort;
   agentInstructions(role: HermesTaskRole): Readonly<{constraints: readonly string[]; acceptanceCriteria: readonly string[]}>;
@@ -99,7 +100,8 @@ export const assignTaskExecutor = async (
   const instructions = ports.agentInstructions(role);
   const delivery = await submitExplicitAgent({actorId: command.actorId, projectId: command.projectId,
     projectItemId: verified.itemId, role,
-    constraints: instructions.constraints, acceptanceCriteria: instructions.acceptanceCriteria}, ports);
+    constraints: instructions.constraints, acceptanceCriteria: instructions.acceptanceCriteria,
+    ...(command.retry === undefined ? {} : {retry: command.retry})}, ports);
   // In Dev and QA already express the active stage in GitHub. Starting Hermes
   // must preserve it; only Ready needs the post-receipt transition to In Dev.
   if (verified.statusOptionName !== 'Ready') {

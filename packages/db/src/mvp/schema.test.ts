@@ -15,6 +15,8 @@ const cleanup = readFileSync(fileURLToPath(
   new URL('../../mvp-drizzle/0001_remove_legacy_agent_outbox.sql', import.meta.url)), 'utf8');
 const artifactIdentity = readFileSync(fileURLToPath(
   new URL('../../mvp-drizzle/0002_source_artifact_kind_identity.sql', import.meta.url)), 'utf8');
+const attemptLifecycle = readFileSync(fileURLToPath(
+  new URL('../../mvp-drizzle/0003_agent_attempt_lifecycle_index.sql', import.meta.url)), 'utf8');
 
 describe('MVP fresh schema', () => {
   it('declares exactly the approved 16 tables', () => {
@@ -53,5 +55,11 @@ describe('MVP fresh schema', () => {
     expect(expected).toContain('secret_refs');
     expect(expected).not.toContain('secrets');
     expect(sql).not.toMatch(/message_body|chat_history|secret_value|storage_reference|action_payload|processed_at/i);
+  });
+
+  it('indexes append-only attempt lifecycle facts without introducing a run table', () => {
+    expect(attemptLifecycle).toContain('CREATE INDEX IF NOT EXISTS "audit_events_attempt_lifecycle_idx"');
+    expect(attemptLifecycle).not.toMatch(/CREATE\s+TABLE|DROP|DELETE|TRUNCATE/i);
+    expect(sql).not.toContain('CREATE TABLE "agent_run');
   });
 });

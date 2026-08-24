@@ -5,3 +5,4 @@ export * from './conversation-dispatcher.ts';
 export * from './delivery-retry.ts';
 export * from './agent-submission.ts';
 export * from './task-executor-assignment.ts';
+export * from './agent-attempt.ts';

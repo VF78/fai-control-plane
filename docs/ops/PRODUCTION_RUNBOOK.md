@@ -149,6 +149,10 @@ mounts, other Hermes data or listening ports.
 Hermes provider credential, Codex CLI credential, exact CLI version, derived
 image, gateway health and public capabilities all pass. The root-written file
 is self-hashed and mounted read-only into the Control Plane web container.
+The same stage atomically installs the reviewed Hermes Nginx config, validates
+it with `nginx -t`, reloads Nginx and probes the authenticated bounded run-status
+route. Any later stage failure restores and reloads the previous config before
+the isolated Hermes services are cleaned up.
 Failed staging and `rollback` remove it, so missing or drifted evidence keeps
 Codex execution unavailable. Staging or rollback remains a separate exact
 production authorization.
