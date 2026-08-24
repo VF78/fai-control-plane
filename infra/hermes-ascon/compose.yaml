@@ -8,6 +8,7 @@ services:
       dockerfile: infra/hermes-ascon/Dockerfile
     user: "10000:10000"
     working_dir: /opt/data/work/project
+    entrypoint: ["/opt/hermes/bin/hermes"]
     command: ["gateway", "run"]
     env_file:
       - ${HERMES_API_SECRET_ENV_FILE:?required}
