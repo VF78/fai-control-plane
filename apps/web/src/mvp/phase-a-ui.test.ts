@@ -7,10 +7,10 @@ describe('Process Hermes execution surface', () => {
   it('keeps execution in Process with the existing context-tab grammar', async () => {
     const view = await source();
     expect(view).toContain("{label:'Этапы'");
-    expect(view).toContain("{label:'Исполнение Hermes'");
+    expect(view).toContain("{label:'Настройка ИИ агента'");
     expect(view).toContain("filter === 'hermes'");
     expect(view).toContain('AgentRoutingControl');
-    expect(view).toContain('Hermes сам определяет класс задачи');
+    expect(view).toContain('ИИ агент сам определяет класс задачи');
   });
 
   it('keeps the project process policy read-only and excludes manual task classification', async () => {
@@ -31,12 +31,18 @@ describe('Process Hermes execution surface', () => {
     expect(control).not.toContain('readAgentRoutingPolicy(');
   });
 
-  it('keeps only the permitted execution classes editable and Claude unavailable', async () => {
+  it('keeps only valid routing fields editable and Claude unavailable', async () => {
     const control = await readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8');
     expect(control).toContain("['manager_project_ops', 'architecture_design', 'critical_decision', 'release_preflight']");
-    expect(control).toContain('Claude Code CLI · недоступен');
+    expect(control).toContain('Claude Code CLI');
+    expect(control).toContain('label="Рассуждение"');
+    expect(control).toContain('value={route.effort === \'high\' ? \'Высокое\' : \'Среднее\'}');
+    expect(control).toContain('<Pencil');
+    expect(control).toContain('fcp-agent-routing-setting');
+    expect(control).not.toContain('Изменить исполнение и модель');
+    expect(control).not.toContain('label="Усилие"');
     expect(control).toContain('disabled');
-    expect(control).toContain('Сохранение недоступно, пока Control Plane не подтвердит runtime Codex CLI.');
+    expect(control).toContain('Редактирование станет доступно после подключения Codex CLI.');
   });
 });
 

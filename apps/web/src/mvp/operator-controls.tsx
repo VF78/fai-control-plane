@@ -1,6 +1,7 @@
 'use client';
 
-import {useEffect, useRef, useState, type FormEvent} from 'react';
+import {useEffect, useRef, useState, type FormEvent, type ReactNode} from 'react';
+import {Pencil, X} from 'lucide-react';
 import type {ProjectContextStatusView} from '@fai-control-plane/db';
 import type {AgentExecutorCatalog, AgentRoutingPolicy} from '@fai-control-plane/domain';
 import {AsyncButton, CommandNoticeView, useAsyncCommand} from './async-command.tsx';
@@ -42,23 +43,30 @@ export function AgentRoutingControl({projectId, canManage, policy, executorCatal
   projectId: string; canManage: boolean; policy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
 }>) {
   const command = useAsyncCommand();
-  if (!canManage) return <p className="fcp-control-note">Изменение исполнения доступно только владельцу проекта.</p>;
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); const form = new FormData(event.currentTarget);
-    const routes = policy.routes.map((route) => {
-      const prefix = route.taskClass;
-      const executor = String(form.get(`${prefix}:executor`));
-      return {...route,
-        executor: executor === 'direct-agent' ? {kind: 'direct-agent'} : {kind: 'cli', id: executor},
-        model: String(form.get(`${prefix}:model`)), effort: String(form.get(`${prefix}:effort`)),
-        runtimeAcceptance: 'required', humanGate: String(form.get(`${prefix}:humanGate`))};
-    });
-    void command.run(() => post(`/api/projects/${projectId}/agent-routing`, {
-      policy: {contract: 'fai.agent-routing.v1', routes}, idempotencyKey: `agent-routing:${id()}`
-    }), {success: 'Настройки исполнения сохранены.'});
-  };
+  type Field = 'executor'|'model'|'effort';
+  const [draft, setDraft] = useState(policy);
+  const [saved, setSaved] = useState(policy);
+  const [editing, setEditing] = useState<{taskClass: AgentRoutingPolicy['routes'][number]['taskClass']; field: Field}|null>(null);
+  const update = (taskClass: AgentRoutingPolicy['routes'][number]['taskClass'], change: (route: AgentRoutingPolicy['routes'][number]) => AgentRoutingPolicy['routes'][number]) => setDraft((current) => ({...current, routes: current.routes.map((route) => route.taskClass === taskClass ? change(route) : route)}));
+  const save = () => void command.run(() => post(`/api/projects/${projectId}/agent-routing`, {policy: draft, idempotencyKey: `agent-routing:${id()}`}), {success: () => { setSaved(draft); setEditing(null); return 'Настройка сохранена.'; }});
+  const cancel = () => { setDraft(saved); setEditing(null); };
   const codexReady = executorCatalog['codex-cli']?.available ?? false;
-  return <details className="fcp-control fcp-hermes-editor"><summary>Изменить исполнение и модель</summary><form onSubmit={submit} aria-busy={command.pending}><p>Классы определяет Hermes; обязательная приёмка и контроль человека зафиксированы политикой.</p>{policy.routes.map((route) => { const executorEditable = editableExecutors.has(route.taskClass); const direct = route.executor.kind === 'direct-agent'; const executor = direct ? 'direct-agent' : route.executor.id; return <fieldset key={route.taskClass}><legend>{routingClassLabel[route.taskClass]}</legend><input type="hidden" name={`${route.taskClass}:humanGate`} value={route.humanGate}/><label>Исполнитель{executorEditable ? <select name={`${route.taskClass}:executor`} defaultValue={executor} disabled={command.pending}><option value="direct-agent">Hermes</option><option value="codex-cli" disabled={!codexReady}>Codex CLI{codexReady ? '' : ' · runtime не подтверждён'}</option><option value="claude-code-cli" disabled>Claude Code CLI · недоступен</option></select> : <><span className="fcp-hermes-editor-fixed">{direct ? 'Hermes' : 'Codex CLI'}</span><input type="hidden" name={`${route.taskClass}:executor`} value={executor}/></>}</label><label>Модель<select name={`${route.taskClass}:model`} defaultValue={route.model} disabled={command.pending}><option value="gpt-5.6-terra">GPT-5.6 Terra</option><option value="gpt-5.6-sol">GPT-5.6 Sol</option></select></label><label>Усилие<select name={`${route.taskClass}:effort`} defaultValue={route.effort} disabled={command.pending}><option value="medium">Среднее</option><option value="high">Высокое</option></select></label><small>Приёмка Hermes обязательна · {routingGateLabel[route.humanGate]}</small></fieldset>; })}{codexReady ? null : <p className="fcp-control-note">Сохранение недоступно, пока Control Plane не подтвердит runtime Codex CLI.</p>}<AsyncButton pending={command.pending} pendingLabel="Сохраняем…" disabled={!codexReady}>Сохранить настройки</AsyncButton></form><CommandNoticeView notice={command.notice}/></details>;
+  return <div className="fcp-agent-routing-editor">{draft.routes.map((route) => {
+    const executor = route.executor.kind === 'direct-agent' ? 'direct-agent' : route.executor.id;
+    const active = (field: Field) => editing?.taskClass === route.taskClass && editing.field === field;
+    const open = (field: Field) => setEditing({taskClass: route.taskClass, field});
+    return <article key={route.taskClass}><h3>{routingClassLabel[route.taskClass]}</h3><div className="fcp-agent-routing-fields">
+      <RoutingSetting label="Исполнитель" value={route.executor.kind === 'direct-agent' ? 'Hermes' : route.executor.id === 'codex-cli' ? 'Codex CLI' : 'Claude Code CLI'} editing={active('executor')} editable={canManage && codexReady && editing === null && editableExecutors.has(route.taskClass)} pending={command.pending} onEdit={() => open('executor')} onSave={save} onCancel={cancel} editor={<select aria-label="Исполнитель" value={executor} disabled={command.pending} onChange={(event) => update(route.taskClass, (current) => ({...current, executor: event.target.value === 'direct-agent' ? {kind:'direct-agent'} : {kind:'cli', id:event.target.value}}))}><option value="direct-agent">Hermes</option><option value="codex-cli">Codex CLI</option><option value="claude-code-cli" disabled>Claude Code CLI</option></select>}/>
+      <RoutingSetting label="Модель" value={route.model === 'gpt-5.6-terra' ? 'GPT-5.6 Terra' : 'GPT-5.6 Sol'} editing={active('model')} editable={canManage && codexReady && editing === null} pending={command.pending} onEdit={() => open('model')} onSave={save} onCancel={cancel} editor={<select aria-label="Модель" value={route.model} disabled={command.pending} onChange={(event) => update(route.taskClass, (current) => ({...current, model:event.target.value}))}><option value="gpt-5.6-terra">GPT-5.6 Terra</option><option value="gpt-5.6-sol">GPT-5.6 Sol</option></select>}/>
+      <RoutingSetting label="Рассуждение" value={route.effort === 'high' ? 'Высокое' : 'Среднее'} editing={active('effort')} editable={canManage && codexReady && editing === null} pending={command.pending} onEdit={() => open('effort')} onSave={save} onCancel={cancel} editor={<select aria-label="Рассуждение" value={route.effort} disabled={command.pending} onChange={(event) => update(route.taskClass, (current) => ({...current, effort:event.target.value as AgentRoutingPolicy['routes'][number]['effort']}))}><option value="medium">Среднее</option><option value="high">Высокое</option></select>}/>
+      <RoutingSetting label="Приёмка агентом" value="Обязательна" editing={false} editable={false} pending={command.pending} onEdit={() => undefined} onSave={save} onCancel={() => undefined} editor={null}/>
+      <RoutingSetting label="Контроль человека" value={routingGateLabel[route.humanGate]} editing={false} editable={false} pending={command.pending} onEdit={() => undefined} onSave={save} onCancel={() => undefined} editor={null}/>
+    </div></article>;
+  })}<CommandNoticeView notice={command.notice}/>{!canManage ? <p className="fcp-control-note">Редактирование доступно владельцу проекта.</p> : codexReady ? null : <p className="fcp-control-note">Редактирование станет доступно после подключения Codex CLI.</p>}</div>;
+}
+
+function RoutingSetting({label, value, editing, editable, pending, editor, onEdit, onSave, onCancel}: Readonly<{label:string; value:string; editing:boolean; editable:boolean; pending:boolean; editor:ReactNode; onEdit:()=>void; onSave:()=>void; onCancel:()=>void}>) {
+  return <div className="fcp-agent-routing-setting"><span>{label}</span>{editing ? <form onSubmit={(event) => { event.preventDefault(); onSave(); }} aria-busy={pending}>{editor}<div><AsyncButton pending={pending} pendingLabel="Сохраняем…">Сохранить</AsyncButton><AsyncButton type="button" className="fcp-icon-button" pending={false} pendingLabel="" disabled={pending} aria-label="Отменить" onClick={onCancel}><X aria-hidden="true" size={15}/></AsyncButton></div></form> : <div><strong>{value}</strong>{editable ? <AsyncButton type="button" className="fcp-icon-button" pending={false} pendingLabel="" disabled={pending} aria-label={`Изменить: ${label}`} onClick={onEdit}><Pencil aria-hidden="true" size={14}/></AsyncButton> : null}</div>}</div>;
 }
 
 const contextSourceLabel: Readonly<Record<string,string>> = {
