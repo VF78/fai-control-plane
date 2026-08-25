@@ -254,9 +254,6 @@ probe.unlink()
 project_probe = Path("/opt/data/work/project/.uid-10000-write-probe")
 project_probe.write_bytes(b"")
 project_probe.unlink()
-codex_probe = Path("/opt/data/codex-home/.uid-10000-write-probe")
-codex_probe.write_bytes(b"")
-codex_probe.unlink()
 '
 }
 

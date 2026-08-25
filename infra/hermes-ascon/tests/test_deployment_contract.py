@@ -251,6 +251,8 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn('executor-attestation-private-key.pem:ro', executor)
         self.assertNotIn('executor-attestation-private-key', gateway)
         self.assertIn('codex-home-mask:/opt/data/codex-home:ro', gateway)
+        gateway_probe = script.split("probe_runtime() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertNotIn('/opt/data/codex-home/.uid-10000-write-probe', gateway_probe)
         self.assertIn('fai_executor_run', plugin)
         self.assertIn('session_id = str(kwargs.get("session_id")', plugin)
         self.assertIn('activate_trusted_execution', script)
