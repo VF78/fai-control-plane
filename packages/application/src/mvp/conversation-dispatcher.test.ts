@@ -76,6 +76,16 @@ describe('receipt-bound role-run authority', () => {
     expect(target.tracker.setProjectItemStage).toHaveBeenCalledOnce();
   });
 
+  it.each(['manager', 'developer', 'qa'] as const)('allows %s to read project facts without mutation authority', async (role) => {
+    const target = ports({actorId: 'must-not-resolve', role: 'client'});
+    await expect(dispatchConversationAction({workspaceId: 'workspace', ports: target,
+      roleRun: {...roleRun, role}, envelope: internal({type: 'project_facts.read'})}))
+      .resolves.toEqual({status: 'completed', referenceId: 'snapshot-1'});
+    expect(target.facts.read).toHaveBeenCalledWith('project');
+    expect(target.identities.resolveActiveHuman).not.toHaveBeenCalled();
+    expect(target.tracker.setProjectItemStage).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['project', 'other', 'v1', 'developer'],
     ['project', 'item', 'other', 'developer'],
