@@ -464,8 +464,8 @@ case "$action" in
       fail 'isolated Codex OAuth store permissions are invalid'
     stage_cleanup_required=1
     prepare_runtime
-    verify_native_execution
     "${compose[@]}" build gateway
+    verify_native_execution
     probe_runtime
     quiet_checked 'Hermes provider OAuth status preflight' \
       "${compose[@]}" run --rm --no-deps \
