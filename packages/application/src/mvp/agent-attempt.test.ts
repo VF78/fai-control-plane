@@ -3,10 +3,14 @@ import {composeAgentTerminalNotification, reconcileActiveAgentAttempts, reconcil
 
 const attempt = {workspaceId: 'workspace', projectId: 'project', actorId: 'actor', itemId: 'item',
   itemTitle: 'Task', itemUrl: 'https://example.test/issues/1',
-  deliveryReference: 'run_ref', correlationId: 'correlation', status: 'started' as const};
+  deliveryReference: 'run_ref', correlationId: `browser:${'c'.repeat(64)}`, status: 'started' as const};
 const accepted = {contract: 'fai.agent-executor-result.v1' as const, decision: 'accepted' as const,
   execution: {taskClass: 'ordinary_implementation' as const, executor: {kind: 'cli' as const, id: 'codex-cli'},
     model: 'gpt-5.6-terra', effort: 'medium' as const}, outcome: 'success' as const,
+  executorReceipt: {contract: 'fai.executor-invocation-receipt.v1' as const, invocationId: 'a'.repeat(64),
+    receiptReference: `browser:${'c'.repeat(64)}`, executorId: 'codex-cli', model: 'gpt-5.6-terra',
+    effort: 'medium' as const, outputSha256: 'b'.repeat(64), completedAt: '2026-08-25T10:00:00.000Z',
+    signature: 'signed-by-adapter'},
   transition: {itemId: 'item', fromVersion: 'v1', targetStage: 'QA', toVersion: 'v2'}, reason: 'done',
   evidence: [{kind: 'checks', result: 'passed'}], deliverables: []};
 const notification = async (_attempt: typeof attempt, _observed: unknown, idempotencyKey: string) => ({
@@ -71,6 +75,21 @@ describe('agent attempt reconciliation', () => {
         attempts:{...store(finish),resolve:async()=>exactAttempt},readFreshItem:async()=>null,
         composeTerminalNotification:notification})).resolves.toMatchObject({status:'failed'});
     expect(finish).toHaveBeenCalledWith(expect.objectContaining({failureCode:'agent_result_invalid'}));
+  });
+
+  it('rejects a signed CLI receipt replayed from another attempt', async () => {
+    const finish = vi.fn<AgentAttemptStore['finish']>(async () => 'recorded');
+    const exactAttempt = {...attempt, observedVersion: 'v1', successTargetTitle: 'QA', reworkTargetTitle: null,
+      expectedOwnerOptionId: 'hermes', routingPolicy: {contract: 'fai.agent-routing.v1' as const, routes: [
+        {...accepted.execution, runtimeAcceptance: 'required' as const, humanGate: 'none' as const}
+      ]}};
+    const replayed = {...accepted, executorReceipt: {...accepted.executorReceipt,
+      receiptReference: `browser:${'d'.repeat(64)}`}};
+    await reconcileAgentAttempt({actorId: 'actor', projectId: 'project', itemId: 'item', deliveryReference: 'run_ref'},
+      {delivery: {submit: vi.fn(), observe: async () => ({status: 'completed', result: replayed})},
+        attempts: {...store(finish), resolve: async () => exactAttempt}, readFreshItem: async () => null,
+        composeTerminalNotification: notification});
+    expect(finish).toHaveBeenCalledWith(expect.objectContaining({status: 'failed', failureCode: 'agent_result_invalid'}));
   });
 
   it('isolates a transient observation failure so the worker can continue', async () => {

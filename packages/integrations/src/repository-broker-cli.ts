@@ -27,4 +27,7 @@ const broker = createGitHubAppRepositoryBroker({
   token: () => tokens.token()
 });
 
+// Fail startup when the approved App/installation/key cannot mint a token;
+// readiness must prove credentials, not merely an open Unix socket.
+await tokens.token();
 await serveRepositoryBroker({socketPath: required('FCP_REPOSITORY_BROKER_SOCKET'), port: broker});

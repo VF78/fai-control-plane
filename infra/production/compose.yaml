@@ -134,6 +134,8 @@ services:
     networks:
       - database
       - egress
+    volumes:
+      - ${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro
     depends_on:
       migrate:
         condition: service_completed_successfully

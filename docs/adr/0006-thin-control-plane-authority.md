@@ -139,3 +139,25 @@ project installation with least-privilege metadata/contents/pull-request
 permissions, a host-owned private-key file, exact bridge authorization route,
 socket/readiness evidence and deployment review. Until those external facts
 exist, the Compose profile remains disabled and repository work fails closed.
+
+## 2026-08-25 amendment: trusted CLI invocation receipt
+
+Hermes remains the sole intelligent agent and accepts executor output, but its
+own statement about which CLI/model/effort it used is not trusted evidence. A
+CLI route must therefore use the provider-neutral `fai_executor_run` tool. Its
+runtime session identity is supplied by Hermes outside model arguments and is
+forwarded to a narrow composition sidecar over a Unix socket.
+
+The sidecar constructs the allowlisted CLI arguments, invokes the real CLI and
+only after a successful exit signs `fai.executor-invocation-receipt.v1`. The
+receipt binds the canonical submission correlation, invocation nonce, executor
+ID, model, effort, output digest and completion time. The private Ed25519 key
+and isolated Codex credential are mounted only into the sidecar; Hermes,
+terminal and the checkout receive neither. Control Plane verifies the public
+signature and exact pinned route, and rejects missing, altered or cross-attempt
+receipts. A later Claude Code adapter uses the same receipt contract.
+
+This sidecar has no queue, task state, scheduling, acceptance or lifecycle: it
+is only an invocation/attestation capability. Direct-Hermes routes remain
+receipt-free. Direct terminal CLI calls are allowed as untrusted diagnostics
+but cannot satisfy a governed stage.

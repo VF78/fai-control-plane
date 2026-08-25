@@ -44,7 +44,7 @@ class PluginTest(unittest.TestCase):
     def test_registers_bounded_tools_and_identity_hooks(self):
         context = Context()
         PLUGIN.register(context)
-        self.assertEqual(len(context.tools), 12)
+        self.assertEqual(len(context.tools), 13)
         self.assertEqual({tool["toolset"] for tool in context.tools}, {"fai_internal", "fai_client"})
         self.assertIn("pre_gateway_dispatch", context.hooks)
         self.assertIn("pre_llm_call", context.hooks)
@@ -154,6 +154,34 @@ class PluginTest(unittest.TestCase):
         self.assertEqual((blocked["status"], blocked["code"]), ("blocked", "authorization_denied"))
         retry = json.loads(handler({}, session_id="browser:" + "a" * 64))
         self.assertEqual((retry["status"], retry["code"]), ("retry", "bridge_unavailable"))
+
+    def test_executor_tool_uses_runtime_session_and_never_caller_identity(self):
+        sent = []
+        body = json.dumps({"status": "completed", "output": "done", "executorReceipt": {}}).encode()
+
+        class Socket:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return None
+            def settimeout(self, _timeout): return None
+            def connect(self, path): self.path = path
+            def sendall(self, value): sent.append(value)
+            def recv(self, _size):
+                if getattr(self, "read", False): return b""
+                self.read = True
+                return b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + body
+
+        original = PLUGIN.socket.socket
+        PLUGIN.socket.socket = lambda *_args, **_kwargs: Socket()
+        session = "browser:" + "b" * 64
+        try:
+            result = json.loads(PLUGIN._executor_handler({"receiptReference": "attacker", "executorId": "codex-cli",
+                "model": "gpt-5.6-terra", "effort": "medium", "prompt": "Implement"}, session_id=session))
+        finally:
+            PLUGIN.socket.socket = original
+        request_body = json.loads(sent[0].split(b"\r\n\r\n", 1)[1])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(request_body["payload"]["receiptReference"], session)
+        self.assertNotEqual(request_body["payload"]["receiptReference"], "attacker")
 
 
 if __name__ == "__main__":

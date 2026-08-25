@@ -36,7 +36,10 @@ services:
       TELEGRAM_GROUP_ALLOWED_CHATS: ${HERMES_TELEGRAM_CHAT_ID:?required}
     volumes:
       - /var/lib/fai-hermes-ascon:/opt/data
+      # Hide the separately mounted Codex credential from Hermes/terminal.
+      - /var/lib/fai-hermes-ascon/codex-home-mask:/opt/data/codex-home:ro
       - /var/lib/fai-hermes-ascon/repository-broker:/run/fai-repository-broker
+      - /var/lib/fai-hermes-ascon/executor-broker:/run/fai-executor-broker
       - ${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro
       - ./extensions/fai-control-plane:/opt/data/plugins/fai-control-plane:ro
       - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
@@ -98,6 +101,37 @@ services:
     restart: unless-stopped
     logging: *bounded-logging
 
+  executor-broker:
+    profiles: [repository-work]
+    image: ${HERMES_IMAGE:?required}
+    user: "10000:10000"
+    working_dir: /opt/data/work/project
+    entrypoint: ["node", "/opt/fai/executor-broker.mjs"]
+    environment:
+      CODEX_HOME: /opt/data/codex-home
+      HOME: /opt/data
+      FCP_EXECUTOR_BROKER_SOCKET: /run/fai-executor-broker/broker.sock
+      FCP_EXECUTOR_ATTESTATION_PRIVATE_KEY_FILE: /run/secrets/executor-attestation-private-key.pem
+    volumes:
+      - /var/lib/fai-codex-ascon/home:/opt/data/codex-home
+      - /var/lib/fai-hermes-ascon/work/project:/opt/data/work/project
+      - /var/lib/fai-hermes-ascon/executor-broker:/run/fai-executor-broker
+      - ${FCP_EXECUTOR_ATTESTATION_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/executor-attestation-private-key.pem:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "const n=require('node:net').connect('/run/fai-executor-broker/broker.sock');n.on('connect',()=>{n.end();process.exit(0)});n.on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cpus: "1.0"
+    mem_limit: 1g
+    pids_limit: 256
+    init: true
+    restart: unless-stopped
+    logging: *bounded-logging
+
   codex-cli:
     image: ${HERMES_IMAGE:?required}
     build:
@@ -111,7 +145,7 @@ services:
       CODEX_HOME: /opt/data/codex-home
       HOME: /opt/data
     volumes:
-      - /var/lib/fai-hermes-ascon/codex-home:/opt/data/codex-home
+      - /var/lib/fai-codex-ascon/home:/opt/data/codex-home
       - /var/lib/fai-hermes-ascon/work/project:/opt/data/work/project
     init: true
     restart: "no"
