@@ -36,7 +36,8 @@ const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): Age
   readFreshSnapshot: async () => snapshot, persistSnapshot: async () => undefined,
   resolveActiveContext: async () => activeContext,
   repository: {readRepository: async () => ({repositoryId: 'R_repo',
-    url: 'https://github.com/VF78/fai-control-plane', defaultBranch: 'main', observedAt: '2026-08-15T10:00:00.000Z'})},
+    url: 'https://github.com/VF78/fai-control-plane', defaultBranch: 'main', defaultBranchSha: 'a'.repeat(40),
+    observedAt: '2026-08-15T10:00:00.000Z'})},
   composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: item.projectId,
     contour: 'trusted-main', channelReference: 'internal', text: `Hermes accepted: ${item.url}`, idempotencyKey}),
   delivery: {submit: async (request) => ({deliveryReference: `hermes:${request.idempotencyKey}`,
@@ -66,7 +67,8 @@ describe('explicit agent submission', () => {
     await expect(submitExplicitAgent(command, value)).resolves.toMatchObject({status: 'completed'});
     await expect(submitExplicitAgent(command, value)).resolves.toMatchObject({status: 'duplicate'});
     expect(deliver).toHaveBeenCalledTimes(1);
-    expect(deliver.mock.calls[0]![0]).toMatchObject({projectItem: {id: 'PVTI_item', projectId: 'project'},
+    expect(deliver.mock.calls[0]![0]).toMatchObject({repository: {id: 'R_repo', defaultBranch: 'main',
+      defaultBranchSha: 'a'.repeat(40)}, projectItem: {id: 'PVTI_item', projectId: 'project'},
       observedVersion: 'github:updated-at:v1', constraints: ['Do not deploy'],
       routing: {policyVersion: routingPolicyVersion, classification: 'runtime-classification-required'},
       sources: [{id: 'context', content: contextContent}]});

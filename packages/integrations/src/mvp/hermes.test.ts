@@ -5,7 +5,8 @@ import {createHermesDeliveryAdapter} from './hermes.ts';
 
 const request = {
   role: 'developer' as const,
-  repository: {id: 'repo', url: 'https://example.test/repo'},
+  repository: {id: 'repo', url: 'https://example.test/repo', defaultBranch: 'main',
+    defaultBranchSha: 'a'.repeat(40)},
   projectItem: {id: 'item', projectId: 'project', issueId: 'issue', url: 'https://example.test/issues/1'},
   observedVersion: 'v1', sources: [], constraints: ['No merge'], acceptanceCriteria: ['Checks pass'],
   approval: null, correlationId: `browser:${'c'.repeat(64)}`, idempotencyKey: 'delivery',

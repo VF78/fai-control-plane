@@ -10,6 +10,8 @@ const utf8Size = (value: string): number => new TextEncoder().encode(value).byte
 export const validateAgentRoleRequest = (value: AgentRoleRequest): boolean => {
   if (!['manager', 'developer', 'qa', 'devops'].includes(value.role) ||
     !isBoundedId(value.repository.id) || !isHttpsUrl(value.repository.url) ||
+    !boundedText(value.repository.defaultBranch, 256) ||
+    !/^[a-f0-9]{40}$/.test(value.repository.defaultBranchSha) ||
     !isBoundedId(value.projectItem.id) || !isBoundedId(value.projectItem.projectId) ||
     !isBoundedId(value.projectItem.issueId) || !isHttpsUrl(value.projectItem.url) ||
     !isBoundedId(value.observedVersion) || !isBoundedId(value.correlationId) ||

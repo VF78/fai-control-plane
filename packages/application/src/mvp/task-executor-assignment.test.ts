@@ -35,7 +35,8 @@ const ports = (failStart = false, initialStatus = 'Ready', initialBlocked = fals
         acceptanceCriteria: ['Record delivery evidence.', 'The same Project item is confirmed in QA.']}
       : {constraints: ['Do not merge, release, deploy, or access production.', 'Move this same Project item from QA to In Dev for rework, otherwise QA to Acceptance, then verify it.'],
         acceptanceCriteria: ['Record delivery evidence.', 'The same Project item is confirmed in In Dev or Acceptance.']},
-    repository: {readRepository: async () => ({repositoryId: 'repo', url: 'https://github.com/acme/repo', defaultBranch: 'main', observedAt: '2026-08-24T00:00:00.000Z'})},
+    repository: {readRepository: async () => ({repositoryId: 'repo', url: 'https://github.com/acme/repo',
+      defaultBranch: 'main', defaultBranchSha: 'a'.repeat(40), observedAt: '2026-08-24T00:00:00.000Z'})},
     composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: item.projectId,
       contour: 'trusted-main', channelReference: 'internal', text: `Hermes accepted: ${item.url}`, idempotencyKey}),
     delivery: {submit: vi.fn(async () => ({deliveryReference: 'hermes:receipt', sessionReference: 'hermes:session'})),

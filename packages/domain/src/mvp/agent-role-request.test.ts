@@ -6,7 +6,8 @@ import type {AgentRoleRequest} from './ports.ts';
 
 const request = (role: AgentRoleRequest['role'] = 'developer'): AgentRoleRequest => ({
   role,
-  repository: {id: 'repo-1', url: 'https://example.test/repository'},
+  repository: {id: 'repo-1', url: 'https://example.test/repository', defaultBranch: 'main',
+    defaultBranchSha: 'a'.repeat(40)},
   projectItem: {id: 'item-1', projectId: 'project-1', issueId: 'issue-1', url: 'https://example.test/issues/1'},
   observedVersion: 'version-1',
   sources: [{id: 'source-1', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator upload',
@@ -24,6 +25,13 @@ const request = (role: AgentRoleRequest['role'] = 'developer'): AgentRoleRequest
 describe('MVP agent role request', () => {
   it('accepts a bounded non-production request', () => {
     expect(validateAgentRoleRequest(request())).toBe(true);
+  });
+
+  it('rejects a missing or malformed pinned repository base', () => {
+    const value = request();
+    expect(validateAgentRoleRequest({...value, repository: {...value.repository, defaultBranch: ''}})).toBe(false);
+    expect(validateAgentRoleRequest({...value, repository: {...value.repository,
+      defaultBranchSha: 'not-a-commit'}})).toBe(false);
   });
 
   it('rejects devops without exact production approval', () => {
