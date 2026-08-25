@@ -1,7 +1,6 @@
 import {createHash} from 'node:crypto';
 import {describe, expect, it} from 'vitest';
-import {codexReadiness, hermesExecutorCatalog, parseCodexReadiness,
-  parseTrustedExecutionReadiness} from './hermes-executor-readiness.ts';
+import {codexReadiness, hermesExecutorCatalog, parseCodexReadiness} from './hermes-executor-readiness.ts';
 
 const evidence = () => {
   const value = {...codexReadiness, loginStatus: 'authenticated' as const,
@@ -30,15 +29,5 @@ describe('Hermes Codex readiness evidence', () => {
   it('keeps Codex unavailable when the readiness artifact is absent', () => {
     expect(hermesExecutorCatalog('/definitely/missing/codex-readiness.json')['codex-cli'])
       .toEqual({available: false, models: []});
-  });
-
-  it('accepts only self-hashed trusted execution activation evidence', () => {
-    const value = {contract: 'fai.trusted-execution-readiness.v1' as const, githubAppId: '123',
-      installationId: '456', release: 'a'.repeat(40), repositoryBrokerImageId: `sha256:${'b'.repeat(64)}`,
-      executorImageId: `sha256:${'c'.repeat(64)}`, executorPublicKeySha256: 'd'.repeat(64),
-      configurationSha256: 'e'.repeat(64), verifiedAt: '2026-08-25T12:00:00.000Z'};
-    const evidenceSha256 = createHash('sha256').update(Object.values(value).join('\n')).digest('hex');
-    expect(parseTrustedExecutionReadiness({...value, evidenceSha256})).toMatchObject({installationId: '456'});
-    expect(parseTrustedExecutionReadiness({...value, evidenceSha256: 'f'.repeat(64)})).toBeNull();
   });
 });

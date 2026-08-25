@@ -1,5 +1,4 @@
 import {createHash} from 'node:crypto';
-import {readFileSync} from 'node:fs';
 import {
   addSourceArtifact,
   appendIncomingEvent,
@@ -26,11 +25,6 @@ import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeM
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
-
-const executorAttestationPublicKey = (): string | undefined => {
-  try { return readFileSync('/run/fai-readiness/executor-attestation-public-key.pem', {encoding: 'utf8'}); }
-  catch { return undefined; }
-};
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('media_type_invalid');
@@ -105,8 +99,7 @@ export const startGitHubProcess = async (database: ReturnType<typeof getDatabase
   const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, input.actorId, input.projectId);
   if (endpoint === undefined || binding?.agentCredentialRef == null) throw new Error('agent_provider_unavailable');
   const delivery = createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048),
-    credentialRef: binding.agentCredentialRef, secrets: secretResolver,
-    executorAttestationPublicKey: executorAttestationPublicKey()});
+    credentialRef: binding.agentCredentialRef, secrets: secretResolver});
   const {ports} = await githubAssignment(database, input.actorId, input.projectId, delivery);
   return startProcess(input, ports);
 };
@@ -278,7 +271,7 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, session.actorId, projectId);
     const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery
       : createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048), credentialRef: binding.agentCredentialRef,
-        secrets: secretResolver, executorAttestationPublicKey: executorAttestationPublicKey()});
+        secrets: secretResolver});
     if (action === 'refresh-attempt') {
       const assignment = await githubAssignment(database, session.actorId, projectId, delivery);
       return Response.json(await reconcileAgentAttempt({actorId: session.actorId, projectId,

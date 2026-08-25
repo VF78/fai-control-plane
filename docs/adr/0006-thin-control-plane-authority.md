@@ -107,57 +107,19 @@ direct Hermes may plan, decide, manage provider-native Project facts, or invoke
 an exact-approval broker. Merge, Actions, release, deploy and production never
 run inside a coding CLI.
 
-## 2026-08-24 amendment: repository work broker
+## 2026-08-25 amendment: native project-scoped execution
 
-Repository-changing Hermes roles use one project-scoped `RepositoryWorkPort`
-implemented by a credential-isolated sidecar in the Hermes composition. This
-is a narrow capability boundary, not a new agent, task lifecycle or Control
-Plane runner. Hermes and its Codex executor receive only `prepare` and
-`publishReview` over a Unix socket and never receive a GitHub PAT, App private
-key or installation token.
+The isolated Hermes composition receives its existing Codex OAuth and one
+host-owned, repository-scoped GitHub credential. Hermes uses its supported
+terminal, `git`, `gh` and configured CLI directly. It may push a new review
+branch and create a pull request for the bound repository; it may not push the
+default branch, merge, release, deploy, access production or receive production
+credentials. Those actions remain outside Hermes and require their existing
+explicit approval.
 
-`prepare` must revalidate the existing canonical submission receipt, exact
-repository binding and exact configured default-branch base revision through the
-authenticated Control Plane bridge before it creates or reuses an isolated
-checkout. `publishReview` can only create or reuse
-`refs/heads/fai/<issue>/<receipt-hash>` without force and create or reuse one
-pull request back to that authorized default branch. Results contain only bounded HTTPS branch/PR
-links. Typed retry and terminal blocker results are safe for the existing
-Hermes terminal/Telegram notification surface.
-
-Executor-writable `.git/config`, remotes, helpers and hooks are untrusted. A
-publication exports a bounded credential-free bundle, imports and validates it
-in a fresh broker-owned bare repository, and runs every token-bearing fetch or
-push only there with system/global Git config disabled and an explicit bound
-HTTPS repository URL. Broker metadata and publication state are never mounted
-into the executor checkout.
-
-The broker has no operations for `main`, tags, deletion, force-push, merge,
-release, Actions or deployment. The App key and short-lived installation token
-exist only inside the broker. Activation requires a separately approved
-project installation with least-privilege metadata/contents/pull-request
-permissions, a host-owned private-key file, exact bridge authorization route,
-socket/readiness evidence and deployment review. Until those external facts
-exist, the Compose profile remains disabled and repository work fails closed.
-
-## 2026-08-25 amendment: trusted CLI invocation receipt
-
-Hermes remains the sole intelligent agent and accepts executor output, but its
-own statement about which CLI/model/effort it used is not trusted evidence. A
-CLI route must therefore use the provider-neutral `fai_executor_run` tool. Its
-runtime session identity is supplied by Hermes outside model arguments and is
-forwarded to a narrow composition sidecar over a Unix socket.
-
-The sidecar constructs the allowlisted CLI arguments, invokes the real CLI and
-only after a successful exit signs `fai.executor-invocation-receipt.v1`. The
-receipt binds the canonical submission correlation, invocation nonce, executor
-ID, model, effort, output digest and completion time. The private Ed25519 key
-and isolated Codex credential are mounted only into the sidecar; Hermes,
-terminal and the checkout receive neither. Control Plane verifies the public
-signature and exact pinned route, and rejects missing, altered or cross-attempt
-receipts. A later Claude Code adapter uses the same receipt contract.
-
-This sidecar has no queue, task state, scheduling, acceptance or lifecycle: it
-is only an invocation/attestation capability. Direct-Hermes routes remain
-receipt-free. Direct terminal CLI calls are allowed as untrusted diagnostics
-but cannot satisfy a governed stage.
+Control Plane submits and observes through `AgentDeliveryPort`, verifies the
+declared route against project policy and verifies provider-native results. It
+does not broker repository access, transport bundles, wrap a CLI or attest an
+executor invocation cryptographically. Repository scope, branch protection and
+the absence of production credentials are deployment facts, not a second
+execution architecture.

@@ -3,8 +3,13 @@ FROM ${HERMES_UPSTREAM_IMAGE}
 
 USER root
 
-RUN npm install --global --omit=dev --no-audit --no-fund @openai/codex@0.144.1 \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates gh git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global --omit=dev --no-audit --no-fund @openai/codex@0.144.1 \
     && test "$(codex --version)" = "codex-cli 0.144.1" \
+    && command -v git >/dev/null \
+    && command -v gh >/dev/null \
     && npm cache clean --force
 
 RUN if ! getent group 10000 >/dev/null; then groupadd --gid 10000 hermes-runtime; fi \
@@ -15,7 +20,7 @@ RUN if ! getent group 10000 >/dev/null; then groupadd --gid 10000 hermes-runtime
     && install -d -o 10000 -g 10000 -m 0700 \
       /opt/data /opt/data/codex-home /opt/data/work /opt/data/work/project
 
-COPY --chown=root:root --chmod=0555 infra/hermes-ascon/executor-broker.mjs /opt/fai/executor-broker.mjs
+COPY --chown=root:root --chmod=0555 infra/hermes-ascon/native-entrypoint.sh /opt/fai/native-entrypoint.sh
 
 ENV CODEX_HOME=/opt/data/codex-home
 WORKDIR /opt/data/work/project

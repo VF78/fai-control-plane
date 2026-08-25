@@ -46,12 +46,11 @@ export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSO
     classification: {by: 'agent-runtime', allowedTaskClasses: agentTaskClasses,
       attempts: 1, unknown: 'deny', unavailableRoute: 'deny',
       then: 'resolve-exact-route-from-request.routing.policy'},
-    cli: {routeFieldsAreExact: ['id', 'model', 'effort'], invocationTool: 'fai_executor_run',
-      terminalInvocation: 'untrusted', invocationReceipt: 'fai.executor-invocation-receipt.v1',
-      receiptMustBeRelayedUnchanged: true, resultContract: 'fai.agent-executor-result.v1'},
+    cli: {routeFieldsAreExact: ['id', 'model', 'effort'], invocation: 'native-terminal',
+      resultContract: 'fai.agent-executor-result.v1'},
     directAgent: {nontrivialWork: 'delegate-native-child-with-route-model-and-effort'},
     acceptance: {decision: ['accepted', 'rejected'], evidenceRequired: true,
-      executionAttestationRequired: true, transitionAttestationRequired: true,
+      executionRouteRequired: true, transitionAttestationRequired: true,
       stageMutation: 'only-after-accepted', deliverables: 'bounded-https-references'}
   },
   request

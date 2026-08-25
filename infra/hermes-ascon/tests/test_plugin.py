@@ -44,7 +44,7 @@ class PluginTest(unittest.TestCase):
     def test_registers_bounded_tools_and_identity_hooks(self):
         context = Context()
         PLUGIN.register(context)
-        self.assertEqual(len(context.tools), 13)
+        self.assertEqual(len(context.tools), 10)
         self.assertEqual({tool["toolset"] for tool in context.tools}, {"fai_internal", "fai_client"})
         self.assertIn("pre_gateway_dispatch", context.hooks)
         self.assertIn("pre_llm_call", context.hooks)
@@ -147,67 +147,6 @@ class PluginTest(unittest.TestCase):
         self.assertEqual(result, '{"status":"completed"}')
         self.assertEqual(captured["profile"], "internal")
         self.assertEqual(captured["source"], {"provider": "agent-role-run", "sessionId": session_id})
-
-    def test_repository_tool_requires_receipt_and_returns_typed_retry_when_socket_is_absent(self):
-        handler = PLUGIN._repository_handler("prepare")
-        blocked = json.loads(handler({}, session_id="telegram-session"))
-        self.assertEqual((blocked["status"], blocked["code"]), ("blocked", "authorization_denied"))
-        retry = json.loads(handler({}, session_id="browser:" + "a" * 64))
-        self.assertEqual((retry["status"], retry["code"]), ("retry", "bridge_unavailable"))
-
-    def test_repository_tool_allows_bounded_time_for_initial_checkout(self):
-        observed = []
-        body = b'{"status":"prepared"}'
-
-        class Socket:
-            def __enter__(self): return self
-            def __exit__(self, *_args): return None
-            def settimeout(self, timeout): observed.append(timeout)
-            def connect(self, _path): return None
-            def sendall(self, _value): return None
-            def recv(self, _size):
-                if getattr(self, "read", False): return b""
-                self.read = True
-                return b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + body
-
-        original = PLUGIN.socket.socket
-        PLUGIN.socket.socket = lambda *_args, **_kwargs: Socket()
-        try:
-            result = json.loads(PLUGIN._repository_handler("prepare")(
-                {}, session_id="browser:" + "a" * 64))
-        finally:
-            PLUGIN.socket.socket = original
-        self.assertEqual(result["status"], "prepared")
-        self.assertEqual(observed, [180])
-
-    def test_executor_tool_uses_runtime_session_and_never_caller_identity(self):
-        sent = []
-        body = json.dumps({"status": "completed", "output": "done", "executorReceipt": {}}).encode()
-
-        class Socket:
-            def __enter__(self): return self
-            def __exit__(self, *_args): return None
-            def settimeout(self, _timeout): return None
-            def connect(self, path): self.path = path
-            def sendall(self, value): sent.append(value)
-            def recv(self, _size):
-                if getattr(self, "read", False): return b""
-                self.read = True
-                return b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + body
-
-        original = PLUGIN.socket.socket
-        PLUGIN.socket.socket = lambda *_args, **_kwargs: Socket()
-        session = "browser:" + "b" * 64
-        try:
-            result = json.loads(PLUGIN._executor_handler({"receiptReference": "attacker", "executorId": "codex-cli",
-                "model": "gpt-5.6-terra", "effort": "medium", "prompt": "Implement"}, session_id=session))
-        finally:
-            PLUGIN.socket.socket = original
-        request_body = json.loads(sent[0].split(b"\r\n\r\n", 1)[1])
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(request_body["payload"]["receiptReference"], session)
-        self.assertNotEqual(request_body["payload"]["receiptReference"], "attacker")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -95,64 +95,38 @@ network change.
 ### Hermes GitHub credential boundary
 
 Reviewed non-secret Hermes environment example SHA-256:
-`79c50f389836928c58ec93a1cef22b05b573ae97dfe57b8cb6f256832e80fb87`.
+`27bd554ecd9458f7d6d1dbd4f54734281bd95d8acbfdf21c2a4f022b5328ab3f`.
 
 Reviewed non-secret Control Plane environment example SHA-256:
 `d724c29b3e4dff276d7ed5d851224887817300d565f104a3d54b17744c78d58a`.
 
-- Never mount a GitHub PAT, App private key, deploy key or `GH_TOKEN` into the
-  Hermes gateway or its terminal. The ASCON repository cannot currently prove
-  protected-ref enforcement, so a standing `contents:write` credential would
-  also expose merge/release writes.
+- Mount only the dedicated, fine-grained ASCON repository credential into the
+  isolated Hermes gateway. Store its canonical value at
+  `/etc/fai-hermes-ascon/secrets/github-repository-token`, root-only mode `0600`;
+  the deployment script makes the UID-10000 runtime copy without logging it.
+- Restrict the credential to `VF78/ascon` with metadata read, contents
+  read/write and pull-request read/write. Do not grant administration, Actions,
+  environments, deployments, secrets or access to another repository.
 - Routine Hermes Project mutations use the existing Control Plane GitHub
   adapter. Hermes receives only its project-isolated internal bridge token;
   Telegram identity is bound server-side, every command is idempotent/audited,
   and provider versions are checked immediately before mutation.
-- The host-owned GitHub credential remains only at
-  `/etc/fai-control-plane-mvp/secrets/github-projects-token`, root-only mode
-  `0600`, and is resolved by the web/worker adapters. Never copy it to the
-  Hermes checkout, data root, environment, logs or approval evidence.
+- The separate Control Plane Project credential remains at
+  `/etc/fai-control-plane-mvp/secrets/github-projects-token` and is never copied
+  into Hermes. Hermes' repository credential is not used by web/worker.
 - Merge, Actions mutation, release and production deploy are not standing
-  Hermes capabilities. Enabling any one requires a separately reviewed broker
-  operation that resolves approved evidence against the exact current provider
-  target/version; a prompt, role name or retained approval is insufficient.
-
-The optional `repository-work` Compose profile is inactive until the exact
-`activate` action succeeds. Its two narrow sidecars are the sole holders of the
-ASCON GitHub App private key/installation tokens and executor signing key.
-Activation is blocked until all of the following are reviewed together:
-
-- a project-only GitHub App installation exists with metadata read,
-  contents read/write and pull-requests read/write, and no administration,
-  Actions, environments, deployments or secrets permission;
-- `/etc/fai-hermes-ascon/secrets/github-app-private-key.pem` is a regular,
-  non-symlink host-owned file, readable only by the broker runtime identity;
-- the Control Plane repository-authorization bridge proves the existing
-  canonical receipt, repository ID/URL, issue number and exact current default-branch SHA;
-- `/var/lib/fai-hermes-ascon/repository-broker` and the Unix socket are confined
-  to the ASCON gateway/broker composition, and the App key is absent from the
-  gateway, Codex container, checkout, environment, logs and readiness payload;
-- broker metadata, locks, bundles and temporary bare repositories live only in
-  `/var/lib/fai-repository-broker-ascon`, outside the gateway-visible
-  `/var/lib/fai-hermes-ascon` parent mount;
-- a root-generated `fai.trusted-execution-readiness.v1` evidence file binds the
-  approved App/installation IDs, both image digests, both socket probes,
-  executor public-key fingerprint and configuration digest without a secret.
-
-Missing or drifted evidence keeps both CLI routing and repository work disabled.
-`stage` never creates the App, installs its downloaded private key or enables
-the profile. After those exact external facts are approved, `activate` validates
-the App by minting a short-lived installation token, starts both sidecars
-atomically and writes readiness; failure stops both and removes readiness.
+  Hermes capabilities. Branch protection must reject direct default-branch
+  pushes. Merge, release and deploy remain separate explicit commands outside
+  Hermes; no production credential is mounted into its composition.
 
 ### Isolated Hermes Codex CLI credential
 
 The Hermes-derived image is built from the exact upstream digest recorded in
 `infra/hermes-ascon/Dockerfile` and pins `@openai/codex` `0.144.1`. The gateway
-runs as UID/GID `10000:10000`; its `/opt/data/codex-home` is an empty mask.
-The isolated credential lives at `/var/lib/fai-codex-ascon/home` and is mounted
-only into `codex-cli` and the trusted executor broker. Never copy or mount
-root's Codex home, a raw GitHub token or another project's credential.
+runs as UID/GID `10000:10000`. The isolated credential lives at
+`/var/lib/fai-codex-ascon/home` and is mounted into the ASCON gateway and the
+one-shot `codex-cli` auth service. Never mount root's Codex home or another
+project's credential.
 
 After separate approval for the interactive device flow, create only the
 project-isolated Codex credential. This action builds and probes the derived
@@ -173,18 +147,17 @@ minimal `codex-cli` Compose service. It mounts only the isolated Codex home and
 project work directory, with no gateway API/Telegram environment, bridge-token
 mounts, other Hermes data or listening ports.
 
-For a configured CLI route Hermes must call `fai_executor_run`. The tool binds
-the runtime-supplied receipt session to a fixed allowlisted CLI/model/effort.
-The isolated broker invokes `/usr/local/bin/codex exec` and only after a real
-successful exit returns `fai.executor-invocation-receipt.v1`, signed with its
-broker-only Ed25519 key. The worker verifies the signature and exact route.
-Direct `terminal` execution has no receipt and cannot complete a stage.
+For a configured CLI route Hermes invokes `codex exec` in its native terminal
+with the exact model and reasoning effort from the project policy, reviews the
+result, pushes only a review branch and creates a pull request with `gh`.
+Control Plane validates Hermes' bounded result against that policy and observes
+the provider-native Project/PR result.
 
 `stage` deletes stale readiness first and recreates
 `/var/lib/fai-hermes-ascon/readiness/codex-cli.json` only after the separate
 Hermes provider credential, Codex CLI credential, exact CLI version, derived
 image, gateway health and public capabilities all pass. Root-written readiness
-and the executor public key are mounted read-only into Control Plane web/worker.
+is mounted read-only into Control Plane web/worker.
 The same stage atomically installs the reviewed Hermes Nginx config, validates
 it with `nginx -t`, reloads Nginx and probes the authenticated bounded run-status
 route. Any later stage failure restores and reloads the previous config before
