@@ -98,7 +98,8 @@ export type AgentExecutorResult = Readonly<{
   execution: Readonly<{taskClass: AgentTaskClass; executor: AgentRoute['executor']; model: string;
     effort: 'medium' | 'high'}>;
   outcome: 'success' | 'rework';
-  transition: Readonly<{itemId: string; fromVersion: string; targetStage: string; toVersion: string}>;
+  /** Requested provider-native transition; Control Plane applies and verifies it after accepting the result. */
+  transition: Readonly<{itemId: string; fromVersion: string; targetStage: string}>;
   reason: string;
   evidence: readonly Readonly<{kind: string; result: string}>[];
   deliverables: readonly Readonly<{label: string; url: string}>[];

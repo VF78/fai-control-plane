@@ -86,9 +86,9 @@ export const reconcileTracker = async (input: Readonly<{
     });
     if (result === 'enqueued') queuedActions += 1;
   }
-  // Evaluate the current provider-native stage, not only a transition edge. Hermes can
-  // mutate Status before its terminal result becomes observable; the accepted receipt
-  // and submission idempotency make this repair pass safe on every poll.
+  // Evaluate the current provider-native stage, not only a transition edge. This repairs
+  // an automatic continuation if the fast terminal-result path was interrupted after
+  // its verified Status mutation. Receipt and submission idempotency make every poll safe.
   if (input.ports.continueAgentChain !== undefined) for (const item of snapshot.items) {
     const continuation = await input.ports.continueAgentChain(item);
     if (continuation === 'started') queuedActions += 1;

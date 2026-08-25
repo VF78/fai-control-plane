@@ -17,7 +17,7 @@ const request = {
 };
 const attestation = {execution: {taskClass: 'ordinary_implementation' as const,
   executor: {kind: 'cli' as const, id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'medium' as const},
-outcome: 'success' as const, transition: {itemId: 'item', fromVersion: 'v1', targetStage: 'QA', toVersion: 'v2'}};
+outcome: 'success' as const, transition: {itemId: 'item', fromVersion: 'v1', targetStage: 'QA'}};
 
 describe('MVP Hermes adapter', () => {
   it('delivers the neutral role contract and returns opaque evidence', async () => {

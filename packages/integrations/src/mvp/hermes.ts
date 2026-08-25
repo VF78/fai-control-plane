@@ -31,8 +31,7 @@ const executorResult = (output: unknown): AgentExecutorResult | null => {
     (route.effort !== 'medium' && route.effort !== 'high') || executor === null || typeof executor !== 'object' ||
     Array.isArray(executor) || !['direct-agent','cli'].includes(String((executor as Record<string, unknown>).kind)) ||
     ((executor as Record<string, unknown>).kind === 'cli' && !bounded((executor as Record<string, unknown>).id, 256)) ||
-    !bounded(moved.itemId, 512) || !bounded(moved.fromVersion, 512) || !bounded(moved.targetStage, 200) ||
-    !bounded(moved.toVersion, 512)) return null;
+    !bounded(moved.itemId, 512) || !bounded(moved.fromVersion, 512) || !bounded(moved.targetStage, 200)) return null;
   const evidence = record.evidence.flatMap((entry) => {
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return [];
     const fact = entry as Record<string, unknown>;
@@ -124,7 +123,7 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
           route.model !== result.execution.model || route.effort !== result.execution.effort ||
           result.transition.itemId !== expected.projectItem.id ||
           result.transition.fromVersion !== expected.observedVersion || target === null ||
-          result.transition.targetStage !== target || result.transition.toVersion === expected.observedVersion) {
+          result.transition.targetStage !== target) {
           return {status: 'failed', failureCode: 'agent_result_invalid'};
         }
       }

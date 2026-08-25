@@ -17,7 +17,7 @@ describe('bounded policy-driven agent continuation', () => {
   });
 
   it('does nothing when the current project stage has no automation setting', async () => {
-    await expect(continueExplicitAgentChain({projectId: 'project', item: {...item, statusOptionName: 'In Dev'}, stage: null,
+    await expect(continueExplicitAgentChain({projectId: 'project', item, stage: null,
       stores: {resolveActor: vi.fn()},
       instructions: () => ({constraints: ['qa'], acceptanceCriteria: ['evidence']}),
       ports: {} as never})).resolves.toBe('not-authorized');

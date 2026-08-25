@@ -37,12 +37,14 @@ visibility, not another tracker or agent platform.
 
 ### Orchestration rule
 
-An observed GitHub Project transition may request one next-role action from
-Hermes. The request contains the role, repository and GitHub item identity,
-bounded approved project context, acceptance criteria, approval fact when
-required, and an idempotency/correlation reference. Hermes performs the work
-and updates the same GitHub item/PR/check/release. The Control Plane observes
-that external result; it does not reconstruct Hermes' internal lifecycle.
+An explicit start or confirmed GitHub Project transition may request one
+next-role action from Hermes. The request contains the role, repository and
+GitHub item identity, bounded approved project context, acceptance criteria,
+approval fact when required, and an idempotency/correlation reference. Hermes
+performs the work and returns evidence plus the configured requested next
+stage. The Control Plane applies that one provider-native Status command with
+exact version/readback, then observes the same GitHub item/PR/check/release; it
+does not reconstruct Hermes' internal lifecycle.
 
 ### Prohibited duplication
 
@@ -118,7 +120,8 @@ credentials. Those actions remain outside Hermes and require their existing
 explicit approval.
 
 Control Plane submits and observes through `AgentDeliveryPort`, verifies the
-declared route against project policy and verifies provider-native results. It
+declared route against project policy, applies the configured provider-native
+Status transition after an accepted result, and verifies immediate readback. It
 does not broker repository access, transport bundles, wrap a CLI or attest an
 executor invocation cryptographically. Repository scope, branch protection and
 the absence of production credentials are deployment facts, not a second

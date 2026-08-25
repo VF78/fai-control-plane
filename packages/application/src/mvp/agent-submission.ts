@@ -25,7 +25,7 @@ export type AgentSubmissionPorts = Readonly<{
   composeAcceptedNotification(item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput>;
   transaction: Readonly<{execute(input: Readonly<{
     workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
-    role: AgentRole; itemId: string; observedVersion: string; sourceCount: number;
+    role: AgentRole; itemId: string; issueId: string; observedVersion: string; sourceCount: number;
     processPolicyVersion: string; processStageId: string; processStageTitle: string;
     successTargetTitle: string | null; reworkTargetTitle: string | null;
     routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog; expectedOwnerOptionId: string;
@@ -151,6 +151,7 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   }
   return ports.transaction.execute({workspaceId: context.workspaceId, projectId: context.projectId,
     actorId: command.actorId, idempotencyKey, correlationId, role: command.role, itemId: item.itemId,
+    issueId: item.issueId,
     observedVersion: item.version, sourceCount: sources.length,
     processPolicyVersion: context.processPolicyVersion, processStageId: processStage.id,
     processStageTitle: processStage.title, successTargetTitle, reworkTargetTitle,
@@ -160,7 +161,9 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
       rootCommandIdempotencyKey: command.root.commandIdempotencyKey}),
     retryOf: command.retry?.deliveryReference ?? null,
     confirmUnobservableFailure: command.retry?.confirmUnobservableFailure === true, notification}, async () => {
-      const delivered = await ports.delivery.submit(request);
+      let delivered: Awaited<ReturnType<AgentDeliveryPort['submit']>>;
+      try { delivered = await ports.delivery.submit(request); }
+      catch { await new Promise<void>((resolve) => setTimeout(resolve, 250)); delivered = await ports.delivery.submit(request); }
       return {deliveryReference: delivered.deliveryReference};
     });
 };

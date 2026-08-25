@@ -10,10 +10,11 @@ describe('task executor control', () => {
     expect(source).toContain('Назначить и начать');
     expect(source).toContain('Подтвердить и начать');
     expect(source).toContain('Запуск Hermes выполняется');
-    expect(source).toContain('Проверить статус');
+    expect(source).toContain('Worker проверяет результат автоматически раз в минуту');
+    expect(source).not.toContain('Проверить статус');
     expect(source).toContain('Запустить заново');
     expect(source).toContain('pendingLabel="Запускаем…"');
-    expect(source).toContain('confirmUnobservableFailure');
+    expect(source).not.toContain('confirmUnobservableFailure');
     expect(source).toContain('const activeRun = confirmedRun');
     expect(source).toContain("task.status === 'Backlog' || task.status === 'Ready'");
     expect(source).toContain('Blocked станет No');

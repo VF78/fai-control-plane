@@ -5,7 +5,6 @@ import {
   canApprove,
   canGovernMembership,
   createApprovalPersistence,
-  createAgentAttemptStore,
   createStores,
   databaseMvpReady,
   executeAgentSubmissionTransaction,
@@ -19,7 +18,8 @@ import {
   saveAgentRoutingPolicy,
   subjectHash
 } from '@fai-control-plane/db';
-import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, composeAgentTerminalNotification, decideApproval, reconcileAgentAttempt, type AgentSubmissionPorts} from '@fai-control-plane/application';
+import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, decideApproval,
+  type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
 import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeMembership, parseAgentRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
@@ -272,20 +272,6 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery
       : createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048), credentialRef: binding.agentCredentialRef,
         secrets: secretResolver});
-    if (action === 'refresh-attempt') {
-      const assignment = await githubAssignment(database, session.actorId, projectId, delivery);
-      return Response.json(await reconcileAgentAttempt({actorId: session.actorId, projectId,
-        itemId: string(body.projectItemId), deliveryReference: string(body.deliveryReference)},
-      {delivery, attempts: createAgentAttemptStore(database), readFreshItem: async (attempt) => {
-        const context = await assignment.ports.resolveContext();
-        if (context === null) return null;
-        const snapshot = await assignment.ports.readFreshSnapshot();
-        await assignment.ports.persistSnapshot(snapshot);
-        return snapshot.items.find((candidate) => candidate.itemId === attempt.itemId &&
-          candidate.projectId === attempt.projectId) ?? null;
-      }, composeTerminalNotification: async (attempt, observed, key) =>
-        composeAgentTerminalNotification(projectId, attempt, observed, key)}));
-    }
     if (action !== 'assign') throw new Error('body_invalid');
     const executor = body.executor;
     if (executor === null || typeof executor !== 'object' || Array.isArray(executor)) throw new Error('body_invalid');
