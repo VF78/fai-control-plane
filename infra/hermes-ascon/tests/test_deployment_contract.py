@@ -15,7 +15,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("x-logging: &bounded-logging", compose)
         self.assertIn('max-size: "10m"', compose)
         self.assertIn('max-file: "3"', compose)
-        self.assertEqual(compose.count("logging: *bounded-logging"), 4)
+        self.assertEqual(compose.count("logging: *bounded-logging"), 2)
         stage_action = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
         self.assertIn("prune_superseded_project_images", stage_action)
         self.assertIn(
@@ -105,7 +105,7 @@ class DeploymentContractTest(unittest.TestCase):
         config = (HERMES / "config.yaml").read_text()
         compose = (HERMES / "compose.yaml").read_text()
         gateway = compose.split("  gateway:", 1)[1].split("\n  codex-cli:", 1)[0]
-        self.assertIn('entrypoint: ["/opt/hermes/bin/hermes"]', gateway)
+        self.assertIn('entrypoint: ["/opt/fai/native-entrypoint.sh"]', gateway)
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
         self.assertIn("default: __HERMES_MODEL__", config)
         self.assertNotIn("${HERMES_MODEL}", config)
@@ -209,70 +209,26 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertLess(stage.index("install_nginx_config"), stage.index("write_readiness"))
         self.assertLess(stage.index("write_readiness"), stage.index("commit_nginx_config"))
 
-    def test_repository_broker_is_an_inactive_secret_isolated_sidecar(self):
+    def test_gateway_uses_native_project_scoped_credentials_without_brokers(self):
         compose = (HERMES / "compose.yaml").read_text()
-        broker = compose.split("  repository-broker:\n", 1)[1].split("\n  executor-broker:", 1)[0]
-        gateway = compose.split("  gateway:\n", 1)[1].split("\n  repository-broker:", 1)[0]
+        gateway = compose.split("  gateway:\n", 1)[1].split("\n  codex-cli:", 1)[0]
         codex = compose.split("  codex-cli:\n", 1)[1]
-        self.assertIn("profiles: [repository-work]", broker)
-        self.assertIn("FCP_REPOSITORY_AUTHORIZATION_URL:?required", broker)
-        self.assertIn("FCP_REPOSITORY_BROKER_RELEASE:-disabled", broker)
-        self.assertIn("FCP_GITHUB_APP_ID:-0", broker)
-        self.assertIn("FCP_GITHUB_APP_INSTALLATION_ID:-0", broker)
-        self.assertIn("FCP_GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null", broker)
-        self.assertNotIn("FCP_GITHUB_APP_ID:?required", broker)
-        self.assertNotIn("disabled.invalid", broker)
-        dockerfile = (ROOT / "infra/repository-broker/Dockerfile").read_text()
-        self.assertIn("repository-broker-cli.js", dockerfile)
-        self.assertIn("node:24-bookworm-slim@sha256:", dockerfile)
-        self.assertIn("github-app-private-key.pem:ro", broker)
-        self.assertIn("broker.sock", broker)
-        self.assertIn("cap_drop: [ALL]", broker)
-        self.assertIn("/run/fai-repository-broker", gateway)
-        self.assertIn(
-            "/var/lib/fai-repository-broker-ascon:/var/lib/fai-repository-broker",
-            broker,
-        )
-        self.assertNotIn("fai-hermes-ascon/repository-broker-state", broker)
-        self.assertNotIn("/var/lib/fai-repository-broker-ascon", gateway)
-        self.assertNotIn("github-app-private-key", gateway)
-        self.assertNotIn("github-app-private-key", codex)
-        self.assertNotIn("FCP_GITHUB_APP", codex)
-        self.assertNotIn("/var/lib/fai-repository-broker-ascon", codex)
-
+        entrypoint = (HERMES / "native-entrypoint.sh").read_text()
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
-        self.assertIn("https://app.f-ai.studio/api/hermes/repository-authorizations", script)
-        self.assertIn("probe_repository_authorization", script)
-        activate = script.split("activate_trusted_execution() {", 1)[1].split("\n}", 1)[0]
-        self.assertIn("probe_repository_authorization", activate)
-
-    def test_executor_broker_is_the_only_cli_credential_and_signing_boundary(self):
-        compose = (HERMES / "compose.yaml").read_text()
-        gateway = compose.split("  gateway:\n", 1)[1].split("\n  repository-broker:", 1)[0]
-        executor = compose.split("  executor-broker:\n", 1)[1].split("\n  codex-cli:", 1)[0]
-        plugin = (HERMES / "extensions/fai-control-plane/__init__.py").read_text()
-        script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
-        broker_code = (HERMES / "executor-broker.mjs").read_text()
-        self.assertIn("profiles: [repository-work]", executor)
-        self.assertIn('/opt/fai/executor-broker.mjs', executor)
-        self.assertIn('/var/lib/fai-codex-ascon/home:/opt/data/codex-home', executor)
-        self.assertIn('executor-attestation-private-key.pem:ro', executor)
-        self.assertNotIn('executor-attestation-private-key', gateway)
-        self.assertIn('codex-home-mask:/opt/data/codex-home:ro', gateway)
-        gateway_probe = script.split("probe_runtime() {", 1)[1].split("\n}\n", 1)[0]
-        self.assertNotIn('/opt/data/codex-home/.uid-10000-write-probe', gateway_probe)
-        self.assertIn('fai_executor_run', plugin)
-        self.assertIn('session_id = str(kwargs.get("session_id")', plugin)
-        self.assertIn('activate_trusted_execution', script)
-        self.assertIn('remove_trusted_readiness', script)
-        activate = script.split("  activate)", 1)[1].split("    ;;", 1)[0]
-        self.assertIn('activate_trusted_execution', activate)
-        self.assertIn("const codex = '/usr/local/bin/codex'", broker_code)
-        self.assertIn("'--model', model", broker_code)
-        self.assertIn('model_reasoning_effort=', broker_code)
-        self.assertIn("sign(null, Buffer.from(canonical), privateKey)", broker_code)
-        self.assertNotIn('payload.command', broker_code)
-        self.assertNotIn('payload.args', broker_code)
+        self.assertIn('entrypoint: ["/opt/fai/native-entrypoint.sh"]', gateway)
+        self.assertIn('/var/lib/fai-codex-ascon/home:/opt/data/codex-home', gateway)
+        self.assertIn('github-repository-token:ro', gateway)
+        self.assertIn('export GH_TOKEN', entrypoint)
+        self.assertIn('git config --global credential.https://github.com.helper', entrypoint)
+        self.assertIn('exec /opt/hermes/bin/hermes "$@"', entrypoint)
+        self.assertIn('verify_native_execution', script)
+        self.assertIn('gh auth status', script)
+        self.assertNotIn('repository-broker', compose + script)
+        self.assertNotIn('executor-broker', compose + script)
+        self.assertNotIn('repository-work', compose + script)
+        self.assertNotIn('FCP_GITHUB_APP', compose + script)
+        self.assertNotIn('EXECUTOR_ATTESTATION', compose + script)
+        self.assertNotIn('github-repository-token', codex)
 
 
 if __name__ == "__main__":

@@ -9,9 +9,9 @@ export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa') 
   ? {constraints: [
     'Work only on the referenced GitHub Project item and repository.',
     'Do not merge, release, deploy, or access production.',
-    'Before invoking the coding CLI, call the receipt-bound repository prepare capability for the exact repository using request.repository.defaultBranch as refs/heads/<branch> and request.repository.defaultBranchSha as the pinned base SHA. Do not look up project facts and do not continue on retry or blocker.',
-    'Invoke every CLI route only through fai_executor_run with the exact configured executor, model and effort; relay its signed executorReceipt unchanged in the final result. Direct terminal CLI output is untrusted.',
-    'Before accepting the executor result, call repository publishReview for the exact prepared work reference and HEAD; accept only its bounded branch and pull-request deliverables.',
+    'Use the native terminal in /opt/data/work/project. Clone or refresh only request.repository.url at request.repository.defaultBranchSha.',
+    'Invoke the configured CLI with the exact executor, model and effort from the resolved route. Hermes must review its result before accepting it.',
+    'Push only a new review branch and create a pull request. Never push the default branch, merge, release, deploy, or access production.',
     'After implementation, follow the supplied project process policy: use the receipt-bound tracker capability to move this same item to its configured next stage and read it back. Reject the executor result if that verified transition cannot be completed.'
   ], acceptanceCriteria: [
     'Record delivery evidence in the referenced GitHub issue or pull request.',
@@ -19,7 +19,7 @@ export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa') 
   ]} : {constraints: [
     'Work only on the referenced GitHub Project item and repository.',
     'Do not merge, release, deploy, or access production.',
-    'If the configured QA route uses a CLI, invoke it only through fai_executor_run and relay its signed executorReceipt unchanged. Direct terminal CLI output is untrusted.',
+    'If the configured QA route uses a CLI, invoke it in the native terminal with the exact configured executor, model and effort. Hermes must review its result.',
     'After QA, follow the supplied project process policy: use the receipt-bound tracker capability to move this same item to its configured rework or next stage. Read it back and verify Status.'
   ], acceptanceCriteria: [
     'Record QA evidence in the referenced GitHub issue or pull request.',

@@ -69,47 +69,6 @@ export type RepositoryReadPort = Readonly<{
   }>>;
 }>;
 
-export type RepositoryWorkFailure = Readonly<{
-  status: 'retry' | 'blocked';
-  code: 'bridge_unavailable' | 'github_unavailable' | 'checkout_busy' |
-    'authorization_denied' | 'binding_mismatch' | 'base_mismatch' |
-    'checkout_invalid' | 'change_missing' | 'policy_denied' | 'response_invalid';
-  /** Safe for the existing bounded terminal/Telegram notification surface. */
-  message: string;
-  retryAfterSeconds?: number;
-}>;
-
-/**
- * Narrow repository capability handed to Hermes. Implementations must keep all
- * provider credentials outside the Hermes/Codex process and workspace.
- */
-export type RepositoryWorkPort = Readonly<{
-  prepare(input: Readonly<{
-    projectId: string;
-    receiptReference: string;
-    repository: Readonly<{id: string; url: string}>;
-    issueNumber: number;
-    base: Readonly<{ref: string; sha: string}>;
-  }>): Promise<Readonly<{
-    status: 'prepared';
-    workReference: string;
-    workspacePath: string;
-    reviewRef: string;
-  }> | RepositoryWorkFailure>;
-  publishReview(input: Readonly<{
-    workReference: string;
-    receiptReference: string;
-    headSha: string;
-    title: string;
-    body: string;
-  }>): Promise<Readonly<{
-    status: 'published';
-    workReference: string;
-    reviewRef: string;
-    deliverables: readonly Readonly<{label: 'branch' | 'pull_request'; url: string}>[];
-  }> | RepositoryWorkFailure>;
-}>;
-
 export type SecretResolverPort = Readonly<{
   resolve(reference: OpaqueSecretRef, expectedPurpose: string): Promise<Readonly<{value: string}>>;
 }>;
@@ -138,12 +97,6 @@ export type AgentExecutorResult = Readonly<{
   /** Hermes classifies once, then attests the exact policy route it actually used. */
   execution: Readonly<{taskClass: AgentTaskClass; executor: AgentRoute['executor']; model: string;
     effort: 'medium' | 'high'}>;
-  /** Composition-signed proof of the CLI invocation. Required for CLI routes, absent for direct-agent routes. */
-  executorReceipt?: Readonly<{
-    contract: 'fai.executor-invocation-receipt.v1'; invocationId: string; receiptReference: string;
-    executorId: string; model: string; effort: 'medium' | 'high'; outputSha256: string;
-    completedAt: string; signature: string;
-  }>;
   outcome: 'success' | 'rework';
   transition: Readonly<{itemId: string; fromVersion: string; targetStage: string; toVersion: string}>;
   reason: string;

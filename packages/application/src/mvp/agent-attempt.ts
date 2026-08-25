@@ -70,11 +70,6 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
     const exact = result !== undefined && route !== undefined &&
       JSON.stringify(route.executor) === JSON.stringify(result.execution.executor) &&
       route.model === result.execution.model && route.effort === result.execution.effort &&
-      (result.execution.executor.kind !== 'cli' ||
-        (result.executorReceipt?.receiptReference === attempt.correlationId &&
-          result.executorReceipt.executorId === result.execution.executor.id &&
-          result.executorReceipt.model === result.execution.model &&
-          result.executorReceipt.effort === result.execution.effort)) &&
       result.transition.itemId === attempt.itemId && result.transition.fromVersion === attempt.observedVersion &&
       target !== null && target !== undefined && result.transition.targetStage === target &&
       tracker !== null && tracker.itemId === attempt.itemId && tracker.version === result.transition.toVersion &&

@@ -1,5 +1,4 @@
 import {readFile} from 'node:fs/promises';
-import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, createStores,
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
@@ -30,10 +29,6 @@ const env = (name: string): string => {
 const secret = (id: string, purpose: string, variable: string): OpaqueSecretRef => ({
   id, purpose, locator: env(variable)
 });
-const executorAttestationPublicKey = (): string | undefined => {
-  try { return readFileSync('/run/fai-readiness/executor-attestation-public-key.pem', 'utf8'); }
-  catch { return undefined; }
-};
 const secrets: SecretResolverPort = {async resolve(reference, expectedPurpose) {
   if (reference.purpose !== expectedPurpose || !reference.locator.startsWith('/')) {
     throw new Error('secret_reference_denied');
@@ -67,8 +62,7 @@ export const createWorker = (database: Database = createDatabase()) => {
   const telegram = createTelegramDeliveryAdapter({config: {projectId, chatId: env('TELEGRAM_INTERNAL_CHAT_ID'),
     tokenRef: secret('telegram', 'messenger_delivery', 'TELEGRAM_BOT_TOKEN_FILE')}, secrets});
   const agentDelivery = createHermesDeliveryAdapter({endpoint: env('HERMES_ROLE_REQUEST_URL'),
-    credentialRef: secret('hermes', 'agent_delivery', 'HERMES_TOKEN_FILE'), secrets,
-    executorAttestationPublicKey: executorAttestationPublicKey()});
+    credentialRef: secret('hermes', 'agent_delivery', 'HERMES_TOKEN_FILE'), secrets});
   const statusChanged = async (
     prior: TrackerItemFact, item: TrackerItemFact, idempotencyKey: string
   ): Promise<MessengerDeliveryInput> => ({projectId, contour: 'trusted-main', channelReference: 'telegram:internal',

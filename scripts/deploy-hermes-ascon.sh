@@ -20,17 +20,13 @@ readonly project_work_directory="$work_directory/project"
 readonly codex_root=/var/lib/fai-codex-ascon
 readonly codex_home="$codex_root/home"
 readonly legacy_codex_home="$data_root/codex-home"
-readonly codex_home_mask="$data_root/codex-home-mask"
 readonly readiness_directory="$data_root/readiness"
 readonly readiness_file="$readiness_directory/codex-cli.json"
-readonly trusted_readiness_file="$readiness_directory/trusted-execution.json"
-readonly executor_public_key_file="$readiness_directory/executor-attestation-public-key.pem"
-readonly repository_broker_state=/var/lib/fai-repository-broker-ascon
-readonly repository_broker_socket_directory="$data_root/repository-broker"
-readonly executor_broker_socket_directory="$data_root/executor-broker"
+readonly github_repository_token=/etc/fai-hermes-ascon/secrets/github-repository-token
 readonly runtime_secret_directory="$data_root/runtime-secrets"
 readonly runtime_internal_bridge_token="$runtime_secret_directory/internal-bridge-token"
 readonly runtime_client_bridge_token="$runtime_secret_directory/client-bridge-token"
+readonly runtime_github_repository_token="$runtime_secret_directory/github-repository-token"
 readonly gateway_pid_file="$data_root/gateway.pid"
 readonly project=fai-hermes-ascon
 readonly workload_uid=10000
@@ -39,7 +35,6 @@ readonly derived_image=fai-hermes-ascon:codex-0.144.1
 readonly upstream_image=nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6
 readonly codex_version=0.144.1
 readonly codex_contract=fai.hermes-codex-readiness.v1
-readonly trusted_execution_contract=fai.trusted-execution-readiness.v1
 
 readonly -a readable_directories=(
   "$deploy_root/infra/hermes-ascon/extensions/fai-control-plane"
@@ -54,7 +49,7 @@ readonly -a readable_files=(
   "$deploy_root/infra/hermes-ascon/extensions/fai-control-plane/__init__.py"
   "$deploy_root/infra/hermes-ascon/extensions/fai-identity/HOOK.yaml"
   "$deploy_root/infra/hermes-ascon/extensions/fai-identity/handler.py"
-  "$deploy_root/infra/hermes-ascon/executor-broker.mjs"
+  "$deploy_root/infra/hermes-ascon/native-entrypoint.sh"
   "$deploy_root/infra/hermes-ascon/Dockerfile"
 )
 
@@ -63,14 +58,14 @@ fail() {
   exit 1
 }
 
-[[ $# -eq 1 && ( $1 == auth || $1 == codex-auth || $1 == stage || $1 == activate || $1 == rollback ) ]] ||
-  fail 'usage: deploy-hermes-ascon.sh <auth|codex-auth|stage|activate|rollback>'
+[[ $# -eq 1 && ( $1 == auth || $1 == codex-auth || $1 == stage || $1 == rollback ) ]] ||
+  fail 'usage: deploy-hermes-ascon.sh <auth|codex-auth|stage|rollback>'
 readonly action=$1
 
 [[ $EUID -eq 0 ]] || fail 'must run as root on the approved host'
 [[ $(git rev-parse --show-toplevel) == "$deploy_root" ]] ||
   fail 'checkout is not the isolated ASCON Hermes directory'
-[[ $action == activate ]] || rm -f "$readiness_file"
+rm -f "$readiness_file"
 [[ -z $(git status --porcelain) ]] || fail 'checkout is not clean'
 [[ "${HERMES_APPROVED_IMAGE:-}" == "$upstream_image" ]] ||
   fail 'exact approved upstream image is missing'
@@ -78,7 +73,7 @@ readonly action=$1
   fail 'approved config digest is missing or invalid'
 
 for path in "$environment_file" "$api_secret_file" "$telegram_secret_file" \
-  "$internal_bridge_token" "$client_bridge_token"; do
+  "$internal_bridge_token" "$client_bridge_token" "$github_repository_token"; do
   [[ -f "$path" && -r "$path" ]] || fail "missing required file: $path"
   [[ $(stat -c '%U:%G:%a' "$path") == root:root:600 ]] ||
     fail "file must be root:root mode 0600: $path"
@@ -96,10 +91,8 @@ done
 readonly hermes_model=$(sed -n 's/^HERMES_MODEL=//p' "$environment_file")
 [[ "$hermes_model" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
   fail 'Hermes model is invalid'
-readonly repository_authorization_url=$(sed -n 's/^FCP_REPOSITORY_AUTHORIZATION_URL=//p' "$environment_file")
-[[ "$repository_authorization_url" == \
-  https://app.f-ai.studio/api/hermes/repository-authorizations ]] ||
-  fail 'repository authorization endpoint is missing or invalid'
+[[ $(sed -n 's/^HERMES_GITHUB_REPOSITORY_TOKEN_FILE=//p' "$environment_file") == \
+  "$runtime_github_repository_token" ]] || fail 'repository token must use the isolated runtime copy'
 
 [[ $(sha256sum "$environment_file" | cut -d ' ' -f 1) == "$HERMES_APPROVED_CONFIG_SHA256" ]] ||
   fail 'production environment does not match approved digest'
@@ -140,12 +133,8 @@ remove_readiness() {
   rm -f "$readiness_file"
 }
 
-remove_trusted_readiness() {
-  rm -f "$trusted_readiness_file" "$executor_public_key_file"
-}
-
 remove_runtime_secrets() {
-  rm -f "$runtime_internal_bridge_token" "$runtime_client_bridge_token"
+  rm -f "$runtime_internal_bridge_token" "$runtime_client_bridge_token" "$runtime_github_repository_token"
 }
 
 render_runtime_config() {
@@ -166,9 +155,7 @@ prepare_runtime() {
   render_runtime_config
   install -d -o root -g root -m 0755 "$readiness_directory"
   install -d -o "$workload_uid" -g "$workload_gid" -m 0700 \
-    "$work_directory" "$project_work_directory" "$codex_root" "$codex_home" "$runtime_secret_directory" \
-    "$codex_home_mask" "$repository_broker_socket_directory" "$executor_broker_socket_directory"
-  install -d -o "$workload_uid" -g "$workload_gid" -m 0700 "$repository_broker_state"
+    "$work_directory" "$project_work_directory" "$codex_root" "$codex_home" "$runtime_secret_directory"
   if [[ ! -s "$codex_home/auth.json" && -s "$legacy_codex_home/auth.json" ]]; then
     install -o "$workload_uid" -g "$workload_gid" -m 0600 "$legacy_codex_home/auth.json" "$codex_home/auth.json"
   fi
@@ -195,8 +182,6 @@ prepare_runtime() {
     "$workload_uid:$workload_gid:700" ]] || fail 'project work directory permissions are invalid'
   [[ $(stat -c '%u:%g:%a' "$codex_home") == \
     "$workload_uid:$workload_gid:700" ]] || fail 'Codex home permissions are invalid'
-  [[ $(stat -c '%u:%g:%a' "$codex_home_mask") == \
-    "$workload_uid:$workload_gid:700" ]] || fail 'Codex credential mask permissions are invalid'
   [[ $(stat -c '%U:%G:%a' "$readiness_directory") == root:root:755 ]] ||
     fail 'readiness directory permissions are invalid'
 
@@ -204,11 +189,16 @@ prepare_runtime() {
     "$internal_bridge_token" "$runtime_internal_bridge_token"
   install -o "$workload_uid" -g "$workload_gid" -m 0600 \
     "$client_bridge_token" "$runtime_client_bridge_token"
+  install -o "$workload_uid" -g "$workload_gid" -m 0600 \
+    "$github_repository_token" "$runtime_github_repository_token"
   cmp -s "$internal_bridge_token" "$runtime_internal_bridge_token" ||
     fail 'internal runtime bridge token copy differs from its canonical source'
   cmp -s "$client_bridge_token" "$runtime_client_bridge_token" ||
     fail 'client runtime bridge token copy differs from its canonical source'
-  for path in "$runtime_internal_bridge_token" "$runtime_client_bridge_token"; do
+  cmp -s "$github_repository_token" "$runtime_github_repository_token" ||
+    fail 'repository runtime token copy differs from its canonical source'
+  for path in "$runtime_internal_bridge_token" "$runtime_client_bridge_token" \
+    "$runtime_github_repository_token"; do
     [[ $(stat -c '%u:%g:%a' "$path") == "$workload_uid:$workload_gid:600" ]] ||
       fail "runtime bridge token permissions are invalid: $path"
   done
@@ -309,85 +299,19 @@ write_readiness() {
     fail 'readiness evidence permissions are invalid'
 }
 
-wait_for_service_health() {
-  local service=$1 deadline=$((SECONDS + 120)) container_id status
-  while (( SECONDS < deadline )); do
-    container_id=$("${compose[@]}" --profile repository-work ps --all -q "$service" 2>/dev/null || true)
-    status=''
-    [[ -z "$container_id" ]] || status=$(docker inspect --format \
-      '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)
-    case "$status" in healthy) return 0 ;; unhealthy|exited|dead) return 1 ;; esac
-    sleep 3
-  done
-  return 1
-}
-
-probe_repository_authorization() {
-  local bridge_token status
-  bridge_token=$(tr -d '\n' < "$internal_bridge_token")
-  status=$(printf 'header = "Authorization: Bearer %s"\n' "$bridge_token" | \
-    curl -sS --max-time 15 --config - --output /dev/null --write-out '%{http_code}' \
-      --header 'Content-Type: application/json' --data '{}' "$repository_authorization_url") ||
-    fail 'repository authorization endpoint probe failed'
-  [[ "$status" == 400 ]] || fail 'repository authorization endpoint did not reject the bounded probe'
-}
-
-activate_trusted_execution() {
-  local app_id installation_id app_key executor_key release public_temporary verified_at
-  local broker_image_id executor_image_id public_sha payload evidence_sha256 temporary
-  app_id=$(sed -n 's/^FCP_GITHUB_APP_ID=//p' "$environment_file")
-  installation_id=$(sed -n 's/^FCP_GITHUB_APP_INSTALLATION_ID=//p' "$environment_file")
-  app_key=$(sed -n 's/^FCP_GITHUB_APP_PRIVATE_KEY_FILE=//p' "$environment_file")
-  executor_key=$(sed -n 's/^FCP_EXECUTOR_ATTESTATION_PRIVATE_KEY_FILE=//p' "$environment_file")
-  release=$(sed -n 's/^FCP_REPOSITORY_BROKER_RELEASE=//p' "$environment_file")
-  [[ "$app_id" =~ ^[1-9][0-9]{0,19}$ && "$installation_id" =~ ^[1-9][0-9]{0,19}$ ]] ||
-    fail 'GitHub App and installation IDs are invalid'
-  [[ "$app_key" == /etc/fai-hermes-ascon/secrets/github-app-private-key.pem ]] ||
-    fail 'GitHub App key path is invalid'
-  [[ "$executor_key" == /etc/fai-hermes-ascon/secrets/executor-attestation-private-key.pem ]] ||
-    fail 'executor attestation key path is invalid'
-  [[ "$release" == "$(git rev-parse HEAD)" && "$release" =~ ^[a-f0-9]{40}$ ]] ||
-    fail 'repository broker release does not match the deployed commit'
-  [[ -f "$app_key" && ! -L "$app_key" ]] || fail 'GitHub App private key is missing or unsafe'
-  chown "$workload_uid:$workload_gid" "$app_key"
-  chmod 0600 "$app_key"
-  if [[ ! -f "$executor_key" ]]; then
-    umask 077
-    openssl genpkey -algorithm ED25519 -out "$executor_key" >/dev/null 2>&1 ||
-      fail 'executor attestation key generation failed'
-  fi
-  [[ -f "$executor_key" && ! -L "$executor_key" ]] || fail 'executor attestation private key is unsafe'
-  chown "$workload_uid:$workload_gid" "$executor_key"
-  chmod 0600 "$executor_key"
-  for path in "$app_key" "$executor_key"; do
-    [[ $(stat -c '%u:%g:%a' "$path") == "$workload_uid:$workload_gid:600" ]] ||
-      fail "broker key permissions are invalid: $path"
-    openssl pkey -in "$path" -noout >/dev/null 2>&1 || fail "broker key is invalid: $path"
-  done
-  public_temporary=$(mktemp "$readiness_directory/.executor-public.XXXXXX")
-  openssl pkey -in "$executor_key" -pubout -out "$public_temporary" >/dev/null 2>&1 ||
-    fail 'executor public key generation failed'
-  chown root:root "$public_temporary"; chmod 0644 "$public_temporary"
-  mv -f "$public_temporary" "$executor_public_key_file"
-  "${compose[@]}" --profile repository-work build repository-broker
-  "${compose[@]}" --profile repository-work up -d repository-broker executor-broker
-  wait_for_service_health repository-broker || fail 'repository broker did not become healthy'
-  wait_for_service_health executor-broker || fail 'executor broker did not become healthy'
-  probe_repository_authorization
-  broker_image_id=$(docker image inspect --format '{{.Id}}' "fai-repository-broker:$release") ||
-    fail 'repository broker image is unavailable'
-  executor_image_id=$(docker image inspect --format '{{.Id}}' "$derived_image") ||
-    fail 'executor broker image is unavailable'
-  public_sha=$(sha256sum "$executor_public_key_file" | cut -d ' ' -f 1)
-  verified_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-  payload=$(printf '%s\n' "$trusted_execution_contract" "$app_id" "$installation_id" "$release" \
-    "$broker_image_id" "$executor_image_id" "$public_sha" "$HERMES_APPROVED_CONFIG_SHA256" "$verified_at")
-  evidence_sha256=$(printf '%s' "$payload" | sha256sum | cut -d ' ' -f 1)
-  temporary=$(mktemp "$readiness_directory/.trusted-execution.json.XXXXXX")
-  printf '{"contract":"%s","githubAppId":"%s","installationId":"%s","release":"%s","repositoryBrokerImageId":"%s","executorImageId":"%s","executorPublicKeySha256":"%s","configurationSha256":"%s","verifiedAt":"%s","evidenceSha256":"%s"}\n' \
-    "$trusted_execution_contract" "$app_id" "$installation_id" "$release" "$broker_image_id" \
-    "$executor_image_id" "$public_sha" "$HERMES_APPROVED_CONFIG_SHA256" "$verified_at" "$evidence_sha256" >"$temporary"
-  chown root:root "$temporary"; chmod 0644 "$temporary"; mv -f "$temporary" "$trusted_readiness_file"
+verify_native_execution() {
+  [[ -f "$github_repository_token" && ! -L "$github_repository_token" ]] ||
+    fail 'project-scoped repository token is missing or unsafe'
+  [[ $(stat -c '%U:%G:%a' "$github_repository_token") == root:root:600 ]] ||
+    fail 'project-scoped repository token must be root:root mode 0600'
+  local token_length
+  token_length=$(wc -c < "$github_repository_token")
+  (( token_length >= 21 && token_length <= 513 )) || fail 'project-scoped repository token is invalid'
+  [[ -s "$codex_home/auth.json" ]] || fail 'isolated Codex OAuth is missing'
+  [[ $(stat -c '%u:%g:%a' "$codex_home/auth.json") == "$workload_uid:$workload_gid:600" ]] ||
+    fail 'isolated Codex OAuth permissions are invalid'
+  quiet_checked 'project-scoped GitHub credential preflight' \
+    "${compose[@]}" run --rm --no-deps gateway --exec gh auth status
 }
 
 wait_for_gateway_health() {
@@ -469,7 +393,6 @@ commit_nginx_config() {
 }
 
 stage_cleanup_required=0
-trusted_cleanup_required=0
 stage_exit_cleanup() {
   local status=$?
   if [[ -n "$nginx_candidate" ]]; then
@@ -496,11 +419,6 @@ stage_exit_cleanup() {
       printf 'deploy-hermes-ascon: automatic isolated-stage cleanup failed\n' >&2
       status=1
     fi
-  fi
-  if (( trusted_cleanup_required )); then
-    "${compose[@]}" --profile repository-work stop repository-broker executor-broker >/dev/null 2>&1 || true
-    "${compose[@]}" --profile repository-work rm -f repository-broker executor-broker >/dev/null 2>&1 || true
-    remove_trusted_readiness
   fi
   trap - EXIT
   exit "$status"
@@ -546,9 +464,7 @@ case "$action" in
       fail 'isolated Codex OAuth store permissions are invalid'
     stage_cleanup_required=1
     prepare_runtime
-    "${compose[@]}" --profile repository-work stop repository-broker executor-broker >/dev/null 2>&1 || true
-    "${compose[@]}" --profile repository-work rm -f repository-broker executor-broker >/dev/null 2>&1 || true
-    remove_trusted_readiness
+    verify_native_execution
     "${compose[@]}" build gateway
     probe_runtime
     quiet_checked 'Hermes provider OAuth status preflight' \
@@ -592,18 +508,9 @@ case "$action" in
     prune_superseded_project_images
     stage_cleanup_required=0
     ;;
-  activate)
-    [[ -s "$readiness_file" ]] || fail 'Hermes/Codex readiness is missing; deploy stage first'
-    trusted_cleanup_required=1
-    prepare_runtime
-    remove_trusted_readiness
-    activate_trusted_execution
-    trusted_cleanup_required=0
-    ;;
   rollback)
-    "${compose[@]}" --profile repository-work down
+    "${compose[@]}" down
     remove_readiness
-    remove_trusted_readiness
     remove_runtime_secrets
     ;;
 esac

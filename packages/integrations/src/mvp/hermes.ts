@@ -6,41 +6,11 @@ import type {
 } from '@fai-control-plane/domain';
 import {renderAgentRoleRequest, validateAgentRoleRequest} from '@fai-control-plane/domain';
 import {agentTaskClasses} from '@fai-control-plane/domain';
-import {createPublicKey, verify} from 'node:crypto';
 
 type Fetch = typeof globalThis.fetch;
 const purpose = 'agent_delivery';
 const bounded = (value: unknown, maximum: number): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
-
-type ExecutorReceipt = NonNullable<AgentExecutorResult['executorReceipt']>;
-const executorReceiptPayload = (receipt: Omit<ExecutorReceipt, 'signature'>): string => [
-  receipt.contract, receipt.invocationId, receipt.receiptReference, receipt.executorId,
-  receipt.model, receipt.effort, receipt.outputSha256, receipt.completedAt
-].join('\n');
-
-const parseExecutorReceipt = (value: unknown): ExecutorReceipt | null => {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
-  const receipt = value as Record<string, unknown>;
-  if (Object.keys(receipt).sort().join(',') !== [
-    'completedAt', 'contract', 'effort', 'executorId', 'invocationId', 'model', 'outputSha256',
-    'receiptReference', 'signature'
-  ].sort().join(',') || receipt.contract !== 'fai.executor-invocation-receipt.v1' ||
-    typeof receipt.invocationId !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.invocationId) ||
-    typeof receipt.receiptReference !== 'string' || !/^browser:[a-f0-9]{64}$/.test(receipt.receiptReference) ||
-    !bounded(receipt.executorId, 256) || !bounded(receipt.model, 100) ||
-    (receipt.effort !== 'medium' && receipt.effort !== 'high') ||
-    typeof receipt.outputSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.outputSha256) ||
-    typeof receipt.completedAt !== 'string' || Number.isNaN(Date.parse(receipt.completedAt)) ||
-    !bounded(receipt.signature, 512) || !/^[A-Za-z0-9+/]+={0,2}$/.test(receipt.signature)) return null;
-  return receipt as unknown as ExecutorReceipt;
-};
-
-const verifiedExecutorReceipt = (receipt: ExecutorReceipt, publicKey: ReturnType<typeof createPublicKey>): boolean => {
-  const {signature, ...unsigned} = receipt;
-  try { return verify(null, Buffer.from(executorReceiptPayload(unsigned)), publicKey, Buffer.from(signature, 'base64')); }
-  catch { return false; }
-};
 
 const executorResult = (output: unknown): AgentExecutorResult | null => {
   if (!bounded(output, 65_536)) return null;
@@ -81,23 +51,15 @@ const executorResult = (output: unknown): AgentExecutorResult | null => {
       ? [{label: reference.label, url: url.toString()}] : [];
   });
   if (deliverables.length !== rawDeliverables.length) return null;
-  let receipt: ExecutorReceipt | undefined;
-  if (record.executorReceipt !== undefined) {
-    const parsed = parseExecutorReceipt(record.executorReceipt);
-    if (parsed === null) return null;
-    receipt = parsed;
-  }
   return {contract: 'fai.agent-executor-result.v1', decision: record.decision,
     execution: route as AgentExecutorResult['execution'], outcome: record.outcome,
-    transition: moved as AgentExecutorResult['transition'], reason: record.reason, evidence, deliverables,
-    ...(receipt === undefined ? {} : {executorReceipt: receipt})};
+    transition: moved as AgentExecutorResult['transition'], reason: record.reason, evidence, deliverables};
 };
 
 export const createHermesDeliveryAdapter = (input: Readonly<{
   endpoint: string;
   credentialRef: OpaqueSecretRef;
   secrets: SecretResolverPort;
-  executorAttestationPublicKey?: string | undefined;
   fetch?: Fetch;
 }>): AgentDeliveryPort => {
   const endpoint = new URL(input.endpoint);
@@ -106,13 +68,6 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     throw new Error('agent_endpoint_invalid');
   }
   const request = input.fetch ?? globalThis.fetch;
-  let executorPublicKey: ReturnType<typeof createPublicKey> | null = null;
-  if (input.executorAttestationPublicKey !== undefined) {
-    try {
-      executorPublicKey = createPublicKey(input.executorAttestationPublicKey);
-      if (executorPublicKey.asymmetricKeyType !== 'ed25519') throw new Error('executor_attestation_key_invalid');
-    } catch { throw new Error('executor_attestation_key_invalid'); }
-  }
   // This cache is verification context for accepted runs, not a scheduler or
   // lifecycle. Canonical attempt/receipt state remains in PostgreSQL.
   const submitted = new Map<string, Parameters<AgentDeliveryPort['submit']>[0]>();
@@ -161,20 +116,12 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     if (value.status === 'completed') {
       const result = executorResult(value.output);
       if (result === null) return {status: 'failed', failureCode: 'agent_result_invalid'};
-      const cli = result.execution.executor.kind === 'cli';
-      const receipt = result.executorReceipt;
-      if ((cli && (executorPublicKey === null || receipt === undefined || receipt.executorId !== result.execution.executor.id ||
-        receipt.model !== result.execution.model || receipt.effort !== result.execution.effort ||
-        !verifiedExecutorReceipt(receipt, executorPublicKey))) || (!cli && receipt !== undefined)) {
-        return {status: 'failed', failureCode: 'agent_result_invalid'};
-      }
       const expected = submitted.get(deliveryReference);
       if (expected !== undefined) {
         const route = expected.routing.policy.routes.find((candidate) => candidate.taskClass === result.execution.taskClass);
         const target = result.outcome === 'success' ? expected.process.successTargetTitle : expected.process.reworkTargetTitle;
         if (route === undefined || JSON.stringify(route.executor) !== JSON.stringify(result.execution.executor) ||
           route.model !== result.execution.model || route.effort !== result.execution.effort ||
-          (cli && receipt?.receiptReference !== expected.correlationId) ||
           result.transition.itemId !== expected.projectItem.id ||
           result.transition.fromVersion !== expected.observedVersion || target === null ||
           result.transition.targetStage !== target || result.transition.toVersion === expected.observedVersion) {
