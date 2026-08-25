@@ -68,6 +68,23 @@ describe('MVP Hermes adapter', () => {
       failureCode: 'agent_result_rejected', result: {...result, deliverables: []}});
   });
 
+  it('keeps a rejected run in the current stage when no rework stage is configured', async () => {
+    const rejected = {contract: 'fai.agent-executor-result.v1', decision: 'rejected',
+      execution: attestation.execution, outcome: 'rework' as const,
+      transition: {...attestation.transition, targetStage: 'In Dev'}, reason: 'Executor failed',
+      evidence: [{kind: 'executor', result: 'Codex exited non-zero'}], deliverables: []};
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({run_id: 'run_ref', status: 'started'}), {status: 202}))
+      .mockResolvedValueOnce(new Response(JSON.stringify({run_id: 'run_ref', status: 'completed',
+        output: JSON.stringify(rejected)})));
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, fetch});
+    await adapter.submit(request);
+    await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'failed',
+      failureCode: 'agent_result_rejected', result: rejected});
+  });
+
   it('accepts direct-agent results', async () => {
     const result = {contract: 'fai.agent-executor-result.v1', decision: 'accepted',
       execution: {taskClass: 'manager_project_ops', executor: {kind: 'direct-agent'},

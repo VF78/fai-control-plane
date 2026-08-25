@@ -18,6 +18,13 @@ sys.modules.setdefault("fai_control_plane_bridge_state", bridge_state)
 _CHAT_ID = "-5540760630"
 _USER_IDS = frozenset({"96211907", "355724486"})
 _ACTION_URL_PATH = "/api/hermes/conversation-actions"
+_ROLE_RUN_PROTOCOL = """Agent role-run protocol (mandatory):
+1. Treat the JSON request as the complete, receipt-bound task specification. Do not call project tools or research the task again.
+2. Resolve exactly one route from request.routing.policy. For a direct-agent route, do only the bounded requested work and return the exact result contract.
+3. For a CLI route, run exactly one non-interactive Codex invocation. Do not load skills, inspect the repository yourself, create a second plan, rerun checks, or review Codex work in this stage.
+4. Use one foreground terminal call from the existing /opt/data/work directory with timeout 1800 and no PTY. Invoke codex exec with --model and model_reasoning_effort from the exact route, --sandbox workspace-write, -C /opt/data/work/project, --output-schema /opt/fai/agent-executor-result.schema.json, and -o for the final result. Pass the complete request JSON to Codex. Redirect progress to a temporary file outside the repository; print only the final result on success and a bounded error tail on failure; remove both temporary files. Let Codex follow repository instructions, implement, check, commit, push a review branch, create the PR, and report evidence; merge/release/deploy remain forbidden.
+5. Verify a referenced PR once with one bounded gh query only when evidence is ambiguous. Do not reconstruct, reinterpret, or replace a valid result. Return only that JSON object unchanged. On a real failure, return the same contract with decision rejected and outcome rework; when no rework stage exists, request the current stage.
+6. Never mutate Project status; Control Plane validates the result and performs the configured transition."""
 
 
 def _pre_dispatch(event, **_kwargs):
@@ -75,6 +82,8 @@ def _context_hook(state, **kwargs):
     session_id = str(kwargs.get("session_id") or "")
     platform_value = kwargs.get("platform")
     platform = str(getattr(platform_value, "value", platform_value or ""))
+    if platform == "api_server" and re.fullmatch(r"browser:[a-f0-9]{64}", session_id):
+        return {"context": _ROLE_RUN_PROTOCOL}
     if platform != "telegram":
         return None
     source = bridge_state.resolve(session_id)

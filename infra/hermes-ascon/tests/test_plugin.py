@@ -96,6 +96,26 @@ class PluginTest(unittest.TestCase):
         self.assertIn("may be stale", stale["context"])
         self.assertIn("Cached rules", stale["context"])
 
+    def test_role_run_context_is_one_thin_codex_execution(self):
+        context = Context()
+        PLUGIN.register(context)
+        result = context.hooks["pre_llm_call"](
+            session_id="browser:" + "a" * 64, platform="api_server"
+        )
+        protocol = result["context"]
+        self.assertIn("exactly one non-interactive Codex invocation", protocol)
+        self.assertIn("-C /opt/data/work/project", protocol)
+        self.assertIn("--sandbox workspace-write", protocol)
+        self.assertIn("--output-schema /opt/fai/agent-executor-result.schema.json", protocol)
+        self.assertIn("Do not reconstruct", protocol)
+
+    def test_non_role_api_session_gets_no_project_protocol(self):
+        context = Context()
+        PLUGIN.register(context)
+        self.assertIsNone(context.hooks["pre_llm_call"](
+            session_id="browser:not-bound", platform="api_server"
+        ))
+
     def test_tool_injects_promoted_identity_not_model_arguments(self):
         source = types.SimpleNamespace(platform=types.SimpleNamespace(value="telegram"),
                                        user_id="96211907", chat_id="-5540760630")

@@ -147,11 +147,14 @@ minimal `codex-cli` Compose service. It mounts only the isolated Codex home and
 project work directory, with no gateway API/Telegram environment, bridge-token
 mounts, other Hermes data or listening ports.
 
-For a configured CLI route Hermes invokes `codex exec` in its native terminal
-with the exact model and reasoning effort from the project policy, reviews the
-result, pushes only a review branch and creates a pull request with `gh`.
-Control Plane validates Hermes' bounded result against that policy and observes
-the provider-native Project/PR result.
+For a configured CLI route Hermes is a thin dispatcher: it invokes one
+non-interactive `codex exec` in its native terminal with the exact model and
+reasoning effort from the project policy. Codex owns the bounded implementation,
+checks, commit, review-branch push and pull-request creation and writes the
+schema-constrained final result. Hermes performs one provider-evidence check and
+passes that result through unchanged. It must not repeat repository research,
+tests or QA inside the same process stage. Control Plane validates the bounded
+result against policy and performs the configured Project transition.
 
 `stage` deletes stale readiness first and recreates
 `/var/lib/fai-hermes-ascon/readiness/codex-cli.json` only after the separate

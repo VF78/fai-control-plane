@@ -47,10 +47,13 @@ export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSO
       attempts: 1, unknown: 'deny', unavailableRoute: 'deny',
       then: 'resolve-exact-route-from-request.routing.policy'},
     cli: {routeFieldsAreExact: ['id', 'model', 'effort'], invocation: 'native-terminal',
-      resultContract: 'fai.agent-executor-result.v1'},
+      attempts: 1, resultContract: 'fai.agent-executor-result.v1',
+      delegation: 'executor-owns-implementation-checks-commit-push-and-review-pr'},
     directAgent: {nontrivialWork: 'delegate-native-child-with-route-model-and-effort'},
     acceptance: {decision: ['accepted', 'rejected'], evidenceRequired: true,
-      executionRouteRequired: true, transitionRequestRequired: true,
+      exactResultFields: ['contract', 'decision', 'execution', 'outcome', 'transition', 'reason',
+        'evidence', 'deliverables'],
+      rejectedWithoutReworkTarget: 'request-current-stage',
       stageMutation: 'control-plane-after-accepted', deliverables: 'bounded-https-references'}
   },
   request
