@@ -1,0 +1,34 @@
+_config_version: 34
+model:
+  provider: openai-codex
+  default: gpt-5.6-terra
+auxiliary:
+  free_only: true
+terminal:
+  backend: local
+  cwd: /opt/data/work
+platform_toolsets:
+  api_server:
+    - terminal
+    - no_mcp
+agent:
+  max_turns: 4
+plugins:
+  enabled:
+    - fai-control-plane
+toolsets:
+  - file
+  - terminal
+  - search
+  - web
+  - skills
+  - todo
+  - memory
+  - session_search
+  - fai_internal
+  - clarify
+tool_loop_guardrails:
+  hard_stop_enabled: true
+  hard_stop_after:
+    exact_failure: 5
+    idempotent_no_progress: 5

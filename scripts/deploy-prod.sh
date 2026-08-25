@@ -54,6 +54,10 @@ readonly secret_names=(
   postgres-password github-login-client-secret github-projects-token github-webhook-secret
   hermes-token telegram-bot-token hermes-internal-action-token hermes-client-action-token
 )
+readonly hermes_management_network=fai-hermes-management
+readonly -a hermes_management_secret_variables=(
+  HERMES_DASHBOARD_USERNAME_HOST_FILE HERMES_DASHBOARD_PASSWORD_HOST_FILE
+)
 
 protected_health() {
   systemctl is-active --quiet myshopai-website.service
@@ -174,7 +178,7 @@ render_target_environment() {
 }
 
 check_host_contract() {
-  local remote_main secret_name secret_path source
+  local remote_main secret_name secret_path secret_variable source
   local -a current_compose
   [[ $(git rev-parse --show-toplevel) == "$deploy_root" ]] || fail 'checkout is not the isolated MVP directory'
   [[ -z $(git status --porcelain) ]] || fail 'checkout is not clean'
@@ -196,6 +200,16 @@ check_host_contract() {
     [[ $(stat -c '%U:%G:%a' "$secret_path") == root:root:600 ]] ||
       fail "secret file must be root:root mode 0600: $secret_path"
   done
+  for secret_variable in "${hermes_management_secret_variables[@]}"; do
+    secret_path=$(sed -n "s/^${secret_variable}=//p" "$environment_file")
+    [[ -n "$secret_path" && -f "$secret_path" && ! -L "$secret_path" && -s "$secret_path" && -r "$secret_path" ]] ||
+      fail "missing or invalid Hermes management secret file: $secret_variable"
+    [[ $(stat -c '%U:%G:%a' "$secret_path") == root:root:600 ]] ||
+      fail "Hermes management secret file must be root:root mode 0600: $secret_variable"
+  done
+  [[ $(docker network inspect --format '{{.Driver}}:{{.Internal}}' \
+    "$hermes_management_network" 2>/dev/null) == bridge:true ]] ||
+    fail 'Hermes management network is missing or is not an internal bridge'
   current_compose=(docker compose --project-name fai-control-plane-mvp --env-file "$environment_file" -f "$compose_file")
   "${current_compose[@]}" config --quiet
   protected_health || fail 'protected-neighbour health check failed'

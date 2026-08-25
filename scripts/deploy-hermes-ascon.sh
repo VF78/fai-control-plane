@@ -23,10 +23,22 @@ readonly legacy_codex_home="$data_root/codex-home"
 readonly readiness_directory="$data_root/readiness"
 readonly readiness_file="$readiness_directory/codex-cli.json"
 readonly github_repository_token=/etc/fai-hermes-ascon/secrets/github-repository-token
+readonly dashboard_username=/etc/fai-hermes-ascon/secrets/dashboard-username
+readonly dashboard_password=/etc/fai-hermes-ascon/secrets/dashboard-password
+readonly dashboard_signing_secret=/etc/fai-hermes-ascon/secrets/dashboard-signing-secret
+readonly devops_ssh_identity=/etc/fai-hermes-ascon/secrets/devops-ssh-identity
+readonly devops_ssh_known_hosts=/etc/fai-hermes-ascon/secrets/devops-ssh-known-hosts
+readonly devops_yc_config=/etc/fai-hermes-ascon/secrets/yandex-cloud-config.yaml
 readonly runtime_secret_directory="$data_root/runtime-secrets"
 readonly runtime_internal_bridge_token="$runtime_secret_directory/internal-bridge-token"
 readonly runtime_client_bridge_token="$runtime_secret_directory/client-bridge-token"
 readonly runtime_github_repository_token="$runtime_secret_directory/github-repository-token"
+readonly runtime_dashboard_username="$runtime_secret_directory/dashboard-username"
+readonly runtime_dashboard_password="$runtime_secret_directory/dashboard-password"
+readonly runtime_dashboard_signing_secret="$runtime_secret_directory/dashboard-signing-secret"
+readonly runtime_devops_ssh_identity="$runtime_secret_directory/devops-ssh-identity"
+readonly runtime_devops_ssh_known_hosts="$runtime_secret_directory/devops-ssh-known-hosts"
+readonly runtime_devops_yc_config="$runtime_secret_directory/yandex-cloud-config.yaml"
 readonly gateway_pid_file="$data_root/gateway.pid"
 readonly project=fai-hermes-ascon
 readonly workload_uid=10000
@@ -50,6 +62,7 @@ readonly -a readable_files=(
   "$deploy_root/infra/hermes-ascon/extensions/fai-identity/HOOK.yaml"
   "$deploy_root/infra/hermes-ascon/extensions/fai-identity/handler.py"
   "$deploy_root/infra/hermes-ascon/native-entrypoint.sh"
+  "$deploy_root/infra/hermes-ascon/management-entrypoint.sh"
   "$deploy_root/infra/hermes-ascon/Dockerfile"
   "$deploy_root/infra/hermes-ascon/agent-executor-result.schema.json"
 )
@@ -74,7 +87,9 @@ rm -f "$readiness_file"
   fail 'approved config digest is missing or invalid'
 
 for path in "$environment_file" "$api_secret_file" "$telegram_secret_file" \
-  "$internal_bridge_token" "$client_bridge_token" "$github_repository_token"; do
+  "$internal_bridge_token" "$client_bridge_token" "$github_repository_token" \
+  "$dashboard_username" "$dashboard_password" "$dashboard_signing_secret" \
+  "$devops_ssh_identity" "$devops_ssh_known_hosts" "$devops_yc_config"; do
   [[ -f "$path" && -r "$path" ]] || fail "missing required file: $path"
   [[ $(stat -c '%U:%G:%a' "$path") == root:root:600 ]] ||
     fail "file must be root:root mode 0600: $path"
@@ -94,6 +109,30 @@ readonly hermes_model=$(sed -n 's/^HERMES_MODEL=//p' "$environment_file")
   fail 'Hermes model is invalid'
 [[ $(sed -n 's/^HERMES_GITHUB_REPOSITORY_TOKEN_FILE=//p' "$environment_file") == \
   "$runtime_github_repository_token" ]] || fail 'repository token must use the isolated runtime copy'
+[[ $(sed -n 's/^HERMES_DASHBOARD_USERNAME_HOST_FILE=//p' "$environment_file") == \
+  "$dashboard_username" ]] || fail 'dashboard username canonical source is invalid'
+[[ $(sed -n 's/^HERMES_DASHBOARD_PASSWORD_HOST_FILE=//p' "$environment_file") == \
+  "$dashboard_password" ]] || fail 'dashboard password canonical source is invalid'
+[[ $(sed -n 's/^HERMES_DASHBOARD_SIGNING_SECRET_HOST_FILE=//p' "$environment_file") == \
+  "$dashboard_signing_secret" ]] || fail 'dashboard signing secret canonical source is invalid'
+[[ $(sed -n 's/^HERMES_DEVOPS_SSH_IDENTITY_HOST_FILE=//p' "$environment_file") == \
+  "$devops_ssh_identity" ]] || fail 'DevOps SSH identity canonical source is invalid'
+[[ $(sed -n 's/^HERMES_DEVOPS_SSH_KNOWN_HOSTS_HOST_FILE=//p' "$environment_file") == \
+  "$devops_ssh_known_hosts" ]] || fail 'DevOps known_hosts canonical source is invalid'
+[[ $(sed -n 's/^HERMES_DEVOPS_YC_CONFIG_HOST_FILE=//p' "$environment_file") == \
+  "$devops_yc_config" ]] || fail 'DevOps Yandex Cloud config canonical source is invalid'
+[[ $(sed -n 's/^HERMES_DASHBOARD_USERNAME_FILE=//p' "$environment_file") == \
+  "$runtime_dashboard_username" ]] || fail 'dashboard username must use its runtime copy'
+[[ $(sed -n 's/^HERMES_DASHBOARD_PASSWORD_FILE=//p' "$environment_file") == \
+  "$runtime_dashboard_password" ]] || fail 'dashboard password must use its runtime copy'
+[[ $(sed -n 's/^HERMES_DASHBOARD_SIGNING_SECRET_FILE=//p' "$environment_file") == \
+  "$runtime_dashboard_signing_secret" ]] || fail 'dashboard signing secret must use its runtime copy'
+[[ $(sed -n 's/^HERMES_DEVOPS_SSH_IDENTITY_FILE=//p' "$environment_file") == \
+  "$runtime_devops_ssh_identity" ]] || fail 'DevOps SSH identity must use its runtime copy'
+[[ $(sed -n 's/^HERMES_DEVOPS_SSH_KNOWN_HOSTS_FILE=//p' "$environment_file") == \
+  "$runtime_devops_ssh_known_hosts" ]] || fail 'DevOps known_hosts must use its runtime copy'
+[[ $(sed -n 's/^HERMES_DEVOPS_YC_CONFIG_FILE=//p' "$environment_file") == \
+  "$runtime_devops_yc_config" ]] || fail 'DevOps Yandex Cloud config must use its runtime copy'
 
 [[ $(sha256sum "$environment_file" | cut -d ' ' -f 1) == "$HERMES_APPROVED_CONFIG_SHA256" ]] ||
   fail 'production environment does not match approved digest'
@@ -114,6 +153,19 @@ for path in "$internal_bridge_token" "$client_bridge_token"; do
   token_length=$(wc -c < "$path")
   (( token_length >= 33 && token_length <= 513 )) || fail "invalid bridge token length: $path"
 done
+dashboard_username_length=$(wc -c < "$dashboard_username")
+dashboard_password_length=$(wc -c < "$dashboard_password")
+dashboard_signing_secret_length=$(wc -c < "$dashboard_signing_secret")
+ssh_identity_length=$(wc -c < "$devops_ssh_identity")
+ssh_known_hosts_length=$(wc -c < "$devops_ssh_known_hosts")
+yc_config_length=$(wc -c < "$devops_yc_config")
+(( dashboard_username_length >= 1 && dashboard_username_length <= 129 )) || fail 'invalid dashboard username length'
+(( dashboard_password_length >= 20 && dashboard_password_length <= 513 )) || fail 'invalid dashboard password length'
+(( dashboard_signing_secret_length >= 32 && dashboard_signing_secret_length <= 513 )) || fail 'invalid dashboard signing secret length'
+(( ssh_identity_length >= 100 && ssh_identity_length <= 16384 )) || fail 'invalid DevOps SSH identity length'
+(( ssh_known_hosts_length >= 1 && ssh_known_hosts_length <= 65536 )) || fail 'invalid DevOps known_hosts length'
+(( yc_config_length >= 2 && yc_config_length <= 65536 )) || fail 'invalid DevOps Yandex Cloud config length'
+ssh-keygen -y -f "$devops_ssh_identity" >/dev/null 2>&1 || fail 'DevOps SSH identity is invalid'
 
 for path in \
   "$deploy_root/infra/hermes-ascon/config.yaml" \
@@ -135,7 +187,19 @@ remove_readiness() {
 }
 
 remove_runtime_secrets() {
-  rm -f "$runtime_internal_bridge_token" "$runtime_client_bridge_token" "$runtime_github_repository_token"
+  rm -f "$runtime_internal_bridge_token" "$runtime_client_bridge_token" \
+    "$runtime_github_repository_token" "$runtime_dashboard_username" \
+    "$runtime_dashboard_password" "$runtime_dashboard_signing_secret" \
+    "$runtime_devops_ssh_identity" "$runtime_devops_ssh_known_hosts" \
+    "$runtime_devops_yc_config"
+}
+
+ensure_management_network() {
+  if ! docker network inspect fai-hermes-management >/dev/null 2>&1; then
+    docker network create --driver bridge --internal fai-hermes-management >/dev/null
+  fi
+  [[ $(docker network inspect --format '{{.Driver}}:{{.Internal}}' fai-hermes-management) == \
+    bridge:true ]] || fail 'Hermes management network must be an internal bridge'
 }
 
 render_runtime_config() {
@@ -192,14 +256,40 @@ prepare_runtime() {
     "$client_bridge_token" "$runtime_client_bridge_token"
   install -o "$workload_uid" -g "$workload_gid" -m 0600 \
     "$github_repository_token" "$runtime_github_repository_token"
+  install -o "$workload_uid" -g "$workload_gid" -m 0600 \
+    "$dashboard_username" "$runtime_dashboard_username"
+  install -o "$workload_uid" -g "$workload_gid" -m 0600 \
+    "$dashboard_password" "$runtime_dashboard_password"
+  install -o "$workload_uid" -g "$workload_gid" -m 0600 \
+    "$dashboard_signing_secret" "$runtime_dashboard_signing_secret"
+  install -o "$workload_uid" -g "$workload_gid" -m 0600 \
+    "$devops_ssh_identity" "$runtime_devops_ssh_identity"
+  install -o "$workload_uid" -g "$workload_gid" -m 0600 \
+    "$devops_ssh_known_hosts" "$runtime_devops_ssh_known_hosts"
+  install -o "$workload_uid" -g "$workload_gid" -m 0600 \
+    "$devops_yc_config" "$runtime_devops_yc_config"
   cmp -s "$internal_bridge_token" "$runtime_internal_bridge_token" ||
     fail 'internal runtime bridge token copy differs from its canonical source'
   cmp -s "$client_bridge_token" "$runtime_client_bridge_token" ||
     fail 'client runtime bridge token copy differs from its canonical source'
   cmp -s "$github_repository_token" "$runtime_github_repository_token" ||
     fail 'repository runtime token copy differs from its canonical source'
+  for pair in \
+    "$dashboard_username:$runtime_dashboard_username" \
+    "$dashboard_password:$runtime_dashboard_password" \
+    "$dashboard_signing_secret:$runtime_dashboard_signing_secret" \
+    "$devops_ssh_identity:$runtime_devops_ssh_identity" \
+    "$devops_ssh_known_hosts:$runtime_devops_ssh_known_hosts" \
+    "$devops_yc_config:$runtime_devops_yc_config"; do
+    canonical=${pair%%:*}
+    runtime=${pair#*:}
+    cmp -s "$canonical" "$runtime" || fail "runtime secret copy differs from its canonical source: $canonical"
+  done
   for path in "$runtime_internal_bridge_token" "$runtime_client_bridge_token" \
-    "$runtime_github_repository_token"; do
+    "$runtime_github_repository_token" "$runtime_dashboard_username" \
+    "$runtime_dashboard_password" "$runtime_dashboard_signing_secret" \
+    "$runtime_devops_ssh_identity" "$runtime_devops_ssh_known_hosts" \
+    "$runtime_devops_yc_config"; do
     [[ $(stat -c '%u:%g:%a' "$path") == "$workload_uid:$workload_gid:600" ]] ||
       fail "runtime bridge token permissions are invalid: $path"
   done
@@ -241,6 +331,9 @@ readable = (
     "/opt/data/profiles/internal/bridge-token",
     "/opt/data/profiles/bitrix-client/bridge-token",
     "/opt/fai/agent-executor-result.schema.json",
+    "/opt/fai-devops/ssh/identity",
+    "/opt/fai-devops/ssh/known_hosts",
+    "/opt/fai-devops/yandex-cloud/config.yaml",
 )
 for name in readable:
     Path(name).read_bytes()
@@ -314,14 +407,24 @@ verify_native_execution() {
     fail 'isolated Codex OAuth permissions are invalid'
   quiet_checked 'project-scoped GitHub credential preflight' \
     "${compose[@]}" run --rm --no-deps gateway --exec gh auth status
+  quiet_checked 'direct Hermes SSH configuration preflight' \
+    "${compose[@]}" run --rm --no-deps gateway --exec ssh -G -F /dev/null \
+      -o BatchMode=yes -o IdentitiesOnly=yes \
+      -o IdentityFile=/opt/fai-devops/ssh/identity \
+      -o UserKnownHostsFile=/opt/fai-devops/ssh/known_hosts \
+      -p "$(sed -n 's/^HERMES_DEVOPS_SSH_PORT=//p' "$environment_file")" \
+      "$(sed -n 's/^HERMES_DEVOPS_SSH_USER=//p' "$environment_file")@$(sed -n 's/^HERMES_DEVOPS_SSH_HOST=//p' "$environment_file")"
+  quiet_checked 'direct Hermes Yandex Cloud CLI preflight' \
+    "${compose[@]}" run --rm --no-deps gateway --exec yc config list
 }
 
-wait_for_gateway_health() {
+wait_for_service_health() {
+  local service=$1
   local deadline=$((SECONDS + 180))
   local container_id
   local status
   while (( SECONDS < deadline )); do
-    container_id=$("${compose[@]}" ps --all -q gateway 2>/dev/null || true)
+    container_id=$("${compose[@]}" ps --all -q "$service" 2>/dev/null || true)
     status=''
     if [[ -n "$container_id" ]]; then
       status=$(docker inspect --format \
@@ -425,6 +528,9 @@ stage_exit_cleanup() {
 trap stage_exit_cleanup EXIT
 
 "${compose[@]}" config --quiet
+if [[ $action != rollback ]]; then
+  ensure_management_network
+fi
 
 case "$action" in
   auth)
@@ -473,8 +579,9 @@ case "$action" in
     "${compose[@]}" down --remove-orphans
     rm -f "$gateway_pid_file"
     [[ ! -e "$gateway_pid_file" ]] || fail 'stale gateway PID file could not be removed'
-    "${compose[@]}" up -d gateway
-    wait_for_gateway_health || fail 'gateway did not become healthy within 180 seconds'
+    "${compose[@]}" up -d gateway dashboard
+    wait_for_service_health gateway || fail 'gateway did not become healthy within 180 seconds'
+    wait_for_service_health dashboard || fail 'dashboard did not become healthy within 180 seconds'
     curl -fsS --max-time 15 \
       https://hermes-ascon.f-ai.studio/health >/dev/null
     api_key=$(sed -n 's/^API_SERVER_KEY=//p' "$api_secret_file")

@@ -60,10 +60,15 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
   credentialRef: OpaqueSecretRef;
   secrets: SecretResolverPort;
   fetch?: Fetch;
+  allowPrivateHttp?: boolean;
 }>): AgentDeliveryPort => {
   const endpoint = new URL(input.endpoint);
-  if (endpoint.protocol !== 'https:' || endpoint.username !== '' || endpoint.password !== '' ||
-    endpoint.pathname !== '/v1/runs' || endpoint.search !== '' || endpoint.hash !== '') {
+  const privateHttp = input.allowPrivateHttp === true && endpoint.protocol === 'http:' &&
+    !endpoint.hostname.includes('.');
+  const runPath = endpoint.pathname === '/v1/runs' ||
+    /^\/p\/[a-z0-9][a-z0-9-]{1,98}[a-z0-9]\/v1\/runs$/.test(endpoint.pathname);
+  if ((endpoint.protocol !== 'https:' && !privateHttp) || endpoint.username !== '' || endpoint.password !== '' ||
+    !runPath || endpoint.search !== '' || endpoint.hash !== '') {
     throw new Error('agent_endpoint_invalid');
   }
   const request = input.fetch ?? globalThis.fetch;

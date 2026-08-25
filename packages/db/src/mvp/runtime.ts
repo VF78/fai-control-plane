@@ -221,7 +221,10 @@ export const projectAgentDeliveryConfigured = async (
     `select exists(select 1 from projects p
        join project_memberships m on m.project_id=p.id and m.actor_id=$1 and m.active=true
        join secret_refs s on s.workspace_id=p.workspace_id and s.purpose='agent_delivery'
-       where p.id=$2 and s.locator like '/%') as configured`, [actorId, projectId]
+       where p.id=$2 and s.locator like '/%' and
+         exists(select 1 from project_source_artifacts a
+           where a.project_id=p.id and a.kind='project_agent_profile_v1')
+       ) as configured`, [actorId, projectId]
   );
   return result.rows[0]?.configured === true;
 };
@@ -1086,7 +1089,7 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
   finally { client.release(); }
 };
 
-export const createAgentAttemptStore = (database: Database): AgentAttemptStore => ({
+export const createAgentAttemptStore = (database: Database, projectId: string | null = null): AgentAttemptStore => ({
   async resolve(input) {
     const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
       itemTitle: string | null; itemUrl: string | null; issueId: string; observedVersion: string;
@@ -1138,10 +1141,10 @@ export const createAgentAttemptStore = (database: Database): AgentAttemptStore =
          join tracker_snapshots s on s.binding_id=b.id cross join lateral jsonb_array_elements(s.facts->'items') fact
          where b.project_id=a.project_id and fact->>'itemId'=a.target_reference and s.error_code is null
          order by s.observed_at desc limit 1) item on true
-       where a.action='agent.submit' and a.actor_id is not null and not exists
+       where a.action='agent.submit' and a.actor_id is not null and ($2::uuid is null or a.project_id=$2) and not exists
          (select 1 from audit_events t where t.project_id=a.project_id and t.correlation_id=a.correlation_id
           and t.action in ('agent.attempt.completed','agent.attempt.failed'))
-       order by a.occurred_at asc limit $1`, [limit]);
+       order by a.occurred_at asc limit $1`, [limit, projectId]);
     return result.rows.map((row) => ({...row, occurredAt: row.occurredAt.toISOString()}));
   },
   async finish(input) {

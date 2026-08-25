@@ -28,6 +28,7 @@ class DeploymentContractTest(unittest.TestCase):
             "FCP_HERMES_READINESS_HOST_DIR=/var/lib/fai-hermes-ascon/readiness\n",
             environment,
         )
+        self.assertIn("BOOTSTRAP_HERMES_PROFILE=internal\n", environment)
         digest = hashlib.sha256(environment_file.read_bytes()).hexdigest()
         runbook = (ROOT / "docs/ops/PRODUCTION_RUNBOOK.md").read_text()
         self.assertIn(digest, runbook)
@@ -250,7 +251,8 @@ render_target_environment
         self.assertEqual(deploy.count('"${candidate_compose[@]}" build web'), 1)
         self.assertNotIn("build web worker", deploy)
         self.assertIn("prune_superseded_project_images", deploy)
-        self.assertIn("docker builder prune -af", script)
+        self.assertIn("--filter label=com.docker.compose.project=fai-control-plane-mvp", script)
+        self.assertNotIn("docker builder prune -af", script)
         dockerfile = (ROOT / "infra/compose/Dockerfile").read_text()
         self.assertIn(
             "LABEL com.docker.compose.project=fai-control-plane-mvp",

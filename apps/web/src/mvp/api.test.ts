@@ -1,13 +1,21 @@
-import {describe, expect, it} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createHash} from 'node:crypto';
+import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import type {Database} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
-import {effectiveAgentRouting, projects, pushChangedPaths, taskAssignableUsers, taskExecutor} from './api.ts';
+import {effectiveAgentRouting, githubRuntimeCoordinates, githubWebhookRepository, projects,
+  pushChangedPaths, refreshGitHubContextSources, taskAssignableUsers, taskExecutor} from './api.ts';
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('projects HTTP boundary', () => {
-  it('is a read-only endpoint and rejects creation before opening a session or database', async () => {
+  it('rejects unauthenticated creation before calling a provider', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch',fetch);
     const response = await projects(new Request('https://app.f-ai.studio/api/projects', {method: 'POST'}));
-    expect(response.status).toBe(405);
-    expect(response.headers.get('allow')).toBe('GET');
+    expect(response.status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 
@@ -42,5 +50,39 @@ describe('project context push selection', () => {
   it('separates deleted canonical files so their prior context cannot remain current', () => {
     expect(pushChangedPaths(bytes({...base,commits:[{added:[],modified:[],removed:['AGENTS.md']}]}),
       {repository:'VF78/ascon',branch:'main'})).toEqual({after:'a'.repeat(40),paths:[],removed:['AGENTS.md']});
+  });
+
+  it('keeps two repository and Project bindings exact', () => {
+    const first = {provider:'github',projectUrl:'https://github.com/users/VF78/projects/1',
+      repositoryUrl:'https://github.com/VF78/control'};
+    const second = {provider:'github',projectUrl:'https://github.com/users/VF78/projects/4',
+      repositoryUrl:'https://github.com/VF78/ascon'};
+    expect(githubRuntimeCoordinates(first)).toEqual({owner:'VF78',repository:'control',projectNumber:1});
+    expect(githubRuntimeCoordinates(second)).toEqual({owner:'VF78',repository:'ascon',projectNumber:4});
+    expect(githubWebhookRepository(bytes(base))).toBe('VF78/ascon');
+  });
+
+  it('refreshes only the repository selected by the canonical runtime binding', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fai-webhook-binding-'));
+    const token = join(root, 'tracker-token');
+    await writeFile(token, 'github-token');
+    const fetch = vi.fn(async (...arguments_: [string | URL | Request]) => {
+      void arguments_;
+      return new Response(JSON.stringify({type:'file',encoding:'base64',
+        content:Buffer.from('Project A instructions').toString('base64')}));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const query = vi.fn(async (...arguments_: [sql: string, parameters?: readonly unknown[]]) => {
+      void arguments_;
+      return {rowCount:1,rows:[{id:'artifact-a'}]};
+    });
+    await refreshGitHubContextSources({query} as unknown as Database, {projectId:'project-a',actorId:'owner-a',
+      owner:'VF78',repository:'control',credentialRef:{id:'tracker-a',purpose:'tracker_read',locator:token},
+      after:'a'.repeat(40),paths:['AGENTS.md']});
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/repos/VF78/control/contents/AGENTS.md'),
+      expect.any(Object));
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/repos/VF78/ascon/'), expect.any(Object));
+    expect(query.mock.calls[0]![1]).toEqual(expect.arrayContaining(['project-a','owner-a']));
+    await rm(root,{recursive:true});
   });
 });

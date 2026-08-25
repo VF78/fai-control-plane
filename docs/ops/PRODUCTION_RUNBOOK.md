@@ -95,10 +95,10 @@ network change.
 ### Hermes GitHub credential boundary
 
 Reviewed non-secret Hermes environment example SHA-256:
-`27bd554ecd9458f7d6d1dbd4f54734281bd95d8acbfdf21c2a4f022b5328ab3f`.
+`6e36edade125c76415443da02c40c2569544fe71524fa1f53df7f88902a604bb`.
 
 Reviewed non-secret Control Plane environment example SHA-256:
-`d724c29b3e4dff276d7ed5d851224887817300d565f104a3d54b17744c78d58a`.
+`ea205e1cc08865df22e5f52ffcec37f84f06abe957c693be08b4b470693a7a98`.
 
 - Mount only the dedicated, fine-grained ASCON repository credential into the
   isolated Hermes gateway. Store its canonical value at
@@ -114,10 +114,29 @@ Reviewed non-secret Control Plane environment example SHA-256:
 - The separate Control Plane Project credential remains at
   `/etc/fai-control-plane-mvp/secrets/github-projects-token` and is never copied
   into Hermes. Hermes' repository credential is not used by web/worker.
-- Merge, Actions mutation, release and production deploy are not standing
-  Hermes capabilities. Branch protection must reject direct default-branch
-  pushes. Merge, release and deploy remain separate explicit commands outside
-  Hermes; no production credential is mounted into its composition.
+- Branch protection must reject direct default-branch pushes. Merge, release
+  and production deployment are available to the same project Hermes only for
+  a request bound to an exact recorded human approval; credential presence is
+  never standing authorization.
+
+### Project Hermes management and DevOps boundary
+
+- The private internal Docker network `fai-hermes-management` connects only the
+  Control Plane web service, the Hermes dashboard and the Hermes gateway. The
+  dashboard has no host-published port and requires its isolated basic-auth
+  credential. Control Plane receives only username/password secret-file mounts.
+- Hermes deployment creates or verifies this internal bridge; Control Plane
+  preflight only verifies it and never creates infrastructure.
+- Canonical dashboard, SSH and Yandex Cloud credential files remain root-owned
+  mode `0600` under `/etc/fai-hermes-ascon/secrets`. The Hermes deploy script
+  creates bounded UID-10000 runtime copies under
+  `/var/lib/fai-hermes-ascon/runtime-secrets`, compares them byte-for-byte and
+  removes them on cleanup without logging values.
+- The project gateway image pins Yandex Cloud CLI `1.22.0` and OpenSSH. The
+  gateway itself, and therefore its bounded Codex tasks, can use the configured
+  project SSH identity, strict `known_hosts` and read-only Yandex CLI profile.
+  Offline stage probes verify the binaries, mounts and SSH configuration
+  without connecting to the target host or mutating Yandex Cloud.
 
 ### Isolated Hermes Codex CLI credential
 
@@ -165,11 +184,13 @@ or second review and passes the schema-constrained result through unchanged.
 Control Plane validates one result and performs one configured Project
 transition with readback.
 
-`stage` deletes stale readiness first and recreates
+`stage` deletes stale readiness first, starts both the gateway and its private
+authenticated dashboard, and recreates
 `/var/lib/fai-hermes-ascon/readiness/codex-cli.json` only after the separate
 Hermes provider credential, Codex CLI credential, exact CLI version, derived
-image, gateway health and public capabilities all pass. Root-written readiness
-is mounted read-only into Control Plane web/worker.
+image, gateway/dashboard health, direct DevOps offline probes and public
+capabilities all pass. Root-written readiness is mounted read-only into Control
+Plane web/worker.
 The same stage atomically installs the reviewed Hermes Nginx config, validates
 it with `nginx -t`, reloads Nginx and probes the authenticated bounded run-status
 route. Any later stage failure restores and reloads the previous config before
