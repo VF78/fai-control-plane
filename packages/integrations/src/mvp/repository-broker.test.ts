@@ -114,5 +114,7 @@ describe('project-scoped repository broker', () => {
     expect(source).toContain("value.replace(/[\\0\\r\\n]/g, ' ').slice(0, 240)");
     expect(source).not.toContain("join(temporary, '.fai-repository-work.json')");
     expect(source).toContain("base: baseBranch");
+    expect(source).toContain('const repositoryBrokerTimeoutMs = 180_000');
+    expect(source).toContain('request.setTimeout(repositoryBrokerTimeoutMs');
   });
 });

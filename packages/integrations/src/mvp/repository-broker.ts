@@ -26,6 +26,7 @@ const blocked = (code: RepositoryWorkFailure['code'], message: string): Reposito
 const retry = (code: RepositoryWorkFailure['code'], message: string, retryAfterSeconds = 30): RepositoryWorkFailure =>
   ({status: 'retry', code, message: safeMessage(message), retryAfterSeconds});
 const branchComponent = (receipt: string): string => createHash('sha256').update(receipt).digest('hex').slice(0, 24);
+const repositoryBrokerTimeoutMs = 180_000;
 
 const parseGitHubRepository = (url: string): Readonly<{owner: string; repository: string}> | null => {
   const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/.exec(url);
@@ -294,7 +295,7 @@ export const createRepositoryWorkSocketAdapter = (socketPath: string): Repositor
         try { resolvePromise(JSON.parse(Buffer.concat(chunks).toString('utf8')) as T); } catch { reject(new Error('repository_broker_response_invalid')); }
       });
     });
-    request.setTimeout(15_000, () => request.destroy(new Error('repository_broker_timeout')));
+    request.setTimeout(repositoryBrokerTimeoutMs, () => request.destroy(new Error('repository_broker_timeout')));
     request.on('error', reject); request.end(body);
   });
   return {prepare: (value) => call('prepare', value), publishReview: (value) => call('publishReview', value)};

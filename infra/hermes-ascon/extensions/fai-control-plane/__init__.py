@@ -20,6 +20,7 @@ _CHAT_ID = "-5540760630"
 _USER_IDS = frozenset({"96211907", "355724486"})
 _ACTION_URL_PATH = "/api/hermes/conversation-actions"
 _REPOSITORY_SOCKET = "/run/fai-repository-broker/broker.sock"
+_REPOSITORY_TIMEOUT_SECONDS = 180
 _EXECUTOR_SOCKET = "/run/fai-executor-broker/broker.sock"
 
 
@@ -151,7 +152,7 @@ def _repository_handler(operation: str):
                    f"Content-Length: {len(encoded)}\r\nConnection: close\r\n\r\n").encode("ascii") + encoded
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(15)
+                client.settimeout(_REPOSITORY_TIMEOUT_SECONDS)
                 client.connect(_REPOSITORY_SOCKET)
                 client.sendall(request)
                 response = b""
