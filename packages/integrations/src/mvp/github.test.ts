@@ -72,16 +72,19 @@ describe('MVP GitHub adapter', () => {
   });
 
   it('keeps repository observation provider-neutral and bound to the configured repository', async () => {
-    const fetch = vi.fn(async () => new Response(JSON.stringify({
-      html_url: 'https://github.com/acme/repo', default_branch: 'main'
-    })));
+    const fetch = vi.fn(async (url: string | URL | Request) => new Response(JSON.stringify(
+      String(url).includes('/git/ref/heads/main')
+        ? {object: {sha: 'a'.repeat(40)}}
+        : {html_url: 'https://github.com/acme/repo', default_branch: 'main'}
+    )));
     const adapter = createGitHubRepositoryReadAdapter({owner: 'acme', repository: 'repo', repositoryId: 'R_1',
       credentialRef: secretRef, secrets: secrets('token'), fetch});
     await expect(adapter.readRepository({repositoryId: 'R_1'})).resolves.toMatchObject({
-      repositoryId: 'R_1', url: 'https://github.com/acme/repo', defaultBranch: 'main'
+      repositoryId: 'R_1', url: 'https://github.com/acme/repo', defaultBranch: 'main',
+      defaultBranchSha: 'a'.repeat(40)
     });
     await expect(adapter.readRepository({repositoryId: 'R_2'})).rejects.toThrow('github_repository_denied');
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('reads every Project page into one version-consistent snapshot', async () => {

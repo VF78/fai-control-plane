@@ -237,7 +237,17 @@ export const createGitHubRepositoryReadAdapter = (input: Readonly<{
     const value = response.ok ? object(await response.json()) : null;
     if (value?.html_url !== `https://github.com/${input.owner}/${input.repository}` ||
       !bounded(value.default_branch, 256)) throw new Error('github_repository_read_failed');
-    return {repositoryId, url: value.html_url as string, defaultBranch: value.default_branch as string,
+    const defaultBranch = value.default_branch as string;
+    const refResponse = await (input.fetch ?? globalThis.fetch)(
+      `https://api.github.com/repos/${input.owner}/${input.repository}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+      {headers: apiHeaders(token), signal: AbortSignal.timeout(10_000)}
+    );
+    const ref = refResponse.ok ? object(await refResponse.json()) : null;
+    const target = object(ref?.object);
+    if (typeof target?.sha !== 'string' || !/^[a-f0-9]{40}$/.test(target.sha)) {
+      throw new Error('github_repository_read_failed');
+    }
+    return {repositoryId, url: value.html_url as string, defaultBranch, defaultBranchSha: target.sha,
       observedAt: new Date().toISOString()};
   }
 });
