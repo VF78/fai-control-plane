@@ -75,9 +75,9 @@ const dispatch = async (input: Readonly<{
       action.itemId === roleRun.itemId && action.expectedVersion === roleRun.observedVersion;
     const configuredStage = action.type === 'project_item.stage' && exactTarget &&
       roleRun.allowedStageTitles.includes(action.stage);
-    const allowed = roleRun.role === 'manager'
+    const allowed = action.type === 'project_facts.read' || (roleRun.role === 'manager'
       ? action.type === 'issue.create' || configuredStage || (action.type === 'issue.update' && exactTarget)
-      : configuredStage;
+      : configuredStage);
     if (!allowed) return {status: 'denied'};
   }
   if (envelope.action.type === 'issue.update' && roleRun === undefined &&
