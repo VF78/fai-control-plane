@@ -1,4 +1,3 @@
-import type {TrackerItemFact} from '@fai-control-plane/domain';
 import {submitExplicitAgent, type AgentSubmissionPorts} from './agent-submission.ts';
 
 export type AgentContinuationStore = Readonly<{
@@ -9,7 +8,7 @@ export type AgentContinuationStore = Readonly<{
 
 export const continueExplicitAgentChain = async (input: Readonly<{
   projectId: string;
-  item: TrackerItemFact;
+  item: Readonly<{projectId: string; itemId: string}>;
   stage: Readonly<{agentRole: 'manager'|'developer'|'qa'; afterRoles: readonly ('manager'|'developer'|'qa')[]; maxStarts: number}> | null;
   stores: AgentContinuationStore;
   ports: AgentSubmissionPorts;

@@ -1015,7 +1015,7 @@ export const resolveAgentSourceReferences = async (database: Database, input: Re
 /** Holds a project-scoped idempotency lock across the external delivery and canonical receipt/audit commit. */
 export const executeAgentSubmissionTransaction = async (database: Database, input: Readonly<{
   workspaceId: string; projectId: string; actorId: string; idempotencyKey: string; correlationId: string;
-  role: string; itemId: string; observedVersion: string; sourceCount: number;
+  role: string; itemId: string; issueId: string; observedVersion: string; sourceCount: number;
   processPolicyVersion: string; processStageId: string; processStageTitle: string;
   successTargetTitle: string | null; reworkTargetTitle: string | null;
   routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog; expectedOwnerOptionId: string;
@@ -1068,7 +1068,7 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
       `insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
        values($1,$2,$3,'agent.submit',$4,$5,$6,$7)`,
       [input.workspaceId,input.projectId,input.actorId,input.itemId,input.correlationId,
-        JSON.stringify({role: input.role, observedVersion: input.observedVersion, sourceCount: input.sourceCount,
+        JSON.stringify({role: input.role, issueId: input.issueId, observedVersion: input.observedVersion, sourceCount: input.sourceCount,
           processPolicyVersion: input.processPolicyVersion, processStageId: input.processStageId,
           processStageTitle: input.processStageTitle, successTargetTitle: input.successTargetTitle,
           reworkTargetTitle: input.reworkTargetTitle, routingPolicy: input.routingPolicy,
@@ -1089,14 +1089,15 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
 export const createAgentAttemptStore = (database: Database): AgentAttemptStore => ({
   async resolve(input) {
     const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
-      itemTitle: string | null; itemUrl: string | null; observedVersion: string;
+      itemTitle: string | null; itemUrl: string | null; issueId: string; observedVersion: string;
       successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
       routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
       deliveryReference: string; correlationId: string; status: 'started'|'completed'|'failed'; occurredAt: Date}>(
       `select a.workspace_id as "workspaceId",a.project_id as "projectId",m.actor_id as "actorId",
        a.target_reference as "itemId",r.result_reference as "deliveryReference",a.correlation_id as "correlationId",
        a.occurred_at as "occurredAt",
-       item.title as "itemTitle",item.url as "itemUrl",a.details->>'observedVersion' as "observedVersion",
+       item.title as "itemTitle",item.url as "itemUrl",coalesce(a.details->>'issueId',item."issueId") as "issueId",
+       a.details->>'observedVersion' as "observedVersion",
        a.details->>'successTargetTitle' as "successTargetTitle",a.details->>'reworkTargetTitle' as "reworkTargetTitle",
        a.details->>'expectedOwnerOptionId' as "expectedOwnerOptionId",a.details->'routingPolicy' as "routingPolicy",
        a.details->'executorCatalog' as "executorCatalog",
@@ -1105,7 +1106,7 @@ export const createAgentAttemptStore = (database: Database): AgentAttemptStore =
          and r.actor_id is not distinct from a.actor_id and r.occurred_at=a.occurred_at and r.command_type='agent.submit'
        join project_memberships m on m.project_id=a.project_id and m.actor_id=$1 and m.active=true
          and m.role in ('project_owner','operator')
-       left join lateral (select fact->>'title' as title,fact->>'url' as url from tracker_bindings b
+       left join lateral (select fact->>'title' as title,fact->>'url' as url,fact->>'issueId' as "issueId" from tracker_bindings b
          join tracker_snapshots s on s.binding_id=b.id cross join lateral jsonb_array_elements(s.facts->'items') fact
          where b.project_id=a.project_id and fact->>'itemId'=a.target_reference and s.error_code is null
          order by s.observed_at desc limit 1) item on true
@@ -1118,21 +1119,22 @@ export const createAgentAttemptStore = (database: Database): AgentAttemptStore =
   },
   async listActive(limit) {
     const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
-      itemTitle: string | null; itemUrl: string | null; observedVersion: string;
+      itemTitle: string | null; itemUrl: string | null; issueId: string; observedVersion: string;
       successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
       routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
       deliveryReference: string; correlationId: string; status: 'started'; occurredAt: Date}>(
       `select a.workspace_id as "workspaceId",a.project_id as "projectId",a.actor_id as "actorId",
        a.target_reference as "itemId",r.result_reference as "deliveryReference",a.correlation_id as "correlationId",
        a.occurred_at as "occurredAt",
-       item.title as "itemTitle",item.url as "itemUrl",a.details->>'observedVersion' as "observedVersion",
+       item.title as "itemTitle",item.url as "itemUrl",coalesce(a.details->>'issueId',item."issueId") as "issueId",
+       a.details->>'observedVersion' as "observedVersion",
        a.details->>'successTargetTitle' as "successTargetTitle",a.details->>'reworkTargetTitle' as "reworkTargetTitle",
        a.details->>'expectedOwnerOptionId' as "expectedOwnerOptionId",a.details->'routingPolicy' as "routingPolicy",
        a.details->'executorCatalog' as "executorCatalog",
        'started'::text as status
        from audit_events a join command_receipts r on r.project_id=a.project_id
          and r.actor_id is not distinct from a.actor_id and r.occurred_at=a.occurred_at and r.command_type='agent.submit'
-       left join lateral (select fact->>'title' as title,fact->>'url' as url from tracker_bindings b
+       left join lateral (select fact->>'title' as title,fact->>'url' as url,fact->>'issueId' as "issueId" from tracker_bindings b
          join tracker_snapshots s on s.binding_id=b.id cross join lateral jsonb_array_elements(s.facts->'items') fact
          where b.project_id=a.project_id and fact->>'itemId'=a.target_reference and s.error_code is null
          order by s.observed_at desc limit 1) item on true

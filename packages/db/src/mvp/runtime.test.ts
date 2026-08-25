@@ -164,7 +164,8 @@ describe('agent submission evidence projection', () => {
 
 describe('agent attempt retry guard', () => {
   const input = {workspaceId: 'workspace', projectId: 'project', actorId: 'actor', idempotencyKey: 'new-key',
-    correlationId: 'new-correlation', role: 'developer', itemId: 'item', observedVersion: 'v1', sourceCount: 1,
+    correlationId: 'new-correlation', role: 'developer', itemId: 'item', issueId: '42',
+    observedVersion: 'v1', sourceCount: 1,
     processPolicyVersion: 'b'.repeat(64), processStageId: 'in-dev', processStageTitle: 'In Dev',
     successTargetTitle: 'QA', reworkTargetTitle: null,
     routingPolicy: {contract: 'fai.agent-routing.v1', routes: []} as never, executorCatalog: {},

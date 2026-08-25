@@ -9,6 +9,7 @@ import {defaultAgentStageInstructions, composeAgentTerminalNotification, continu
 import {
   createHermesDeliveryAdapter,
   createGitHubRepositoryReadAdapter,
+  createGitHubTrackerMutationAdapter,
   createGitHubTrackerReadAdapter,
   createTelegramDeliveryAdapter
 } from '@fai-control-plane/integrations';
@@ -49,11 +50,14 @@ export const createWorker = (database: Database = createDatabase()) => {
   const stores = createStores(database, workspaceId);
   const attempts = createAgentAttemptStore(database);
   const continuations = createAgentContinuationStore(database);
-  const tracker = createGitHubTrackerReadAdapter({binding: {
+  const trackerBinding = {
     id: bindingId, owner, repository, projectId, projectNumber,
     projectUrl: `https://github.com/users/${owner}/projects/${projectNumber}`,
     credentialRef: secret('github-projects', 'tracker_read', 'GITHUB_PROJECTS_TOKEN_FILE')
-  }, secrets});
+  };
+  const tracker = createGitHubTrackerReadAdapter({binding: trackerBinding, secrets});
+  const trackerMutation = createGitHubTrackerMutationAdapter({binding: trackerBinding,
+    credentialRef: secret('github-projects', 'tracker_mutate', 'GITHUB_PROJECTS_TOKEN_FILE'), secrets});
   const repositoryRead = createGitHubRepositoryReadAdapter({owner, repository, repositoryId,
     credentialRef: secret('github-projects', 'tracker_read', 'GITHUB_PROJECTS_TOKEN_FILE'), secrets});
   const clientMessenger = {async send() {
@@ -97,16 +101,24 @@ export const createWorker = (database: Database = createDatabase()) => {
     transaction: {execute: (input, submit) => executeAgentSubmissionTransaction(database, input, submit)}
   };
   return {
-    async reconcile() {
-      await reconcileActiveAgentAttempts(20, {delivery: agentDelivery, attempts,
-        readFreshItem: async (attempt) => {
-          const snapshot = await tracker.readSnapshot(bindingId, null);
-          await stores.snapshots.replace(snapshot);
-          return snapshot.items.find((candidate) => candidate.projectId === attempt.projectId &&
-            candidate.itemId === attempt.itemId) ?? null;
+    async observe() {
+      await reconcileActiveAgentAttempts(20, {delivery: agentDelivery, attempts, tracker: trackerMutation,
+        continueAgentChain: async (attempt, targetStage) => {
+          const processPolicy = await readActiveProjectProcessPolicy(database, projectId);
+          const stage = processPolicy?.policy.stages.find((candidate) => candidate.title === targetStage) ?? null;
+          if (stage?.automation === null || stage === null) {
+            const snapshot = await tracker.readSnapshot(bindingId, null);
+            await stores.snapshots.replace(snapshot);
+            return;
+          }
+          await continueExplicitAgentChain({projectId,
+            item: {projectId: attempt.projectId, itemId: attempt.itemId}, stage: stage.automation,
+            stores: continuations, ports: submissionPorts, instructions: defaultAgentStageInstructions});
         },
         composeTerminalNotification: async (attempt, observed, key) =>
           composeAgentTerminalNotification(attempt.projectId, attempt, observed, key)});
+    },
+    async reconcile() {
       const cursor = await database.query<{cursor: string | null}>('select cursor from tracker_bindings where id=$1', [bindingId]);
       let processPolicy: Awaited<ReturnType<typeof readActiveProjectProcessPolicy>> = null;
       try { processPolicy = await readActiveProjectProcessPolicy(database, projectId); }

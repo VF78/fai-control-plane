@@ -53,7 +53,7 @@ describe('MVP agent role request', () => {
         classification: 'runtime-classification-required', policy: {contract: 'fai.agent-routing.v1'}}},
       execution: {classification: {by: 'agent-runtime', unknown: 'deny', unavailableRoute: 'deny'},
         cli: {routeFieldsAreExact: ['id', 'model', 'effort'], resultContract: 'fai.agent-executor-result.v1'},
-        acceptance: {evidenceRequired: true, stageMutation: 'only-after-accepted',
+        acceptance: {evidenceRequired: true, stageMutation: 'control-plane-after-accepted',
           deliverables: 'bounded-https-references'}}
     });
     expect(renderAgentRoleRequest(request())).toContain('codex-cli');

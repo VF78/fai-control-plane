@@ -50,8 +50,8 @@ export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSO
       resultContract: 'fai.agent-executor-result.v1'},
     directAgent: {nontrivialWork: 'delegate-native-child-with-route-model-and-effort'},
     acceptance: {decision: ['accepted', 'rejected'], evidenceRequired: true,
-      executionRouteRequired: true, transitionAttestationRequired: true,
-      stageMutation: 'only-after-accepted', deliverables: 'bounded-https-references'}
+      executionRouteRequired: true, transitionRequestRequired: true,
+      stageMutation: 'control-plane-after-accepted', deliverables: 'bounded-https-references'}
   },
   request
 });
