@@ -110,6 +110,11 @@ class PluginTest(unittest.TestCase):
         self.assertIn("--output-schema /opt/fai/agent-executor-result.schema.json", protocol)
         self.assertIn("Do not make a second gh query", protocol)
         self.assertIn("runs only missing acceptance/risk checks", protocol)
+        self.assertIn("first reviews the unchanged PR independently", protocol)
+        self.assertIn("one localized low-risk fix on the existing PR branch", protocol)
+        self.assertIn("requests developer rework instead", protocol)
+        self.assertIn("rework updates that same PR head branch", protocol)
+        self.assertIn("never creates a duplicate PR", protocol)
 
     def test_non_role_api_session_gets_no_project_protocol(self):
         context = Context()
