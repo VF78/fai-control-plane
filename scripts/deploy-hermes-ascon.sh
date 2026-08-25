@@ -413,7 +413,7 @@ stage_exit_cleanup() {
   fi
   if (( stage_cleanup_required )); then
     remove_readiness
-    if "${compose[@]}" down >/dev/null 2>&1; then
+    if "${compose[@]}" down --remove-orphans >/dev/null 2>&1; then
       remove_runtime_secrets
     else
       printf 'deploy-hermes-ascon: automatic isolated-stage cleanup failed\n' >&2
@@ -471,7 +471,7 @@ case "$action" in
       "${compose[@]}" run --rm --no-deps \
         --entrypoint /opt/hermes/bin/hermes gateway auth status openai-codex
     verify_codex_runtime
-    "${compose[@]}" down
+    "${compose[@]}" down --remove-orphans
     rm -f "$gateway_pid_file"
     [[ ! -e "$gateway_pid_file" ]] || fail 'stale gateway PID file could not be removed'
     "${compose[@]}" up -d gateway
@@ -509,7 +509,7 @@ case "$action" in
     stage_cleanup_required=0
     ;;
   rollback)
-    "${compose[@]}" down
+    "${compose[@]}" down --remove-orphans
     remove_readiness
     remove_runtime_secrets
     ;;
