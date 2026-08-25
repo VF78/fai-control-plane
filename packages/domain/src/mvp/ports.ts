@@ -77,7 +77,7 @@ export type AgentRole = 'manager' | 'developer' | 'qa' | 'devops';
 export type AgentRoleRequest = Readonly<{
   role: AgentRole;
   repository: Readonly<{id: string; url: string; defaultBranch: string; defaultBranchSha: string}>;
-  projectItem: Readonly<{id: string; projectId: string; issueId: string; url: string}>;
+  projectItem: Readonly<{id: string; projectId: string; issueId: string; title: string; url: string}>;
   observedVersion: string;
   sources: readonly SourceReference[];
   constraints: readonly string[];

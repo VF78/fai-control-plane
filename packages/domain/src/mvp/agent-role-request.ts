@@ -13,7 +13,8 @@ export const validateAgentRoleRequest = (value: AgentRoleRequest): boolean => {
     !boundedText(value.repository.defaultBranch, 256) ||
     !/^[a-f0-9]{40}$/.test(value.repository.defaultBranchSha) ||
     !isBoundedId(value.projectItem.id) || !isBoundedId(value.projectItem.projectId) ||
-    !isBoundedId(value.projectItem.issueId) || !isHttpsUrl(value.projectItem.url) ||
+    !isBoundedId(value.projectItem.issueId) || !boundedText(value.projectItem.title, 512) ||
+    !isHttpsUrl(value.projectItem.url) ||
     !isBoundedId(value.observedVersion) || !isBoundedId(value.correlationId) ||
     !isBoundedId(value.idempotencyKey) || value.sources.length > 20 ||
     value.constraints.length > 40 || value.acceptanceCriteria.length > 40) return false;
@@ -47,10 +48,13 @@ export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSO
       attempts: 1, unknown: 'deny', unavailableRoute: 'deny',
       then: 'resolve-exact-route-from-request.routing.policy'},
     cli: {routeFieldsAreExact: ['id', 'model', 'effort'], invocation: 'native-terminal',
-      resultContract: 'fai.agent-executor-result.v1'},
-    directAgent: {nontrivialWork: 'delegate-native-child-with-route-model-and-effort'},
+      attempts: 1, resultContract: 'fai.agent-executor-result.v1',
+      delegation: 'executor-owns-implementation-checks-commit-push-and-review-pr'},
+    directAgent: {scope: 'project-management-or-exact-approved-operation', repositoryWork: 'deny'},
     acceptance: {decision: ['accepted', 'rejected'], evidenceRequired: true,
-      executionRouteRequired: true, transitionRequestRequired: true,
+      exactResultFields: ['contract', 'decision', 'execution', 'outcome', 'transition', 'reason',
+        'evidence', 'deliverables'],
+      rejectedWithoutReworkTarget: 'request-current-stage',
       stageMutation: 'control-plane-after-accepted', deliverables: 'bounded-https-references'}
   },
   request

@@ -8,7 +8,8 @@ const request = (role: AgentRoleRequest['role'] = 'developer'): AgentRoleRequest
   role,
   repository: {id: 'repo-1', url: 'https://example.test/repository', defaultBranch: 'main',
     defaultBranchSha: 'a'.repeat(40)},
-  projectItem: {id: 'item-1', projectId: 'project-1', issueId: 'issue-1', url: 'https://example.test/issues/1'},
+  projectItem: {id: 'item-1', projectId: 'project-1', issueId: 'issue-1', title: 'Fix the exact issue',
+    url: 'https://example.test/issues/1'},
   observedVersion: 'version-1',
   sources: [{id: 'source-1', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator upload',
     content: 'Approved requirements'}],
@@ -34,6 +35,13 @@ describe('MVP agent role request', () => {
       defaultBranchSha: 'not-a-commit'}})).toBe(false);
   });
 
+  it('requires a bounded task title for classification without another provider read', () => {
+    const value = request();
+    expect(validateAgentRoleRequest({...value, projectItem: {...value.projectItem, title: ''}})).toBe(false);
+    expect(validateAgentRoleRequest({...value, projectItem: {...value.projectItem,
+      title: 'x'.repeat(513)}})).toBe(false);
+  });
+
   it('rejects devops without exact production approval', () => {
     expect(validateAgentRoleRequest(request('devops'))).toBe(false);
   });
@@ -52,8 +60,12 @@ describe('MVP agent role request', () => {
       contract: 'fai.agent-role-request.v1', request: {role: 'developer', routing: {
         classification: 'runtime-classification-required', policy: {contract: 'fai.agent-routing.v1'}}},
       execution: {classification: {by: 'agent-runtime', unknown: 'deny', unavailableRoute: 'deny'},
-        cli: {routeFieldsAreExact: ['id', 'model', 'effort'], resultContract: 'fai.agent-executor-result.v1'},
+        cli: {routeFieldsAreExact: ['id', 'model', 'effort'], attempts: 1,
+          resultContract: 'fai.agent-executor-result.v1'},
         acceptance: {evidenceRequired: true, stageMutation: 'control-plane-after-accepted',
+          exactResultFields: ['contract', 'decision', 'execution', 'outcome', 'transition', 'reason',
+            'evidence', 'deliverables'],
+          rejectedWithoutReworkTarget: 'request-current-stage',
           deliverables: 'bounded-https-references'}}
     });
     expect(renderAgentRoleRequest(request())).toContain('codex-cli');

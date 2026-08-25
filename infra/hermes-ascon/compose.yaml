@@ -27,6 +27,7 @@ services:
       HERMES_GATEWAY_NO_SUPERVISE: "1"
       HERMES_PROVIDER: openai-codex
       HERMES_MODEL: ${HERMES_MODEL:?required}
+      TERMINAL_MAX_FOREGROUND_TIMEOUT: "1800"
       CODEX_HOME: /opt/data/codex-home
       HERMES_GITHUB_REPOSITORY_TOKEN_FILE: /run/secrets/github-repository-token
       HOME: /opt/data
@@ -42,6 +43,7 @@ services:
       - ${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro
       - ./extensions/fai-control-plane:/opt/data/plugins/fai-control-plane:ro
       - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
+      - ./agent-executor-result.schema.json:/opt/fai/agent-executor-result.schema.json:ro
       - ./profiles/internal/config.yaml:/opt/data/profiles/internal/config.yaml:ro
       - ./profiles/bitrix-client/config.yaml:/opt/data/profiles/bitrix-client/config.yaml:ro
       - ${HERMES_INTERNAL_BRIDGE_TOKEN_FILE:?required}:/opt/data/profiles/internal/bridge-token:ro

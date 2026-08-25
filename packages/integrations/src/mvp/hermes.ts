@@ -118,7 +118,8 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
       const expected = submitted.get(deliveryReference);
       if (expected !== undefined) {
         const route = expected.routing.policy.routes.find((candidate) => candidate.taskClass === result.execution.taskClass);
-        const target = result.outcome === 'success' ? expected.process.successTargetTitle : expected.process.reworkTargetTitle;
+        const target = result.outcome === 'success' ? expected.process.successTargetTitle
+          : expected.process.reworkTargetTitle ?? expected.process.stageTitle;
         if (route === undefined || JSON.stringify(route.executor) !== JSON.stringify(result.execution.executor) ||
           route.model !== result.execution.model || route.effort !== result.execution.effort ||
           result.transition.itemId !== expected.projectItem.id ||

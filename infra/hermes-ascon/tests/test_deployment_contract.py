@@ -37,6 +37,15 @@ class DeploymentContractTest(unittest.TestCase):
             self.assertEqual(lines[0], "_config_version: 34", config)
             self.assertEqual(lines.count("_config_version: 34"), 1, config)
 
+    def test_api_role_runs_have_one_executor_tool_and_a_bounded_loop(self):
+        config = (HERMES / "config.yaml").read_text()
+        api_tools = config.split("  api_server:\n", 1)[1].split("\n\nagent:", 1)[0]
+        self.assertIn("    - terminal\n", api_tools)
+        self.assertIn("    - no_mcp", api_tools)
+        self.assertNotIn("fai_internal", api_tools)
+        self.assertNotIn("skills", api_tools)
+        self.assertIn("agent:\n  max_turns: 4\n", config)
+
     def test_bridge_mounts_use_isolated_runtime_copies(self):
         environment_file = HERMES / "production.env.example"
         environment = environment_file.read_text()
@@ -63,7 +72,8 @@ class DeploymentContractTest(unittest.TestCase):
     def test_stage_prepares_uid_boundary_and_fails_closed(self):
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
         readable_block = script.split("readonly -a readable_files=(", 1)[1].split(")", 1)[0]
-        self.assertEqual(readable_block.count('"$deploy_root/'), 10)
+        self.assertEqual(readable_block.count('"$deploy_root/'), 11)
+        self.assertIn('agent-executor-result.schema.json"', readable_block)
         self.assertIn('chmod 0644 "${readable_files[@]}"', script)
         self.assertIn('chmod 0755 "${readable_directories[@]}"', script)
         self.assertIn('"$workload_uid:$workload_gid:755"', script)
@@ -135,6 +145,11 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("working_dir: /opt/data/work/project", compose)
         self.assertIn("CODEX_HOME: /opt/data/codex-home", compose)
         self.assertIn("HERMES_IMAGE=fai-hermes-ascon:codex-0.144.1", environment)
+        self.assertIn('TERMINAL_MAX_FOREGROUND_TIMEOUT: "1800"', compose)
+        self.assertIn(
+            "./agent-executor-result.schema.json:/opt/fai/agent-executor-result.schema.json:ro",
+            compose,
+        )
 
         codex_service = compose.split("  codex-cli:\n", 1)[1]
         self.assertNotIn("env_file:", codex_service)

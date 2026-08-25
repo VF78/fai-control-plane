@@ -25,8 +25,8 @@ export const defaultAgentRoutingPolicy: AgentRoutingPolicy = {contract: 'fai.age
   {taskClass: 'ui_responsive', executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'high', runtimeAcceptance: 'required', humanGate: 'product_visual'},
   {taskClass: 'complex_implementation', executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'high', runtimeAcceptance: 'required', humanGate: 'none'},
   {taskClass: 'qa_audit', executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'medium', runtimeAcceptance: 'required', humanGate: 'none'},
-  {taskClass: 'architecture_design', executor: {kind: 'direct-agent'}, model: 'gpt-5.6-sol', effort: 'medium', runtimeAcceptance: 'required', humanGate: 'architecture_decision'},
-  {taskClass: 'critical_decision', executor: {kind: 'direct-agent'}, model: 'gpt-5.6-sol', effort: 'high', runtimeAcceptance: 'required', humanGate: 'architecture_decision'},
+  {taskClass: 'architecture_design', executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-sol', effort: 'medium', runtimeAcceptance: 'required', humanGate: 'architecture_decision'},
+  {taskClass: 'critical_decision', executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-sol', effort: 'high', runtimeAcceptance: 'required', humanGate: 'architecture_decision'},
   {taskClass: 'release_preflight', executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-sol', effort: 'medium', runtimeAcceptance: 'required', humanGate: 'none'},
   {taskClass: 'protected_operation', executor: {kind: 'direct-agent'}, model: 'gpt-5.6-sol', effort: 'medium', runtimeAcceptance: 'required', humanGate: 'production_exact'}
 ]};

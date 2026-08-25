@@ -18,6 +18,14 @@ sys.modules.setdefault("fai_control_plane_bridge_state", bridge_state)
 _CHAT_ID = "-5540760630"
 _USER_IDS = frozenset({"96211907", "355724486"})
 _ACTION_URL_PATH = "/api/hermes/conversation-actions"
+_ROLE_RUN_PROTOCOL = """Agent role-run protocol (mandatory):
+1. The JSON request is the receipt-bound routing envelope. Classify once from request.role, request.projectItem.title, constraints and acceptance criteria; resolve exactly one route from request.routing.policy. Unknown or unavailable routes are rejected.
+2. A direct-agent route is only for bounded project management or an exact approved operation. Never use it for repository implementation, QA, architecture or critical engineering decisions.
+3. A CLI route is exactly one foreground terminal call with timeout 1800 and no PTY, containing exactly one non-interactive codex exec. Do not load skills, inspect the repository in Hermes, delegate, start background work, poll, create a second plan, repeat checks or review Codex output.
+4. The persistent /opt/data/work/project checkout is worktree metadata only. In that single terminal call fetch request.repository.defaultBranchSha, create a fresh detached worktree at /opt/data/work/runs/<64-hex-correlation-id>, and run codex exec there with the route's exact --model and model_reasoning_effort, --sandbox workspace-write, --output-schema /opt/fai/agent-executor-result.schema.json and -o. The compact prompt contains only the role, Project item title/URL, pinned base, exact receipt/transition fields, constraints and acceptance criteria. Codex reads AGENTS.md, the referenced GitHub issue and only relevant repository files itself; never paste chat history, repository documents or the full source capsule into the prompt.
+5. Developer Codex performs one implementation pass, focused self-checks and commit. It creates one review branch and PR only when none exists for the item; rework updates that same PR head branch and never creates a duplicate PR. QA Codex first reviews the unchanged PR independently and runs only missing acceptance/risk checks. It may make, commit and push one localized low-risk fix on the existing PR branch, run the focused check and record final diff evidence in the same pass. It requests developer rework instead when scope or acceptance changes, architecture/schema/public API/security/migrations/production configuration are affected, or the result remains uncertain or failing. It never repeats an unchanged full test suite. Merge, release, deploy and production remain forbidden.
+6. Capture the schema result, then remove the temporary worktree and result/progress files in the same terminal call. Return Codex's JSON unchanged. Do not make a second gh query or reinterpret a valid result. A real terminal/contract failure is a rejected result targeting the configured rework stage, or the current stage when none exists.
+7. Never mutate Project status; Control Plane validates one result, applies one configured transition with provider readback, and starts the next configured role once."""
 
 
 def _pre_dispatch(event, **_kwargs):
@@ -75,6 +83,8 @@ def _context_hook(state, **kwargs):
     session_id = str(kwargs.get("session_id") or "")
     platform_value = kwargs.get("platform")
     platform = str(getattr(platform_value, "value", platform_value or ""))
+    if platform == "api_server" and re.fullmatch(r"browser:[a-f0-9]{64}", session_id):
+        return {"context": _ROLE_RUN_PROTOCOL}
     if platform != "telegram":
         return None
     source = bridge_state.resolve(session_id)

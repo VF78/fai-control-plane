@@ -11,6 +11,14 @@ describe('Hermes routing policy', () => {
       executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'medium'
     });
   });
+  it('routes repository architecture and critical decisions to Codex with the approved Sol effort', () => {
+    expect(resolveAgentRoute(defaultAgentRoutingPolicy, 'architecture_design', catalog)).toMatchObject({
+      executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-sol', effort: 'medium'
+    });
+    expect(resolveAgentRoute(defaultAgentRoutingPolicy, 'critical_decision', catalog)).toMatchObject({
+      executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-sol', effort: 'high'
+    });
+  });
   it('denies unknown classes and unavailable future executors', () => {
     expect(() => resolveAgentRoute(defaultAgentRoutingPolicy, 'unknown', catalog)).toThrow('agent_route_denied');
     const future: AgentRoutingPolicy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map(

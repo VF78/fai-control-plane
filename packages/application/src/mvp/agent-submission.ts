@@ -131,7 +131,8 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   const correlationId = command.root?.chainReference ?? `browser:${idempotencyKey.slice('agent.submit:'.length)}`;
   const request: AgentRoleRequest = {role: command.role, repository: {id: repository.repositoryId,
     url: repository.url, defaultBranch: repository.defaultBranch, defaultBranchSha: repository.defaultBranchSha},
-    projectItem: {id: item.itemId, projectId: context.projectId, issueId: item.issueId, url: item.url},
+    projectItem: {id: item.itemId, projectId: context.projectId, issueId: item.issueId,
+      title: item.title, url: item.url},
     observedVersion: item.version, sources, constraints: command.constraints,
     acceptanceCriteria: command.acceptanceCriteria, approval: null,
     routing: {policyVersion: context.routingPolicyVersion, policy: context.routingPolicy,

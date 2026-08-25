@@ -96,6 +96,33 @@ class PluginTest(unittest.TestCase):
         self.assertIn("may be stale", stale["context"])
         self.assertIn("Cached rules", stale["context"])
 
+    def test_role_run_context_is_one_thin_codex_execution(self):
+        context = Context()
+        PLUGIN.register(context)
+        result = context.hooks["pre_llm_call"](
+            session_id="browser:" + "a" * 64, platform="api_server"
+        )
+        protocol = result["context"]
+        self.assertIn("exactly one non-interactive codex exec", protocol)
+        self.assertIn("fresh detached worktree", protocol)
+        self.assertIn("/opt/data/work/runs/<64-hex-correlation-id>", protocol)
+        self.assertIn("--sandbox workspace-write", protocol)
+        self.assertIn("--output-schema /opt/fai/agent-executor-result.schema.json", protocol)
+        self.assertIn("Do not make a second gh query", protocol)
+        self.assertIn("runs only missing acceptance/risk checks", protocol)
+        self.assertIn("first reviews the unchanged PR independently", protocol)
+        self.assertIn("one localized low-risk fix on the existing PR branch", protocol)
+        self.assertIn("requests developer rework instead", protocol)
+        self.assertIn("rework updates that same PR head branch", protocol)
+        self.assertIn("never creates a duplicate PR", protocol)
+
+    def test_non_role_api_session_gets_no_project_protocol(self):
+        context = Context()
+        PLUGIN.register(context)
+        self.assertIsNone(context.hooks["pre_llm_call"](
+            session_id="browser:not-bound", platform="api_server"
+        ))
+
     def test_tool_injects_promoted_identity_not_model_arguments(self):
         source = types.SimpleNamespace(platform=types.SimpleNamespace(value="telegram"),
                                        user_id="96211907", chat_id="-5540760630")

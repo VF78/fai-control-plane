@@ -68,7 +68,8 @@ describe('explicit agent submission', () => {
     await expect(submitExplicitAgent(command, value)).resolves.toMatchObject({status: 'duplicate'});
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(deliver.mock.calls[0]![0]).toMatchObject({repository: {id: 'R_repo', defaultBranch: 'main',
-      defaultBranchSha: 'a'.repeat(40)}, projectItem: {id: 'PVTI_item', projectId: 'project'},
+      defaultBranchSha: 'a'.repeat(40)}, projectItem: {id: 'PVTI_item', projectId: 'project',
+        title: 'GUI recovery'},
       observedVersion: 'github:updated-at:v1', constraints: ['Do not deploy'],
       routing: {policyVersion: routingPolicyVersion, classification: 'runtime-classification-required'},
       sources: [{id: 'context', content: contextContent}]});

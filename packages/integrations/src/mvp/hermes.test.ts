@@ -7,7 +7,8 @@ const request = {
   role: 'developer' as const,
   repository: {id: 'repo', url: 'https://example.test/repo', defaultBranch: 'main',
     defaultBranchSha: 'a'.repeat(40)},
-  projectItem: {id: 'item', projectId: 'project', issueId: 'issue', url: 'https://example.test/issues/1'},
+  projectItem: {id: 'item', projectId: 'project', issueId: 'issue', title: 'Implement exact issue',
+    url: 'https://example.test/issues/1'},
   observedVersion: 'v1', sources: [], constraints: ['No merge'], acceptanceCriteria: ['Checks pass'],
   approval: null, correlationId: `browser:${'c'.repeat(64)}`, idempotencyKey: 'delivery',
   routing: {policyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'),
@@ -66,6 +67,23 @@ describe('MVP Hermes adapter', () => {
         new Response(JSON.stringify({run_id: 'run_ref', status: 'completed', output: JSON.stringify(result)})))});
     await expect(adapter.observe('run_ref')).resolves.toMatchObject({status: 'failed',
       failureCode: 'agent_result_rejected', result: {...result, deliverables: []}});
+  });
+
+  it('keeps a rejected run in the current stage when no rework stage is configured', async () => {
+    const rejected = {contract: 'fai.agent-executor-result.v1', decision: 'rejected',
+      execution: attestation.execution, outcome: 'rework' as const,
+      transition: {...attestation.transition, targetStage: 'In Dev'}, reason: 'Executor failed',
+      evidence: [{kind: 'executor', result: 'Codex exited non-zero'}], deliverables: []};
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({run_id: 'run_ref', status: 'started'}), {status: 202}))
+      .mockResolvedValueOnce(new Response(JSON.stringify({run_id: 'run_ref', status: 'completed',
+        output: JSON.stringify(rejected)})));
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, fetch});
+    await adapter.submit(request);
+    await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'failed',
+      failureCode: 'agent_result_rejected', result: rejected});
   });
 
   it('accepts direct-agent results', async () => {
