@@ -4,9 +4,21 @@ import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSna
   projectContextSourceKind, serializeProjectContextSnapshot, serializeProjectContextSource,
   trackerPollIntervalMs, trackerStaleAfterMs} from '@fai-control-plane/domain';
 import {activateProjectContextSnapshot, addSourceArtifact, projectAgentDeliveryConfigured, readActiveProjectContext, readAgentRoutingPolicy,
+  createAgentAttemptStore,
   readProjectContextStatus,
   readProjectProcessPolicy, resolveReceiptBoundRoleRun, trackerSnapshotFreshness,
   executeAgentSubmissionTransaction, type Database} from './runtime.ts';
+
+describe('project-scoped active attempts', () => {
+  it('filters by project before applying the bounded limit', async () => {
+    const query = vi.fn(async () => ({rows: []}));
+    const store = createAgentAttemptStore({query} as unknown as Database,
+      '00000000-0000-4000-8000-000000000001');
+    await store.listActive(20);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('($2::uuid is null or a.project_id=$2)'),
+      [20, '00000000-0000-4000-8000-000000000001']);
+  });
+});
 
 describe('tracker snapshot freshness', () => {
   const observedAt = new Date('2026-08-23T10:00:00.000Z');
@@ -26,8 +38,12 @@ describe('tracker snapshot freshness', () => {
 describe('agent delivery readiness', () => {
   it('uses the authorized project DB projection without exposing the secret locator', async () => {
     const query = vi.fn().mockResolvedValue({rows: [{configured: true}]});
-    await expect(projectAgentDeliveryConfigured({query} as unknown as Database, 'actor', 'project')).resolves.toBe(true);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("s.purpose='agent_delivery'"), ['actor', 'project']);
+    await expect(projectAgentDeliveryConfigured({query} as unknown as Database, 'actor', 'project'))
+      .resolves.toBe(true);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("s.purpose='agent_delivery'"),
+      ['actor', 'project']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("a.kind='project_agent_profile_v1'"),
+      ['actor', 'project']);
   });
 
   it('fails closed when no canonical reference is visible', async () => {

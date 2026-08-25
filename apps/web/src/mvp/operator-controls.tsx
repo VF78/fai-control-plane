@@ -6,7 +6,7 @@ import type {ProjectContextStatusView} from '@fai-control-plane/db';
 import type {AgentExecutorCatalog, AgentRoutingPolicy} from '@fai-control-plane/domain';
 import {AsyncButton, CommandNoticeView, useAsyncCommand} from './async-command.tsx';
 
-type Result = {error?: string; status?: string; version?: string};
+type Result = {error?: string; status?: string; version?: string; projectId?:string; slug?:string; profile?:string|null};
 const post = async (path: string, body: Record<string, unknown>): Promise<Result> => {
   const response = await fetch(path, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)});
   const value = await response.json().catch(() => ({})) as Result;
@@ -37,6 +37,35 @@ export function SourceAddControl({projectId}: Readonly<{projectId: string}>) {
   const command = useAsyncCommand();
   const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); void command.run(() => post(`/api/projects/${projectId}/sources`, {kind: form.get('kind'), name: form.get('name'), mediaType: 'text/plain', contentText: form.get('contentText'), sourceUrl: empty(form.get('sourceUrl')), provenance: form.get('provenance')}), {success: 'Источник добавлен.'}); };
   return <details className="fcp-control"><summary>Добавить источник</summary><form onSubmit={submit} aria-busy={command.pending}><label>Название<input name="name" required maxLength={200} disabled={command.pending}/></label><label>Тип<input name="kind" defaultValue="operator_note" required maxLength={64} disabled={command.pending}/></label><label>Ссылка на источник <input name="sourceUrl" type="url" disabled={command.pending}/></label><label>Происхождение<input name="provenance" defaultValue="operator" required maxLength={500} disabled={command.pending}/></label><label>Содержание<textarea name="contentText" required maxLength={200000} disabled={command.pending}/></label><AsyncButton pending={command.pending} pendingLabel="Сохраняем…">Сохранить источник</AsyncButton></form><CommandNoticeView notice={command.notice}/></details>;
+}
+
+export function ProjectRegistrationControl() {
+  const command=useAsyncCommand();
+  const submit=(event:FormEvent<HTMLFormElement>)=>{event.preventDefault();const form=new FormData(event.currentTarget);
+    void command.run(()=>post('/api/projects',{name:form.get('name'),slug:form.get('slug'),projectUrl:form.get('projectUrl'),
+      repositoryUrl:form.get('repositoryUrl'),idempotencyKey:`project-register:${id()}`}),
+      {success:'Проект подключён. Теперь выберите его и активируйте ИИ агента.'});};
+  return <details className="fcp-control"><summary>Подключить проект</summary><form onSubmit={submit} aria-busy={command.pending}>
+    <label>Название<input name="name" required maxLength={200} disabled={command.pending}/></label>
+    <label>Короткое имя<input name="slug" required maxLength={100} pattern="[a-z0-9][a-z0-9-]+[a-z0-9]" placeholder="fai-control-plane" disabled={command.pending}/></label>
+    <label>Ссылка на GitHub Project<input name="projectUrl" type="url" required placeholder="https://github.com/users/VF78/projects/1" disabled={command.pending}/></label>
+    <label>Ссылка на репозиторий<input name="repositoryUrl" type="url" required placeholder="https://github.com/VF78/fai-control-plane" disabled={command.pending}/></label>
+    <small>Секреты не вводятся: используются защищённые подключения рабочего пространства.</small>
+    <AsyncButton pending={command.pending} pendingLabel="Подключаем…">Подключить</AsyncButton>
+  </form><CommandNoticeView notice={command.notice}/></details>;
+}
+
+export function ProjectAgentActivationControl({projectId,status,profile}:Readonly<{projectId:string;
+  status:'not_configured'|'ready';profile:string|null}>) {
+  const command=useAsyncCommand(); const activate=()=>void command.run(()=>post(`/api/projects/${projectId}/agent-profile`,
+    {idempotencyKey:`agent-profile:${id()}`}),{success:(result)=>result.status==='ready'?'ИИ агент готов к работе.':'Настройка не подтверждена.',
+      error:(error)=>error instanceof Error&&error.message==='agent_profile_probe_failed'
+        ?'Профиль создан, но Hermes ещё не подтвердил готовность. Повторите активацию после запуска gateway.'
+        :'Не удалось активировать ИИ агента. Существующая конфигурация не изменена.'});
+  return <div className="fcp-agent-activation"><div><strong>{status==='ready'?'ИИ агент готов':'ИИ агент не настроен'}</strong>
+    <small>{status==='ready'?`Постоянный профиль ${profile??''} активен для этого проекта.`:'Будет создан отдельный постоянный Hermes-профиль из общего шаблона.'}</small></div>
+    {status==='ready'?null:<AsyncButton type="button" pending={command.pending} pendingLabel="Настраиваем…" onClick={activate}>Активировать ИИ агента</AsyncButton>}
+    <CommandNoticeView notice={command.notice}/></div>;
 }
 
 export function AgentRoutingControl({projectId, canManage, policy, executorCatalog}: Readonly<{

@@ -35,10 +35,14 @@ describe('worker readiness', () => {
     expect(source.indexOf('await reconcileActiveAgentAttempts')).toBeGreaterThan(-1);
     const reconcile = source.split('async reconcile()', 2)[1]!;
     expect(reconcile).not.toContain('reconcileActiveAgentAttempts');
-    expect(source).toContain('tracker: trackerMutation');
-    expect(source).toContain('readActiveProjectProcessPolicy(database, projectId)');
-    expect(source).toContain("env('BOOTSTRAP_REPOSITORY_ID')");
-    expect(source).not.toContain('GITHUB_REPOSITORY_ID');
+    expect(source).toContain('tracker: runtime.trackerMutation');
+    expect(source).toContain('readActiveProjectProcessPolicy(database, project.projectId)');
+    expect(source).toContain('listWorkerProjectBindings(database, workspaceId)');
+    expect(source).not.toContain("env('FCP_PROJECT_ID')");
+    expect(source).not.toContain("env('GITHUB_BINDING_ID')");
+    expect(source).not.toContain("env('HERMES_ROLE_REQUEST_URL')");
+    expect(source).not.toContain("env('HERMES_TRACKER_OWNER_OPTION_ID')");
+    expect(source).not.toContain("env('STATUS_DONE_ID')");
     expect(source).not.toContain("item.statusOptionName === 'QA'");
   });
 });

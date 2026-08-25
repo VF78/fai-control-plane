@@ -147,6 +147,15 @@ describe('MVP Hermes adapter', () => {
       secrets: {resolve: async () => ({value: 'bearer'})}})).toThrow('agent_endpoint_invalid');
   });
 
+  it('allows a named profile only on an explicitly trusted private HTTP gateway', () => {
+    expect(() => createHermesDeliveryAdapter({endpoint: 'http://hermes-gateway:8642/p/project-control/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, allowPrivateHttp: true})).not.toThrow();
+    expect(() => createHermesDeliveryAdapter({endpoint: 'http://agent.example.test/p/project-control/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, allowPrivateHttp: true})).toThrow('agent_endpoint_invalid');
+  });
+
   it('rejects malformed provider evidence', async () => {
     const adapter = createHermesDeliveryAdapter({endpoint: 'https://agent.example.test/v1/runs',
       credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},

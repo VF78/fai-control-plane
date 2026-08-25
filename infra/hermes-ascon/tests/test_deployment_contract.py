@@ -16,7 +16,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("x-logging: &bounded-logging", compose)
         self.assertIn('max-size: "10m"', compose)
         self.assertIn('max-file: "3"', compose)
-        self.assertEqual(compose.count("logging: *bounded-logging"), 2)
+        self.assertEqual(compose.count("logging: *bounded-logging"), 3)
         stage_action = script.split("  stage)", 1)[1].split("    ;;", 1)[0]
         self.assertIn("prune_superseded_project_images", stage_action)
         self.assertIn(
@@ -31,6 +31,7 @@ class DeploymentContractTest(unittest.TestCase):
             HERMES / "config.yaml",
             HERMES / "profiles/internal/config.yaml",
             HERMES / "profiles/bitrix-client/config.yaml",
+            HERMES / "profile-template/config.yaml",
         )
         for config in configs:
             lines = config.read_text().splitlines()
@@ -72,7 +73,7 @@ class DeploymentContractTest(unittest.TestCase):
     def test_stage_prepares_uid_boundary_and_fails_closed(self):
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
         readable_block = script.split("readonly -a readable_files=(", 1)[1].split(")", 1)[0]
-        self.assertEqual(readable_block.count('"$deploy_root/'), 11)
+        self.assertEqual(readable_block.count('"$deploy_root/'), 12)
         self.assertIn('agent-executor-result.schema.json"', readable_block)
         self.assertIn('chmod 0644 "${readable_files[@]}"', script)
         self.assertIn('chmod 0755 "${readable_directories[@]}"', script)
@@ -82,7 +83,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("run --rm --no-deps --user", script)
         self.assertIn("local deadline=$((SECONDS + 180))", script)
         self.assertLess(
-            script.index("wait_for_gateway_health || fail"),
+            script.index("wait_for_service_health gateway || fail"),
             script.index("https://hermes-ascon.f-ai.studio/health"),
         )
         cleanup = script.split("stage_exit_cleanup()", 1)[1].split("trap stage_exit_cleanup", 1)[0]
@@ -104,7 +105,11 @@ class DeploymentContractTest(unittest.TestCase):
             stage_action,
         )
         self.assertLess(stage_action.index('"${compose[@]}" down'), stage_action.index('rm -f "$gateway_pid_file"'))
-        self.assertLess(stage_action.index('rm -f "$gateway_pid_file"'), stage_action.index('"${compose[@]}" up -d gateway'))
+        self.assertLess(
+            stage_action.index('rm -f "$gateway_pid_file"'),
+            stage_action.index('"${compose[@]}" up -d gateway dashboard'),
+        )
+        self.assertIn("wait_for_service_health dashboard", stage_action)
         self.assertLess(
             stage_action.index("https://hermes-ascon.f-ai.studio/v1/capabilities"),
             stage_action.index("write_readiness"),
@@ -248,6 +253,59 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertNotIn('FCP_GITHUB_APP', compose + script)
         self.assertNotIn('EXECUTOR_ATTESTATION', compose + script)
         self.assertNotIn('github-repository-token', codex)
+
+    def test_private_management_and_direct_devops_runtime_are_bounded(self):
+        dockerfile = (HERMES / "Dockerfile").read_text()
+        compose = (HERMES / "compose.yaml").read_text()
+        environment = (HERMES / "production.env.example").read_text()
+        script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
+        dashboard = compose.split("  dashboard:\n", 1)[1].split("\n  codex-cli:", 1)[0]
+        gateway = compose.split("  gateway:\n", 1)[1].split("\n  dashboard:", 1)[0]
+
+        self.assertIn("ARG YC_VERSION=1.22.0", dockerfile)
+        self.assertIn("openssh-client", dockerfile)
+        self.assertIn('yc version | grep -Eq "^Yandex Cloud CLI ${YC_VERSION}', dockerfile)
+        self.assertIn("HERMES_DEVOPS_SSH_IDENTITY_FILE: /opt/fai-devops/ssh/identity", gateway)
+        self.assertIn("YC_CONFIG_DIR: /opt/fai-devops/yandex-cloud", gateway)
+        self.assertIn("${HERMES_DEVOPS_SSH_IDENTITY_FILE:?required}", gateway)
+        self.assertNotIn("${HERMES_DEVOPS_SSH_IDENTITY_HOST_FILE", gateway)
+        self.assertIn("external: true", compose)
+        self.assertIn("name: fai-hermes-management", compose)
+        self.assertNotIn("ports:", dashboard)
+        self.assertIn("/opt/fai/management-entrypoint.sh", dashboard)
+        self.assertIn("${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro", dashboard)
+
+        for name in (
+            "HERMES_DASHBOARD_USERNAME",
+            "HERMES_DASHBOARD_PASSWORD",
+            "HERMES_DASHBOARD_SIGNING_SECRET",
+            "HERMES_DEVOPS_SSH_IDENTITY",
+            "HERMES_DEVOPS_SSH_KNOWN_HOSTS",
+            "HERMES_DEVOPS_YC_CONFIG",
+        ):
+            self.assertIn(f"{name}_HOST_FILE=", environment)
+            self.assertIn(f"{name}_FILE=/var/lib/fai-hermes-ascon/runtime-secrets/", environment)
+
+        self.assertIn("ensure_management_network", script)
+        self.assertIn("docker network create --driver bridge --internal", script)
+        self.assertIn("ssh-keygen -y -f", script)
+        self.assertIn("ssh -G", script)
+        self.assertIn("gateway --exec yc config list", script)
+
+        application_compose = (ROOT / "infra/production/compose.yaml").read_text()
+        application_environment = (ROOT / "infra/production/production.env.example").read_text()
+        application_script = (ROOT / "scripts/deploy-prod.sh").read_text()
+        web = application_compose.split("  web:\n", 1)[1].split("\n  worker:", 1)[0]
+        self.assertIn("- hermes-management", web)
+        self.assertIn("source: hermes-management-username", web)
+        self.assertIn("source: hermes-management-password", web)
+        self.assertIn("name: fai-hermes-management", application_compose)
+        self.assertIn("external: true", application_compose)
+        self.assertIn("HERMES_MANAGEMENT_URL=http://hermes-dashboard:9119", application_environment)
+        self.assertIn("HERMES_GATEWAY_INTERNAL_BASE_URL=http://hermes-gateway:8642", application_environment)
+        self.assertIn("HERMES_PROFILE_TEMPLATE=fai-project-template", application_environment)
+        self.assertIn("docker network inspect", application_script)
+        self.assertNotIn("docker network create", application_script)
 
 
 if __name__ == "__main__":

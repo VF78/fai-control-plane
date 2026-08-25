@@ -96,9 +96,14 @@ services:
         target: source-hermes-client-action-token
       - source: hermes-token
         target: source-hermes-token
+      - source: hermes-management-username
+        target: hermes-management-username
+      - source: hermes-management-password
+        target: hermes-management-password
     networks:
       - database
       - egress
+      - hermes-management
     ports:
       - "127.0.0.1:13010:3000"
     volumes:
@@ -153,6 +158,9 @@ networks:
   database:
     internal: true
   egress:
+  hermes-management:
+    name: fai-hermes-management
+    external: true
 
 volumes:
   postgres-data:
@@ -175,3 +183,7 @@ secrets:
     file: ${HERMES_INTERNAL_ACTION_TOKEN_HOST_FILE:?required}
   hermes-client-action-token:
     file: ${HERMES_CLIENT_ACTION_TOKEN_HOST_FILE:?required}
+  hermes-management-username:
+    file: ${HERMES_DASHBOARD_USERNAME_HOST_FILE:?required}
+  hermes-management-password:
+    file: ${HERMES_DASHBOARD_PASSWORD_HOST_FILE:?required}

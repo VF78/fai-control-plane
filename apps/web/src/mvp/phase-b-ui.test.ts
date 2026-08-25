@@ -24,7 +24,7 @@ describe('Phase B operator surfaces', () => {
     expect(view).not.toContain('ApprovalControl');
   });
 
-  it('keeps approvals as a selected-task command and Settings as evidence only', async () => {
+  it('keeps approvals selected-task-only and exposes explicit project registration and agent activation', async () => {
     const page = await source('../../app/page.tsx');
     const view = await source('phase-b-ui.tsx');
     expect(page).toContain("view === 'tasks'");
@@ -36,5 +36,7 @@ describe('Phase B operator surfaces', () => {
     expect(page).toContain('projectAgentDeliveryConfigured(database, session.actorId, selected.id)');
     expect(page).toContain('integrationConfig(process.env, agentDeliveryConfigured)');
     expect(view).not.toContain('integrationConfig(');
+    expect(view).toContain('ProjectRegistrationControl');
+    expect(view).toContain('ProjectAgentActivationControl');
   });
 });

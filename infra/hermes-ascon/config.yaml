@@ -39,9 +39,8 @@ plugins:
 
 gateway:
   multiplex_profiles: true
-  multiplex_profile_allowlist:
-    - internal
-    - bitrix-client
+  # Hermes resolves named prefixed API profiles on every request. A profile
+  # remains inaccessible until its own API_SERVER_KEY is configured.
   profile_routes:
     - name: ascon-internal
       platform: telegram

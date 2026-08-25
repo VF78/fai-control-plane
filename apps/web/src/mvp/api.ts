@@ -11,8 +11,11 @@ import {
   listProjects,
   onboardProjectMember,
   resolveAgentSubmissionBinding,
+  resolveProjectRuntimeByRepository,
   readAgentRoutingPolicy,
   readProjectProcessPolicy,
+  readProjectAgentProfile,
+  readProjectTrackerCapabilities,
   readActiveProjectContext,
   refreshProjectContext,
   saveAgentRoutingPolicy,
@@ -25,6 +28,7 @@ import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeM
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
+import {activateProjectAgentProfile, resolveAndRegisterProject} from './project-onboarding.ts';
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('media_type_invalid');
@@ -50,18 +54,40 @@ export const effectiveAgentRouting = (routing: Awaited<ReturnType<typeof readAge
   policy: defaultAgentRoutingPolicy,
   version: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex')
 };
+const agentEndpoint = async (
+  database: ReturnType<typeof getDatabase>,
+  actorId: string,
+  projectId: string
+): Promise<string | undefined> => {
+  const profile = await readProjectAgentProfile(database, actorId, projectId);
+  if (profile.status === 'ready' && profile.endpointPath !== null) {
+    const base = process.env.HERMES_GATEWAY_INTERNAL_BASE_URL;
+    if (base === undefined) throw new Error('agent_provider_unavailable');
+    return new URL(profile.endpointPath, base).toString();
+  }
+  return undefined;
+};
+const privateAgentEndpoint = (endpoint: string): boolean => {
+  const base = process.env.HERMES_GATEWAY_INTERNAL_BASE_URL;
+  if (base === undefined) return false;
+  try {
+    const gateway = new URL(base);
+    const target = new URL(endpoint);
+    return gateway.protocol === 'http:' && gateway.origin === target.origin &&
+      /^\/p\/[a-z0-9][a-z0-9-]{1,98}[a-z0-9]\/v1\/runs$/.test(target.pathname);
+  } catch {
+    return false;
+  }
+};
 const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorId: string, projectId: string, delivery: AgentDeliveryPort) => {
   const context = await resolveAgentSubmissionBinding(database, actorId, projectId);
   if (context === null) throw new Error('task_executor_denied');
   if (!['project_owner', 'operator'].includes(context.requesterRole)) throw new Error('task_executor_denied');
-  if (context.provider !== 'github') throw new Error('tracker_provider_unsupported');
-  const projectUrl = new URL(context.projectUrl); const repositoryUrl = new URL(context.repositoryUrl);
-  const projectMatch = /^\/users\/([^/]+)\/projects\/(\d+)$/.exec(projectUrl.pathname);
-  const repositoryMatch = /^\/([^/]+)\/([^/]+)\/?$/.exec(repositoryUrl.pathname);
-  if (projectUrl.origin !== 'https://github.com' || repositoryUrl.origin !== 'https://github.com' ||
-    projectMatch === null || repositoryMatch === null || projectMatch[1] !== repositoryMatch[1]) throw new Error('github_binding_invalid');
-  const binding = {id: context.bindingId, owner: projectMatch[1]!, repository: repositoryMatch[2]!,
-    projectId: context.projectId, projectNumber: Number(projectMatch[2]), projectUrl: context.projectUrl,
+  const coordinates = githubRuntimeCoordinates(context);
+  if (coordinates === null) throw new Error(context.provider === 'github'
+    ? 'github_binding_invalid' : 'tracker_provider_unsupported');
+  const binding = {id: context.bindingId, ...coordinates,
+    projectId: context.projectId, projectUrl: context.projectUrl,
     credentialRef: context.trackerCredentialRef};
   const tracker = createGitHubTrackerMutationAdapter({binding,
     credentialRef: {...context.trackerCredentialRef, purpose: 'tracker_mutate'}, secrets: secretResolver});
@@ -71,10 +97,14 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
   const stores = createStores(database, context.workspaceId);
   const routing = effectiveAgentRouting(await readAgentRoutingPolicy(database, actorId, projectId));
   const processPolicy = await readProjectProcessPolicy(database, actorId, projectId);
-  if (processPolicy === null) throw new Error('project_process_policy_unavailable');
-  return {context, tracker, ports: {resolveContext: async () => ({workspaceId: context.workspaceId, projectId: context.projectId,
+  const trackerCapabilities = await readProjectTrackerCapabilities(database, actorId, projectId);
+  if (processPolicy === null || trackerCapabilities === null) {
+    throw new Error('project_process_policy_unavailable');
+  }
+  return {context, tracker, trackerRead: read, ports: {resolveContext: async () => ({workspaceId: context.workspaceId, projectId: context.projectId,
       requesterRole: context.requesterRole, bindingId: context.bindingId, repository: {id: context.repositoryId, url: context.repositoryUrl},
-      agentTrackerOwnerOptionId: process.env.HERMES_TRACKER_OWNER_OPTION_ID ?? '', doneStatusOptionId: process.env.STATUS_DONE_ID ?? '',
+      agentTrackerOwnerOptionId: trackerCapabilities.agentOwnerOptionId,
+      doneStatusOptionId: trackerCapabilities.doneStatusOptionId,
       routingPolicyVersion: routing.version, routingPolicy: routing.policy,
       processPolicyVersion: processPolicy.version, processPolicy: processPolicy.policy,
       executorCatalog: hermesExecutorCatalog()}),
@@ -95,22 +125,44 @@ export const startGitHubProcess = async (database: ReturnType<typeof getDatabase
     Readonly<{kind: 'create'; title: string; statement: string}>;
   sourceReference: string; idempotencyKey: string;
 }>) => {
-  const endpoint = process.env.HERMES_ROLE_REQUEST_URL;
+  const endpoint = await agentEndpoint(database,input.actorId,input.projectId);
   const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, input.actorId, input.projectId);
   if (endpoint === undefined || binding?.agentCredentialRef == null) throw new Error('agent_provider_unavailable');
   const delivery = createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048),
-    credentialRef: binding.agentCredentialRef, secrets: secretResolver});
+    credentialRef: binding.agentCredentialRef, secrets: secretResolver,
+    allowPrivateHttp: privateAgentEndpoint(endpoint)});
   const {ports} = await githubAssignment(database, input.actorId, input.projectId, delivery);
   return startProcess(input, ports);
 };
 
 export const projects = async (request: Request): Promise<Response> => {
   try {
-    if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET'}});
     const database = getDatabase();
     const session = await requireSession();
+    if (request.method === 'POST') {
+      requireCsrf(request); const body=await json(request); const slug=string(body.slug,100);
+      if(!/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(slug)) throw new Error('body_invalid');
+      const result=await resolveAndRegisterProject(database,{workspaceId:session.workspaceId,actorId:session.actorId,
+        name:string(body.name,200),slug,projectUrl:string(body.projectUrl,2_048),repositoryUrl:string(body.repositoryUrl,2_048),
+        idempotencyKey:string(body.idempotencyKey,128)});
+      await refreshProjectContext(database,{workspaceId:session.workspaceId,projectId:result.projectId,actorId:session.actorId,
+        idempotencyKey:`project-context:register:${result.projectId}`,occurredAt:new Date().toISOString()});
+      return Response.json(result,{status:result.created?201:200});
+    }
+    if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET, POST'}});
     return Response.json({projects: await listProjects(database, session.actorId)});
   } catch (error) { return jsonError(error); }
+};
+
+export const projectAgentProfile = async (request:Request,projectId:string):Promise<Response>=>{
+  try { const database=getDatabase(); const session=await requireSession();
+    if(request.method==='GET') return Response.json(await readProjectAgentProfile(database,session.actorId,projectId),
+      {headers:{'cache-control':'no-store'}});
+    if(request.method!=='POST') return new Response(null,{status:405,headers:{allow:'GET, POST'}});
+    requireCsrf(request); const body=await json(request);
+    return Response.json(await activateProjectAgentProfile(database,{workspaceId:session.workspaceId,actorId:session.actorId,
+      projectId,idempotencyKey:string(body.idempotencyKey,128)}),{headers:{'cache-control':'no-store'}});
+  } catch(error){return jsonError(error);}
 };
 
 export const onboard = async (request: Request): Promise<Response> => {
@@ -217,12 +269,9 @@ export const approval = async (request: Request, approvalId: string): Promise<Re
     const kind = string(body.kind, 32) as ApprovalKind;
     const persistence = createApprovalPersistence(database);
     const projectId = string(body.projectId);
-    const owner = string(process.env.GITHUB_OWNER, 100); const repository = string(process.env.GITHUB_REPOSITORY, 100);
-    const projectNumber = Number(string(process.env.GITHUB_PROJECT_NUMBER, 16));
-    const bindingId = string(process.env.GITHUB_BINDING_ID);
-    const tracker = createGitHubTrackerReadAdapter({binding: {id: bindingId, owner, repository, projectId,
-      projectNumber, projectUrl: `https://github.com/users/${owner}/projects/${projectNumber}`,
-      credentialRef: envSecret('GITHUB_PROJECTS_TOKEN', 'tracker_read')}, secrets: secretResolver});
+    const assignment = await githubAssignment(database, session.actorId, projectId, unavailableDelivery);
+    const tracker = assignment.trackerRead;
+    const bindingId = assignment.context.bindingId;
     const stores = createStores(database, session.workspaceId);
     const result = await decideApproval({workspaceId: session.workspaceId, request: {
       id: approvalId, projectId, kind,
@@ -267,11 +316,11 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     const database = getDatabase(); const session = await requireSession(); requireCsrf(request);
     const body = await json(request); const projectId = string(body.projectId);
     const action = body.action === undefined ? 'assign' : string(body.action, 32);
-    const endpoint = process.env.HERMES_ROLE_REQUEST_URL;
+    const endpoint = await agentEndpoint(database,session.actorId,projectId);
     const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, session.actorId, projectId);
     const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery
       : createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048), credentialRef: binding.agentCredentialRef,
-        secrets: secretResolver});
+        secrets: secretResolver, allowPrivateHttp: privateAgentEndpoint(endpoint)});
     if (action !== 'assign') throw new Error('body_invalid');
     const executor = body.executor;
     if (executor === null || typeof executor !== 'object' || Array.isArray(executor)) throw new Error('body_invalid');
@@ -355,13 +404,38 @@ export const pushChangedPaths = (body: Uint8Array, expected: Readonly<{repositor
   }
   return {after: after.toLowerCase(), paths: [...paths].sort(), removed: [...removed].sort()};
 };
-const refreshGitHubContextSources = async (database: ReturnType<typeof getDatabase>, projectId: string,
-  after: string, paths: readonly string[]): Promise<void> => {
-  const owner = string(process.env.GITHUB_OWNER, 100); const repository = string(process.env.GITHUB_REPOSITORY, 100);
-  const token = (await secretResolver.resolve(envSecret('GITHUB_PROJECTS_TOKEN', 'tracker_read'), 'tracker_read')).value;
+export const githubWebhookRepository = (body: Uint8Array): string | null => {
+  let payload: unknown;
+  try { payload = JSON.parse(Buffer.from(body).toString('utf8')); } catch { return null; }
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const fullName = (payload as {repository?: {full_name?: unknown}}).repository?.full_name;
+  return typeof fullName === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fullName) ? fullName : null;
+};
+export const githubRuntimeCoordinates = (binding: Readonly<{provider: string; projectUrl: string;
+  repositoryUrl: string}>): Readonly<{owner: string; repository: string; projectNumber: number}> | null => {
+  if (binding.provider !== 'github') return null;
+  let projectUrl: URL; let repositoryUrl: URL;
+  try {
+    projectUrl = new URL(binding.projectUrl); repositoryUrl = new URL(binding.repositoryUrl);
+  } catch {
+    return null;
+  }
+  const project = /^\/users\/([^/]+)\/projects\/(\d+)\/?$/.exec(projectUrl.pathname);
+  const repository = /^\/([^/]+)\/([^/]+)\/?$/.exec(repositoryUrl.pathname);
+  if (projectUrl.origin !== 'https://github.com' || repositoryUrl.origin !== 'https://github.com' ||
+    project === null || repository === null || project[1]!.toLowerCase() !== repository[1]!.toLowerCase()) return null;
+  const projectNumber = Number(project[2]);
+  return Number.isSafeInteger(projectNumber) && projectNumber > 0
+    ? {owner: project[1]!, repository: repository[2]!, projectNumber} : null;
+};
+export const refreshGitHubContextSources = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
+  projectId: string; actorId: string; owner: string; repository: string; credentialRef: OpaqueSecretRef;
+  after: string; paths: readonly string[];
+}>): Promise<void> => {
+  const token = (await secretResolver.resolve(input.credentialRef, 'tracker_read')).value;
   if (token.length === 0 || token.length > 65_536 || token.includes('\0')) throw new Error('github_credential_invalid');
-  for (const path of paths) {
-    const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${after}`, {
+  for (const path of input.paths) {
+    const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${input.after}`, {
       headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28'},
       signal: AbortSignal.timeout(15_000)
     });
@@ -373,23 +447,25 @@ const refreshGitHubContextSources = async (database: ReturnType<typeof getDataba
     const key = watchedContextPaths.get(path);
     if (key === undefined) throw new Error('github_context_read_invalid');
     const serialized = JSON.stringify({contract:'fai.project-context-source.v1', key, content});
-    await addSourceArtifact(database, {projectId, actorId: string(process.env.BOOTSTRAP_OWNER_ACTOR_ID),
+    await addSourceArtifact(database, {projectId: input.projectId, actorId: input.actorId,
       kind: 'project_context_source_v1', name: key, mediaType: 'application/json', contentText: serialized,
-      sha256: createHash('sha256').update(serialized).digest('hex'), sourceUrl: `https://github.com/${owner}/${repository}/blob/${after}/${path}`,
-      provenance: `repo-file:${path}@${after}`});
+      sha256: createHash('sha256').update(serialized).digest('hex'),
+      sourceUrl: `https://github.com/${input.owner}/${input.repository}/blob/${input.after}/${path}`,
+      provenance: `repo-file:${path}@${input.after}`});
   }
 };
 
-const invalidateRemovedGitHubContextSources = async (database: ReturnType<typeof getDatabase>, projectId: string,
-  after: string, paths: readonly string[]): Promise<void> => {
-  for (const path of paths) {
+const invalidateRemovedGitHubContextSources = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
+  projectId: string; actorId: string; after: string; paths: readonly string[];
+}>): Promise<void> => {
+  for (const path of input.paths) {
     const key = watchedContextPaths.get(path); if (key === undefined) continue;
     const serialized = JSON.stringify({contract:'fai.project-context-source.v1',key,
-      content:`Source removed from the configured repository at ${after}.`});
-    await addSourceArtifact(database,{projectId,actorId:string(process.env.BOOTSTRAP_OWNER_ACTOR_ID),
+      content:`Source removed from the configured repository at ${input.after}.`});
+    await addSourceArtifact(database,{projectId:input.projectId,actorId:input.actorId,
       kind:'project_context_source_v1',name:key,mediaType:'application/json',contentText:serialized,
       sha256:createHash('sha256').update(serialized).digest('hex'),sourceUrl:null,
-      provenance:`repo-file-removed:${path}@${after}`});
+      provenance:`repo-file-removed:${path}@${input.after}`});
   }
 };
 
@@ -403,25 +479,34 @@ export const githubWebhook = async (request: Request): Promise<Response> => {
       'x-github-event': request.headers.get('x-github-event') ?? undefined
     }, body, secretRef: envSecret('GITHUB_WEBHOOK_SECRET', 'tracker_webhook_verify'), secrets: secretResolver});
     if (verified === null) throw new Error('webhook_denied');
-    const projectId = string(process.env.FCP_PROJECT_ID);
-    const result = await appendIncomingEvent(database, {projectId, provider: 'github',
+    const fullName = githubWebhookRepository(body);
+    if (fullName === null) throw new Error('webhook_denied');
+    const runtime = await resolveProjectRuntimeByRepository(database, string(process.env.FCP_WORKSPACE_ID),
+      `https://github.com/${fullName}`);
+    const coordinates = runtime === null ? null : githubRuntimeCoordinates(runtime);
+    if (runtime === null || coordinates === null) throw new Error('webhook_denied');
+    const result = await appendIncomingEvent(database, {projectId: runtime.projectId, provider: 'github',
       providerDeliveryId: verified.deliveryId, eventType: verified.eventType, payloadHash: verified.payloadHash,
       receivedAt: new Date().toISOString()});
     const push = verified.eventType === 'push' ? pushChangedPaths(body,{
-      repository:`${string(process.env.GITHUB_OWNER,100)}/${string(process.env.GITHUB_REPOSITORY,100)}`,
-      branch:string(process.env.GITHUB_DEFAULT_BRANCH,100)
+      repository:`${coordinates.owner}/${coordinates.repository}`,
+      branch: runtime.trackerCapabilities.defaultBranch
     }) : null;
     if (push !== null && (push.paths.length > 0 || push.removed.length > 0)) {
       if (result === 'duplicate') {
         const processed = await database.query(`select 1 from command_receipts
           where project_id=$1 and idempotency_key=$2 and command_type='project.context.activate'`,
-        [projectId,`project-context:webhook:${verified.deliveryId}`]);
+        [runtime.projectId,`project-context:webhook:${verified.deliveryId}`]);
         if (processed.rowCount === 1) return Response.json({status:'duplicate'}, {status:200});
       }
-      await refreshGitHubContextSources(database, projectId, push.after, push.paths);
-      await invalidateRemovedGitHubContextSources(database,projectId,push.after,push.removed);
-      if (push.removed.length === 0) await refreshProjectContext(database, {workspaceId: string(process.env.FCP_WORKSPACE_ID), projectId,
-          actorId: string(process.env.BOOTSTRAP_OWNER_ACTOR_ID), idempotencyKey: `project-context:webhook:${verified.deliveryId}`,
+      await refreshGitHubContextSources(database, {projectId: runtime.projectId, actorId: runtime.ownerActorId,
+        owner: coordinates.owner, repository: coordinates.repository, credentialRef: runtime.trackerCredentialRef,
+        after: push.after, paths: push.paths});
+      await invalidateRemovedGitHubContextSources(database,{projectId:runtime.projectId,actorId:runtime.ownerActorId,
+        after:push.after,paths:push.removed});
+      if (push.removed.length === 0) await refreshProjectContext(database, {workspaceId: runtime.workspaceId,
+          projectId: runtime.projectId, actorId: runtime.ownerActorId,
+          idempotencyKey: `project-context:webhook:${verified.deliveryId}`,
           occurredAt: new Date().toISOString()});
     }
     return Response.json({status: result}, {status: result === 'recorded' ? 202 : 200});
