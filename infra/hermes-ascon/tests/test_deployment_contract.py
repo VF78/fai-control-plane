@@ -215,11 +215,13 @@ class DeploymentContractTest(unittest.TestCase):
         gateway = compose.split("  gateway:\n", 1)[1].split("\n  repository-broker:", 1)[0]
         codex = compose.split("  codex-cli:\n", 1)[1]
         self.assertIn("profiles: [repository-work]", broker)
+        self.assertIn("FCP_REPOSITORY_AUTHORIZATION_URL:?required", broker)
         self.assertIn("FCP_REPOSITORY_BROKER_RELEASE:-disabled", broker)
         self.assertIn("FCP_GITHUB_APP_ID:-0", broker)
         self.assertIn("FCP_GITHUB_APP_INSTALLATION_ID:-0", broker)
         self.assertIn("FCP_GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null", broker)
         self.assertNotIn("FCP_GITHUB_APP_ID:?required", broker)
+        self.assertNotIn("disabled.invalid", broker)
         dockerfile = (ROOT / "infra/repository-broker/Dockerfile").read_text()
         self.assertIn("repository-broker-cli.js", dockerfile)
         self.assertIn("node:24-bookworm-slim@sha256:", dockerfile)
@@ -237,6 +239,12 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertNotIn("github-app-private-key", codex)
         self.assertNotIn("FCP_GITHUB_APP", codex)
         self.assertNotIn("/var/lib/fai-repository-broker-ascon", codex)
+
+        script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
+        self.assertIn("https://app.f-ai.studio/api/hermes/repository-authorizations", script)
+        self.assertIn("probe_repository_authorization", script)
+        activate = script.split("activate_trusted_execution() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("probe_repository_authorization", activate)
 
     def test_executor_broker_is_the_only_cli_credential_and_signing_boundary(self):
         compose = (HERMES / "compose.yaml").read_text()
