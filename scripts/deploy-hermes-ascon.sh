@@ -96,6 +96,10 @@ done
 readonly hermes_model=$(sed -n 's/^HERMES_MODEL=//p' "$environment_file")
 [[ "$hermes_model" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
   fail 'Hermes model is invalid'
+readonly repository_authorization_url=$(sed -n 's/^FCP_REPOSITORY_AUTHORIZATION_URL=//p' "$environment_file")
+[[ "$repository_authorization_url" == \
+  https://app.f-ai.studio/api/hermes/repository-authorizations ]] ||
+  fail 'repository authorization endpoint is missing or invalid'
 
 [[ $(sha256sum "$environment_file" | cut -d ' ' -f 1) == "$HERMES_APPROVED_CONFIG_SHA256" ]] ||
   fail 'production environment does not match approved digest'
@@ -318,6 +322,16 @@ wait_for_service_health() {
   return 1
 }
 
+probe_repository_authorization() {
+  local bridge_token status
+  bridge_token=$(tr -d '\n' < "$internal_bridge_token")
+  status=$(printf 'header = "Authorization: Bearer %s"\n' "$bridge_token" | \
+    curl -sS --max-time 15 --config - --output /dev/null --write-out '%{http_code}' \
+      --header 'Content-Type: application/json' --data '{}' "$repository_authorization_url") ||
+    fail 'repository authorization endpoint probe failed'
+  [[ "$status" == 400 ]] || fail 'repository authorization endpoint did not reject the bounded probe'
+}
+
 activate_trusted_execution() {
   local app_id installation_id app_key executor_key release public_temporary verified_at
   local broker_image_id executor_image_id public_sha payload evidence_sha256 temporary
@@ -359,6 +373,7 @@ activate_trusted_execution() {
   "${compose[@]}" --profile repository-work up -d repository-broker executor-broker
   wait_for_service_health repository-broker || fail 'repository broker did not become healthy'
   wait_for_service_health executor-broker || fail 'executor broker did not become healthy'
+  probe_repository_authorization
   broker_image_id=$(docker image inspect --format '{{.Id}}' "fai-repository-broker:$release") ||
     fail 'repository broker image is unavailable'
   executor_image_id=$(docker image inspect --format '{{.Id}}' "$derived_image") ||

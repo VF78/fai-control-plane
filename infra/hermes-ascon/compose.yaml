@@ -72,7 +72,7 @@ services:
       dockerfile: infra/repository-broker/Dockerfile
     user: "10000:10000"
     environment:
-      FCP_REPOSITORY_AUTHORIZATION_URL: ${FCP_REPOSITORY_AUTHORIZATION_URL:-https://disabled.invalid/api/hermes/repository-authorizations}
+      FCP_REPOSITORY_AUTHORIZATION_URL: ${FCP_REPOSITORY_AUTHORIZATION_URL:?required}
       FCP_REPOSITORY_BRIDGE_TOKEN_FILE: /run/secrets/internal-bridge-token
       FCP_GITHUB_APP_ID: ${FCP_GITHUB_APP_ID:-0}
       FCP_GITHUB_APP_INSTALLATION_ID: ${FCP_GITHUB_APP_INSTALLATION_ID:-0}
