@@ -20,7 +20,7 @@ platform_toolsets:
     - no_mcp
 
 agent:
-  max_turns: 12
+  max_turns: 4
 
 toolsets:
   - file

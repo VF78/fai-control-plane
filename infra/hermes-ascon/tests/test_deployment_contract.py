@@ -44,7 +44,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("    - no_mcp", api_tools)
         self.assertNotIn("fai_internal", api_tools)
         self.assertNotIn("skills", api_tools)
-        self.assertIn("agent:\n  max_turns: 12\n", config)
+        self.assertIn("agent:\n  max_turns: 4\n", config)
 
     def test_bridge_mounts_use_isolated_runtime_copies(self):
         environment_file = HERMES / "production.env.example"

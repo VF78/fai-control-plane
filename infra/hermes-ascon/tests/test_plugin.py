@@ -103,11 +103,13 @@ class PluginTest(unittest.TestCase):
             session_id="browser:" + "a" * 64, platform="api_server"
         )
         protocol = result["context"]
-        self.assertIn("exactly one non-interactive Codex invocation", protocol)
-        self.assertIn("-C /opt/data/work/project", protocol)
+        self.assertIn("exactly one non-interactive codex exec", protocol)
+        self.assertIn("fresh detached worktree", protocol)
+        self.assertIn("/opt/data/work/runs/<64-hex-correlation-id>", protocol)
         self.assertIn("--sandbox workspace-write", protocol)
         self.assertIn("--output-schema /opt/fai/agent-executor-result.schema.json", protocol)
-        self.assertIn("Do not reconstruct", protocol)
+        self.assertIn("Do not make a second gh query", protocol)
+        self.assertIn("runs only missing acceptance/risk checks", protocol)
 
     def test_non_role_api_session_gets_no_project_protocol(self):
         context = Context()

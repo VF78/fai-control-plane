@@ -9,8 +9,8 @@ export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa') 
   ? {constraints: [
     'Work only on the referenced GitHub Project item and repository.',
     'Do not merge, release, deploy, or access production.',
-    'Use the native terminal in /opt/data/work/project. Clone or refresh only request.repository.url at request.repository.defaultBranchSha.',
-    'Invoke the configured CLI once with the exact executor, model and effort from the resolved route. The CLI owns implementation, checks, commit, review branch and pull request; Hermes only verifies the returned provider evidence.',
+    'Use a fresh temporary git worktree created from request.repository.defaultBranchSha; never execute in the persistent base checkout.',
+    'Invoke the configured CLI once with the exact executor, model and effort. It reads AGENTS.md and the referenced issue, owns one implementation pass, focused self-checks, commit, review branch and pull request; Hermes only returns its result.',
     'Push only a new review branch and create a pull request. Never push the default branch, merge, release, deploy, or access production.',
     'Return the exact configured next stage for this item. Control Plane performs and verifies the Project mutation.'
   ], acceptanceCriteria: [
@@ -19,7 +19,8 @@ export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa') 
   ]} : {constraints: [
     'Work only on the referenced GitHub Project item and repository.',
     'Do not merge, release, deploy, or access production.',
-    'If the configured QA route uses a CLI, invoke it once in the native terminal with the exact configured executor, model and effort. The CLI owns the bounded QA review; Hermes only verifies the returned provider evidence.',
+    'Invoke the configured CLI once in a fresh temporary worktree with the exact model and effort. It reviews the referenced PR and prior evidence, runs only missing acceptance/risk checks, and records the QA result; Hermes only returns its result.',
+    'Do not repeat an unchanged full test suite and do not implement fixes during QA; request the configured developer rework stage when changes are required.',
     'Return the exact configured rework or next stage. Control Plane performs and verifies the Project mutation.'
   ], acceptanceCriteria: [
     'Record QA evidence in the referenced GitHub issue or pull request.',

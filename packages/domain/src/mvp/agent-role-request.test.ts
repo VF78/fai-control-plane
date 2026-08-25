@@ -8,7 +8,8 @@ const request = (role: AgentRoleRequest['role'] = 'developer'): AgentRoleRequest
   role,
   repository: {id: 'repo-1', url: 'https://example.test/repository', defaultBranch: 'main',
     defaultBranchSha: 'a'.repeat(40)},
-  projectItem: {id: 'item-1', projectId: 'project-1', issueId: 'issue-1', url: 'https://example.test/issues/1'},
+  projectItem: {id: 'item-1', projectId: 'project-1', issueId: 'issue-1', title: 'Fix the exact issue',
+    url: 'https://example.test/issues/1'},
   observedVersion: 'version-1',
   sources: [{id: 'source-1', sha256: 'a'.repeat(64), kind: 'requirements', provenance: 'operator upload',
     content: 'Approved requirements'}],
@@ -32,6 +33,13 @@ describe('MVP agent role request', () => {
     expect(validateAgentRoleRequest({...value, repository: {...value.repository, defaultBranch: ''}})).toBe(false);
     expect(validateAgentRoleRequest({...value, repository: {...value.repository,
       defaultBranchSha: 'not-a-commit'}})).toBe(false);
+  });
+
+  it('requires a bounded task title for classification without another provider read', () => {
+    const value = request();
+    expect(validateAgentRoleRequest({...value, projectItem: {...value.projectItem, title: ''}})).toBe(false);
+    expect(validateAgentRoleRequest({...value, projectItem: {...value.projectItem,
+      title: 'x'.repeat(513)}})).toBe(false);
   });
 
   it('rejects devops without exact production approval', () => {
