@@ -6,12 +6,15 @@ Authority stays external:
 
 - GitHub repository owns code, pull requests, checks and releases.
 - GitHub Project owns tasks, status, assignees, dates and dependencies.
-- Hermes executes manager, developer, QA and DevOps role requests.
+- One project-scoped Hermes directly orchestrates and executes manager,
+  developer, QA and DevOps work with persistent `git`/`gh`/CLI/SSH credentials.
 - PostgreSQL owns only project configuration and sources, identities,
   exact-reference approvals, provider snapshots/cursors, idempotency and audit.
 
 The application has two processes: a Next.js web service and one stateless
-worker. The worker runs only `github-reconcile` and `delivery-retry`. The fresh
+worker. The worker only polls authoritative GitHub facts, observes Hermes,
+delivers notifications, restarts an unavailable Hermes and launches the next
+configured stage; it never brokers provider or CLI commands. The fresh
 MVP database is created by `packages/db/mvp-drizzle/0000_mvp.sql`; it does not
 read, migrate or delete the legacy database.
 

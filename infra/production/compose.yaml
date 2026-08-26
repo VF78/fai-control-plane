@@ -186,8 +186,6 @@ secrets:
     file: ${TELEGRAM_BOT_TOKEN_HOST_FILE:?required}
   hermes-internal-action-token:
     file: ${HERMES_INTERNAL_ACTION_TOKEN_HOST_FILE:?required}
-  hermes-client-action-token:
-    file: ${HERMES_CLIENT_ACTION_TOKEN_HOST_FILE:?required}
   hermes-management-username:
     file: ${HERMES_DASHBOARD_USERNAME_HOST_FILE:?required}
   hermes-management-password:

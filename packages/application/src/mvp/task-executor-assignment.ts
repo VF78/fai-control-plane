@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import type {AgentRole, ProjectRole, TrackerExecutorAssignmentPort, TrackerMutationPort, TrackerSnapshot} from '@fai-control-plane/domain';
+import type {AgentRole, ProjectRole, TrackerExecutorAssignmentPort, TrackerSnapshot} from '@fai-control-plane/domain';
 import type {AgentSubmissionContext, AgentSubmissionPorts} from './agent-submission.ts';
 import {submitExplicitAgent} from './agent-submission.ts';
 
@@ -122,38 +122,19 @@ export const assignTaskExecutor = async (
 };
 
 export type ProcessStartCommand = Readonly<{actorId: string; projectId: string;
-  task: Readonly<{kind: 'existing'; itemId: string}> | Readonly<{kind: 'create'; title: string; statement: string}>;
+  task: Readonly<{kind: 'existing'; itemId: string}>;
   sourceReference: string; idempotencyKey: string}>;
-export type ProcessStartPorts = Omit<TaskExecutorAssignmentPorts, 'tracker'> & Readonly<{
-  tracker: TrackerExecutorAssignmentPort & Pick<TrackerMutationPort, 'createIssue'>;
-}>;
+export type ProcessStartPorts = TaskExecutorAssignmentPorts;
 
 /**
- * The one process.start root command. A create is resolved back to the exact
- * provider URL before assignment; an unrelated/newly visible backlog item can
- * therefore never be adopted by the worker.
+ * Starts only the exact existing provider item selected in the UI.
  */
 export const startProcess = async (command: ProcessStartCommand,
   ports: ProcessStartPorts): Promise<TaskExecutorAssignmentResult & Readonly<{itemId: string; chainReference: string}>> => {
   if (!bounded(command.sourceReference, 512) || !bounded(command.idempotencyKey, 512)) {
     throw new Error('process_start_invalid');
   }
-  let itemId: string;
-  if (command.task.kind === 'existing') itemId = command.task.itemId;
-  else {
-    if (!bounded(command.task.title, 160) || !bounded(command.task.statement, 4_000)) {
-      throw new Error('process_start_invalid');
-    }
-    const created = await ports.tracker.createIssue({projectId: command.projectId, title: command.task.title,
-      statement: command.task.statement, idempotencyKey: `${command.idempotencyKey}:create`});
-    const context = await ports.resolveContext({actorId: command.actorId, projectId: command.projectId});
-    if (context === null) throw new Error('process_start_denied');
-    const snapshot = await refresh(ports, context);
-    const matches = snapshot.items.filter((candidate) => candidate.projectId === command.projectId &&
-      candidate.url === created.url && candidate.version === created.version);
-    if (matches.length !== 1) throw new Error('process_start_readback_conflict');
-    itemId = matches[0]!.itemId;
-  }
+  const itemId = command.task.itemId;
   if (!bounded(itemId, 512)) throw new Error('process_start_invalid');
   const chainReference = `browser:${createHash('sha256').update(JSON.stringify({projectId: command.projectId,
     itemId, sourceReference: command.sourceReference, idempotencyKey: command.idempotencyKey})).digest('hex')}`;

@@ -12,7 +12,6 @@ readonly nginx_enabled=/etc/nginx/sites-enabled/hermes-ascon.f-ai.studio.conf
 readonly api_secret_file=/etc/fai-hermes-ascon/secrets/api-server.env
 readonly telegram_secret_file=/etc/fai-hermes-ascon/secrets/telegram.env
 readonly internal_bridge_token=/etc/fai-hermes-ascon/secrets/internal-bridge-token
-readonly client_bridge_token=/etc/fai-hermes-ascon/secrets/client-bridge-token
 readonly data_root=/var/lib/fai-hermes-ascon
 readonly runtime_config_file="$data_root/runtime-config.yaml"
 readonly work_directory="$data_root/work"
@@ -32,7 +31,6 @@ readonly devops_yc_config=/etc/fai-hermes-ascon/secrets/yandex-cloud-config.yaml
 readonly runtime_secret_directory="$data_root/runtime-secrets"
 readonly runtime_yc_config_directory="$data_root/.config/yandex-cloud"
 readonly runtime_internal_bridge_token="$runtime_secret_directory/internal-bridge-token"
-readonly runtime_client_bridge_token="$runtime_secret_directory/client-bridge-token"
 readonly runtime_github_repository_token="$runtime_secret_directory/github-repository-token"
 readonly runtime_dashboard_username="$runtime_secret_directory/dashboard-username"
 readonly runtime_dashboard_password="$runtime_secret_directory/dashboard-password"
@@ -56,7 +54,6 @@ readonly -a readable_directories=(
 readonly -a readable_files=(
   "$deploy_root/infra/hermes-ascon/config.yaml"
   "$deploy_root/infra/hermes-ascon/profiles/internal/config.yaml"
-  "$deploy_root/infra/hermes-ascon/profiles/bitrix-client/config.yaml"
   "$deploy_root/infra/hermes-ascon/extensions/fai-control-plane/plugin.yaml"
   "$deploy_root/infra/hermes-ascon/extensions/fai-control-plane/bridge_state.py"
   "$deploy_root/infra/hermes-ascon/extensions/fai-control-plane/__init__.py"
@@ -87,7 +84,7 @@ rm -f "$readiness_file"
   fail 'approved config digest is missing or invalid'
 
 for path in "$environment_file" "$api_secret_file" "$telegram_secret_file" \
-  "$internal_bridge_token" "$client_bridge_token" "$github_repository_token" \
+  "$internal_bridge_token" "$github_repository_token" \
   "$dashboard_username" "$dashboard_password" "$dashboard_signing_secret" \
   "$devops_ssh_identity" "$devops_ssh_known_hosts" "$devops_yc_config"; do
   [[ -f "$path" && -r "$path" ]] || fail "missing required file: $path"
@@ -98,9 +95,6 @@ done
 [[ $(sed -n 's/^HERMES_INTERNAL_BRIDGE_TOKEN_FILE=//p' "$environment_file") == \
   "$runtime_internal_bridge_token" ]] ||
   fail 'internal bridge token must use the isolated runtime copy'
-[[ $(sed -n 's/^HERMES_CLIENT_BRIDGE_TOKEN_FILE=//p' "$environment_file") == \
-  "$runtime_client_bridge_token" ]] ||
-  fail 'client bridge token must use the isolated runtime copy'
 [[ $(sed -n 's/^HERMES_RENDERED_CONFIG_FILE=//p' "$environment_file") == \
   "$runtime_config_file" ]] ||
   fail 'Hermes must use the isolated rendered config'
@@ -149,7 +143,7 @@ grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' "$environment_file" &&
   fail 'API secret file must contain only one non-empty API_SERVER_KEY'
 [[ $(wc -l < "$telegram_secret_file") -eq 1 && $(grep -Ec '^TELEGRAM_BOT_TOKEN=[^[:space:]]+$' "$telegram_secret_file") -eq 1 ]] ||
   fail 'Telegram secret file must contain only one non-empty TELEGRAM_BOT_TOKEN'
-for path in "$internal_bridge_token" "$client_bridge_token"; do
+for path in "$internal_bridge_token"; do
   token_length=$(wc -c < "$path")
   (( token_length >= 33 && token_length <= 513 )) || fail "invalid bridge token length: $path"
 done
@@ -169,8 +163,7 @@ ssh-keygen -y -f "$devops_ssh_identity" >/dev/null 2>&1 || fail 'DevOps SSH iden
 
 for path in \
   "$deploy_root/infra/hermes-ascon/config.yaml" \
-  "$deploy_root/infra/hermes-ascon/profiles/internal/config.yaml" \
-  "$deploy_root/infra/hermes-ascon/profiles/bitrix-client/config.yaml"; do
+  "$deploy_root/infra/hermes-ascon/profiles/internal/config.yaml"; do
   [[ $(grep -Fxc '_config_version: 34' "$path") -eq 1 ]] ||
     fail "Hermes config does not declare schema version 34: $path"
 done
@@ -187,7 +180,7 @@ remove_readiness() {
 }
 
 remove_runtime_secrets() {
-  rm -f "$runtime_internal_bridge_token" "$runtime_client_bridge_token" \
+  rm -f "$runtime_internal_bridge_token" \
     "$runtime_github_repository_token" "$runtime_dashboard_username" \
     "$runtime_dashboard_password" "$runtime_dashboard_signing_secret" \
     "$runtime_devops_ssh_identity" "$runtime_devops_ssh_known_hosts" \
@@ -254,8 +247,6 @@ prepare_runtime() {
   install -o "$workload_uid" -g "$workload_gid" -m 0600 \
     "$internal_bridge_token" "$runtime_internal_bridge_token"
   install -o "$workload_uid" -g "$workload_gid" -m 0600 \
-    "$client_bridge_token" "$runtime_client_bridge_token"
-  install -o "$workload_uid" -g "$workload_gid" -m 0600 \
     "$github_repository_token" "$runtime_github_repository_token"
   install -o "$workload_uid" -g "$workload_gid" -m 0600 \
     "$dashboard_username" "$runtime_dashboard_username"
@@ -271,8 +262,6 @@ prepare_runtime() {
     "$devops_yc_config" "$runtime_devops_yc_config"
   cmp -s "$internal_bridge_token" "$runtime_internal_bridge_token" ||
     fail 'internal runtime bridge token copy differs from its canonical source'
-  cmp -s "$client_bridge_token" "$runtime_client_bridge_token" ||
-    fail 'client runtime bridge token copy differs from its canonical source'
   cmp -s "$github_repository_token" "$runtime_github_repository_token" ||
     fail 'repository runtime token copy differs from its canonical source'
   for pair in \
@@ -286,7 +275,7 @@ prepare_runtime() {
     runtime=${pair#*:}
     cmp -s "$canonical" "$runtime" || fail "runtime secret copy differs from its canonical source: $canonical"
   done
-  for path in "$runtime_internal_bridge_token" "$runtime_client_bridge_token" \
+  for path in "$runtime_internal_bridge_token" \
     "$runtime_github_repository_token" "$runtime_dashboard_username" \
     "$runtime_dashboard_password" "$runtime_dashboard_signing_secret" \
     "$runtime_devops_ssh_identity" "$runtime_devops_ssh_known_hosts" \
@@ -323,14 +312,12 @@ from pathlib import Path
 readable = (
     "/opt/data/config.yaml",
     "/opt/data/profiles/internal/config.yaml",
-    "/opt/data/profiles/bitrix-client/config.yaml",
     "/opt/data/plugins/fai-control-plane/plugin.yaml",
     "/opt/data/plugins/fai-control-plane/bridge_state.py",
     "/opt/data/plugins/fai-control-plane/__init__.py",
     "/opt/data/hooks/fai-identity/HOOK.yaml",
     "/opt/data/hooks/fai-identity/handler.py",
     "/opt/data/profiles/internal/bridge-token",
-    "/opt/data/profiles/bitrix-client/bridge-token",
     "/opt/fai-devops/ssh/identity",
     "/opt/fai-devops/ssh/known_hosts",
     "/opt/data/.config/yandex-cloud/config.yaml",

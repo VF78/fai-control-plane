@@ -95,25 +95,22 @@ network change.
 ### Hermes GitHub credential boundary
 
 Reviewed non-secret Hermes environment example SHA-256:
-`6e36edade125c76415443da02c40c2569544fe71524fa1f53df7f88902a604bb`.
+`e1f067f8a2f6cebe8157e72b74144db7623c79312b8e465e7d84dd6a90161e46`.
 
 Reviewed non-secret Control Plane environment example SHA-256:
-`f2df6de4ec68d2e25d2fe95873ce15a939b3a03da3625812d0a1040295f8b136`.
+`739e0e80c490b8a9b1a58ec0e120238ee63f769f747a7ed8a4f172e8a965f456`.
 
-- Mount only the dedicated, fine-grained ASCON repository credential into the
+- Mount one persistent project-scoped GitHub credential into the
   isolated Hermes gateway. Store its canonical value at
   `/etc/fai-hermes-ascon/secrets/github-repository-token`, root-only mode `0600`;
   the deployment script makes the UID-10000 runtime copy without logging it.
-- Restrict the credential to `VF78/ascon` with metadata read, contents
-  read/write and pull-request read/write. Do not grant administration, Actions,
-  environments, deployments, secrets or access to another repository.
-- Routine Hermes Project mutations use the existing Control Plane GitHub
-  adapter. Hermes receives only its project-isolated internal bridge token;
-  Telegram identity is bound server-side, every command is idempotent/audited,
-  and provider versions are checked immediately before mutation.
-- The separate Control Plane Project credential remains at
-  `/etc/fai-control-plane-mvp/secrets/github-projects-token` and is never copied
-  into Hermes. Hermes' repository credential is not used by web/worker.
+- The credential must let the project Hermes directly use `git` and `gh` for
+  the bound repository and GitHub Project, including issue/Project mutations,
+  review branches and PRs. Verify `gh project view` and repository push/admin
+  permission from inside the gateway after every credential change.
+- Control Plane may use the same host-owned credential for provider polling;
+  it never proxies a GitHub command for Hermes. The token value is not stored
+  in PostgreSQL, rendered context, logs or agent packets.
 - Branch protection must reject direct default-branch pushes. Merge, release
   and production deployment are available to the same project Hermes only for
   a request bound to an exact recorded human approval; credential presence is
@@ -166,11 +163,16 @@ minimal `codex-cli` Compose service. It mounts only the isolated Codex home and
 project work directory, with no gateway API/Telegram environment, bridge-token
 mounts, other Hermes data or listening ports.
 
-For a configured CLI route Hermes is only the existing remote dispatcher: it
-creates a fresh temporary worktree from the pinned base and invokes one
-non-interactive `codex exec` with the exact model and reasoning effort. Codex
-reads `AGENTS.md`, the referenced issue and relevant files itself. Development
-owns one implementation pass plus focused checks. It creates one review PR, or
+Hermes is the persistent project PM/Dev/QA/DevOps orchestrator. It reads the
+referenced issue, comments, Project fields, linked PR and repository facts
+directly with `git`/`gh`. If an issue lacks adequate scope or acceptance
+criteria, Hermes updates that same issue and requests plan confirmation in
+Telegram before execution. For a configured CLI route it creates or reuses the
+stable issue worktree and invokes one non-interactive
+`codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral` inside the
+isolated non-root project container with the exact model and reasoning effort.
+Codex reads `AGENTS.md`, the referenced issue and relevant files itself.
+Development owns one implementation pass plus focused checks. It creates one review PR, or
 updates that same PR head branch when QA requests rework; it never creates a
 second PR for the same item. The separate QA stage first
 reviews the unchanged PR independently, reuses current evidence and runs only
@@ -179,10 +181,10 @@ the existing PR branch, committed, pushed and verified in that same QA pass.
 Scope or acceptance
 changes, architecture/schema/public API/security/migration/production changes,
 and uncertain or still-failing results return to Development and then pass QA
-again. Hermes does no repository research, delegation, polling, repeat testing
-or second review and passes the schema-constrained result through unchanged.
-Control Plane validates one result and performs one configured Project
-transition with readback.
+again. Hermes changes the same GitHub Project item directly and verifies the
+provider readback. Control Plane observes the run and authoritative GitHub
+facts, sends notifications, recovers an unavailable Hermes and submits the next
+configured stage; it never proxies a GitHub, repository, CLI or DevOps command.
 
 `stage` deletes stale readiness first, starts both the gateway and its private
 authenticated dashboard, and recreates

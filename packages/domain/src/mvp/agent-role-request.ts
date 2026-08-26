@@ -41,7 +41,8 @@ export const validateAgentRoleRequest = (value: AgentRoleRequest): boolean => {
 };
 
 /** Compact hand-off to the persistent project Hermes. Canonical context is
- * loaded by its project profile; do not resend source documents or chat history. */
+ * loaded by its project profile; do not resend source documents, chat history
+ * or approval material. */
 export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSON.stringify({
   contract: 'fai.agent-role-request.v1',
   task: {role: request.role, repository: request.repository, projectItem: request.projectItem,
@@ -50,7 +51,6 @@ export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSO
   routing: request.routing,
   constraints: request.constraints,
   acceptanceCriteria: request.acceptanceCriteria,
-  approval: request.approval,
   receipt: {correlationId: request.correlationId, idempotencyKey: request.idempotencyKey,
     contract: 'fai.agent-executor-result.v1'}
 });

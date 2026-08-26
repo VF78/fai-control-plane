@@ -30,7 +30,6 @@ class DeploymentContractTest(unittest.TestCase):
         configs = (
             HERMES / "config.yaml",
             HERMES / "profiles/internal/config.yaml",
-            HERMES / "profiles/bitrix-client/config.yaml",
             HERMES / "profile-template/config.yaml",
         )
         for config in configs:
@@ -55,11 +54,6 @@ class DeploymentContractTest(unittest.TestCase):
             "/var/lib/fai-hermes-ascon/runtime-secrets/internal-bridge-token\n",
             environment,
         )
-        self.assertIn(
-            "HERMES_CLIENT_BRIDGE_TOKEN_FILE="
-            "/var/lib/fai-hermes-ascon/runtime-secrets/client-bridge-token\n",
-            environment,
-        )
         self.assertNotIn("TOKEN_FILE=/etc/fai-hermes-ascon/secrets/", environment)
         self.assertIn(
             "HERMES_RENDERED_CONFIG_FILE="
@@ -73,7 +67,7 @@ class DeploymentContractTest(unittest.TestCase):
     def test_stage_prepares_uid_boundary_and_fails_closed(self):
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
         readable_block = script.split("readonly -a readable_files=(", 1)[1].split(")", 1)[0]
-        self.assertEqual(readable_block.count('"$deploy_root/'), 11)
+        self.assertEqual(readable_block.count('"$deploy_root/'), 10)
         self.assertNotIn('agent-executor-result.schema.json', script)
         self.assertIn('chmod 0644 "${readable_files[@]}"', script)
         self.assertIn('chmod 0755 "${readable_directories[@]}"', script)

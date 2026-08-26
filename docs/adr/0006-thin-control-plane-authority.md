@@ -28,8 +28,8 @@ visibility, not another tracker or agent platform.
 | Concern | Sole authority | Control Plane behaviour |
 | --- | --- | --- |
 | Code, branches, commits, PRs, checks, releases | GitHub repository | Link, observe and display |
-| Project tasks, assignees, dates, dependencies, status | GitHub Project | Observe/update the same item; retain only bounded sync facts |
-| Planning, development, QA, DevOps execution | Hermes | Submit one bounded role request through a supported authenticated Hermes surface |
+| Project tasks, assignees, dates, dependencies, status | GitHub Project | Observe the same item and retain only bounded sync facts; UI-originated human commands may update the provider directly |
+| Planning, project orchestration, development, QA, DevOps execution | One project-scoped Hermes | Submit/observe through a supported authenticated Hermes surface; Hermes operates providers directly |
 | Hermes use of Codex CLI | Hermes | No Control Plane composition or runtime |
 | Project source documents and configuration | Control Plane/PostgreSQL | Store with provenance and expose bounded references |
 | PO/client approvals | Control Plane/PostgreSQL | Record explicit human decisions and bind them to external references |
@@ -42,9 +42,11 @@ next-role action from Hermes. The request contains the role, repository and
 GitHub item identity, bounded approved project context, acceptance criteria,
 approval fact when required, and an idempotency/correlation reference. Hermes
 performs the work and returns evidence plus the configured requested next
-stage. The Control Plane applies that one provider-native Status command with
-exact version/readback, then observes the same GitHub item/PR/check/release; it
-does not reconstruct Hermes' internal lifecycle.
+stage. Hermes changes the same GitHub Project item directly with its persistent
+project credential and verifies provider readback. The Control Plane observes
+the same GitHub item/PR/check/release, notifies, restarts an unavailable Hermes
+and submits the next configured stage; it does not apply Hermes' provider
+commands or reconstruct Hermes' internal lifecycle.
 
 ### Prohibited duplication
 
@@ -109,20 +111,21 @@ direct Hermes may plan, decide, manage provider-native Project facts, or invoke
 an exact-approval broker. Merge, Actions, release, deploy and production never
 run inside a coding CLI.
 
-## 2026-08-25 amendment: native project-scoped execution
+## 2026-08-26 amendment: direct project-scoped orchestration
 
-The isolated Hermes composition receives its existing Codex OAuth and one
-host-owned, repository-scoped GitHub credential. Hermes uses its supported
-terminal, `git`, `gh` and configured CLI directly. It may push a new review
-branch and create a pull request for the bound repository; it may not push the
-default branch, merge, release, deploy, access production or receive production
-credentials. Those actions remain outside Hermes and require their existing
-explicit approval.
+Each isolated project Hermes receives persistent credentials sufficient for
+its configured PM/Dev/QA/DevOps role: GitHub repository and Project access,
+the configured coding CLI, and approved environment access. Hermes uses its
+native terminal, `git`, `gh`, SSH and configured CLI directly. It creates and
+updates issues/Project items, pushes review branches, creates PRs, performs QA
+and executes DevOps work itself. Exact merge/release/deploy/production actions
+still require the corresponding explicit approval; possession of a credential
+is not approval.
 
-Control Plane submits and observes through `AgentDeliveryPort`, verifies the
-declared route against project policy, applies the configured provider-native
-Status transition after an accepted result, and verifies immediate readback. It
-does not broker repository access, transport bundles, wrap a CLI or attest an
-executor invocation cryptographically. Repository scope, branch protection and
-the absence of production credentials are deployment facts, not a second
-execution architecture.
+Control Plane submits and observes through `AgentDeliveryPort`, polls the
+authoritative GitHub facts, verifies the configured stage, emits notifications,
+restarts an unavailable Hermes and launches the next configured stage. It does
+not broker repository/Project/CLI/SSH/deployment commands, apply Hermes' status
+transition, transport bundles, wrap a CLI or attest an executor invocation
+cryptographically. Autonomous mode is a Hermes project-manager run, not worker
+selection of backlog items.
