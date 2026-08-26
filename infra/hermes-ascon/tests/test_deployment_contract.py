@@ -266,7 +266,11 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("openssh-client", dockerfile)
         self.assertIn('yc version | grep -Eq "^Yandex Cloud CLI ${YC_VERSION}', dockerfile)
         self.assertIn("HERMES_DEVOPS_SSH_IDENTITY_FILE: /opt/fai-devops/ssh/identity", gateway)
-        self.assertIn("YC_CONFIG_DIR: /opt/fai-devops/yandex-cloud", gateway)
+        self.assertNotIn("YC_CONFIG_DIR:", gateway)
+        self.assertIn(
+            "${HERMES_DEVOPS_YC_CONFIG_FILE:?required}:/opt/data/.config/yandex-cloud/config.yaml:ro",
+            gateway,
+        )
         self.assertIn("${HERMES_DEVOPS_SSH_IDENTITY_FILE:?required}", gateway)
         self.assertNotIn("${HERMES_DEVOPS_SSH_IDENTITY_HOST_FILE", gateway)
         self.assertIn("external: true", compose)

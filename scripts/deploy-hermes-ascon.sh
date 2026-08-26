@@ -30,6 +30,7 @@ readonly devops_ssh_identity=/etc/fai-hermes-ascon/secrets/devops-ssh-identity
 readonly devops_ssh_known_hosts=/etc/fai-hermes-ascon/secrets/devops-ssh-known-hosts
 readonly devops_yc_config=/etc/fai-hermes-ascon/secrets/yandex-cloud-config.yaml
 readonly runtime_secret_directory="$data_root/runtime-secrets"
+readonly runtime_yc_config_directory="$data_root/.config/yandex-cloud"
 readonly runtime_internal_bridge_token="$runtime_secret_directory/internal-bridge-token"
 readonly runtime_client_bridge_token="$runtime_secret_directory/client-bridge-token"
 readonly runtime_github_repository_token="$runtime_secret_directory/github-repository-token"
@@ -220,7 +221,8 @@ prepare_runtime() {
   render_runtime_config
   install -d -o root -g root -m 0755 "$readiness_directory"
   install -d -o "$workload_uid" -g "$workload_gid" -m 0700 \
-    "$work_directory" "$project_work_directory" "$codex_root" "$codex_home" "$runtime_secret_directory"
+    "$work_directory" "$project_work_directory" "$codex_root" "$codex_home" \
+    "$runtime_secret_directory" "$runtime_yc_config_directory"
   if [[ ! -s "$codex_home/auth.json" && -s "$legacy_codex_home/auth.json" ]]; then
     install -o "$workload_uid" -g "$workload_gid" -m 0600 "$legacy_codex_home/auth.json" "$codex_home/auth.json"
   fi
@@ -333,7 +335,7 @@ readable = (
     "/opt/fai/agent-executor-result.schema.json",
     "/opt/fai-devops/ssh/identity",
     "/opt/fai-devops/ssh/known_hosts",
-    "/opt/fai-devops/yandex-cloud/config.yaml",
+    "/opt/data/.config/yandex-cloud/config.yaml",
 )
 for name in readable:
     Path(name).read_bytes()

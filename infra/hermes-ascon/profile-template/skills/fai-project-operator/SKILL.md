@@ -16,5 +16,5 @@ description: Authoritative project-manager and bounded Codex execution policy fo
 - Change the provider-native stage only after accepted evidence. Merge, release, deploy and production require exact human approval.
 - For an approved DevOps task, use the same Hermes/Codex environment. SSH only with
   `HERMES_DEVOPS_SSH_IDENTITY_FILE`, `HERMES_DEVOPS_SSH_KNOWN_HOSTS_FILE`, strict host-key checking and the
-  configured host/user/port. Use the read-only `YC_CONFIG_DIR` profile for Yandex Cloud. Never copy credentials into
+  configured host/user/port. Use the read-only Yandex Cloud CLI profile mounted in the project HOME. Never copy credentials into
   a repository, output or task result, and never treat their presence as approval to mutate production.
