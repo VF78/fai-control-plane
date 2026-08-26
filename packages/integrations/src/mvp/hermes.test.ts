@@ -27,9 +27,12 @@ describe('MVP Hermes adapter', () => {
       credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
       secrets: {resolve: async () => ({value: 'bearer'})}, fetch});
     await expect(adapter.submit(request)).resolves.toEqual({deliveryReference: 'run_ref', sessionReference: request.correlationId});
-    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as {input: string; session_id: string;
+    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as {input: string; instructions: string;
+      session_id: string;
       provider: string; model: string; model_options: {reasoning_effort: string}};
     expect(JSON.parse(body.input)).toMatchObject({contract: 'fai.agent-role-request.v1'});
+    expect(body.instructions).toContain('MUST use fai_project_facts and fai_project_item_stage');
+    expect(body.instructions).toContain('only one compact valid fai.agent-executor-result.v1 JSON object');
     expect(body.session_id).toBe(request.correlationId);
     expect(body).toMatchObject({provider: 'openai-codex', model: 'gpt-5.6-terra',
       model_options: {reasoning_effort: 'medium'}});
@@ -54,6 +57,18 @@ describe('MVP Hermes adapter', () => {
       credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
       secrets: {resolve: async () => ({value: 'bearer'})}, fetch: vi.fn(async () =>
         new Response(JSON.stringify({run_id: 'run_ref', status: 'completed', output: JSON.stringify(result)})))});
+    await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'completed', result});
+  });
+
+  it('accepts one exact JSON result in a standard json fence', async () => {
+    const result = {contract: 'fai.agent-executor-result.v1', decision: 'accepted', ...attestation,
+      reason: 'Ready for QA', evidence: [{kind: 'checks', result: 'Focused tests passed'}],
+      deliverables: [{label: 'Review', url: 'https://example.test/pr/1'}]};
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, fetch: vi.fn(async () =>
+        new Response(JSON.stringify({run_id: 'run_ref', status: 'completed',
+          output: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\``})))});
     await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'completed', result});
   });
 

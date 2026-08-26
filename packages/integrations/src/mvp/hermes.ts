@@ -9,13 +9,19 @@ import {agentTaskClasses} from '@fai-control-plane/domain';
 
 type Fetch = typeof globalThis.fetch;
 const purpose = 'agent_delivery';
+const roleRunInstructions = `Execute the exact project-role request in the input JSON.
+GitHub Project facts and stage changes MUST use fai_project_facts and fai_project_item_stage; never query projectItems through gh or GitHub GraphQL. gh is only for repository issues, branches, commits and pull requests.
+Follow the requested role boundary and configured route exactly. Do not start another process stage.
+Your final response MUST contain only one compact valid fai.agent-executor-result.v1 JSON object matching the receipt requested by the input. Do not add prose or Markdown fences.`;
 const bounded = (value: unknown, maximum: number): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
 
 const executorResult = (output: unknown): AgentExecutorResult | null => {
   if (!bounded(output, 65_536)) return null;
+  const normalized = output.startsWith('```json\n') && output.endsWith('\n```')
+    ? output.slice(8, -4) : output;
   let value: unknown;
-  try { value = JSON.parse(output); } catch { return null; }
+  try { value = JSON.parse(normalized); } catch { return null; }
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (record.contract !== 'fai.agent-executor-result.v1' ||
@@ -85,7 +91,8 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     const response = await request(endpoint, {
       method: 'POST',
       headers: {accept: 'application/json', authorization: await authorization(), 'content-type': 'application/json'},
-      body: JSON.stringify({input: renderAgentRoleRequest(roleRequest), session_id: roleRequest.correlationId,
+      body: JSON.stringify({input: renderAgentRoleRequest(roleRequest), instructions: roleRunInstructions,
+        session_id: roleRequest.correlationId,
         provider: 'openai-codex', model: 'gpt-5.6-terra', model_options: {reasoning_effort: 'medium'},
         orchestration: {kind: 'hermes-classifier', attempts: 1,
           executorRoute: 'resolve-from-input-policy-and-attest'}}),
