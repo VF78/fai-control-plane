@@ -136,9 +136,14 @@ services:
         target: source-telegram-bot-token
       - source: hermes-token
         target: source-hermes-token
+      - source: hermes-management-username
+        target: hermes-management-username
+      - source: hermes-management-password
+        target: hermes-management-password
     networks:
       - database
       - egress
+      - hermes-management
     volumes:
       - ${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro
     depends_on:

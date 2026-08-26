@@ -1,6 +1,6 @@
 import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,
   projectAgentDeliveryConfigured, readAgentRoutingPolicy, readProjectAgentProfile, readProjectContextStatus,
-  readProjectProcessPolicy, readProjectTrackerCapabilities} from '@fai-control-plane/db';
+  readProjectExecutionMode, readProjectProcessPolicy, readProjectTrackerCapabilities} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import {Dashboard, Process, Shell, Tasks} from '../src/mvp/phase-a-ui.tsx';
 import {executorFact} from '../src/mvp/phase-a-view.ts';
@@ -35,10 +35,12 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     : await projectAgentDeliveryConfigured(database, session.actorId, selected.id);
   const agentProfile = selected === null ? null
     : await readProjectAgentProfile(database, session.actorId, selected.id);
-  const [agentRouting, processPolicy, activeContext] = selected === null ? [null, null, null] as const : await Promise.all([
+  const [agentRouting, processPolicy, activeContext, executionMode] = selected === null
+    ? [null, null, null, {mode:'manual' as const,actorId:null,changedAt:null}] as const : await Promise.all([
     readAgentRoutingPolicy(database, session.actorId, selected.id),
     readProjectProcessPolicy(database, session.actorId, selected.id),
-    readProjectContextStatus(database, session.actorId, selected.id)
+    readProjectContextStatus(database, session.actorId, selected.id),
+    readProjectExecutionMode(database, session.actorId, selected.id)
   ]);
   const trackerCapabilities = selected === null ? null
     : await readProjectTrackerCapabilities(database, session.actorId, selected.id);
@@ -61,7 +63,7 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
             confirmedRun={run}
             task={{itemId: task.itemId, status: task.statusOptionName, blocked: task.blocked}}/>;
         }}/>
-    : view === 'process' ? <Process project={selected} filter={query.filter} routing={routing} processPolicy={processPolicy} activeContext={activeContext} canManageRouting={canManageRouting} canManageContext={canManageContext}/>
+    : view === 'process' ? <Process project={selected} filter={query.filter} routing={routing} processPolicy={processPolicy} executionMode={executionMode} activeContext={activeContext} canManageRouting={canManageRouting} canManageContext={canManageContext}/>
       : view === 'dashboard' ? <Dashboard projects={projects}/>
         : <PhaseB view={view} project={selected} evidence={evidence} sources={sources} approvals={approvals} actorId={session.actorId} config={config} agentProfile={agentProfile}/>;
 

@@ -18,14 +18,12 @@ sys.modules.setdefault("fai_control_plane_bridge_state", bridge_state)
 _CHAT_ID = "-5540760630"
 _USER_IDS = frozenset({"96211907", "355724486"})
 _ACTION_URL_PATH = "/api/hermes/conversation-actions"
-_ROLE_RUN_PROTOCOL = """Agent role-run protocol (mandatory):
-1. The JSON request is the receipt-bound routing envelope. Classify once from request.role, request.projectItem.title, constraints and acceptance criteria; resolve exactly one route from request.routing.policy. Unknown or unavailable routes are rejected.
-2. A direct-agent route is only for bounded project management or an exact approved operation. Never use it for repository implementation, QA, architecture or critical engineering decisions.
-3. A CLI route is exactly one foreground terminal call with timeout 1800 and no PTY, containing exactly one non-interactive codex exec. Do not load skills, inspect the repository in Hermes, delegate, start background work, poll, create a second plan, repeat checks or review Codex output.
-4. The persistent /opt/data/work/project checkout is worktree metadata only. In that single terminal call fetch request.repository.defaultBranchSha, create a fresh detached worktree at /opt/data/work/runs/<64-hex-correlation-id>, and run codex exec there with the route's exact --model and model_reasoning_effort, --sandbox workspace-write, --output-schema /opt/fai/agent-executor-result.schema.json and -o. The compact prompt contains only the role, Project item title/URL, pinned base, exact receipt/transition fields, constraints and acceptance criteria. Codex reads AGENTS.md, the referenced GitHub issue and only relevant repository files itself; never paste chat history, repository documents or the full source capsule into the prompt.
-5. Developer Codex performs one implementation pass, focused self-checks and commit. It creates one review branch and PR only when none exists for the item; rework updates that same PR head branch and never creates a duplicate PR. QA Codex first reviews the unchanged PR independently and runs only missing acceptance/risk checks. It may make, commit and push one localized low-risk fix on the existing PR branch, run the focused check and record final diff evidence in the same pass. It requests developer rework instead when scope or acceptance changes, architecture/schema/public API/security/migrations/production configuration are affected, or the result remains uncertain or failing. It never repeats an unchanged full test suite. Merge, release, deploy and production remain forbidden.
-6. Capture the schema result, then remove the temporary worktree and result/progress files in the same terminal call. Return Codex's JSON unchanged. Do not make a second gh query or reinterpret a valid result. A real terminal/contract failure is a rejected result targeting the configured rework stage, or the current stage when none exists.
-7. Never mutate Project status; Control Plane validates one result, applies one configured transition with provider readback, and starts the next configured role once."""
+_ROLE_RUN_PROTOCOL = """Project task protocol:
+1. You are this project's persistent PM, Developer, QA and DevOps operator. The compact JSON request names one exact GitHub item and role. Read current GitHub/Project facts before acting; never rely on stale chat history.
+2. Resolve one configured route. Do project-management work yourself. For repository work invoke exactly one foreground non-interactive Codex CLI in the stable issue worktree under /opt/data/work/items. Use the configured model/reasoning and `codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral`; this non-root project container is the external sandbox. Give Codex only the issue URL, role, constraints and acceptance criteria. Codex reads AGENTS.md and relevant files itself.
+3. Reuse the issue branch/worktree/PR after retry or QA. Developer performs focused checks. QA reviews the current PR and missing acceptance/risk checks; it may fix one localized low-risk defect, otherwise returns Dev rework. Never duplicate an issue or PR. Never merge, release, deploy or touch production without exact approval in the request.
+4. Verify the real commit/PR/artifact, then call fai_project_item_stage for the same item and configured success or rework stage. Confirm GitHub readback. On an unresolved blocker keep the current stage.
+5. Return one compact fai.agent-executor-result.v1 JSON object with decision, execution, outcome, transition, reason, evidence and HTTPS deliverables. Report the route actually used. Do not start the next stage; Control Plane observes the Project result and sends the next short role command."""
 
 
 def _pre_dispatch(event, **_kwargs):
@@ -162,6 +160,9 @@ _TOOLS = (
          {"type": "object", "properties": {"kind": {"const": "existing"}, "itemId": _ID},
           "required": ["kind", "itemId"], "additionalProperties": False}
      ]}}, ["task"]),
+    ("fai_project_execution_mode", "project.execution.mode",
+     "Enable or stop project autonomous execution. This is separate from starting one task.",
+     {"mode": {"type": "string", "enum": ["manual", "autonomous"]}}, ["mode"]),
     ("fai_issue_create", "issue.create", "Create one issue in the bound repository and Project.",
      {"title": {"type": "string", "minLength": 1, "maxLength": 160}, "statement": _TEXT}, ["title", "statement"]),
     ("fai_issue_update", "issue.update", "Update one exact issue and verify the provider result.",
@@ -188,7 +189,7 @@ def register(ctx) -> None:
     for name, action_type, description, properties, required in _TOOLS:
         ctx.register_tool(name=name, toolset="fai_internal", schema=_schema(name, description, properties, required),
                           handler=_handler(action_type))
-    for name, action_type, description, properties, required in (_TOOLS[2], _TOOLS[4]):
+    for name, action_type, description, properties, required in (_TOOLS[3], _TOOLS[5]):
         client_name = name.replace("fai_", "fai_client_", 1)
         ctx.register_tool(name=client_name, toolset="fai_client",
                           schema=_schema(client_name, description, properties, required),

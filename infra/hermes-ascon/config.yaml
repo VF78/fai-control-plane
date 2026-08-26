@@ -17,6 +17,7 @@ terminal:
 platform_toolsets:
   api_server:
     - terminal
+    - fai_internal
     - no_mcp
 
 agent:

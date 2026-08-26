@@ -55,20 +55,16 @@ describe('MVP agent role request', () => {
     }})).toBe(true);
   });
 
-  it('renders the immutable policy and deterministic Hermes classification/execution contract', () => {
+  it('renders the compact task contract without resending project sources or chat history', () => {
     expect(JSON.parse(renderAgentRoleRequest(request()))).toMatchObject({
-      contract: 'fai.agent-role-request.v1', request: {role: 'developer', routing: {
-        classification: 'runtime-classification-required', policy: {contract: 'fai.agent-routing.v1'}}},
-      execution: {classification: {by: 'agent-runtime', unknown: 'deny', unavailableRoute: 'deny'},
-        cli: {routeFieldsAreExact: ['id', 'model', 'effort'], attempts: 1,
-          resultContract: 'fai.agent-executor-result.v1'},
-        acceptance: {evidenceRequired: true, stageMutation: 'control-plane-after-accepted',
-          exactResultFields: ['contract', 'decision', 'execution', 'outcome', 'transition', 'reason',
-            'evidence', 'deliverables'],
-          rejectedWithoutReworkTarget: 'request-current-stage',
-          deliverables: 'bounded-https-references'}}
+      contract: 'fai.agent-role-request.v1', task: {role: 'developer'}, routing: {
+        classification: 'runtime-classification-required', policy: {contract: 'fai.agent-routing.v1'}},
+      receipt: {contract: 'fai.agent-executor-result.v1'}
     });
-    expect(renderAgentRoleRequest(request())).toContain('codex-cli');
+    const rendered = renderAgentRoleRequest(request());
+    expect(rendered).toContain('codex-cli');
+    expect(rendered).not.toContain('sources');
+    expect(rendered).not.toContain('chatHistory');
   });
 
   it('rejects a stale policy version while allowing the manager work route to be configured', () => {

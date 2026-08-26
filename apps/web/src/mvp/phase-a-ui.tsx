@@ -1,9 +1,9 @@
-import type {ProjectContextStatusView, ProjectProcessPolicyView, ProjectTaskView} from '@fai-control-plane/db';
+import type {ProjectContextStatusView, ProjectExecutionModeView, ProjectProcessPolicyView, ProjectTaskView} from '@fai-control-plane/db';
 import type {AgentExecutorCatalog, AgentRoutingPolicy} from '@fai-control-plane/domain';
 import type {ReactNode} from 'react';
 import {AlertTriangle, ArrowRight, Bot, ChevronRight, CircleDot, FileCheck2, FolderKanban, LayoutDashboard, ListChecks, Menu, MessageSquareText, Settings2, ShieldCheck, UsersRound, Workflow} from 'lucide-react';
 import {dashboardProjection, phaseAStages, readableAssignees} from './phase-a-view.ts';
-import {AgentRoutingControl, HermesContextControl, LogoutControl} from './operator-controls.tsx';
+import {AgentRoutingControl, HermesContextControl, LogoutControl, ProjectExecutionModeControl} from './operator-controls.tsx';
 
 export type PhaseArea = 'dashboard'|'tasks'|'process'|'conversations'|'people'|'systems'|'settings';
 const labels: Record<PhaseArea,string> = {dashboard:'Обзор',tasks:'Задачи',process:'Процесс',conversations:'Чаты',people:'Роли и доступы',systems:'Агенты и системы',settings:'План и подключения'};
@@ -45,13 +45,13 @@ function HermesContext({context, project, canManage}: Readonly<{context: Project
   return <div className="fcp-hermes-context-view"><div><h2>Контекст ИИ агента</h2><p>Собранный контекст, который ИИ агент использует в новых задачах.</p></div><HermesContextControl projectId={project.id} canManage={canManage} context={context}/></div>;
 }
 
-export function Process({project, filter, routing, processPolicy, activeContext, canManageRouting, canManageContext}: Readonly<{project: ProjectTaskView|null; filter: string|undefined; routing: AgentRoutingPresentation; processPolicy: ProjectProcessPolicyView|null; activeContext: ProjectContextStatusView|null; canManageRouting: boolean; canManageContext: boolean}>) {
+export function Process({project, filter, routing, processPolicy, executionMode, activeContext, canManageRouting, canManageContext}: Readonly<{project: ProjectTaskView|null; filter: string|undefined; routing: AgentRoutingPresentation; processPolicy: ProjectProcessPolicyView|null; executionMode: ProjectExecutionModeView; activeContext: ProjectContextStatusView|null; canManageRouting: boolean; canManageContext: boolean}>) {
   if (project === null) return <Empty title="Нет доступных проектов"/>;
   const tab = filter === 'hermes' ? 'hermes' : filter === 'context' ? 'context' : 'stages';
   const stages = processPolicy?.policy.stages ?? [];
   const body = tab === 'hermes' ? <HermesExecution project={project} routing={routing} canManage={canManageRouting}/>
     : tab === 'context' ? <HermesContext context={activeContext} project={project} canManage={canManageContext}/>
-      : stages.length === 0 ? <Empty title="Процесс не настроен"/> : <section className="fcp-section"><div className="fcp-section-head"><div><h2>Как проект проходит разработку</h2><span>Проектная политика процесса · только чтение</span></div><span>Версия {processPolicy?.version.slice(0, 12)}</span></div><ol className="fcp-protocol-flow" aria-label={`Протокол работы ${project.name}`}>{stages.map((stage, index) => {
+      : stages.length === 0 ? <Empty title="Процесс не настроен"/> : <section className="fcp-section"><ProjectExecutionModeControl projectId={project.id} mode={executionMode} canManage={canManageContext}/><div className="fcp-section-head"><div><h2>Как проект проходит разработку</h2><span>Проектная политика процесса · только чтение</span></div><span>Версия {processPolicy?.version.slice(0, 12)}</span></div><ol className="fcp-protocol-flow" aria-label={`Протокол работы ${project.name}`}>{stages.map((stage, index) => {
         const next = stage.nextStageId === null ? null : stages.find((candidate) => candidate.id === stage.nextStageId)?.title ?? 'Не настроено';
         return <li key={stage.id}><header><span>{String(index + 1).padStart(2, '0')}</span><span className="fcp-status neutral"><CircleDot aria-hidden="true" size={14}/>Этап</span></header><h3>{stage.title}</h3><dl><div><dt>Ответственный</dt><dd>{stage.responsibility}</dd></div><div><dt>Режим / gate</dt><dd>{stage.gate}</dd></div><div><dt>Подтверждающие материалы</dt><dd>{stage.evidence}</dd></div></dl><footer>{next === null ? <><FileCheck2 aria-hidden="true" size={15}/><span>Завершение процесса</span></> : <><ArrowRight aria-hidden="true" size={15}/><span>Далее: {next}</span></>}</footer>{next === null ? null : <span className="fcp-protocol-connector" aria-hidden="true"/>}</li>;
       })}</ol></section>;

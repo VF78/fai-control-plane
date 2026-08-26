@@ -51,7 +51,6 @@ services:
       - ${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro
       - ./extensions/fai-control-plane:/opt/data/plugins/fai-control-plane:ro
       - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
-      - ./agent-executor-result.schema.json:/opt/fai/agent-executor-result.schema.json:ro
       - ./profile-template:/opt/data/profiles/fai-project-template:ro
       - ./profiles/internal/config.yaml:/opt/data/profiles/internal/config.yaml:ro
       - ./profiles/bitrix-client/config.yaml:/opt/data/profiles/bitrix-client/config.yaml:ro

@@ -2,12 +2,13 @@ import {describe, expect, it} from 'vitest';
 import {mvpApiRoutes, mvpOAuthCallbackRoute, readiness} from './http-surface.ts';
 
 describe('MVP HTTP surface contract', () => {
-  it('contains exactly the approved 15 API routes, including context refresh and agent routing', () => {
-    expect(mvpApiRoutes).toHaveLength(15);
-    expect(new Set(mvpApiRoutes).size).toBe(15);
+  it('contains exactly the approved 16 API routes, including autonomous mode', () => {
+    expect(mvpApiRoutes).toHaveLength(16);
+    expect(new Set(mvpApiRoutes).size).toBe(16);
     expect(mvpApiRoutes).toContain('/api/tasks/executor');
     expect(mvpApiRoutes).toContain('/api/projects/[projectId]/agent-routing');
     expect(mvpApiRoutes).toContain('/api/projects/[projectId]/context/refresh');
+    expect(mvpApiRoutes).toContain('/api/projects/[projectId]/execution-mode');
   });
 
   it('keeps OAuth callback outside the API route count', () => {

@@ -2,7 +2,7 @@
 
 import {useEffect, useRef, useState, type FormEvent, type ReactNode} from 'react';
 import {Pencil, X} from 'lucide-react';
-import type {ProjectContextStatusView} from '@fai-control-plane/db';
+import type {ProjectContextStatusView, ProjectExecutionModeView} from '@fai-control-plane/db';
 import type {AgentExecutorCatalog, AgentRoutingPolicy} from '@fai-control-plane/domain';
 import {AsyncButton, CommandNoticeView, useAsyncCommand} from './async-command.tsx';
 
@@ -66,6 +66,23 @@ export function ProjectAgentActivationControl({projectId,status,profile}:Readonl
   return <div className="fcp-agent-activation"><div><strong>{status==='ready'?'ИИ агент готов':'ИИ агент не настроен'}</strong>
     <small>{status==='ready'?`Постоянный профиль ${profile??''} активен для этого проекта.`:'Будет создан отдельный постоянный Hermes-профиль из общего шаблона.'}</small></div>
     {status==='ready'?null:<AsyncButton type="button" pending={command.pending} pendingLabel="Настраиваем…" onClick={activate}>Активировать ИИ агента</AsyncButton>}
+    <CommandNoticeView notice={command.notice}/></div>;
+}
+
+export function ProjectExecutionModeControl({projectId, mode, canManage}: Readonly<{
+  projectId: string; mode: ProjectExecutionModeView; canManage: boolean;
+}>) {
+  const command = useAsyncCommand(); const autonomous = mode.mode === 'autonomous';
+  const change = () => void command.run(() => post(`/api/projects/${projectId}/execution-mode`, {
+    mode: autonomous ? 'manual' : 'autonomous', idempotencyKey: `project-execution-mode:${id()}`
+  }), {success: autonomous ? 'Автономный режим остановлен.' : 'Автономный режим включён.'});
+  return <div className="fcp-agent-activation fcp-project-execution-mode"><div>
+    <strong>{autonomous ? 'Автономное выполнение включено' : 'Ручной запуск задач'}</strong>
+    <small>{autonomous ? 'Worker запускает по одной готовой задаче и останавливается на согласовании или блокере.'
+      : 'Новые задачи запускаются только человеком в разделе «Задачи».'}</small></div>
+    {canManage ? <AsyncButton type="button" className={autonomous ? 'fcp-secondary' : undefined}
+      pending={command.pending} pendingLabel={autonomous ? 'Останавливаем…' : 'Включаем…'} onClick={change}>
+      {autonomous ? 'Остановить' : 'Включить автономно'}</AsyncButton> : null}
     <CommandNoticeView notice={command.notice}/></div>;
 }
 

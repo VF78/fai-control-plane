@@ -28,7 +28,7 @@ describe('Process Hermes execution surface', () => {
       readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8')
     ]);
     expect(page).toContain('readAgentRoutingPolicy(database, session.actorId, selected.id)');
-    expect(page).toContain('<Process project={selected} filter={query.filter} routing={routing} processPolicy={processPolicy} activeContext={activeContext} canManageRouting={canManageRouting} canManageContext={canManageContext}/>');
+    expect(page).toContain('<Process project={selected} filter={query.filter} routing={routing} processPolicy={processPolicy} executionMode={executionMode} activeContext={activeContext} canManageRouting={canManageRouting} canManageContext={canManageContext}/>');
     expect(control).not.toContain('readAgentRoutingPolicy(');
   });
 

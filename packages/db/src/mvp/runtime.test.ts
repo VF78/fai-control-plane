@@ -6,7 +6,7 @@ import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSna
 import {activateProjectContextSnapshot, addSourceArtifact, projectAgentDeliveryConfigured, readActiveProjectContext, readAgentRoutingPolicy,
   createAgentAttemptStore,
   readProjectContextStatus,
-  readProjectProcessPolicy, resolveReceiptBoundRoleRun, trackerSnapshotFreshness,
+  readProjectExecutionMode, readProjectProcessPolicy, resolveReceiptBoundRoleRun, trackerSnapshotFreshness,
   executeAgentSubmissionTransaction, type Database} from './runtime.ts';
 
 describe('project-scoped active attempts', () => {
@@ -76,6 +76,19 @@ describe('versioned project process projection', () => {
     await expect(readProjectProcessPolicy({query} as unknown as Database,'actor','project')).resolves.toMatchObject({policy});
     expect(query.mock.calls[0]?.[0]).toContain("action='project.process.configure'");
     expect(query.mock.calls[0]?.[0]).toContain("s.kind='project_process_policy_v1'");
+  });
+});
+
+describe('project execution mode projection', () => {
+  it('defaults to manual and reads only the latest project-scoped command', async () => {
+    const empty = vi.fn().mockResolvedValue({rows:[]});
+    await expect(readProjectExecutionMode({query:empty} as unknown as Database,'actor','project'))
+      .resolves.toEqual({mode:'manual',actorId:null,changedAt:null});
+    const query = vi.fn().mockResolvedValue({rows:[{actorId:'actor',mode:'autonomous',
+      changedAt:new Date('2026-08-26T10:00:00.000Z')}]});
+    await expect(readProjectExecutionMode({query} as unknown as Database,'actor','project'))
+      .resolves.toEqual({mode:'autonomous',actorId:'actor',changedAt:'2026-08-26T10:00:00.000Z'});
+    expect(query.mock.calls[0]?.[0]).toContain("action='project.execution.mode'");
   });
 });
 

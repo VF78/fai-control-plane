@@ -1,6 +1,7 @@
 import {describe, expect, it, vi} from 'vitest';
 import {dispatchClientConversationAction, dispatchConversationAction, type ReceiptBoundRoleRun} from './conversation-dispatcher.ts';
-import type {ClientConversationEnvelope, InternalConversationEnvelope, ProjectRole} from '@fai-control-plane/domain';
+import {validateConversationEnvelope, type ClientConversationEnvelope, type InternalConversationEnvelope,
+  type ProjectRole} from '@fai-control-plane/domain';
 
 const envelope: ClientConversationEnvelope = {message: {projectId: 'project', contour: 'client-edge',
   channelReference: 'channel', senderReference: 'sender', messageReference: 'message',
@@ -16,7 +17,8 @@ const ports = (identity: {actorId: string; role: ProjectRole} | null = {actorId:
   sources: {add: vi.fn(async () => ({referenceId: 'source-1'}))},
   identities: {resolveActiveHuman: vi.fn(async () => identity)},
   receipts: {exists: vi.fn(async () => false), record: vi.fn(async () => undefined)},
-  completion: {complete: vi.fn(async () => 'recorded' as const)}
+  completion: {complete: vi.fn(async () => 'recorded' as const)},
+  executionMode: {configure: vi.fn(async () => ({referenceId:'autonomous'}))}
 });
 describe('client conversation trust boundary', () => {
   it('creates one bounded issue without an agent port', async () => {
@@ -56,6 +58,17 @@ describe('client conversation trust boundary', () => {
     await expect(dispatchClientConversationAction({workspaceId: 'workspace', envelope: source, ports: target}))
       .resolves.toEqual({status: 'completed', referenceId: 'source-1'});
     expect(target.sources.add).toHaveBeenCalledWith(expect.objectContaining({actorId: 'client-a'}));
+  });
+
+  it('lets an authenticated operator enable autonomous mode only on the internal contour', async () => {
+    const target = ports({actorId:'operator',role:'operator'});
+    const internal = {...envelope,message:{...envelope.message,contour:'trusted-main' as const},
+      action:{type:'project.execution.mode' as const,mode:'autonomous' as const}};
+    expect(validateConversationEnvelope(internal)).toBe(true);
+    await expect(dispatchConversationAction({workspaceId:'workspace',envelope:internal,ports:target}))
+      .resolves.toEqual({status:'completed',referenceId:'autonomous'});
+    expect(target.executionMode.configure).toHaveBeenCalledWith(expect.objectContaining({actorId:'operator',
+      projectId:'project',mode:'autonomous'}));
   });
 });
 

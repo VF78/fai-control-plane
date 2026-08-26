@@ -44,7 +44,7 @@ class PluginTest(unittest.TestCase):
     def test_registers_bounded_tools_and_identity_hooks(self):
         context = Context()
         PLUGIN.register(context)
-        self.assertEqual(len(context.tools), 10)
+        self.assertEqual(len(context.tools), 11)
         self.assertEqual({tool["toolset"] for tool in context.tools}, {"fai_internal", "fai_client"})
         self.assertIn("pre_gateway_dispatch", context.hooks)
         self.assertIn("pre_llm_call", context.hooks)
@@ -103,18 +103,16 @@ class PluginTest(unittest.TestCase):
             session_id="browser:" + "a" * 64, platform="api_server"
         )
         protocol = result["context"]
-        self.assertIn("exactly one non-interactive codex exec", protocol)
-        self.assertIn("fresh detached worktree", protocol)
-        self.assertIn("/opt/data/work/runs/<64-hex-correlation-id>", protocol)
-        self.assertIn("--sandbox workspace-write", protocol)
-        self.assertIn("--output-schema /opt/fai/agent-executor-result.schema.json", protocol)
-        self.assertIn("Do not make a second gh query", protocol)
-        self.assertIn("runs only missing acceptance/risk checks", protocol)
-        self.assertIn("first reviews the unchanged PR independently", protocol)
-        self.assertIn("one localized low-risk fix on the existing PR branch", protocol)
-        self.assertIn("requests developer rework instead", protocol)
-        self.assertIn("rework updates that same PR head branch", protocol)
-        self.assertIn("never creates a duplicate PR", protocol)
+        self.assertIn("exactly one foreground non-interactive Codex CLI", protocol)
+        self.assertIn("stable issue worktree under /opt/data/work/items", protocol)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox --ephemeral", protocol)
+        self.assertIn("Give Codex only the issue URL, role, constraints and acceptance criteria", protocol)
+        self.assertIn("missing acceptance/risk checks", protocol)
+        self.assertIn("one localized low-risk defect", protocol)
+        self.assertIn("returns Dev rework", protocol)
+        self.assertIn("Reuse the issue branch/worktree/PR", protocol)
+        self.assertIn("Never duplicate an issue or PR", protocol)
+        self.assertIn("call fai_project_item_stage", protocol)
 
     def test_non_role_api_session_gets_no_project_protocol(self):
         context = Context()

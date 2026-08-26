@@ -151,16 +151,24 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
   if (binding === null || binding.agentCredentialRef === null || binding.requesterRole !== 'project_owner') {
     throw new Error('agent_profile_denied');
   }
+  const stored = await readProjectAgentProfile(database, input.actorId, input.projectId);
+  const token = (await secretResolver.resolve(binding.agentCredentialRef, 'agent_delivery')).value;
+  if (stored.status === 'ready' && stored.profile !== null) {
+    if (await profileCapabilitiesAvailable(stored.profile, token)) return stored;
+    const client = await managementClient();
+    const restarted = await client.request('/api/gateway/restart', {method: 'POST'});
+    if (!restarted.ok || !await profileCapabilitiesAvailable(stored.profile, token, 12)) {
+      throw new Error('agent_profile_probe_failed');
+    }
+    return stored;
+  }
   const project = await database.query<{slug: string}>(
     'select slug from projects where id=$1 and workspace_id=$2', [input.projectId, input.workspaceId]);
   const slug = project.rows[0]?.slug;
   if (slug === undefined) throw new Error('agent_profile_denied');
-  const stored = await readProjectAgentProfile(database, input.actorId, input.projectId);
-  const profile = stored.status === 'ready' && stored.profile !== null
-    ? stored.profile : slug === 'ascon' ? 'internal' : `project-${slug}`;
+  const profile = slug === 'ascon' ? 'internal' : `project-${slug}`;
   const template = process.env.HERMES_PROFILE_TEMPLATE ?? 'fai-project-template';
   const workDirectory = `/opt/data/work/projects/${slug}`;
-  const token = (await secretResolver.resolve(binding.agentCredentialRef, 'agent_delivery')).value;
   const client = await managementClient();
   const listed = await expectJson<{profiles: readonly {name?: string}[]}>(await client.request('/api/profiles'));
   const created = !listed.profiles.some((item) => item.name === profile);
@@ -175,7 +183,7 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
     headers: {'content-type': 'application/json'}, body: JSON.stringify({key: 'API_SERVER_KEY', value: token, profile})}));
   if (created) await expectJson(await client.request(`/api/config?profile=${encodeURIComponent(profile)}`, {method: 'PUT',
     headers: {'content-type': 'application/json'}, body: JSON.stringify({profile, config: {terminal: {
-      backend: 'local', cwd: workDirectory}, platform_toolsets: {api_server: ['terminal', 'no_mcp']},
+      backend: 'local', cwd: workDirectory}, platform_toolsets: {api_server: ['terminal', 'fai_internal', 'no_mcp']},
     toolsets: ['file', 'terminal', 'search', 'web', 'skills', 'todo', 'memory', 'session_search',
       'fai_internal', 'clarify']}})}));
   const endpointPath = `/p/${encodeURIComponent(profile)}/v1/runs`;
@@ -187,11 +195,5 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
 export const ensureProjectAgentProfile = async (database: Database, input: Readonly<{
   workspaceId: string; actorId: string; projectId: string; idempotencyKey: string;
 }>): Promise<ProjectAgentProfileView> => {
-  const current = await readProjectAgentProfile(database, input.actorId, input.projectId);
-  if (current.status !== 'ready' || current.profile === null) return activateProjectAgentProfile(database, input);
-  const binding = await resolveAgentSubmissionBinding(database, input.actorId, input.projectId);
-  if (binding === null || binding.agentCredentialRef === null) throw new Error('agent_profile_denied');
-  const token = (await secretResolver.resolve(binding.agentCredentialRef, 'agent_delivery')).value;
-  if (await profileCapabilitiesAvailable(current.profile, token)) return current;
   return activateProjectAgentProfile(database, input);
 };
