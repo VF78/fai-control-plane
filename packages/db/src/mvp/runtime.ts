@@ -43,12 +43,13 @@ const normalizeTrackerItems = (value: unknown): TrackerSnapshot['items'] => Arra
   : [];
 
 export const createDatabase = (connectionString = process.env.DATABASE_URL): Database => {
-  if (connectionString !== undefined && connectionString.length > 0) return new Pool({connectionString, max: 10, idleTimeoutMillis: 30_000});
+  const pool = {max: 10, min: 1, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 400};
+  if (connectionString !== undefined && connectionString.length > 0) return new Pool({connectionString, ...pool});
   if ([process.env.PGHOST,process.env.PGUSER,process.env.PGDATABASE,process.env.PGPASSWORD].some((value) => !value)) {
     throw new Error('database_configuration_required');
   }
   return new Pool({host: process.env.PGHOST,port: Number(process.env.PGPORT ?? 5432),user: process.env.PGUSER,
-    database: process.env.PGDATABASE,password: process.env.PGPASSWORD,max:10,idleTimeoutMillis:30_000});
+    database: process.env.PGDATABASE,password: process.env.PGPASSWORD,...pool});
 };
 
 export const databaseReady = async (database: Database): Promise<boolean> => {
@@ -121,9 +122,13 @@ export type ProjectOperatorEvidenceView = Readonly<{
   audit: readonly Readonly<{action: string; targetReference: string; occurredAt: string}>[];
 }>;
 
+export type ProjectOperatorEvidenceSection =
+  'people'|'ingress'|'messenger'|'receipts'|'audit'|'conversations'|'agentSubmissions';
+
 export const listProjectOperatorEvidenceViews = async (
   database: Database,
-  actorId: string
+  actorId: string,
+  sections: ReadonlySet<ProjectOperatorEvidenceSection> | null = null
 ): Promise<readonly ProjectOperatorEvidenceView[]> => {
   type PersonRow = {projectId: string; membershipId: string; actorId: string; displayName: string; kind: 'human' | 'agent' | 'system'; role: string; active: boolean;
     provider: string | null; subjectHash: string | null};
@@ -136,34 +141,36 @@ export const listProjectOperatorEvidenceViews = async (
   type AgentSubmissionRow = {projectId: string; lastOccurredAt: Date; count: string};
   type AgentSubmissionEvidenceRow = {projectId: string; targetReference: string; deliveryReference: string; occurredAt: Date;
     status: 'started'|'completed'|'failed'};
+  const enabled = (section: ProjectOperatorEvidenceSection) => sections === null || sections.has(section);
+  const empty = <T>() => Promise.resolve({rows: [] as T[]});
   const scope = `select p.id from projects p join project_memberships m on m.project_id=p.id
     where m.actor_id=$1 and m.active=true`;
   const [people, ingress, deliveries, receipts, audit, conversations, agentSubmissions, agentSubmissionEvidence] = await Promise.all([
-    database.query<PersonRow>(`select m.project_id as "projectId",m.id as "membershipId",a.id as "actorId",a.display_name as "displayName",a.kind,m.role,m.active,
+    enabled('people') ? database.query<PersonRow>(`select m.project_id as "projectId",m.id as "membershipId",a.id as "actorId",a.display_name as "displayName",a.kind,m.role,m.active,
       i.provider,i.subject_hash as "subjectHash" from project_memberships m join actors a on a.id=m.actor_id
       left join actor_external_identities i on i.actor_id=a.id where m.project_id in (${scope})
-      order by a.display_name,i.provider`, [actorId]),
-    database.query<IngressRow>(`select project_id as "projectId",provider,max(received_at) as "lastReceivedAt",count(*)::text as count
-      from incoming_events where project_id in (${scope}) group by project_id,provider`, [actorId]),
-    database.query<DeliveryRow>(`select project_id as "projectId",
+      order by a.display_name,i.provider`, [actorId]) : empty<PersonRow>(),
+    enabled('ingress') ? database.query<IngressRow>(`select project_id as "projectId",provider,max(received_at) as "lastReceivedAt",count(*)::text as count
+      from incoming_events where project_id in (${scope}) group by project_id,provider`, [actorId]) : empty<IngressRow>(),
+    enabled('messenger') ? database.query<DeliveryRow>(`select project_id as "projectId",
       count(*) filter(where delivered_at is null and last_error_code is null)::text as pending,
       count(*) filter(where delivered_at is not null)::text as delivered,
       count(*) filter(where delivered_at is null and last_error_code is not null)::text as failed,
       max(coalesce(delivered_at,claimed_at,created_at)) as "lastOccurredAt" from outbox_events
-      where project_id in (${scope}) and topic='messenger-notification' group by project_id`, [actorId]),
-    database.query<ReceiptRow>(`select project_id as "projectId",command_type as "commandType",result_reference as "resultReference",occurred_at as "occurredAt"
-      from command_receipts where project_id in (${scope}) order by occurred_at desc limit 80`, [actorId]),
-    database.query<AuditRow>(`select project_id as "projectId",action,target_reference as "targetReference",occurred_at as "occurredAt"
-      from audit_events where project_id in (${scope}) order by occurred_at desc limit 80`, [actorId]),
-    database.query<ConversationRow>(`select project_id as "projectId",details->>'contour' as contour,
+      where project_id in (${scope}) and topic='messenger-notification' group by project_id`, [actorId]) : empty<DeliveryRow>(),
+    enabled('receipts') ? database.query<ReceiptRow>(`select project_id as "projectId",command_type as "commandType",result_reference as "resultReference",occurred_at as "occurredAt"
+      from command_receipts where project_id in (${scope}) order by occurred_at desc limit 80`, [actorId]) : empty<ReceiptRow>(),
+    enabled('audit') ? database.query<AuditRow>(`select project_id as "projectId",action,target_reference as "targetReference",occurred_at as "occurredAt"
+      from audit_events where project_id in (${scope}) order by occurred_at desc limit 80`, [actorId]) : empty<AuditRow>(),
+    enabled('conversations') ? database.query<ConversationRow>(`select project_id as "projectId",details->>'contour' as contour,
       max(occurred_at) as "lastOccurredAt",count(*)::text as count from audit_events
       where project_id in (${scope}) and action like 'conversation.%'
         and details->>'contour' in ('trusted-main','client-edge')
-      group by project_id,details->>'contour'`, [actorId]),
-    database.query<AgentSubmissionRow>(`select project_id as "projectId",max(occurred_at) as "lastOccurredAt",
+      group by project_id,details->>'contour'`, [actorId]) : empty<ConversationRow>(),
+    enabled('agentSubmissions') ? database.query<AgentSubmissionRow>(`select project_id as "projectId",max(occurred_at) as "lastOccurredAt",
       count(*)::text as count from command_receipts where project_id in (${scope}) and command_type='agent.submit'
-      group by project_id`, [actorId]),
-    database.query<AgentSubmissionEvidenceRow>(`select a.project_id as "projectId",a.target_reference as "targetReference",
+      group by project_id`, [actorId]) : empty<AgentSubmissionRow>(),
+    enabled('agentSubmissions') ? database.query<AgentSubmissionEvidenceRow>(`select a.project_id as "projectId",a.target_reference as "targetReference",
       r.result_reference as "deliveryReference",r.occurred_at as "occurredAt",
       coalesce(terminal.details->>'status','started') as status from audit_events a
       join command_receipts r on r.project_id=a.project_id and r.actor_id is not distinct from a.actor_id
@@ -172,6 +179,7 @@ export const listProjectOperatorEvidenceViews = async (
         and t.correlation_id=a.correlation_id and t.action in ('agent.attempt.completed','agent.attempt.failed')
         order by t.occurred_at desc limit 1) terminal on true
       where a.project_id in (${scope}) and a.action='agent.submit' order by r.occurred_at desc limit 80`, [actorId])
+      : empty<AgentSubmissionEvidenceRow>()
   ]);
   const ids = await listProjects(database, actorId);
   return ids.map((project) => {
@@ -210,6 +218,49 @@ export const listProjects = async (database: Database, actorId: string): Promise
      where m.actor_id = $1 and m.active = true order by p.name`, [actorId]
   );
   return result.rows;
+};
+
+export const readProjectMembershipRole = async (
+  database: Database,
+  actorId: string,
+  projectId: string
+): Promise<ProjectRole | null> => {
+  const result = await database.query<{role: ProjectRole}>(
+    `select role from project_memberships where project_id=$1 and actor_id=$2 and active=true`,
+    [projectId, actorId]
+  );
+  return result.rows[0]?.role ?? null;
+};
+
+export type ProjectAgentSubmissionView = Readonly<{
+  deliveryReference: string;
+  occurredAt: string;
+  status: 'started'|'completed'|'failed';
+}>;
+
+/** The one attempt shown on a task detail; avoids loading the full operator evidence projection. */
+export const readProjectAgentSubmissionView = async (
+  database: Database,
+  actorId: string,
+  projectId: string,
+  targetReference: string
+): Promise<ProjectAgentSubmissionView | null> => {
+  const result = await database.query<Omit<ProjectAgentSubmissionView, 'occurredAt'> & {occurredAt: Date}>(
+    `select r.result_reference as "deliveryReference",a.occurred_at as "occurredAt",
+       coalesce(terminal.details->>'status','started') as status
+     from audit_events a
+     join project_memberships m on m.project_id=a.project_id and m.actor_id=$1 and m.active=true
+     join command_receipts r on r.project_id=a.project_id
+       and r.actor_id is not distinct from a.actor_id and r.occurred_at=a.occurred_at
+       and r.command_type='agent.submit'
+     left join lateral (select t.details from audit_events t where t.project_id=a.project_id
+       and t.correlation_id=a.correlation_id and t.action in ('agent.attempt.completed','agent.attempt.failed')
+       order by t.occurred_at desc limit 1) terminal on true
+     where a.project_id=$2 and a.target_reference=$3 and a.action='agent.submit'
+     order by a.occurred_at desc limit 1`, [actorId, projectId, targetReference]
+  );
+  const row = result.rows[0];
+  return row === undefined ? null : {...row, occurredAt: row.occurredAt.toISOString()};
 };
 
 export const projectAgentDeliveryConfigured = async (
