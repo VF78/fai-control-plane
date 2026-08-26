@@ -5,9 +5,26 @@ import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSna
   trackerPollIntervalMs, trackerStaleAfterMs} from '@fai-control-plane/domain';
 import {activateProjectContextSnapshot, addSourceArtifact, projectAgentDeliveryConfigured, readActiveProjectContext, readAgentRoutingPolicy,
   createAgentAttemptStore,
-  readProjectContextStatus,
+  readProjectAgentSubmissionView, readProjectContextStatus,
   readProjectExecutionMode, readProjectProcessPolicy, trackerSnapshotFreshness,
-  executeAgentSubmissionTransaction, type Database} from './runtime.ts';
+  executeAgentSubmissionTransaction, readProjectMembershipRole, type Database} from './runtime.ts';
+
+describe('focused page projections', () => {
+  it('reads one active membership role', async () => {
+    const query = vi.fn().mockResolvedValue({rows:[{role:'project_owner'}]});
+    await expect(readProjectMembershipRole({query} as unknown as Database,'actor','project'))
+      .resolves.toBe('project_owner');
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('active=true'), ['project','actor']);
+  });
+
+  it('reads only the latest submission for the selected task', async () => {
+    const query = vi.fn().mockResolvedValue({rows:[{deliveryReference:'run-1',
+      occurredAt:new Date('2026-08-26T10:00:00.000Z'),status:'completed'}]});
+    await expect(readProjectAgentSubmissionView({query} as unknown as Database,'actor','project','item'))
+      .resolves.toEqual({deliveryReference:'run-1',occurredAt:'2026-08-26T10:00:00.000Z',status:'completed'});
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('a.target_reference=$3'), ['actor','project','item']);
+  });
+});
 
 describe('project-scoped active attempts', () => {
   it('filters by project before applying the bounded limit', async () => {

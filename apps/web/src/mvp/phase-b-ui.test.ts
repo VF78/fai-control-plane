@@ -32,11 +32,21 @@ describe('Phase B operator surfaces', () => {
     expect(page).not.toContain('TaskApprovalEvidence');
     expect(page).toContain('<PhaseB view={view}');
     expect(page).toContain('TaskExecutorControl');
-    expect(page).toContain('evidence?.agentSubmissions.recent.find');
+    expect(page).toContain('readProjectAgentSubmissionView(database, session.actorId, selected.id, query.task)');
     expect(page).toContain('projectAgentDeliveryConfigured(database, session.actorId, selected.id)');
     expect(page).toContain('integrationConfig(process.env, agentDeliveryConfigured)');
     expect(view).not.toContain('integrationConfig(');
     expect(view).toContain('ProjectRegistrationControl');
     expect(view).toContain('ProjectAgentActivationControl');
+  });
+
+  it('loads only the projections required by the selected surface', async () => {
+    const page = await source('../../app/page.tsx');
+    expect(page).toContain("view === 'settings' ? listProjectSourceViews");
+    expect(page).toContain("view === 'settings' ? listApprovalEvidenceViews");
+    expect(page).toContain("view === 'systems' ? projectAgentDeliveryConfigured");
+    expect(page).toContain("view === 'conversations'\n      ? ['people','messenger','conversations']");
+    expect(page).toContain("view === 'systems' ? ['receipts','audit','agentSubmissions']");
+    expect(page).not.toContain('const [projects, sources, approvals, operatorEvidence]');
   });
 });
