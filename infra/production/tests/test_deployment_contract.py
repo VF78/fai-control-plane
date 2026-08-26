@@ -28,7 +28,7 @@ class DeploymentContractTest(unittest.TestCase):
             "FCP_HERMES_READINESS_HOST_DIR=/var/lib/fai-hermes-ascon/readiness\n",
             environment,
         )
-        self.assertIn("BOOTSTRAP_HERMES_PROFILE=internal\n", environment)
+        self.assertNotIn("BOOTSTRAP_HERMES_PROFILE", environment)
         digest = hashlib.sha256(environment_file.read_bytes()).hexdigest()
         runbook = (ROOT / "docs/ops/PRODUCTION_RUNBOOK.md").read_text()
         self.assertIn(digest, runbook)

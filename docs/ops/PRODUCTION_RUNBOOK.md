@@ -98,7 +98,7 @@ Reviewed non-secret Hermes environment example SHA-256:
 `6e36edade125c76415443da02c40c2569544fe71524fa1f53df7f88902a604bb`.
 
 Reviewed non-secret Control Plane environment example SHA-256:
-`ea205e1cc08865df22e5f52ffcec37f84f06abe957c693be08b4b470693a7a98`.
+`f2df6de4ec68d2e25d2fe95873ce15a939b3a03da3625812d0a1040295f8b136`.
 
 - Mount only the dedicated, fine-grained ASCON repository credential into the
   isolated Hermes gateway. Store its canonical value at
