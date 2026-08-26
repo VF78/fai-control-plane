@@ -52,7 +52,7 @@ readonly release_commit=$2
 readonly secret_root=/etc/fai-control-plane-mvp/secrets
 readonly secret_names=(
   postgres-password github-login-client-secret github-projects-token github-webhook-secret
-  hermes-token telegram-bot-token hermes-internal-action-token hermes-client-action-token
+  hermes-token telegram-bot-token hermes-internal-action-token
 )
 readonly hermes_management_network=fai-hermes-management
 readonly -a hermes_management_secret_variables=(
