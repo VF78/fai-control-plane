@@ -500,6 +500,77 @@ export const readActiveProjectProcessPolicy = async (database: Database,
   return projectProcessPolicyView(result.rows[0]);
 };
 
+export type ProjectExecutionModeView = Readonly<{
+  mode: 'manual'|'autonomous'; actorId: string|null; changedAt: string|null;
+}>;
+
+const executionModeView = (row: Readonly<{actorId: string; mode: string; changedAt: Date}>|undefined):
+  ProjectExecutionModeView => row === undefined ? {mode: 'manual', actorId: null, changedAt: null} : {
+    mode: row.mode === 'autonomous' ? 'autonomous' : 'manual', actorId: row.actorId,
+    changedAt: row.changedAt.toISOString()
+  };
+
+export const readProjectExecutionMode = async (database: Database, actorId: string,
+  projectId: string): Promise<ProjectExecutionModeView> => {
+  const result = await database.query<{actorId: string; mode: string; changedAt: Date}>(
+    `select a.actor_id as "actorId",a.details->>'mode' as mode,a.occurred_at as "changedAt"
+     from audit_events a join project_memberships m on m.project_id=a.project_id and m.actor_id=$1 and m.active=true
+     where a.project_id=$2 and a.action='project.execution.mode' order by a.occurred_at desc,a.created_at desc limit 1`,
+    [actorId, projectId]);
+  return executionModeView(result.rows[0]);
+};
+
+export const readActiveProjectExecutionMode = async (database: Database,
+  projectId: string): Promise<ProjectExecutionModeView> => {
+  const result = await database.query<{actorId: string; mode: string; changedAt: Date}>(
+    `select actor_id as "actorId",details->>'mode' as mode,occurred_at as "changedAt"
+     from audit_events where project_id=$1 and action='project.execution.mode'
+     order by occurred_at desc,created_at desc limit 1`, [projectId]);
+  return executionModeView(result.rows[0]);
+};
+
+export const saveProjectExecutionMode = async (database: Database, input: Readonly<{
+  workspaceId: string; projectId: string; actorId: string; mode: 'manual'|'autonomous';
+  idempotencyKey: string; occurredAt: string;
+}>): Promise<ProjectExecutionModeView> => {
+  if (!['manual','autonomous'].includes(input.mode) || !/^[a-z0-9:_-]{1,256}$/.test(input.idempotencyKey) ||
+    !Number.isFinite(Date.parse(input.occurredAt))) throw new Error('project_execution_mode_invalid');
+  const client = await database.connect();
+  try {
+    await client.query('begin');
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [input.idempotencyKey]);
+    const membership = await client.query<{workspaceId: string}>(`select p.workspace_id as "workspaceId"
+      from project_memberships m join projects p on p.id=m.project_id
+      where m.project_id=$1 and m.actor_id=$2 and m.active=true and m.role in ('project_owner','operator') for update`,
+    [input.projectId,input.actorId]);
+    if (membership.rows[0]?.workspaceId !== input.workspaceId) throw new Error('project_execution_mode_denied');
+    const prior = await client.query<{mode: string; changedAt: Date}>(`select a.details->>'mode' as mode,
+      a.occurred_at as "changedAt" from command_receipts r join audit_events a on a.project_id=r.project_id
+      and a.actor_id is not distinct from r.actor_id and a.occurred_at=r.occurred_at
+      where r.idempotency_key=$1 and r.command_type='project.execution.mode'`, [input.idempotencyKey]);
+    if (prior.rows[0] !== undefined) {
+      await client.query('rollback'); return executionModeView({actorId: input.actorId,
+        mode: prior.rows[0].mode, changedAt: prior.rows[0].changedAt});
+    }
+    await client.query(`insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
+      values($1,$2,$3,'project.execution.mode',$4,$5)`,
+    [input.projectId,input.actorId,input.idempotencyKey,input.mode,input.occurredAt]);
+    await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
+      values($1,$2,$3,'project.execution.mode',$4,$5,$6,$7)`, [input.workspaceId,input.projectId,input.actorId,
+      input.mode,`mode:${input.idempotencyKey}`,JSON.stringify({mode: input.mode}),input.occurredAt]);
+    const notificationKey = `${input.idempotencyKey}:telegram`;
+    const text = input.mode === 'autonomous'
+      ? 'Автономный режим проекта включён. ИИ агент будет брать по одной готовой задаче до обязательного согласования, блокера или завершения работ.'
+      : 'Автономный режим проекта остановлен. Текущая задача продолжает контролироваться, новые задачи автоматически не запускаются.';
+    await client.query(`insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
+      values($1,'messenger-notification',$2,$3,$4) on conflict(idempotency_key) do nothing`, [input.projectId,
+      notificationKey,JSON.stringify({message:{projectId:input.projectId,contour:'trusted-main',
+        channelReference:'telegram:internal',text,idempotencyKey:notificationKey}}),input.occurredAt]);
+    await client.query('commit'); return {mode: input.mode, actorId: input.actorId, changedAt: input.occurredAt};
+  } catch (error) { await client.query('rollback'); throw error; }
+  finally { client.release(); }
+};
+
 export const saveProjectProcessPolicy = async (database: Database, input: Readonly<{
   workspaceId: string; projectId: string; actorId: string; policy: ProjectProcessPolicy;
   idempotencyKey: string; occurredAt: string;
@@ -1092,7 +1163,7 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
 export const createAgentAttemptStore = (database: Database, projectId: string | null = null): AgentAttemptStore => ({
   async resolve(input) {
     const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
-      itemTitle: string | null; itemUrl: string | null; issueId: string; observedVersion: string;
+      itemTitle: string | null; itemUrl: string | null; issueId: string; role: 'manager'|'developer'|'qa'; retryOf: string|null;
       successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
       routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
       deliveryReference: string; correlationId: string; status: 'started'|'completed'|'failed'; occurredAt: Date}>(
@@ -1100,6 +1171,7 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
        a.target_reference as "itemId",r.result_reference as "deliveryReference",a.correlation_id as "correlationId",
        a.occurred_at as "occurredAt",
        item.title as "itemTitle",item.url as "itemUrl",coalesce(a.details->>'issueId',item."issueId") as "issueId",
+       a.details->>'role' as role,a.details->>'retryOf' as "retryOf",
        a.details->>'observedVersion' as "observedVersion",
        a.details->>'successTargetTitle' as "successTargetTitle",a.details->>'reworkTargetTitle' as "reworkTargetTitle",
        a.details->>'expectedOwnerOptionId' as "expectedOwnerOptionId",a.details->'routingPolicy' as "routingPolicy",
@@ -1122,7 +1194,7 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
   },
   async listActive(limit) {
     const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
-      itemTitle: string | null; itemUrl: string | null; issueId: string; observedVersion: string;
+      itemTitle: string | null; itemUrl: string | null; issueId: string; role: 'manager'|'developer'|'qa'; retryOf: string|null;
       successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
       routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
       deliveryReference: string; correlationId: string; status: 'started'; occurredAt: Date}>(
@@ -1130,6 +1202,7 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
        a.target_reference as "itemId",r.result_reference as "deliveryReference",a.correlation_id as "correlationId",
        a.occurred_at as "occurredAt",
        item.title as "itemTitle",item.url as "itemUrl",coalesce(a.details->>'issueId',item."issueId") as "issueId",
+       a.details->>'role' as role,a.details->>'retryOf' as "retryOf",
        a.details->>'observedVersion' as "observedVersion",
        a.details->>'successTargetTitle' as "successTargetTitle",a.details->>'reworkTargetTitle' as "reworkTargetTitle",
        a.details->>'expectedOwnerOptionId' as "expectedOwnerOptionId",a.details->'routingPolicy' as "routingPolicy",

@@ -65,7 +65,6 @@ readonly -a readable_files=(
   "$deploy_root/infra/hermes-ascon/native-entrypoint.sh"
   "$deploy_root/infra/hermes-ascon/management-entrypoint.sh"
   "$deploy_root/infra/hermes-ascon/Dockerfile"
-  "$deploy_root/infra/hermes-ascon/agent-executor-result.schema.json"
 )
 
 fail() {
@@ -332,7 +331,6 @@ readable = (
     "/opt/data/hooks/fai-identity/handler.py",
     "/opt/data/profiles/internal/bridge-token",
     "/opt/data/profiles/bitrix-client/bridge-token",
-    "/opt/fai/agent-executor-result.schema.json",
     "/opt/fai-devops/ssh/identity",
     "/opt/fai-devops/ssh/known_hosts",
     "/opt/data/.config/yandex-cloud/config.yaml",

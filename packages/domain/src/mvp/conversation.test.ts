@@ -34,6 +34,13 @@ describe('MVP conversation boundary', () => {
       task:{kind:'surprise',title:'Task',statement:'Do it'}}})).toBeNull();
   });
 
+  it('allows autonomous mode only on the authenticated internal contour', () => {
+    const action = {type:'project.execution.mode' as const,mode:'autonomous' as const};
+    expect(validateConversationEnvelope({...envelope('trusted-main'),action})).toBe(true);
+    expect(validateConversationEnvelope({...envelope('client-edge'),action})).toBe(false);
+    expect(parseConversationEnvelope({...envelope('trusted-main'),action})).toMatchObject({action});
+  });
+
   it('rejects message bodies over the persistence-free ingress limit', () => {
     const value = envelope();
     expect(validateConversationEnvelope({...value, message: {...value.message, text: 'x'.repeat(4_001)}})).toBe(false);

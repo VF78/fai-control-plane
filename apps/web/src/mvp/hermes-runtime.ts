@@ -6,7 +6,8 @@ import {
   createStores,
   readActiveProjectContext,
   resolveActiveHumanMember,
-  resolveReceiptBoundRoleRun
+  resolveReceiptBoundRoleRun,
+  saveProjectExecutionMode
 } from '@fai-control-plane/db';
 import {decideApproval, dispatchClientConversationAction, dispatchConversationAction} from '@fai-control-plane/application';
 import {
@@ -86,6 +87,13 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
       sourceReference: string; idempotencyKey: string}>) {
       const result = await startGitHubProcess(database, command);
       return {referenceId: result.chainReference};
+    }},
+    executionMode: {async configure(command: Readonly<{actorId: string; projectId: string;
+      mode: 'manual'|'autonomous'; idempotencyKey: string; observedAt: string}>) {
+      const result = await saveProjectExecutionMode(database, {workspaceId, projectId: command.projectId,
+        actorId: command.actorId, mode: command.mode, idempotencyKey: command.idempotencyKey,
+        occurredAt: command.observedAt});
+      return {referenceId: result.mode};
     }}
   };
   return createHermesConversationActionHandler({

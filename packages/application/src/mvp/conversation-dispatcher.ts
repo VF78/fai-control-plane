@@ -42,6 +42,8 @@ type SharedPorts = Readonly<{
   processStart?: Readonly<{execute(input: Readonly<{actorId: string; projectId: string;
     task: Extract<InternalConversationEnvelope['action'], {type: 'process.start'}>['task'];
     sourceReference: string; idempotencyKey: string}>): Promise<Readonly<{referenceId: string}>>}>;
+  executionMode?: Readonly<{configure(input: Readonly<{actorId: string; projectId: string;
+    mode: 'manual'|'autonomous'; idempotencyKey: string; observedAt: string}>): Promise<Readonly<{referenceId: string}>>}>;
 }>;
 
 export type ClientConversationPorts = SharedPorts;
@@ -60,6 +62,7 @@ const dispatch = async (input: Readonly<{
     return {status: 'denied'};
   }
   if (envelope.message.contour === 'client-edge' && envelope.action.type === 'process.start') return {status: 'denied'};
+  if (envelope.message.contour === 'client-edge' && envelope.action.type === 'project.execution.mode') return {status: 'denied'};
   const roleRun = input.roleRun;
   if (roleRun !== undefined && (envelope.message.contour !== 'trusted-main' ||
     envelope.message.correlationId !== roleRun.sessionId || envelope.message.projectId !== roleRun.projectId ||
@@ -103,6 +106,14 @@ const dispatch = async (input: Readonly<{
       referenceId = (await ports.processStart.execute({actorId, projectId: envelope.message.projectId,
         task: envelope.action.task, sourceReference: envelope.message.messageReference,
         idempotencyKey: envelope.message.idempotencyKey})).referenceId;
+      break;
+    }
+    case 'project.execution.mode': {
+      if (envelope.message.contour !== 'trusted-main' || roleRun !== undefined || ports.executionMode === undefined ||
+        !['project_owner','operator'].includes(identity.role)) return {status: 'denied'};
+      referenceId = (await ports.executionMode.configure({actorId, projectId: envelope.message.projectId,
+        mode: envelope.action.mode, idempotencyKey: envelope.message.idempotencyKey,
+        observedAt: envelope.message.observedAt})).referenceId;
       break;
     }
     case 'issue.update': {

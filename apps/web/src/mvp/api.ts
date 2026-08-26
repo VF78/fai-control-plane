@@ -15,10 +15,12 @@ import {
   readAgentRoutingPolicy,
   readProjectProcessPolicy,
   readProjectAgentProfile,
+  readProjectExecutionMode,
   readProjectTrackerCapabilities,
   readActiveProjectContext,
   refreshProjectContext,
   saveAgentRoutingPolicy,
+  saveProjectExecutionMode,
   subjectHash
 } from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, decideApproval,
@@ -163,6 +165,20 @@ export const projectAgentProfile = async (request:Request,projectId:string):Prom
     return Response.json(await ensureProjectAgentProfile(database,{workspaceId:session.workspaceId,actorId:session.actorId,
       projectId,idempotencyKey:string(body.idempotencyKey,128)}),{headers:{'cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
+};
+
+export const projectExecutionMode = async (request: Request, projectId: string): Promise<Response> => {
+  try {
+    const database = getDatabase(); const session = await requireSession();
+    if (request.method === 'GET') return Response.json(await readProjectExecutionMode(database, session.actorId, projectId),
+      {headers: {'cache-control': 'no-store'}});
+    if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'GET, POST'}});
+    requireCsrf(request); const body = await json(request); const mode = string(body.mode, 16);
+    if (mode !== 'manual' && mode !== 'autonomous') throw new Error('body_invalid');
+    return Response.json(await saveProjectExecutionMode(database, {workspaceId: session.workspaceId, projectId,
+      actorId: session.actorId, mode, idempotencyKey: string(body.idempotencyKey),
+      occurredAt: new Date().toISOString()}), {headers: {'cache-control': 'no-store'}});
+  } catch (error) { return jsonError(error); }
 };
 
 export const onboard = async (request: Request): Promise<Response> => {
@@ -324,8 +340,6 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     if (kind !== 'human' && kind !== 'hermes') throw new Error('body_invalid');
     const candidate = kind === 'human' ? choice.candidate : undefined;
     if (kind === 'human' && (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))) throw new Error('body_invalid');
-    if (kind === 'hermes') await ensureProjectAgentProfile(database, {workspaceId: session.workspaceId,
-      actorId: session.actorId, projectId, idempotencyKey: `agent-profile:task:${projectId}`});
     const endpoint = kind === 'hermes' ? await agentEndpoint(database,session.actorId,projectId) : undefined;
     const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, session.actorId, projectId);
     const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery

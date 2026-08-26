@@ -1,7 +1,8 @@
-import type {AgentDeliveryPort, AgentExecutorCatalog, AgentExecutorResult, AgentRoutingPolicy, MessengerDeliveryInput, TrackerMutationPort} from '@fai-control-plane/domain';
+import type {AgentDeliveryPort, AgentExecutorCatalog, AgentExecutorResult, AgentRoutingPolicy, MessengerDeliveryInput, TrackerSnapshot} from '@fai-control-plane/domain';
 
 export type AgentAttemptRecord = Readonly<{
   workspaceId: string; projectId: string; actorId: string; itemId: string; issueId: string;
+  role: 'manager'|'developer'|'qa'; retryOf?: string|null;
   itemTitle: string | null; itemUrl: string | null;
   deliveryReference: string; correlationId: string; status: 'started'|'completed'|'failed';
   occurredAt?: string;
@@ -19,16 +20,11 @@ export type AgentAttemptStore = Readonly<{
 }>;
 
 export type AgentAttemptReconciliationPorts = Readonly<{delivery: AgentDeliveryPort; attempts: AgentAttemptStore;
-  tracker: Pick<TrackerMutationPort, 'setProjectItemStage'>;
+  readTracker(): Promise<TrackerSnapshot>;
+  recoverUnavailable?(attempt: AgentAttemptRecord): Promise<Awaited<ReturnType<AgentDeliveryPort['observe']>>>;
   continueAgentChain?(attempt: AgentAttemptRecord, targetStage: string): Promise<void>;
   composeTerminalNotification(attempt: AgentAttemptRecord, observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>,
     idempotencyKey: string): Promise<MessengerDeliveryInput>}>;
-
-const pause = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
-const twice = async <T>(operation: () => Promise<T>): Promise<T> => {
-  try { return await operation(); }
-  catch { await pause(250); return operation(); }
-};
 
 const validDeliverables = (result: AgentExecutorResult): boolean => result.deliverables.length > 0 &&
   result.deliverables.length <= 10 &&
@@ -71,10 +67,14 @@ export const composeAgentTerminalNotification = (
 const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptReconciliationPorts,
   supplied?: Awaited<ReturnType<AgentDeliveryPort['observe']>>) => {
   if (attempt.status !== 'started') return {status: attempt.status, deliveryReference: attempt.deliveryReference};
-  let observed = supplied ?? await twice(() => ports.delivery.observe(attempt.deliveryReference));
+  let observed = supplied ?? await ports.delivery.observe(attempt.deliveryReference);
   const expired = attempt.occurredAt !== undefined && Number.isFinite(Date.parse(attempt.occurredAt)) &&
     Date.now() - Date.parse(attempt.occurredAt) >= 30 * 60_000;
-  if (observed.status === 'unknown' && expired) observed = {status: 'failed', failureCode: 'provider_timeout'};
+  if (observed.status === 'unknown' && expired) {
+    observed = ports.recoverUnavailable === undefined
+      ? {status: 'failed', failureCode: 'provider_timeout'}
+      : await ports.recoverUnavailable(attempt);
+  }
   if (observed.status === 'started' || observed.status === 'unknown') {
     return {status: observed.status, deliveryReference: attempt.deliveryReference};
   }
@@ -96,16 +96,13 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
       result.decision === 'accepted' && validDeliverables(result) && target !== 'Done' && attempt.issueId.length > 0;
     if (verified.status === 'completed' && !exact) verified = {status: 'failed', failureCode: 'agent_result_invalid',
       ...(result === undefined ? {} : {result})};
-    if (verified.status === 'completed' && result !== undefined && target !== null && target !== undefined &&
-      expectedVersion !== undefined) {
-      const targetStage = target;
+    if (verified.status === 'completed' && result !== undefined && target !== null && target !== undefined) {
       try {
-        const moved = await twice(() => ports.tracker.setProjectItemStage({projectId: attempt.projectId,
-          itemId: attempt.itemId, issueId: attempt.issueId, expectedVersion,
-          stage: targetStage, idempotencyKey: `agent.status:${attempt.correlationId}:${targetStage}`}));
-        if (moved.referenceId !== attempt.itemId || moved.version === expectedVersion) {
-          throw new Error('github_mutation_failed');
-        }
+        const snapshot = await ports.readTracker();
+        const item = snapshot.items.find((candidate) => candidate.itemId === attempt.itemId &&
+          candidate.issueId === attempt.issueId && candidate.projectId === attempt.projectId);
+        if (item === undefined || item.statusOptionName !== target || item.blocked !== false ||
+          item.ownerOptionId !== attempt.expectedOwnerOptionId) throw new Error('github_readback_failed');
       } catch { verified = {status: 'failed', failureCode: 'provider_unavailable', result}; }
     }
   }
@@ -137,9 +134,15 @@ export const reconcileActiveAgentAttempts = async (limit: number, ports: AgentAt
   const results = [];
   for (const attempt of attempts) {
     let observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>;
-    try { observed = await twice(() => ports.delivery.observe(attempt.deliveryReference)); }
+    try { observed = await ports.delivery.observe(attempt.deliveryReference); }
     catch {
-      observed = {status: 'failed', failureCode: 'provider_unavailable'};
+      try {
+        observed = ports.recoverUnavailable === undefined
+          ? {status: 'failed', failureCode: 'provider_unavailable'}
+          : await ports.recoverUnavailable(attempt);
+      } catch {
+        observed = {status: 'failed', failureCode: 'provider_unavailable'};
+      }
     }
     try { results.push(await reconcileRecord(attempt, ports, observed)); }
     catch { results.push({status: 'reconciliation-failed' as const, deliveryReference: attempt.deliveryReference}); }

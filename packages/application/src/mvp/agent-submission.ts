@@ -162,9 +162,7 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
       rootCommandIdempotencyKey: command.root.commandIdempotencyKey}),
     retryOf: command.retry?.deliveryReference ?? null,
     confirmUnobservableFailure: command.retry?.confirmUnobservableFailure === true, notification}, async () => {
-      let delivered: Awaited<ReturnType<AgentDeliveryPort['submit']>>;
-      try { delivered = await ports.delivery.submit(request); }
-      catch { await new Promise<void>((resolve) => setTimeout(resolve, 250)); delivered = await ports.delivery.submit(request); }
+      const delivered = await ports.delivery.submit(request);
       return {deliveryReference: delivered.deliveryReference};
     });
 };

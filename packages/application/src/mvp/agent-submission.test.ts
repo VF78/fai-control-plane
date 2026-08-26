@@ -78,16 +78,14 @@ describe('explicit agent submission', () => {
       idempotencyKey: expect.stringMatching(/^agent\.submit:[a-f0-9]{64}:accepted$/)}});
   });
 
-  it('retries one transient Hermes submission with the same idempotent request', async () => {
+  it('submits once and leaves provider recovery to the worker guarantee loop', async () => {
     const base = ports();
     const submit = vi.fn(async (request: Parameters<typeof base.delivery.submit>[0]) => {
-      if (submit.mock.calls.length === 1) throw new Error('agent_provider_unavailable');
-      return {deliveryReference:`hermes:${request.idempotencyKey}`,sessionReference:request.correlationId};
+      throw new Error(`agent_provider_unavailable:${request.idempotencyKey}`);
     });
     const value: AgentSubmissionPorts = {...base,delivery:{...base.delivery,submit}};
-    await expect(submitExplicitAgent(command,value)).resolves.toMatchObject({status:'completed'});
-    expect(submit).toHaveBeenCalledTimes(2);
-    expect(submit.mock.calls[0]![0].idempotencyKey).toBe(submit.mock.calls[1]![0].idempotencyKey);
+    await expect(submitExplicitAgent(command,value)).rejects.toThrow('agent_provider_unavailable');
+    expect(submit).toHaveBeenCalledOnce();
   });
 
   it('rejects a missing, stale, or malformed active context before delivery', async () => {

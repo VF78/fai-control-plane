@@ -227,11 +227,11 @@ describe('project onboarding composition', () => {
     await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
       projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'internal'});
     const requests = calls.map(({request}) => request);
-    expect(requests).toContain('POST /api/files/mkdir');
-    expect(requests).toContain('PUT /api/env?profile=internal');
+    expect(requests).toContain('POST /api/gateway/restart');
+    expect(requests).not.toContain('POST /api/files/mkdir');
+    expect(requests).not.toContain('PUT /api/env?profile=internal');
     expect(requests).not.toContain('POST /api/profiles');
     expect(requests).not.toContain('PUT /api/config?profile=internal');
-    expect(calls.find(({request}) => request === 'PUT /api/env?profile=internal')?.body).toContain('API_SERVER_KEY');
     expect(probes).toBe(2);
     await rm(files.root, {recursive: true});
   });
