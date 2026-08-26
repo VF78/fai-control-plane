@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import type {Database} from '@fai-control-plane/db';
-import {activateProjectAgentProfile, resolveAndRegisterProject} from './project-onboarding.ts';
+import {activateProjectAgentProfile, ensureProjectAgentProfile, resolveAndRegisterProject} from './project-onboarding.ts';
 
 const environments = ['GITHUB_PROJECTS_TOKEN_FILE', 'HERMES_MANAGEMENT_URL', 'HERMES_MANAGEMENT_USERNAME_FILE',
   'HERMES_MANAGEMENT_PASSWORD_FILE', 'HERMES_GATEWAY_INTERNAL_BASE_URL'] as const;
@@ -153,6 +153,86 @@ describe('project onboarding composition', () => {
     });
     expect(JSON.stringify(persisted)).not.toContain('agent-secret');
     expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining("'project.agent.activate'"), expect.any(Array));
+    await rm(files.root, {recursive: true});
+  });
+
+  it('only probes a healthy stored profile and never mutates it', async () => {
+    const files = await secretFiles();
+    process.env.HERMES_GATEWAY_INTERNAL_BASE_URL = 'http://hermes-gateway:8642';
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(value));
+      calls.push(`${init?.method ?? 'GET'} ${url.pathname}${url.search}`);
+      return new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
+    }));
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
+        content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
+          endpointPath: '/p/internal/v1/runs'})}]};
+      if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace',
+        projectId: 'project', requesterRole: 'project_owner', bindingId: 'binding', provider: 'github',
+        externalProjectId: 'PVT_1', projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
+        repositoryUrl: 'https://github.com/VF78/control', cursor: null, trackerSecretId: 'tracker-secret',
+        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.token, agentSecretId: 'agent-secret',
+        agentSecretLocator: files.token}]};
+      return {rowCount: 0, rows: []};
+    });
+    const database = {query, connect: vi.fn()} as unknown as Database;
+    await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
+      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toEqual({status: 'ready', profile: 'internal',
+      endpointPath: '/p/internal/v1/runs', version: 'version-1'});
+    expect(calls).toEqual(['GET /p/internal/v1/capabilities']);
+    expect(database.connect).not.toHaveBeenCalled();
+    await rm(files.root, {recursive: true});
+  });
+
+  it('repairs access for the same unhealthy stored profile without recreating or reconfiguring it', async () => {
+    const files = await secretFiles();
+    process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
+    process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
+    process.env.HERMES_MANAGEMENT_PASSWORD_FILE = files.password;
+    process.env.HERMES_GATEWAY_INTERNAL_BASE_URL = 'http://hermes-gateway:8642';
+    const calls: {request: string; body: string}[] = [];
+    let probes = 0;
+    vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(value));
+      calls.push({request: `${init?.method ?? 'GET'} ${url.pathname}${url.search}`, body: String(init?.body ?? '')});
+      if (url.pathname.endsWith('/v1/capabilities')) {
+        probes += 1;
+        return probes === 1 ? new Response('{}', {status: 401})
+          : new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
+      }
+      if (url.pathname === '/auth/password-login') return new Response('{}', {headers: {'set-cookie': 'session=ok; Path=/'}});
+      if (url.pathname === '/api/profiles' && init?.method === undefined) {
+        return new Response(JSON.stringify({profiles: [{name: 'internal'}]}));
+      }
+      return new Response('{}');
+    }));
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
+        content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
+          endpointPath: '/p/internal/v1/runs'})}]};
+      if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace', projectId: 'project',
+        requesterRole: 'project_owner', bindingId: 'binding', provider: 'github', externalProjectId: 'PVT_1',
+        projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
+        repositoryUrl: 'https://github.com/VF78/control', cursor: null, trackerSecretId: 'tracker-secret',
+        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.token, agentSecretId: 'agent-secret',
+        agentSecretLocator: files.token}]};
+      if (sql.startsWith('select slug from projects')) return {rowCount: 1, rows: [{slug: 'ascon'}]};
+      return {rowCount: 0, rows: []};
+    });
+    const clientQuery = vi.fn(async (sql: string) => sql.includes("role='project_owner'")
+      ? {rowCount: 1, rows: [{}]} : {rowCount: 1, rows: []});
+    const database = {query, connect: vi.fn(async () => ({query: clientQuery, release: vi.fn()}))} as unknown as Database;
+    await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
+      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'internal'});
+    const requests = calls.map(({request}) => request);
+    expect(requests).toContain('POST /api/files/mkdir');
+    expect(requests).toContain('PUT /api/env?profile=internal');
+    expect(requests).not.toContain('POST /api/profiles');
+    expect(requests).not.toContain('PUT /api/config?profile=internal');
+    expect(calls.find(({request}) => request === 'PUT /api/env?profile=internal')?.body).toContain('API_SERVER_KEY');
+    expect(probes).toBe(2);
     await rm(files.root, {recursive: true});
   });
 });

@@ -63,8 +63,6 @@ export const bootstrap = async (): Promise<void> => {
       agentOwnerOptionId: required('HERMES_TRACKER_OWNER_OPTION_ID', 512),
       doneStatusOptionId: required('STATUS_DONE_ID', 512),
       defaultBranch: required('GITHUB_DEFAULT_BRANCH', 256)});
-    await seedBootstrapAgentProfile(client, {projectId, actorId: ownerId,
-      profile: required('BOOTSTRAP_HERMES_PROFILE', 100)});
     await seedProjectProcessPolicy(client, {workspaceId, projectId, actorId: ownerId,
       path: required('FCP_PROJECT_PROCESS_POLICY_FILE')});
     await seedCanonicalProjectContextSources(client, {projectId, actorId: ownerId,
@@ -81,25 +79,6 @@ export const bootstrap = async (): Promise<void> => {
       idempotencyKey: `bootstrap-context:${projectId}`, occurredAt: new Date().toISOString()});
   } catch (error) { await client.query('rollback'); throw error; }
   finally { client.release(); await database.end(); }
-};
-
-const seedBootstrapAgentProfile = async (client: Pick<PoolClient, 'query'>, input: Readonly<{
-  projectId: string;
-  actorId: string;
-  profile: string;
-}>): Promise<void> => {
-  if (!/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(input.profile)) {
-    throw new Error('BOOTSTRAP_HERMES_PROFILE_invalid');
-  }
-  const content = JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready',
-    profile: input.profile, endpointPath: `/p/${input.profile}/v1/runs`,
-    templateVersion: 'v2026.8.13-fai-project-v1'});
-  const version = createHash('sha256').update(content).digest('hex');
-  await client.query(`insert into project_source_artifacts
-    (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
-    values($1,$2,$3,'project_agent_profile_v1','Project AI agent profile','application/json',$4,$5,null,
-      'composition:bootstrap') on conflict(project_id,kind,sha256) do nothing`,
-  [randomUUID(), input.projectId, input.actorId, version, content]);
 };
 
 const seedTrackerCapabilities = async (client: Pick<PoolClient, 'query'>, input: Readonly<{

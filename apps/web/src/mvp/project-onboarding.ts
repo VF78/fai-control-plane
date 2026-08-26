@@ -125,11 +125,28 @@ const expectJson = async <T>(response: Response): Promise<T> => {
   return response.json() as Promise<T>;
 };
 
+const profileCapabilitiesAvailable = async (
+  profile: string,
+  token: string,
+  attempts = 1
+): Promise<boolean> => {
+  const base = process.env.HERMES_GATEWAY_INTERNAL_BASE_URL;
+  if (base === undefined) throw new Error('agent_profile_unavailable');
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const response = await fetch(new URL(`/p/${encodeURIComponent(profile)}/v1/capabilities`, base),
+      {headers: {authorization: `Bearer ${token}`}, signal: AbortSignal.timeout(2_000)}).catch(() => null);
+    if (response?.ok) {
+      const value = await response.json().catch(() => null) as {object?: string}|null;
+      if (value?.object === 'hermes.api_server.capabilities') return true;
+    }
+    if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+};
+
 export const activateProjectAgentProfile = async (database: Database, input: Readonly<{
   workspaceId: string; actorId: string; projectId: string; idempotencyKey: string;
 }>): Promise<ProjectAgentProfileView> => {
-  const current = await readProjectAgentProfile(database, input.actorId, input.projectId);
-  if (current.status === 'ready') return current;
   const binding = await resolveAgentSubmissionBinding(database, input.actorId, input.projectId);
   if (binding === null || binding.agentCredentialRef === null || binding.requesterRole !== 'project_owner') {
     throw new Error('agent_profile_denied');
@@ -138,13 +155,16 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
     'select slug from projects where id=$1 and workspace_id=$2', [input.projectId, input.workspaceId]);
   const slug = project.rows[0]?.slug;
   if (slug === undefined) throw new Error('agent_profile_denied');
-  const profile = slug === 'ascon' ? 'internal' : `project-${slug}`;
+  const stored = await readProjectAgentProfile(database, input.actorId, input.projectId);
+  const profile = stored.status === 'ready' && stored.profile !== null
+    ? stored.profile : slug === 'ascon' ? 'internal' : `project-${slug}`;
   const template = process.env.HERMES_PROFILE_TEMPLATE ?? 'fai-project-template';
   const workDirectory = `/opt/data/work/projects/${slug}`;
   const token = (await secretResolver.resolve(binding.agentCredentialRef, 'agent_delivery')).value;
   const client = await managementClient();
   const listed = await expectJson<{profiles: readonly {name?: string}[]}>(await client.request('/api/profiles'));
-  if (!listed.profiles.some((item) => item.name === profile)) {
+  const created = !listed.profiles.some((item) => item.name === profile);
+  if (created) {
     await expectJson(await client.request('/api/profiles', {method: 'POST',
       headers: {'content-type': 'application/json'}, body: JSON.stringify({name: profile, clone_from: template,
         no_skills: false, description: `Project manager for ${slug}`})}));
@@ -153,25 +173,25 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
     headers: {'content-type': 'application/json'}, body: JSON.stringify({path: workDirectory})}));
   await expectJson(await client.request(`/api/env?profile=${encodeURIComponent(profile)}`, {method: 'PUT',
     headers: {'content-type': 'application/json'}, body: JSON.stringify({key: 'API_SERVER_KEY', value: token, profile})}));
-  await expectJson(await client.request(`/api/config?profile=${encodeURIComponent(profile)}`, {method: 'PUT',
+  if (created) await expectJson(await client.request(`/api/config?profile=${encodeURIComponent(profile)}`, {method: 'PUT',
     headers: {'content-type': 'application/json'}, body: JSON.stringify({profile, config: {terminal: {
       backend: 'local', cwd: workDirectory}, platform_toolsets: {api_server: ['terminal', 'no_mcp']},
     toolsets: ['file', 'terminal', 'search', 'web', 'skills', 'todo', 'memory', 'session_search',
       'fai_internal', 'clarify']}})}));
-  const base = process.env.HERMES_GATEWAY_INTERNAL_BASE_URL;
-  if (base === undefined) throw new Error('agent_profile_unavailable');
   const endpointPath = `/p/${encodeURIComponent(profile)}/v1/runs`;
-  let verified = false;
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const response = await fetch(new URL(`/p/${encodeURIComponent(profile)}/v1/capabilities`, base),
-      {headers: {authorization: `Bearer ${token}`}, signal: AbortSignal.timeout(2_000)}).catch(() => null);
-    if (response?.ok) {
-      const value = await response.json().catch(() => null) as {object?: string}|null;
-      if (value?.object === 'hermes.api_server.capabilities') { verified = true; break; }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  if (!verified) throw new Error('agent_profile_probe_failed');
+  if (!await profileCapabilitiesAvailable(profile, token, 12)) throw new Error('agent_profile_probe_failed');
   return recordProjectAgentProfile(database, {...input, profile, endpointPath,
     templateVersion: 'v2026.8.13-fai-project-v1', occurredAt: new Date().toISOString()});
+};
+
+export const ensureProjectAgentProfile = async (database: Database, input: Readonly<{
+  workspaceId: string; actorId: string; projectId: string; idempotencyKey: string;
+}>): Promise<ProjectAgentProfileView> => {
+  const current = await readProjectAgentProfile(database, input.actorId, input.projectId);
+  if (current.status !== 'ready' || current.profile === null) return activateProjectAgentProfile(database, input);
+  const binding = await resolveAgentSubmissionBinding(database, input.actorId, input.projectId);
+  if (binding === null || binding.agentCredentialRef === null) throw new Error('agent_profile_denied');
+  const token = (await secretResolver.resolve(binding.agentCredentialRef, 'agent_delivery')).value;
+  if (await profileCapabilitiesAvailable(current.profile, token)) return current;
+  return activateProjectAgentProfile(database, input);
 };

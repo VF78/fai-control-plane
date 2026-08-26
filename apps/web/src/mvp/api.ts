@@ -28,7 +28,7 @@ import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeM
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
-import {activateProjectAgentProfile, resolveAndRegisterProject} from './project-onboarding.ts';
+import {ensureProjectAgentProfile, resolveAndRegisterProject} from './project-onboarding.ts';
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('media_type_invalid');
@@ -160,7 +160,7 @@ export const projectAgentProfile = async (request:Request,projectId:string):Prom
       {headers:{'cache-control':'no-store'}});
     if(request.method!=='POST') return new Response(null,{status:405,headers:{allow:'GET, POST'}});
     requireCsrf(request); const body=await json(request);
-    return Response.json(await activateProjectAgentProfile(database,{workspaceId:session.workspaceId,actorId:session.actorId,
+    return Response.json(await ensureProjectAgentProfile(database,{workspaceId:session.workspaceId,actorId:session.actorId,
       projectId,idempotencyKey:string(body.idempotencyKey,128)}),{headers:{'cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
 };
@@ -316,11 +316,6 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     const database = getDatabase(); const session = await requireSession(); requireCsrf(request);
     const body = await json(request); const projectId = string(body.projectId);
     const action = body.action === undefined ? 'assign' : string(body.action, 32);
-    const endpoint = await agentEndpoint(database,session.actorId,projectId);
-    const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, session.actorId, projectId);
-    const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery
-      : createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048), credentialRef: binding.agentCredentialRef,
-        secrets: secretResolver, allowPrivateHttp: privateAgentEndpoint(endpoint)});
     if (action !== 'assign') throw new Error('body_invalid');
     const executor = body.executor;
     if (executor === null || typeof executor !== 'object' || Array.isArray(executor)) throw new Error('body_invalid');
@@ -329,6 +324,13 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     if (kind !== 'human' && kind !== 'hermes') throw new Error('body_invalid');
     const candidate = kind === 'human' ? choice.candidate : undefined;
     if (kind === 'human' && (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))) throw new Error('body_invalid');
+    if (kind === 'hermes') await ensureProjectAgentProfile(database, {workspaceId: session.workspaceId,
+      actorId: session.actorId, projectId, idempotencyKey: `agent-profile:task:${projectId}`});
+    const endpoint = kind === 'hermes' ? await agentEndpoint(database,session.actorId,projectId) : undefined;
+    const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, session.actorId, projectId);
+    const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery
+      : createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048), credentialRef: binding.agentCredentialRef,
+        secrets: secretResolver, allowPrivateHttp: privateAgentEndpoint(endpoint)});
     const {ports} = await githubAssignment(database, session.actorId, projectId, kind === 'hermes' ? delivery : unavailableDelivery);
     const retryValue = body.retry;
     const retry = retryValue === undefined ? undefined : (() => {
@@ -355,8 +357,11 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     if (['github_owner_unavailable','task_executor_unavailable'].includes(code)) return Response.json({error: 'operation_unavailable'}, {status: 409});
     if (['agent_attempt_active','agent_retry_denied'].includes(code)) return Response.json({error: 'retry_unavailable'}, {status: 409});
     if (code === 'agent_context_unavailable') return Response.json({error: 'context_unavailable'}, {status: 409});
-    if (['agent_submit_denied','agent_routing_policy_invalid','agent_request_invalid'].includes(code)) {
+    if (['agent_submit_denied','agent_routing_policy_invalid','agent_request_invalid','agent_profile_denied'].includes(code)) {
       return Response.json({error: 'execution_unavailable'}, {status: 409});
+    }
+    if (['agent_profile_unavailable','agent_profile_probe_failed'].includes(code)) {
+      return Response.json({error: 'profile_unavailable'}, {status: 502});
     }
     if (['agent_delivery_failed','agent_response_invalid'].includes(code)) return Response.json({error: 'delivery_failed'}, {status: 502});
     if (['tracker_provider_unsupported','github_binding_invalid','github_read_failed','github_response_invalid',

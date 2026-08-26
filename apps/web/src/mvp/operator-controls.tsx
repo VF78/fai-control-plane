@@ -22,6 +22,7 @@ const taskExecutorErrorNotice = (code: string): string => ({
   delivery_failed: 'GitHub назначил Hermes, но запуск не подтверждён. Не повторяйте команду до проверки квитанции.',
   context_unavailable: 'Запуск Hermes недоступен: сначала актуализируйте контекст проекта в разделе «Процесс».',
   execution_unavailable: 'Запуск Hermes недоступен: настройки исполнения проекта не готовы.',
+  profile_unavailable: 'Профиль ИИ агента недоступен после восстановления. Задача не запущена.',
   provider_error: 'GitHub или Hermes не подтвердил операцию. Не повторяйте команду до проверки квитанции.'
 }[code] ?? 'Команда не подтверждена. Обновите задачу и проверьте её состояние перед повтором.');
 const id = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
