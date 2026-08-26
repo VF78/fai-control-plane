@@ -35,7 +35,6 @@ services:
       HERMES_DEVOPS_SSH_PORT: ${HERMES_DEVOPS_SSH_PORT:-22}
       HERMES_DEVOPS_SSH_IDENTITY_FILE: /opt/fai-devops/ssh/identity
       HERMES_DEVOPS_SSH_KNOWN_HOSTS_FILE: /opt/fai-devops/ssh/known_hosts
-      YC_CONFIG_DIR: /opt/fai-devops/yandex-cloud
       HOME: /opt/data
       FCP_CONVERSATION_ACTION_URL: ${FCP_CONVERSATION_ACTION_URL:?required}
       TELEGRAM_ALLOWED_USERS: ${HERMES_TELEGRAM_ALLOWED_USERS:?required}
@@ -48,7 +47,7 @@ services:
       - ${HERMES_GITHUB_REPOSITORY_TOKEN_FILE:?required}:/run/secrets/github-repository-token:ro
       - ${HERMES_DEVOPS_SSH_IDENTITY_FILE:?required}:/opt/fai-devops/ssh/identity:ro
       - ${HERMES_DEVOPS_SSH_KNOWN_HOSTS_FILE:?required}:/opt/fai-devops/ssh/known_hosts:ro
-      - ${HERMES_DEVOPS_YC_CONFIG_FILE:?required}:/opt/fai-devops/yandex-cloud/config.yaml:ro
+      - ${HERMES_DEVOPS_YC_CONFIG_FILE:?required}:/opt/data/.config/yandex-cloud/config.yaml:ro
       - ${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro
       - ./extensions/fai-control-plane:/opt/data/plugins/fai-control-plane:ro
       - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
