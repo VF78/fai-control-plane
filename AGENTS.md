@@ -23,11 +23,19 @@ f(AI) Control is a thin supervisory layer over existing delivery tools. Issue
 
 - GitHub repository owns code, PRs, checks and releases.
 - GitHub Project owns tasks, status, assignees, dates and dependencies.
-- Hermes is the replaceable role executor behind `AgentDeliveryPort`; its use
-  of Codex CLI, Claude CLI or another executor is internal to Hermes.
+- One project-scoped Hermes is the replaceable PM/Dev/QA/DevOps orchestrator
+  and executor behind `AgentDeliveryPort`. It uses persistent project
+  credentials to operate `git`, `gh`, configured CLIs and approved DevOps
+  surfaces directly; executor choice remains internal to Hermes.
 - Control Plane/PostgreSQL owns projects and sources, provider bindings and
   bounded snapshots, exact human approvals, messenger actions, receipts,
   idempotency and audit.
+
+The worker is only a controller: submit/observe a Hermes run, poll and verify
+authoritative provider facts, notify, restart Hermes after an observable
+failure, and submit the next configured stage. It never brokers repository,
+GitHub Project, CLI, SSH or deployment commands and never selects or performs
+project work on Hermes' behalf.
 
 Do not recreate a local task/status/DAG, TaskPacket/AgentRun platform, QA or
 deployment lifecycle, chat history, agent scheduler, generic IAM, provider
@@ -45,7 +53,9 @@ semantics or schema.
 - Hermes work is never inferred from the backlog. Submission must be an
   authenticated explicit operator action for a non-Done item whose
   provider-native `Owner` is exactly Hermes.
-- Coding executors cannot merge, release, deploy or access production.
+- Hermes may hold the direct project and DevOps credentials required for its
+  role. Merge, release, deploy and production mutation still require the exact
+  approval configured for that action; a coding CLI never grants approval.
 - Do not change production, DNS, VPS, Nginx, credentials or protected services
   without Vladimir's explicit approval of the exact action.
 

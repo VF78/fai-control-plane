@@ -35,7 +35,9 @@ describe('worker readiness', () => {
     expect(source.indexOf('await reconcileActiveAgentAttempts')).toBeGreaterThan(-1);
     const reconcile = source.split('async reconcile()', 2)[1]!;
     expect(reconcile).not.toContain('reconcileActiveAgentAttempts');
-    expect(source).toContain('tracker: runtime.trackerMutation');
+    expect(source).not.toContain('trackerMutation');
+    expect(source).not.toContain('assignTaskExecutor');
+    expect(source).not.toContain('const eligible = snapshot.items.find');
     expect(source).toContain('readActiveProjectProcessPolicy(database, project.projectId)');
     expect(source).toContain('listWorkerProjectBindings(database, workspaceId)');
     expect(source).not.toContain("env('FCP_PROJECT_ID')");

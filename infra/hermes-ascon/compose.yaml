@@ -53,9 +53,7 @@ services:
       - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
       - ./profile-template:/opt/data/profiles/fai-project-template:ro
       - ./profiles/internal/config.yaml:/opt/data/profiles/internal/config.yaml:ro
-      - ./profiles/bitrix-client/config.yaml:/opt/data/profiles/bitrix-client/config.yaml:ro
       - ${HERMES_INTERNAL_BRIDGE_TOKEN_FILE:?required}:/opt/data/profiles/internal/bridge-token:ro
-      - ${HERMES_CLIENT_BRIDGE_TOKEN_FILE:?required}:/opt/data/profiles/bitrix-client/bridge-token:ro
     networks:
       default:
       management:

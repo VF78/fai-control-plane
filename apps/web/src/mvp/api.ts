@@ -121,10 +121,9 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
     ) => executeAgentSubmissionTransaction(database, input, submit)}}};
 };
 
-/** Shared UI/Telegram composition for the canonical process.start command. */
+/** UI composition for starting one exact existing Project item. */
 export const startGitHubProcess = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
-  actorId: string; projectId: string; task: Readonly<{kind: 'existing'; itemId: string}> |
-    Readonly<{kind: 'create'; title: string; statement: string}>;
+  actorId: string; projectId: string; task: Readonly<{kind: 'existing'; itemId: string}>;
   sourceReference: string; idempotencyKey: string;
 }>) => {
   const endpoint = await agentEndpoint(database,input.actorId,input.projectId);

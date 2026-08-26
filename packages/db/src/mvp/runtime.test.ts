@@ -6,7 +6,7 @@ import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSna
 import {activateProjectContextSnapshot, addSourceArtifact, projectAgentDeliveryConfigured, readActiveProjectContext, readAgentRoutingPolicy,
   createAgentAttemptStore,
   readProjectContextStatus,
-  readProjectExecutionMode, readProjectProcessPolicy, resolveReceiptBoundRoleRun, trackerSnapshotFreshness,
+  readProjectExecutionMode, readProjectProcessPolicy, trackerSnapshotFreshness,
   executeAgentSubmissionTransaction, type Database} from './runtime.ts';
 
 describe('project-scoped active attempts', () => {
@@ -239,37 +239,5 @@ describe('agent attempt retry guard', () => {
       {...input, retryOf: 'run_expired', confirmUnobservableFailure: true}, async () => ({deliveryReference: 'run_new'})))
       .resolves.toMatchObject({deliveryReference: 'run_new'});
     expect(confirmed.query.mock.calls.some(([sql]) => String(sql).includes("'agent.attempt.failed'"))).toBe(true);
-  });
-});
-
-describe('receipt-bound role-run projection', () => {
-  it('derives the exact submit key and returns only one active operator receipt/audit match', async () => {
-    const query = vi.fn().mockResolvedValue({rows: [{actorId: 'actor', projectId: 'project',
-      requesterRole: 'operator', role: 'developer', itemId: 'PVTI_1', observedVersion: 'v1',
-      successTargetTitle: 'QA', reworkTargetTitle: null,
-      occurredAt: new Date('2026-08-24T10:00:00.000Z')}]});
-    const sessionId = `browser:${'a'.repeat(64)}`;
-    await expect(resolveReceiptBoundRoleRun({query} as unknown as Database, sessionId, 'project'))
-      .resolves.toMatchObject({sessionId, actorId: 'actor', role: 'developer', itemId: 'PVTI_1'});
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("r.command_type='agent.submit'"),
-      [sessionId, 'project', `agent.submit:${'a'.repeat(64)}`]);
-  });
-
-  it('fails closed for malformed ids, duplicate matches, clients, or malformed receipt details', async () => {
-    const query = vi.fn();
-    await expect(resolveReceiptBoundRoleRun({query} as unknown as Database, 'browser:nope', 'project'))
-      .resolves.toBeNull();
-    expect(query).not.toHaveBeenCalled();
-    for (const rows of [
-      [{actorId: 'a'}, {actorId: 'b'}],
-      [{actorId: 'a', projectId: 'project', requesterRole: 'client', role: 'developer', itemId: 'item',
-        observedVersion: 'v1', occurredAt: new Date()}],
-      [{actorId: 'a', projectId: 'project', requesterRole: 'operator', role: 'devops', itemId: 'item',
-        observedVersion: 'v1', occurredAt: new Date()}]
-    ]) {
-      query.mockResolvedValueOnce({rows});
-      await expect(resolveReceiptBoundRoleRun({query} as unknown as Database, `browser:${'a'.repeat(64)}`, 'project'))
-        .resolves.toBeNull();
-    }
   });
 });

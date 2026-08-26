@@ -2,15 +2,14 @@ import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, createStores,
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
-  readActiveProjectExecutionMode, readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
+  readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, composeAgentTerminalNotification, continueExplicitAgentChain,
-  assignTaskExecutor, deliverPending, reconcileActiveAgentAttempts, reconcileTracker, submitExplicitAgent,
+  deliverPending, reconcileActiveAgentAttempts, reconcileTracker, submitExplicitAgent,
   type AgentAttemptRecord, type AgentSubmissionPorts
 } from '@fai-control-plane/application';
 import {
   createHermesDeliveryAdapter,
   createGitHubRepositoryReadAdapter,
-  createGitHubTrackerMutationAdapter,
   createGitHubTrackerReadAdapter,
   createTelegramDeliveryAdapter
 } from '@fai-control-plane/integrations';
@@ -89,8 +88,6 @@ export const createWorker = (database: Database = createDatabase()) => {
     const trackerBinding = {id: project.bindingId, ...coordinates, projectId: project.projectId,
       projectUrl: project.projectUrl, credentialRef: project.trackerCredentialRef};
     const tracker = createGitHubTrackerReadAdapter({binding: trackerBinding, secrets});
-    const trackerMutation = createGitHubTrackerMutationAdapter({binding: trackerBinding,
-      credentialRef: {...project.trackerCredentialRef, purpose: 'tracker_mutate'}, secrets});
     const repository = createGitHubRepositoryReadAdapter({...coordinates, repositoryId: project.repositoryId,
       credentialRef: project.trackerCredentialRef, secrets});
     const agentSignature = `${project.bindingId}:${project.endpointPath}:${project.agentCredentialRef.id}`;
@@ -136,7 +133,7 @@ export const createWorker = (database: Database = createDatabase()) => {
       channelReference: 'telegram:internal',
       text: `Статус задачи изменён: ${prior.statusOptionName ?? 'Не указан'} → ${item.statusOptionName ?? 'Не указан'}\n${item.title} — ${item.url}`,
       idempotencyKey});
-    return {project, tracker, trackerMutation, agentDelivery, submissionPorts, statusChanged};
+    return {project, tracker, agentDelivery, submissionPorts, statusChanged};
   };
 
   const activeProjects = async () => {
@@ -228,7 +225,6 @@ export const createWorker = (database: Database = createDatabase()) => {
     async reconcile() {
       const results = await runProjectBindingsIsolated(await activeProjects(), async (project) => {
         const runtime = projectRuntime(project);
-        const projectAttempts = createAgentAttemptStore(database, project.projectId);
         let processPolicy: Awaited<ReturnType<typeof readActiveProjectProcessPolicy>> = null;
         try {
           processPolicy = await readActiveProjectProcessPolicy(database, project.projectId);
@@ -250,39 +246,6 @@ export const createWorker = (database: Database = createDatabase()) => {
                 ?.automation ?? null,
               stores: continuations, ports: runtime.submissionPorts,
               instructions: defaultAgentStageInstructions})}});
-        const executionMode = await readActiveProjectExecutionMode(database, project.projectId);
-        if (executionMode.mode !== 'autonomous' || executionMode.actorId === null ||
-          (await projectAttempts.listActive(1)).length > 0 || processPolicy === null) return;
-        const snapshot = await runtime.tracker.readSnapshot(project.bindingId, null);
-        await stores.snapshots.replace(snapshot);
-        const stages = new Map(processPolicy.policy.stages.map((stage) => [stage.title, stage]));
-        const itemsByIssue = new Map(snapshot.items.map((item) => [item.issueId, item]));
-        const eligible = snapshot.items.find((item) => {
-          const stage = item.statusOptionName === null ? undefined : stages.get(item.statusOptionName);
-          const dependenciesReady = item.dependencyIssueIds.every((id) =>
-            itemsByIssue.get(id)?.statusOptionId === project.doneStatusOptionId);
-          const autonomousEntry = stage !== undefined && (stage.title === 'Ready' || stage.automation !== null);
-          const available = (item.ownerOptionId === null && item.assigneeIds.length === 0) ||
-            item.ownerOptionId === project.agentOwnerOptionId;
-          return item.blocked === false && dependenciesReady && autonomousEntry && available;
-        });
-        if (eligible === undefined) {
-          await notifyRecovery(project.projectId, snapshot.externalVersion, 'autonomous-idle',
-            'Автономный режим: готовых задач больше нет либо следующая задача требует согласования или снятия блокера.');
-          return;
-        }
-        const stage = eligible.statusOptionName === null ? undefined : stages.get(eligible.statusOptionName);
-        if (eligible.ownerOptionId === project.agentOwnerOptionId && stage?.automation !== null && stage !== undefined) {
-          const instructions = defaultAgentStageInstructions(stage.automation.agentRole);
-          await submitExplicitAgent({actorId: executionMode.actorId, projectId: project.projectId,
-            projectItemId: eligible.itemId, role: stage.automation.agentRole,
-            constraints: instructions.constraints, acceptanceCriteria: instructions.acceptanceCriteria},
-          runtime.submissionPorts);
-          return;
-        }
-        await assignTaskExecutor({actorId: executionMode.actorId, projectId: project.projectId,
-          projectItemId: eligible.itemId, executor: {kind: 'hermes'}}, {...runtime.submissionPorts,
-          tracker: runtime.trackerMutation, agentInstructions: defaultAgentStageInstructions});
       });
       await reportFailures('reconcile', results);
     },

@@ -22,7 +22,7 @@ Authority is fixed:
 | --- | --- |
 | Code, PRs, checks, release references | GitHub repository |
 | Tasks, status, assignees, dates, dependencies | GitHub Project |
-| Planning, development, QA and DevOps execution | Hermes |
+| Planning, project orchestration, development, QA and DevOps execution | One project-scoped Hermes using direct project credentials |
 | Projects/sources, bindings, exact approvals, bounded snapshots, receipts/audit | Control Plane/PostgreSQL |
 
 The active ASCON composition uses GitHub, a project-isolated Hermes and
@@ -39,6 +39,10 @@ contracts with its own bindings, including Matrix/Element; it is not a fork.
   idempotency and audit.
 - Hermes is behind `AgentDeliveryPort`; OpenClaw may replace its adapter without
   changing core semantics. Codex CLI/Claude CLI remain executor internals.
+- Hermes directly creates and updates repository and GitHub Project facts with
+  persistent `git`/`gh` credentials. The worker only submits/observes, verifies
+  provider readback, notifies, restarts Hermes and launches the next configured
+  stage. No Control Plane GitHub/CLI broker is permitted.
 - No automatic backlog execution. Only an authenticated operator may submit a
   non-Done item whose provider-native `Owner` is exactly Hermes.
 - UI shows confirmed facts, provenance, freshness and error state. Missing data

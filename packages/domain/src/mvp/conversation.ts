@@ -2,17 +2,8 @@ import type {ClientMessengerInbound, InternalMessengerInbound, MessengerInbound}
 import {approvalKinds, isBoundedId, isInstant, type ApprovalDecision, type ApprovalKind} from './model.ts';
 
 export type ConversationAction =
-  | Readonly<{type: 'project_facts.read'}>
   | Readonly<{type: 'project_context.read'; ifVersion: string | null}>
-  | Readonly<{type: 'issue.create'; title: string; statement: string}>
-  | Readonly<{type: 'process.start'; task: Readonly<{kind: 'existing'; itemId: string}> |
-      Readonly<{kind: 'create'; title: string; statement: string}>}>
   | Readonly<{type: 'project.execution.mode'; mode: 'manual'|'autonomous'}>
-  | Readonly<{type: 'issue.update'; itemId: string; issueId: string; expectedVersion: string;
-    operation: 'title' | 'body' | 'state'; value: string}>
-  | Readonly<{type: 'issue.clarify'; referenceId: string; expectedVersion: string; statement: string}>
-  | Readonly<{type: 'project_item.stage'; itemId: string; issueId: string; expectedVersion: string;
-    stage: 'Backlog' | 'Ready' | 'In Dev' | 'QA' | 'Acceptance'}>
   | Readonly<{type: 'source.add'; name: string; content: string}>
   | Readonly<{type: 'approval.decide'; approvalId: string; kind: 'plan' | 'internal_operation' | 'production' | 'acceptance' | 'client_uat'; targetReference: string; decision: 'approved' | 'rejected'}>;
 
@@ -34,26 +25,10 @@ export const validateConversationEnvelope = (input: ConversationEnvelope): boole
     !isInstant(message.observedAt) || !text(message.text, 4_000) ||
     !isBoundedId(message.correlationId) || !isBoundedId(message.idempotencyKey)) return false;
   switch (input.action.type) {
-    case 'project_facts.read': return true;
     case 'project_context.read': return input.action.ifVersion === null ||
       /^[a-f0-9]{64}$/.test(input.action.ifVersion);
-    case 'issue.create': return text(input.action.title, 160) && text(input.action.statement, 4_000);
-    case 'process.start': return input.message.contour === 'trusted-main' &&
-      (input.action.task.kind === 'existing' ? isBoundedId(input.action.task.itemId)
-        : input.action.task.kind === 'create' && text(input.action.task.title, 160) &&
-          text(input.action.task.statement, 4_000));
     case 'project.execution.mode': return input.message.contour === 'trusted-main' &&
       (input.action.mode === 'manual' || input.action.mode === 'autonomous');
-    case 'issue.update': return isBoundedId(input.action.itemId) && isBoundedId(input.action.issueId) &&
-      isBoundedId(input.action.expectedVersion) && ['title', 'body', 'state'].includes(input.action.operation) &&
-      (input.action.operation === 'state'
-        ? ['open', 'closed'].includes(input.action.value)
-        : text(input.action.value, input.action.operation === 'title' ? 160 : 4_000));
-    case 'issue.clarify': return isBoundedId(input.action.referenceId) &&
-      isBoundedId(input.action.expectedVersion) && text(input.action.statement, 4_000);
-    case 'project_item.stage': return isBoundedId(input.action.itemId) &&
-      isBoundedId(input.action.issueId) && isBoundedId(input.action.expectedVersion) &&
-      ['Backlog', 'Ready', 'In Dev', 'QA', 'Acceptance'].includes(input.action.stage);
     case 'source.add': return text(input.action.name, 200) && text(input.action.content, 4_000);
     case 'approval.decide': return isBoundedId(input.action.approvalId) && isBoundedId(input.action.targetReference) &&
       approvalKinds.includes(input.action.kind) &&
@@ -70,30 +45,10 @@ export const parseConversationEnvelope = (value: unknown): ConversationEnvelope 
   const contour = message.contour;
   if (contour !== 'trusted-main' && contour !== 'client-edge') return null;
   let parsedAction: ConversationAction | null = null;
-  if (action.type === 'project_facts.read') parsedAction = {type: 'project_facts.read'};
-  else if (action.type === 'project_context.read') parsedAction = {type: 'project_context.read',
+  if (action.type === 'project_context.read') parsedAction = {type: 'project_context.read',
     ifVersion: action.ifVersion === null || action.ifVersion === undefined ? null : String(action.ifVersion)};
-  else if (action.type === 'issue.create') parsedAction = {type: 'issue.create', title: String(action.title ?? ''), statement: String(action.statement ?? '')};
-  else if (action.type === 'process.start' && action.task !== null && typeof action.task === 'object' &&
-    !Array.isArray(action.task)) {
-    const task = action.task as Record<string, unknown>;
-    if (task.kind === 'existing') parsedAction =
-      {type: 'process.start', task: {kind: 'existing', itemId: String(task.itemId ?? '')}};
-    else if (task.kind === 'create') parsedAction =
-      {type: 'process.start', task: {kind: 'create', title: String(task.title ?? ''),
-        statement: String(task.statement ?? '')}};
-  }
   else if (action.type === 'project.execution.mode') parsedAction = {type: 'project.execution.mode',
     mode: action.mode as 'manual'|'autonomous'};
-  else if (action.type === 'issue.update') parsedAction = {type: 'issue.update', itemId: String(action.itemId ?? ''),
-    issueId: String(action.issueId ?? ''), expectedVersion: String(action.expectedVersion ?? ''),
-    operation: action.operation as 'title' | 'body' | 'state', value: String(action.value ?? '')};
-  else if (action.type === 'issue.clarify') parsedAction = {type: 'issue.clarify', referenceId: String(action.referenceId ?? ''),
-    expectedVersion: String(action.expectedVersion ?? ''), statement: String(action.statement ?? '')};
-  else if (action.type === 'project_item.stage') parsedAction = {type: 'project_item.stage',
-    itemId: String(action.itemId ?? ''), issueId: String(action.issueId ?? ''),
-    expectedVersion: String(action.expectedVersion ?? ''),
-    stage: action.stage as 'Backlog' | 'Ready' | 'In Dev' | 'QA' | 'Acceptance'};
   else if (action.type === 'source.add') parsedAction = {type: 'source.add', name: String(action.name ?? ''),
     content: String(action.content ?? '')};
   else if (action.type === 'approval.decide') parsedAction = {type: 'approval.decide', approvalId: String(action.approvalId ?? ''),

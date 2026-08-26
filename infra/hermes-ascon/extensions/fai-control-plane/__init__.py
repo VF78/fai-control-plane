@@ -19,11 +19,11 @@ _CHAT_ID = "-5540760630"
 _USER_IDS = frozenset({"96211907", "355724486"})
 _ACTION_URL_PATH = "/api/hermes/conversation-actions"
 _ROLE_RUN_PROTOCOL = """Project task protocol:
-1. You are this project's persistent PM, Developer, QA and DevOps operator. The compact JSON request names one exact GitHub item and role. Read current GitHub/Project facts before acting; never rely on stale chat history.
-2. Resolve one configured route. Do project-management work yourself. For repository work invoke exactly one foreground non-interactive Codex CLI in the stable issue worktree under /opt/data/work/items. Use the configured model/reasoning and `codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral`; this non-root project container is the external sandbox. Give Codex only the issue URL, role, constraints and acceptance criteria. Codex reads AGENTS.md and relevant files itself.
-3. Reuse the issue branch/worktree/PR after retry or QA. Developer performs focused checks. QA reviews the current PR and missing acceptance/risk checks; it may fix one localized low-risk defect, otherwise returns Dev rework. Never duplicate an issue or PR. Never merge, release, deploy or touch production without exact approval in the request.
-4. Verify the real commit/PR/artifact, then call fai_project_item_stage for the same item and configured success or rework stage. Confirm GitHub readback. On an unresolved blocker keep the current stage.
-5. Return one compact fai.agent-executor-result.v1 JSON object with decision, execution, outcome, transition, reason, evidence and HTTPS deliverables. Report the route actually used. Do not start the next stage; Control Plane observes the Project result and sends the next short role command."""
+1. You are this project's persistent PM, Developer, QA and DevOps orchestrator and executor. The compact request names one exact GitHub item, role and configured CLI/model/reasoning route. Read the issue, comments, Project fields, linked PR and current repository facts directly with git/gh before acting; never rely on stale chat history.
+2. If the issue is incomplete, do the PM work yourself: analyze it, update the same issue with the missing scope and acceptance criteria, send the proposed plan to Telegram for confirmation, and wait. This is not a technical blocker. After confirmation, or when the issue is already complete, follow the requested role and route. For repository work invoke exactly one foreground non-interactive Codex CLI in the stable issue worktree under /opt/data/work/items with `codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral`; this non-root project container is the external sandbox. Give Codex only the issue URL, role, constraints, acceptance criteria and the smallest necessary project context; Codex reads AGENTS.md and relevant files itself.
+3. Reuse the issue branch/worktree/PR after retry or QA. Developer performs focused checks. QA reviews the current PR and missing acceptance/risk checks; it may fix one localized low-risk defect, otherwise returns Dev rework. Never duplicate an issue or PR. Never merge, release, deploy or touch production unless Vladimir confirmed that exact action through the trusted UI or Telegram dialogue. Worker task payloads never carry approval material.
+4. Create/update issues and change the same Project item directly with gh. Confirm GitHub readback. Never ask Control Plane to proxy a repository or Project command. On an unresolved blocker keep the current stage.
+5. Return only one compact fai.agent-executor-result.v1 JSON object with decision, execution, outcome, transition, reason, evidence and HTTPS deliverables; add no prose or Markdown. Report the CLI/model/reasoning actually used and the GitHub Project transition you verified. Approval material is never delivered in the task request."""
 
 
 def _pre_dispatch(event, **_kwargs):
@@ -126,18 +126,10 @@ def _handler(action_type: str):
     def handle(args: dict, **kwargs) -> str:
         session_id = str(kwargs.get("session_id") or "")
         source = bridge_state.resolve(session_id)
-        if source is None and re.fullmatch(r"browser:[a-f0-9]{64}", session_id):
-            source = {"provider": "agent-role-run", "sessionId": session_id}
-        if source is None or source.get("provider") not in ("telegram", "agent-role-run"):
+        if source is None or source.get("provider") != "telegram":
             return json.dumps({"error": "authenticated_message_identity_required"})
         action = {"type": action_type, **args}
         return _post("internal", source, action)
-    return handle
-
-
-def _client_handler(_action_type: str):
-    def handle(_args: dict, **_kwargs) -> str:
-        return json.dumps({"error": "authenticated_browser_identity_required"})
     return handle
 
 
@@ -150,32 +142,9 @@ def _schema(name: str, description: str, properties: dict, required: list[str]) 
 _TEXT = {"type": "string", "minLength": 1, "maxLength": 4000}
 _ID = {"type": "string", "minLength": 1, "maxLength": 256}
 _TOOLS = (
-    ("fai_project_facts", "project_facts.read", "Read current provider-native project facts.", {}, []),
-    ("fai_process_start", "process.start",
-     "For a Telegram task intent, create and start one monitored Hermes process chain, or start one exact existing Project item.",
-     {"task": {"oneOf": [
-         {"type": "object", "properties": {"kind": {"const": "create"},
-          "title": {"type": "string", "minLength": 1, "maxLength": 160}, "statement": _TEXT},
-          "required": ["kind", "title", "statement"], "additionalProperties": False},
-         {"type": "object", "properties": {"kind": {"const": "existing"}, "itemId": _ID},
-          "required": ["kind", "itemId"], "additionalProperties": False}
-     ]}}, ["task"]),
     ("fai_project_execution_mode", "project.execution.mode",
      "Enable or stop project autonomous execution. This is separate from starting one task.",
      {"mode": {"type": "string", "enum": ["manual", "autonomous"]}}, ["mode"]),
-    ("fai_issue_create", "issue.create", "Create one issue in the bound repository and Project.",
-     {"title": {"type": "string", "minLength": 1, "maxLength": 160}, "statement": _TEXT}, ["title", "statement"]),
-    ("fai_issue_update", "issue.update", "Update one exact issue and verify the provider result.",
-     {"itemId": _ID, "issueId": _ID, "expectedVersion": _ID,
-      "operation": {"type": "string", "enum": ["title", "body", "state"]}, "value": _TEXT},
-     ["itemId", "issueId", "expectedVersion", "operation", "value"]),
-    ("fai_issue_clarify", "issue.clarify", "Add clarification to an exact issue version.",
-     {"referenceId": _ID, "expectedVersion": _ID, "statement": _TEXT}, ["referenceId", "expectedVersion", "statement"]),
-    ("fai_project_item_stage", "project_item.stage",
-     "Change the stage of the exact GitHub Project item and verify the provider result. Done is approval-gated and unavailable here.",
-     {"itemId": _ID, "issueId": _ID, "expectedVersion": _ID,
-      "stage": {"type": "string", "enum": ["Backlog", "Ready", "In Dev", "QA", "Acceptance"]}},
-     ["itemId", "issueId", "expectedVersion", "stage"]),
     ("fai_source_add", "source.add", "Attach bounded source context to the project.",
      {"name": {"type": "string", "minLength": 1, "maxLength": 200}, "content": _TEXT}, ["name", "content"]),
     ("fai_approval_decide", "approval.decide", "Record an explicit human decision for an exact approval target.",
@@ -189,10 +158,5 @@ def register(ctx) -> None:
     for name, action_type, description, properties, required in _TOOLS:
         ctx.register_tool(name=name, toolset="fai_internal", schema=_schema(name, description, properties, required),
                           handler=_handler(action_type))
-    for name, action_type, description, properties, required in (_TOOLS[3], _TOOLS[5]):
-        client_name = name.replace("fai_", "fai_client_", 1)
-        ctx.register_tool(name=client_name, toolset="fai_client",
-                          schema=_schema(client_name, description, properties, required),
-                          handler=_client_handler(action_type))
     ctx.register_hook("pre_gateway_dispatch", _pre_dispatch)
     ctx.register_hook("pre_llm_call", lambda **kwargs: _context_hook(ctx.state, **kwargs))

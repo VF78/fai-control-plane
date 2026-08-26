@@ -44,8 +44,8 @@ class PluginTest(unittest.TestCase):
     def test_registers_bounded_tools_and_identity_hooks(self):
         context = Context()
         PLUGIN.register(context)
-        self.assertEqual(len(context.tools), 11)
-        self.assertEqual({tool["toolset"] for tool in context.tools}, {"fai_internal", "fai_client"})
+        self.assertEqual(len(context.tools), 3)
+        self.assertEqual({tool["toolset"] for tool in context.tools}, {"fai_internal"})
         self.assertIn("pre_gateway_dispatch", context.hooks)
         self.assertIn("pre_llm_call", context.hooks)
 
@@ -105,14 +105,19 @@ class PluginTest(unittest.TestCase):
         protocol = result["context"]
         self.assertIn("exactly one foreground non-interactive Codex CLI", protocol)
         self.assertIn("stable issue worktree under /opt/data/work/items", protocol)
-        self.assertIn("--dangerously-bypass-approvals-and-sandbox --ephemeral", protocol)
-        self.assertIn("Give Codex only the issue URL, role, constraints and acceptance criteria", protocol)
+        self.assertIn("codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral", protocol)
+        self.assertIn("Give Codex only the issue URL, role, constraints, acceptance criteria", protocol)
+        self.assertIn("send the proposed plan to Telegram for confirmation, and wait", protocol)
+        self.assertIn("Worker task payloads never carry approval material", protocol)
         self.assertIn("missing acceptance/risk checks", protocol)
         self.assertIn("one localized low-risk defect", protocol)
         self.assertIn("returns Dev rework", protocol)
         self.assertIn("Reuse the issue branch/worktree/PR", protocol)
         self.assertIn("Never duplicate an issue or PR", protocol)
-        self.assertIn("call fai_project_item_stage", protocol)
+        self.assertIn("directly with gh", protocol)
+        self.assertIn("Never ask Control Plane to proxy", protocol)
+        self.assertIn("decision, execution, outcome, transition, reason, evidence", protocol)
+        self.assertIn("add no prose or Markdown", protocol)
 
     def test_non_role_api_session_gets_no_project_protocol(self):
         context = Context()
@@ -133,7 +138,7 @@ class PluginTest(unittest.TestCase):
         PLUGIN._post = lambda profile, native_source, action: captured.update(
             profile=profile, source=native_source, action=action) or '{"status":"completed"}'
         try:
-            result = PLUGIN._handler("issue.create")({"title": "Bug", "statement": "Observed"}, session_id="s1")
+            result = PLUGIN._handler("source.add")({"name": "Note", "content": "Observed"}, session_id="s1")
         finally:
             PLUGIN._post = original
         self.assertEqual(result, '{"status":"completed"}')
@@ -141,37 +146,13 @@ class PluginTest(unittest.TestCase):
         self.assertEqual(captured["source"]["updateId"], "77")
         self.assertNotIn("userId", captured["action"])
 
-    def test_process_start_is_one_bounded_internal_tool(self):
+    def test_only_control_plane_owned_tools_are_registered(self):
         context = Context()
         PLUGIN.register(context)
-        tool = next(tool for tool in context.tools if tool["name"] == "fai_process_start")
-        self.assertEqual(tool["toolset"], "fai_internal")
-        self.assertEqual(tool["schema"]["parameters"]["required"], ["task"])
-        self.assertEqual(len(tool["schema"]["parameters"]["properties"]["task"]["oneOf"]), 2)
-
-    def test_client_tools_fail_closed_without_browser_identity(self):
-        self.assertEqual(PLUGIN._client_handler("issue.create")({}, session_id="s1"),
-                         '{"error": "authenticated_browser_identity_required"}')
-
-    def test_role_run_session_cannot_be_promoted_without_receipt_binding(self):
-        self.assertEqual(PLUGIN._handler("project_item.stage")({}, session_id="browser:unbound"),
-            '{"error": "authenticated_message_identity_required"}')
-
-    def test_exact_role_run_session_is_forwarded_for_server_side_receipt_resolution(self):
-        captured = {}
-        original = PLUGIN._post
-        PLUGIN._post = lambda profile, source, action: captured.update(
-            profile=profile, source=source, action=action) or '{"status":"completed"}'
-        session_id = "browser:" + "a" * 64
-        try:
-            result = PLUGIN._handler("project_item.stage")(
-                {"itemId": "PVTI_1", "issueId": "42", "expectedVersion": "v1", "stage": "QA"},
-                session_id=session_id)
-        finally:
-            PLUGIN._post = original
-        self.assertEqual(result, '{"status":"completed"}')
-        self.assertEqual(captured["profile"], "internal")
-        self.assertEqual(captured["source"], {"provider": "agent-role-run", "sessionId": session_id})
+        names = {tool["name"] for tool in context.tools}
+        self.assertEqual(names, {"fai_project_execution_mode", "fai_source_add", "fai_approval_decide"})
+        self.assertFalse(any("issue" in name or "project_item" in name or "process_start" in name
+                             for name in names))
 
 if __name__ == "__main__":
     unittest.main()

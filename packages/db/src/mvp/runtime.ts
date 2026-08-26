@@ -990,44 +990,6 @@ export const resolveActiveHumanMember = async (database: Database, projectId: st
   return result.rows[0] ?? null;
 };
 
-export type ReceiptBoundRoleRun = Readonly<{
-  sessionId: string; actorId: string; projectId: string; requesterRole: ProjectRole;
-  role: 'manager' | 'developer' | 'qa'; itemId: string; observedVersion: string; occurredAt: string;
-  allowedStageTitles: readonly string[];
-}>;
-
-/** Resolves role-run authority only from the canonical submit receipt, matching audit, and live requester membership. */
-export const resolveReceiptBoundRoleRun = async (database: Database, sessionId: string,
-  projectId: string): Promise<ReceiptBoundRoleRun | null> => {
-  const match = /^browser:([a-f0-9]{64})$/.exec(sessionId);
-  if (match === null) return null;
-  const idempotencyKey = `agent.submit:${match[1]}`;
-  const result = await database.query<Readonly<{
-    actorId: string; projectId: string; requesterRole: ProjectRole; role: string;
-    itemId: string; observedVersion: string; successTargetTitle: string | null; reworkTargetTitle: string | null;
-    occurredAt: Date;
-  }>>(`select r.actor_id as "actorId",r.project_id as "projectId",m.role as "requesterRole",
-      a.details->>'role' as role,a.target_reference as "itemId",
-      a.details->>'observedVersion' as "observedVersion",a.details->>'successTargetTitle' as "successTargetTitle",
-      a.details->>'reworkTargetTitle' as "reworkTargetTitle",r.occurred_at as "occurredAt"
-    from command_receipts r
-    join audit_events a on a.project_id=r.project_id and a.actor_id=r.actor_id
-      and a.occurred_at=r.occurred_at and a.action='agent.submit' and a.correlation_id=$1
-    join actors actor on actor.id=r.actor_id and actor.kind='human' and actor.enabled=true
-    join project_memberships m on m.project_id=r.project_id and m.actor_id=r.actor_id and m.active=true
-    where r.project_id=$2 and r.idempotency_key=$3 and r.command_type='agent.submit'
-    limit 2`, [sessionId, projectId, idempotencyKey]);
-  const row = result.rows.length === 1 ? result.rows[0] : undefined;
-  if (row === undefined || !['project_owner', 'operator'].includes(row.requesterRole) ||
-    !['manager', 'developer', 'qa'].includes(row.role) || !/^[^\0\r\n]{1,256}$/.test(row.itemId) ||
-    !/^[^\0\r\n]{1,256}$/.test(row.observedVersion)) return null;
-  const allowedStageTitles = [row.successTargetTitle,row.reworkTargetTitle].filter((value): value is string =>
-    value !== null && /^[^\0\r\n]{1,200}$/.test(value));
-  if (row.role !== 'manager' && allowedStageTitles.length === 0) return null;
-  return {...row, sessionId, role: row.role as 'manager' | 'developer' | 'qa', allowedStageTitles,
-    occurredAt: row.occurredAt.toISOString()};
-};
-
 export const canApprove = async (
   database: Database, actorId: string, projectId: string, kind: ApprovalKind
 ): Promise<boolean> => {

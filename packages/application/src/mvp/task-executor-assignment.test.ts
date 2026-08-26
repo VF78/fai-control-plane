@@ -177,24 +177,11 @@ describe('task executor assignment', () => {
     expect(start).not.toHaveBeenCalled(); expect(value.delivery).not.toHaveBeenCalled();
   });
 
-  it('process.start create adopts only the exact provider readback and returns one chain reference', async () => {
+  it('process.start starts only the exact existing item and returns one chain reference', async () => {
     const value = ports(false, 'In Dev');
-    const tracker = {...value.value.tracker, createIssue: vi.fn(async () => ({referenceId:'219',
-      url:'https://github.com/acme/repo/issues/219',version:'github:updated-at:v1'}))};
-    await expect(startProcess({actorId:'actor',projectId:'project',task:{kind:'create',title:'Task',statement:'Work'},
-      sourceReference:'telegram:message:12',idempotencyKey:'process.start:telegram:77'},
-    {...value.value,tracker})).resolves.toMatchObject({status:'started',itemId:'item',
+    await expect(startProcess({actorId:'actor',projectId:'project',task:{kind:'existing',itemId:'item'},
+      sourceReference:'ui:task-executor',idempotencyKey:'process.start:ui:project:item'},
+    value.value)).resolves.toMatchObject({status:'started',itemId:'item',
       chainReference:expect.stringMatching(/^browser:[a-f0-9]{64}$/)});
-    expect(tracker.createIssue).toHaveBeenCalledOnce();
-  });
-
-  it('process.start create refuses a non-exact tracker readback', async () => {
-    const value = ports(false, 'In Dev'); const start = vi.spyOn(value.value.tracker,'startExecutor');
-    const tracker = {...value.value.tracker, createIssue: vi.fn(async () => ({referenceId:'220',
-      url:'https://github.com/acme/repo/issues/220',version:'github:updated-at:v1'}))};
-    await expect(startProcess({actorId:'actor',projectId:'project',task:{kind:'create',title:'Task',statement:'Work'},
-      sourceReference:'telegram:message:12',idempotencyKey:'process.start:telegram:77'},
-    {...value.value,tracker})).rejects.toThrow('process_start_readback_conflict');
-    expect(start).not.toHaveBeenCalled(); expect(value.delivery).not.toHaveBeenCalled();
   });
 });

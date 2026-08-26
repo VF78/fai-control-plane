@@ -4,11 +4,7 @@ export type IntegrationConfig = Readonly<{
   bitrix: Readonly<{configured: boolean; clientActionsEnabled: boolean}>;
 }>;
 
-/** The client contour is deliberately opt-in; an unset or malformed value never enables it. */
 type Environment = Readonly<Record<string, string | undefined>>;
-
-export const bitrixClientActionsEnabled = (environment: Environment = process.env): boolean =>
-  environment.BITRIX24_CLIENT_ACTIONS_ENABLED === 'true';
 
 export const integrationConfig = (
   environment: Environment = process.env,
@@ -21,7 +17,7 @@ export const integrationConfig = (
     allowedUsers: environment.TELEGRAM_INTERNAL_ALLOWED_USER_IDS?.split(',').filter(Boolean).length ?? 0
   },
   bitrix: {
-    configured: Boolean(environment.BITRIX24_TASK_ID && environment.HERMES_CLIENT_ACTION_TOKEN_FILE),
-    clientActionsEnabled: bitrixClientActionsEnabled(environment)
+    configured: Boolean(environment.BITRIX24_TASK_ID),
+    clientActionsEnabled: false
   }
 });

@@ -65,6 +65,7 @@ describe('MVP agent role request', () => {
     expect(rendered).toContain('codex-cli');
     expect(rendered).not.toContain('sources');
     expect(rendered).not.toContain('chatHistory');
+    expect(rendered).not.toContain('approval');
   });
 
   it('rejects a stale policy version while allowing the manager work route to be configured', () => {
