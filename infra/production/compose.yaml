@@ -92,8 +92,6 @@ services:
         target: source-github-webhook-secret
       - source: hermes-internal-action-token
         target: source-hermes-internal-action-token
-      - source: hermes-client-action-token
-        target: source-hermes-client-action-token
       - source: hermes-token
         target: source-hermes-token
       - source: hermes-management-username
