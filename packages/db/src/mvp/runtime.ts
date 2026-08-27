@@ -768,6 +768,9 @@ export const canonicalProjectContextKeys = Object.freeze([
   'repo:agents', 'repo:ai-context', 'repo:adr-0006',
   'composition:project-process-policy'
 ] as const);
+const requiredProjectContextKeys = Object.freeze([
+  'repo:agents', 'composition:project-process-policy'
+] as const);
 
 const boundedCapsule = (value: string, maximum = 4_000): string => {
   const encoder = new TextEncoder();
@@ -789,27 +792,26 @@ export const refreshProjectContext = async (database: Database, input: Readonly<
       and name=any($3::text[]) order by name,created_at desc,id desc`,
   [input.projectId, projectContextSourceKind, canonicalProjectContextKeys]);
   const current = new Map<string, {id: string; content: string}>();
+  const resolved = new Set<string>();
   for (const source of sources.rows) {
-    if (current.has(source.name)) continue;
+    if (resolved.has(source.name)) continue;
+    resolved.add(source.name);
     if (source.provenance.startsWith('repo-file-removed:')) continue;
     let decoded: unknown;
     try { decoded = JSON.parse(source.contentText); } catch { continue; }
     const parsed = parseProjectContextSource(decoded);
     if (parsed !== null && parsed.key === source.name) current.set(source.name, {id: source.id, content: parsed.content});
   }
-  if (canonicalProjectContextKeys.some((key) => !current.has(key))) throw new Error('project_context_not_configured');
-  const ordered = canonicalProjectContextKeys.map((key) => [key, current.get(key)!] as const);
-  // Four concise source slices make every canonical input visible in the
-  // ephemeral capsule; full source text remains in its provenance artifact.
+  if (requiredProjectContextKeys.some((key) => !current.has(key))) throw new Error('project_context_not_configured');
+  const ordered = canonicalProjectContextKeys.flatMap((key) => {
+    const source = current.get(key); return source === undefined ? [] : [[key, source] as const];
+  });
+  // Concise source slices make every available project input visible in the
+  // ephemeral capsule; optional repository documents stay optional.
   const content = ordered.map(([key, source]) => `# ${key}\n${boundedCapsule(source.content, 600)}`).join('\n\n');
   if (new TextEncoder().encode(content).byteLength === 0) throw new Error('project_context_not_configured');
   const sourceIds = ordered.map(([,source]) => source.id);
-  // Bootstrap is safely repeatable while still activating changed repository
-  // sources after a reinstall or document update.
-  const idempotencyKey = input.idempotencyKey.startsWith('bootstrap-context:')
-    ? `${input.idempotencyKey}:${createHash('sha256').update(sourceIds.join('\0')).digest('hex').slice(0,32)}`
-    : input.idempotencyKey;
-  return activateProjectContextSnapshot(database, {...input, idempotencyKey, sourceIds, content});
+  return activateProjectContextSnapshot(database, {...input, sourceIds, content});
 };
 
 export const appendIncomingEvent = async (database: Database, input: Readonly<{

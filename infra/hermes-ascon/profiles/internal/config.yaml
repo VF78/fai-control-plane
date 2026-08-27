@@ -15,12 +15,20 @@ platform_toolsets:
     - no_mcp
 
 agent:
-  max_turns: 4
+  max_turns: 500
 
 plugins:
   enabled:
     - fai-control-plane
 
 toolsets:
+  - file
+  - terminal
+  - search
+  - web
+  - skills
+  - todo
+  - memory
+  - session_search
   - fai_internal
   - clarify

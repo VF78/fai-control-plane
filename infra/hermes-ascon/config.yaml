@@ -10,7 +10,7 @@ auxiliary:
 
 terminal:
   backend: local
-  cwd: /opt/data/work
+  cwd: /opt/data/work/project
 
 # API role-runs are a thin control loop around one configured executor. Keep
 # Telegram profiles independent; they retain their own conversational tools.
@@ -21,7 +21,7 @@ platform_toolsets:
     - no_mcp
 
 agent:
-  max_turns: 4
+  max_turns: 500
 
 toolsets:
   - file
@@ -32,6 +32,7 @@ toolsets:
   - todo
   - memory
   - session_search
+  - fai_internal
   - clarify
 
 plugins:

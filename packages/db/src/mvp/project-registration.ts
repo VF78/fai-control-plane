@@ -4,6 +4,8 @@ import {defaultAgentRoutingPolicy, defaultProjectProcessPolicy, projectContextSn
 import type {OpaqueSecretRef} from '@fai-control-plane/domain';
 import type {Database} from './runtime.ts';
 
+export const projectAgentProfileTemplateVersion = 'v2026.8.27-fai-project-v2';
+
 export type RegisterProjectInput = Readonly<{
   workspaceId: string; actorId: string; name: string; slug: string; repositoryUrl: string; repositoryId: string;
   projectUrl: string; externalProjectId: string; contextSources: readonly ProjectContextSource[];
@@ -214,6 +216,7 @@ export const readProjectAgentProfile = async (
   try {
     const value = JSON.parse(row.content) as Record<string, unknown>;
     if (value.contract === 'fai.project-agent-profile.v1' && value.status === 'ready' &&
+      value.templateVersion === projectAgentProfileTemplateVersion &&
       typeof value.profile === 'string' &&
       /^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(value.profile) &&
       value.endpointPath === `/p/${encodeURIComponent(value.profile)}/v1/runs`) {

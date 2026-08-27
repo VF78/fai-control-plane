@@ -6,14 +6,14 @@ auxiliary:
   free_only: true
 terminal:
   backend: local
-  cwd: /opt/data/work
+  cwd: /opt/data/work/project
 platform_toolsets:
   api_server:
     - terminal
     - fai_internal
     - no_mcp
 agent:
-  max_turns: 4
+  max_turns: 500
 plugins:
   enabled:
     - fai-control-plane

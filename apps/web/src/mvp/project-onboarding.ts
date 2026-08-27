@@ -1,6 +1,7 @@
 import {
   readProjectAgentProfile,
   recordProjectAgentProfile,
+  projectAgentProfileTemplateVersion,
   registerProject,
   resolveAgentSubmissionBinding,
   type Database,
@@ -125,6 +126,85 @@ const expectJson = async <T>(response: Response): Promise<T> => {
   return response.json() as Promise<T>;
 };
 
+const projectProfileVersion = projectAgentProfileTemplateVersion;
+const projectProfileMarker = (slug: string): string => `<!-- fai-project-profile:${projectProfileVersion}:${slug} -->`;
+const projectSoul = (input: Readonly<{slug: string; repositoryUrl: string; projectUrl: string}>): string => {
+  const coordinates = githubUrls(input.projectUrl, input.repositoryUrl);
+  return `${projectProfileMarker(input.slug)}
+# Project Hermes
+
+You are the permanent project manager and project interface for this one project.
+Repository: ${input.repositoryUrl}
+GitHub Project: ${input.projectUrl} (owner ${coordinates.owner}, number ${coordinates.projectNumber})
+
+Keep durable decisions and compact project facts in native Hermes memory. GitHub Issues and this GitHub Project are the
+only task and status truth. For every task trigger, read the issue, comments, Project fields and linked PR yourself with
+native git/gh access, and read repository AGENTS.md before project work. Never interpret Control Plane internal
+identifiers as GitHub Project identifiers.
+
+Perform planning and Project operations directly. If scope or acceptance criteria are incomplete, update the same issue
+and request confirmation in Telegram before execution. For implementation, documentation, QA and DevOps evidence, run
+one fresh bounded Codex CLI task using the role, CLI, model and reasoning route from the trigger, with only the issue URL
+and smallest necessary repository context. Preserve this Hermes profile, its memory and Telegram sessions across tasks
+and restarts.
+
+Before execution, check that the issue, repository, required credentials and target environment are reachable. If an
+essential input or access is missing, do not repeat failing actions: keep the task at its current stage, record the exact
+missing prerequisite, notify Telegram and return a structured blocked result. Otherwise continue until the stage has a
+real result; do not stop because of an arbitrary small turn count.
+
+Development must produce every requested artifact before moving the item to QA. QA verifies those existing artifacts and
+may fix one localized issue or return the item to development with concrete findings. Update the same Project item after
+each completed stage and report every stage, result and blocker in Telegram. Never create a duplicate issue, run or PR.
+Never merge, release, deploy, mutate production or send customer material without Vladimir's exact approval.
+`;
+};
+const projectProfileConfig = (workDirectory: string) => ({
+  terminal: {backend: 'local', cwd: workDirectory},
+  platform_toolsets: {api_server: ['terminal', 'fai_internal', 'no_mcp']},
+  // Hermes' native default is 500. Keep only the emergency runaway ceiling;
+  // ordinary stopping is governed by the semantic project rules in SOUL.
+  agent: {max_turns: 500},
+  toolsets: ['file', 'terminal', 'search', 'web', 'skills', 'todo', 'memory', 'session_search',
+    'fai_internal', 'clarify']
+});
+const recordValue = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const projectConfigMatches = (value: unknown, workDirectory: string): boolean => {
+  const root = recordValue(value); const config = recordValue(root?.config) ?? root;
+  const terminal = recordValue(config?.terminal); const agent = recordValue(config?.agent);
+  const platform = recordValue(config?.platform_toolsets);
+  const apiServer = Array.isArray(platform?.api_server) ? platform.api_server : [];
+  const toolsets = Array.isArray(config?.toolsets) ? config.toolsets : [];
+  return terminal?.backend === 'local' && terminal.cwd === workDirectory &&
+    typeof agent?.max_turns === 'number' && agent.max_turns >= 500 &&
+    ['terminal', 'fai_internal', 'no_mcp'].every((item) => apiServer.includes(item)) &&
+    ['terminal', 'memory', 'session_search', 'fai_internal'].every((item) => toolsets.includes(item));
+};
+
+const ensureProjectProfileConfiguration = async (client: CookieClient, input: Readonly<{
+  profile: string; slug: string; repositoryUrl: string; projectUrl: string; workDirectory: string; token: string;
+}>): Promise<void> => {
+  const soulPath = `/api/profiles/${encodeURIComponent(input.profile)}/soul`;
+  const soulValue = await expectJson<unknown>(await client.request(soulPath));
+  const soul = recordValue(soulValue)?.content;
+  const configValue = await expectJson<unknown>(await client.request(`/api/config?profile=${encodeURIComponent(input.profile)}`));
+  const configured = typeof soul === 'string' && soul.includes(projectProfileMarker(input.slug)) &&
+    soul.includes(input.repositoryUrl) && soul.includes(input.projectUrl) &&
+    projectConfigMatches(configValue, input.workDirectory);
+  if (configured) return;
+  await expectJson(await client.request('/api/files/mkdir', {method: 'POST',
+    headers: {'content-type': 'application/json'}, body: JSON.stringify({path: input.workDirectory})}));
+  await expectJson(await client.request(`/api/env?profile=${encodeURIComponent(input.profile)}`, {method: 'PUT',
+    headers: {'content-type': 'application/json'}, body: JSON.stringify({key: 'API_SERVER_KEY',
+      value: input.token, profile: input.profile})}));
+  await expectJson(await client.request(`/api/config?profile=${encodeURIComponent(input.profile)}`, {method: 'PUT',
+    headers: {'content-type': 'application/json'}, body: JSON.stringify({profile: input.profile,
+      config: projectProfileConfig(input.workDirectory)})}));
+  await expectJson(await client.request(soulPath, {method: 'PUT', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({content: projectSoul(input)})}));
+};
+
 const profileCapabilitiesAvailable = async (
   profile: string,
   token: string,
@@ -153,22 +233,14 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
   }
   const stored = await readProjectAgentProfile(database, input.actorId, input.projectId);
   const token = (await secretResolver.resolve(binding.agentCredentialRef, 'agent_delivery')).value;
-  if (stored.status === 'ready' && stored.profile !== null) {
-    if (await profileCapabilitiesAvailable(stored.profile, token)) return stored;
-    const client = await managementClient();
-    const restarted = await client.request('/api/gateway/restart', {method: 'POST'});
-    if (!restarted.ok || !await profileCapabilitiesAvailable(stored.profile, token, 12)) {
-      throw new Error('agent_profile_probe_failed');
-    }
-    return stored;
-  }
   const project = await database.query<{slug: string}>(
     'select slug from projects where id=$1 and workspace_id=$2', [input.projectId, input.workspaceId]);
   const slug = project.rows[0]?.slug;
   if (slug === undefined) throw new Error('agent_profile_denied');
-  const profile = slug === 'ascon' ? 'internal' : `project-${slug}`;
+  const profile = stored.status === 'ready' && stored.profile !== null
+    ? stored.profile : slug === 'ascon' ? 'internal' : `project-${slug}`;
   const template = process.env.HERMES_PROFILE_TEMPLATE ?? 'fai-project-template';
-  const workDirectory = `/opt/data/work/projects/${slug}`;
+  const workDirectory = '/opt/data/work/project';
   const client = await managementClient();
   const listed = await expectJson<{profiles: readonly {name?: string}[]}>(await client.request('/api/profiles'));
   const created = !listed.profiles.some((item) => item.name === profile);
@@ -177,19 +249,17 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
       headers: {'content-type': 'application/json'}, body: JSON.stringify({name: profile, clone_from: template,
         no_skills: false, description: `Project manager for ${slug}`})}));
   }
-  await expectJson(await client.request('/api/files/mkdir', {method: 'POST',
-    headers: {'content-type': 'application/json'}, body: JSON.stringify({path: workDirectory})}));
-  await expectJson(await client.request(`/api/env?profile=${encodeURIComponent(profile)}`, {method: 'PUT',
-    headers: {'content-type': 'application/json'}, body: JSON.stringify({key: 'API_SERVER_KEY', value: token, profile})}));
-  if (created) await expectJson(await client.request(`/api/config?profile=${encodeURIComponent(profile)}`, {method: 'PUT',
-    headers: {'content-type': 'application/json'}, body: JSON.stringify({profile, config: {terminal: {
-      backend: 'local', cwd: workDirectory}, platform_toolsets: {api_server: ['terminal', 'fai_internal', 'no_mcp']},
-    toolsets: ['file', 'terminal', 'search', 'web', 'skills', 'todo', 'memory', 'session_search',
-      'fai_internal', 'clarify']}})}));
+  await ensureProjectProfileConfiguration(client, {profile, slug, repositoryUrl: binding.repositoryUrl,
+    projectUrl: binding.projectUrl, workDirectory, token});
   const endpointPath = `/p/${encodeURIComponent(profile)}/v1/runs`;
-  if (!await profileCapabilitiesAvailable(profile, token, 12)) throw new Error('agent_profile_probe_failed');
+  if (!await profileCapabilitiesAvailable(profile, token)) {
+    const restarted = await client.request('/api/gateway/restart', {method: 'POST'});
+    if (!restarted.ok || !await profileCapabilitiesAvailable(profile, token, 12)) {
+      throw new Error('agent_profile_probe_failed');
+    }
+  }
   return recordProjectAgentProfile(database, {...input, profile, endpointPath,
-    templateVersion: 'v2026.8.13-fai-project-v1', occurredAt: new Date().toISOString()});
+    templateVersion: projectProfileVersion, occurredAt: new Date().toISOString()});
 };
 
 export const ensureProjectAgentProfile = async (database: Database, input: Readonly<{

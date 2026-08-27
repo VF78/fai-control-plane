@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from 'vitest';
-import type {Database} from '@fai-control-plane/db';
+import {projectAgentProfileTemplateVersion, type Database} from '@fai-control-plane/db';
 import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProjectBindings,
   runProjectBindingsIsolated,
   type WorkerProjectBinding} from './project-runtime.ts';
@@ -11,7 +11,7 @@ const row = (projectId: string, repository: string, profile: string) => ({
   trackerSecretId: 'tracker', trackerSecretPurpose: 'tracker_read', trackerSecretLocator: '/run/tracker',
   agentSecretId: 'agent', agentSecretLocator: '/run/agent', profileArtifact: JSON.stringify({
     contract: 'fai.project-agent-profile.v1', status: 'ready', profile,
-    endpointPath: `/p/${profile}/v1/runs`, templateVersion: 'v1'
+    endpointPath: `/p/${profile}/v1/runs`, templateVersion: projectAgentProfileTemplateVersion
   }), trackerCapabilitiesArtifact: JSON.stringify({contract: 'fai.project-tracker-capabilities.v1',
     provider: 'github', agentOwnerOptionId: `hermes-${projectId}`, doneStatusOptionId: `done-${projectId}`,
     defaultBranch: 'main'})

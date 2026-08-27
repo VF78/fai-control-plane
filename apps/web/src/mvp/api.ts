@@ -146,6 +146,7 @@ export const projects = async (request: Request): Promise<Response> => {
       const result=await resolveAndRegisterProject(database,{workspaceId:session.workspaceId,actorId:session.actorId,
         name:string(body.name,200),slug,projectUrl:string(body.projectUrl,2_048),repositoryUrl:string(body.repositoryUrl,2_048),
         idempotencyKey:string(body.idempotencyKey,128)});
+      await refreshBoundGitHubContextSources(database, session.actorId, result.projectId);
       await refreshProjectContext(database,{workspaceId:session.workspaceId,projectId:result.projectId,actorId:session.actorId,
         idempotencyKey:`project-context:register:${result.projectId}`,occurredAt:new Date().toISOString()});
       return Response.json(result,{status:result.created?201:200});
@@ -269,6 +270,7 @@ export const refreshContext = async (request: Request, projectId: string): Promi
     if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'POST'}});
     const database = getDatabase(); const session = await requireSession(); requireCsrf(request);
     const body = await json(request);
+    await refreshBoundGitHubContextSources(database, session.actorId, projectId);
     const result = await refreshProjectContext(database, {workspaceId: session.workspaceId, projectId, actorId: session.actorId,
       idempotencyKey: string(body.idempotencyKey), occurredAt: new Date().toISOString()});
     return Response.json(result, {headers: {'cache-control': 'no-store'}});
@@ -448,7 +450,7 @@ export const githubRuntimeCoordinates = (binding: Readonly<{provider: string; pr
 };
 export const refreshGitHubContextSources = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
   projectId: string; actorId: string; owner: string; repository: string; credentialRef: OpaqueSecretRef;
-  after: string; paths: readonly string[];
+  after: string; paths: readonly string[]; requiredPaths?: readonly string[];
 }>): Promise<void> => {
   const token = (await secretResolver.resolve(input.credentialRef, 'tracker_read')).value;
   if (token.length === 0 || token.length > 65_536 || token.includes('\0')) throw new Error('github_credential_invalid');
@@ -457,6 +459,10 @@ export const refreshGitHubContextSources = async (database: ReturnType<typeof ge
       headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28'},
       signal: AbortSignal.timeout(15_000)
     });
+    if (response.status === 404 && !input.requiredPaths?.includes(path)) {
+      await invalidateRemovedGitHubContextSources(database, {...input, paths: [path]});
+      continue;
+    }
     if (!response.ok) throw new Error('github_context_read_failed');
     const value = await response.json() as Record<string, unknown>;
     if (value.type !== 'file' || typeof value.content !== 'string' || value.encoding !== 'base64') throw new Error('github_context_read_invalid');
@@ -471,6 +477,26 @@ export const refreshGitHubContextSources = async (database: ReturnType<typeof ge
       sourceUrl: `https://github.com/${input.owner}/${input.repository}/blob/${input.after}/${path}`,
       provenance: `repo-file:${path}@${input.after}`});
   }
+};
+
+const refreshBoundGitHubContextSources = async (database: ReturnType<typeof getDatabase>, actorId: string,
+  projectId: string): Promise<void> => {
+  const binding = await resolveAgentSubmissionBinding(database, actorId, projectId);
+  if (binding === null) throw new Error('github_binding_invalid');
+  const coordinates = githubRuntimeCoordinates(binding);
+  const capabilities = await readProjectTrackerCapabilities(database, actorId, projectId);
+  if (coordinates === null || capabilities?.provider !== 'github') throw new Error('github_binding_invalid');
+  const token = (await secretResolver.resolve(binding.trackerCredentialRef, 'tracker_read')).value;
+  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(coordinates.owner)}/${encodeURIComponent(coordinates.repository)}/commits/${encodeURIComponent(capabilities.defaultBranch)}`, {
+    headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${token}`,
+      'x-github-api-version': '2022-11-28'}, signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok) throw new Error('github_context_read_failed');
+  const value = await response.json() as {sha?: unknown};
+  if (typeof value.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(value.sha)) throw new Error('github_context_read_invalid');
+  await refreshGitHubContextSources(database, {projectId, actorId, owner: coordinates.owner,
+    repository: coordinates.repository, credentialRef: binding.trackerCredentialRef, after: value.sha.toLowerCase(),
+    paths: [...watchedContextPaths.keys()], requiredPaths: ['AGENTS.md']});
 };
 
 const invalidateRemovedGitHubContextSources = async (database: ReturnType<typeof getDatabase>, input: Readonly<{

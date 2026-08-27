@@ -85,4 +85,20 @@ describe('project context push selection', () => {
     expect(query.mock.calls[0]![1]).toEqual(expect.arrayContaining(['project-a','owner-a']));
     await rm(root,{recursive:true});
   });
+
+  it('records an optional missing repository document as removed instead of failing refresh', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fai-webhook-optional-'));
+    const token = join(root, 'tracker-token'); await writeFile(token, 'github-token');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}',{status:404})));
+    const query = vi.fn(async (...arguments_: [sql: string, parameters?: readonly unknown[]]) => {
+      void arguments_; return {rowCount:1,rows:[{id:'artifact-removed'}]};
+    });
+    await expect(refreshGitHubContextSources({query} as unknown as Database,{projectId:'project-a',actorId:'owner-a',
+      owner:'VF78',repository:'ascon',credentialRef:{id:'tracker-a',purpose:'tracker_read',locator:token},
+      after:'a'.repeat(40),paths:['docs/AI_CONTEXT.md'],requiredPaths:['AGENTS.md']})).resolves.toBeUndefined();
+    expect(query.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
+      'project-a','owner-a','repo:ai-context',expect.stringContaining('Source removed')
+    ]));
+    await rm(root,{recursive:true});
+  });
 });

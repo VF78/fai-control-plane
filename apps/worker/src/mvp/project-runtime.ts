@@ -1,4 +1,4 @@
-import type {Database} from '@fai-control-plane/db';
+import {projectAgentProfileTemplateVersion, type Database} from '@fai-control-plane/db';
 import type {OpaqueSecretRef} from '@fai-control-plane/domain';
 
 export type WorkerProjectBinding = Readonly<{
@@ -37,6 +37,7 @@ const profileEndpoint = (content: string): Readonly<{profile: string; endpointPa
   try {
     const value = JSON.parse(content) as Record<string, unknown>;
     if (value.contract !== 'fai.project-agent-profile.v1' || value.status !== 'ready' ||
+      value.templateVersion !== projectAgentProfileTemplateVersion ||
       typeof value.profile !== 'string' ||
       !/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(value.profile) ||
       value.endpointPath !== `/p/${encodeURIComponent(value.profile)}/v1/runs`) return null;

@@ -99,7 +99,7 @@ describe('project onboarding composition', () => {
     await rejection;
     expect(database.connect).not.toHaveBeenCalled();
     expect(calls).toContain('PUT /api/config?profile=project-control');
-    expect(calls.filter((call) => call.endsWith('/v1/capabilities'))).toHaveLength(12);
+    expect(calls.filter((call) => call.endsWith('/v1/capabilities'))).toHaveLength(13);
     await rm(files.root, {recursive: true});
   });
 
@@ -156,13 +156,25 @@ describe('project onboarding composition', () => {
     await rm(files.root, {recursive: true});
   });
 
-  it('only probes a healthy stored profile and never mutates it', async () => {
+  it('checks a configured stored profile without rewriting its durable state', async () => {
     const files = await secretFiles();
+    process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
+    process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
+    process.env.HERMES_MANAGEMENT_PASSWORD_FILE = files.password;
     process.env.HERMES_GATEWAY_INTERNAL_BASE_URL = 'http://hermes-gateway:8642';
     const calls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(value));
       calls.push(`${init?.method ?? 'GET'} ${url.pathname}${url.search}`);
+      if (url.pathname === '/auth/password-login') return new Response('{}', {headers: {'set-cookie': 'session=ok; Path=/'}});
+      if (url.pathname === '/api/profiles') return new Response(JSON.stringify({profiles: [{name: 'internal'}]}));
+      if (url.pathname.endsWith('/soul')) return new Response(JSON.stringify({
+        content: '<!-- fai-project-profile:v2026.8.27-fai-project-v2:ascon -->\nhttps://github.com/VF78/control\nhttps://github.com/users/VF78/projects/1'
+      }));
+      if (url.pathname === '/api/config') return new Response(JSON.stringify({terminal: {backend: 'local',
+        cwd: '/opt/data/work/project'}, agent: {max_turns: 500},
+      platform_toolsets: {api_server: ['terminal', 'fai_internal', 'no_mcp']},
+      toolsets: ['terminal', 'memory', 'session_search', 'fai_internal']}));
       return new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
     }));
     const query = vi.fn(async (sql: string) => {
@@ -175,18 +187,23 @@ describe('project onboarding composition', () => {
         repositoryUrl: 'https://github.com/VF78/control', cursor: null, trackerSecretId: 'tracker-secret',
         trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.token, agentSecretId: 'agent-secret',
         agentSecretLocator: files.token}]};
+      if (sql.startsWith('select slug from projects')) return {rowCount: 1, rows: [{slug: 'ascon'}]};
       return {rowCount: 0, rows: []};
     });
-    const database = {query, connect: vi.fn()} as unknown as Database;
+    const clientQuery = vi.fn(async (sql: string) => sql.includes("role='project_owner'")
+      ? {rowCount: 1, rows: [{}]} : {rowCount: 1, rows: []});
+    const database = {query, connect: vi.fn(async () => ({query: clientQuery, release: vi.fn()}))} as unknown as Database;
     await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
-      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toEqual({status: 'ready', profile: 'internal',
-      endpointPath: '/p/internal/v1/runs', version: 'version-1'});
-    expect(calls).toEqual(['GET /p/internal/v1/capabilities']);
-    expect(database.connect).not.toHaveBeenCalled();
+      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'internal',
+      endpointPath: '/p/internal/v1/runs'});
+    expect(calls).toContain('GET /p/internal/v1/capabilities');
+    expect(calls.filter((call) => call.startsWith('PUT '))).toEqual([]);
+    expect(calls).not.toContain('POST /api/files/mkdir');
+    expect(database.connect).toHaveBeenCalledOnce();
     await rm(files.root, {recursive: true});
   });
 
-  it('repairs access for the same unhealthy stored profile without recreating or reconfiguring it', async () => {
+  it('repairs an old stored profile once, preserves it and restarts only when unavailable', async () => {
     const files = await secretFiles();
     process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
     process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
@@ -228,10 +245,12 @@ describe('project onboarding composition', () => {
       projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'internal'});
     const requests = calls.map(({request}) => request);
     expect(requests).toContain('POST /api/gateway/restart');
-    expect(requests).not.toContain('POST /api/files/mkdir');
-    expect(requests).not.toContain('PUT /api/env?profile=internal');
+    expect(requests).toContain('POST /api/files/mkdir');
+    expect(requests).toContain('PUT /api/env?profile=internal');
     expect(requests).not.toContain('POST /api/profiles');
-    expect(requests).not.toContain('PUT /api/config?profile=internal');
+    expect(requests).toContain('PUT /api/config?profile=internal');
+    expect(requests).toContain('PUT /api/profiles/internal/soul');
+    expect(requests).toContain('POST /api/gateway/restart');
     expect(probes).toBe(2);
     await rm(files.root, {recursive: true});
   });

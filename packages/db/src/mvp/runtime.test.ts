@@ -6,7 +6,7 @@ import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSna
 import {activateProjectContextSnapshot, addSourceArtifact, projectAgentDeliveryConfigured, readActiveProjectContext, readAgentRoutingPolicy,
   createAgentAttemptStore,
   readProjectAgentSubmissionView, readProjectContextStatus,
-  readProjectExecutionMode, readProjectProcessPolicy, trackerSnapshotFreshness,
+  readProjectExecutionMode, readProjectProcessPolicy, refreshProjectContext, trackerSnapshotFreshness,
   executeAgentSubmissionTransaction, readProjectMembershipRole, type Database} from './runtime.ts';
 
 describe('focused page projections', () => {
@@ -177,11 +177,49 @@ describe('active project context projection', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('keys bootstrap refreshes by canonical source identity so updated documents activate', async () => {
+  it('keeps the runtime context capsule bounded instead of resending full source documents', async () => {
     const source = await import('node:fs/promises').then(({readFile}) => readFile(new URL('./runtime.ts', import.meta.url), 'utf8'));
-    expect(source).toContain("input.idempotencyKey.startsWith('bootstrap-context:')");
-    expect(source).toContain("update(sourceIds.join('\\0'))");
     expect(source).toContain('boundedCapsule(source.content, 600)');
+  });
+
+  it('requires project instructions and process policy but keeps repository supplements optional', async () => {
+    const source = (id: string, name: string, content: string, provenance = 'repo-file:test') => {
+      const contentText = serializeProjectContextSource({contract:'fai.project-context-source.v1',key:name,content});
+      return {id,name,kind:projectContextSourceKind,contentText,provenance,
+        sha256:projectContextSnapshotVersion(contentText)};
+    };
+    const rows = [
+      source('00000000-0000-4000-8000-000000000001','repo:agents','ASCON instructions'),
+      source('00000000-0000-4000-8000-000000000002','composition:project-process-policy','ASCON process','composition-file')
+    ];
+    const query = vi.fn().mockResolvedValue({rows});
+    const transactionQuery = vi.fn(async (statement: string) => {
+      if (statement.includes("m.role in ('project_owner','operator')")) return {rows:[{workspaceId:'workspace'}]};
+      if (statement.includes("command_type='project.context.activate'")) return {rows:[]};
+      if (statement.includes('id=any($2::uuid[]) and kind=$3')) return {rows};
+      return {rows:[]};
+    });
+    const database = {query, connect: vi.fn(async () => ({query:transactionQuery,release:vi.fn()}))} as unknown as Database;
+    await expect(refreshProjectContext(database,{workspaceId:'workspace',projectId:'project',actorId:'actor',
+      idempotencyKey:'refresh:one',occurredAt:'2026-08-27T00:00:00.000Z'})).resolves.toMatchObject({status:'completed'});
+    expect(query.mock.calls[0]?.[1]).toEqual(['project',projectContextSourceKind,
+      ['repo:agents','repo:ai-context','repo:adr-0006','composition:project-process-policy']]);
+  });
+
+  it('does not revive an older repository source after a newer removal tombstone', async () => {
+    const oldText = serializeProjectContextSource({contract:'fai.project-context-source.v1',key:'repo:agents',
+      content:'obsolete instructions'});
+    const query = vi.fn().mockResolvedValue({rows:[
+      {id:'00000000-0000-4000-8000-000000000002',name:'repo:agents',contentText:oldText,
+        provenance:'repo-file-removed:AGENTS.md@deadbeef'},
+      {id:'00000000-0000-4000-8000-000000000001',name:'repo:agents',contentText:oldText,
+        provenance:'repo-file:AGENTS.md@old'}
+    ]});
+    const database = {query,connect:vi.fn()} as unknown as Database;
+    await expect(refreshProjectContext(database,{workspaceId:'workspace',projectId:'project',actorId:'actor',
+      idempotencyKey:'refresh:removed',occurredAt:'2026-08-27T00:00:00.000Z'}))
+      .rejects.toThrow('project_context_not_configured');
+    expect(database.connect).not.toHaveBeenCalled();
   });
 
   it('compares text audit references with artifact UUIDs explicitly', async () => {
