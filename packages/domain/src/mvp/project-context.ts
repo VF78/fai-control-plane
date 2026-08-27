@@ -4,6 +4,9 @@ import {isBoundedId} from './model.ts';
 export const projectContextSnapshotKind = 'project_context_snapshot_v1';
 export const projectContextSourceKind = 'project_context_source_v1';
 export const projectContextSnapshotMaxBytes = 4_000;
+export const projectPassportPaths = Object.freeze([
+  'docs/project-passport.md', 'docs/product-passport.md', 'PROJECT.md'
+] as const);
 
 export type ProjectContextSource = Readonly<{
   contract: 'fai.project-context-source.v1';

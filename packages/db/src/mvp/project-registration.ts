@@ -216,10 +216,12 @@ export const readProjectAgentProfile = async (
   try {
     const value = JSON.parse(row.content) as Record<string, unknown>;
     if (value.contract === 'fai.project-agent-profile.v1' && value.status === 'ready' &&
-      value.templateVersion === projectAgentProfileTemplateVersion &&
       typeof value.profile === 'string' &&
       /^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(value.profile) &&
       value.endpointPath === `/p/${encodeURIComponent(value.profile)}/v1/runs`) {
+      if (value.templateVersion !== projectAgentProfileTemplateVersion) {
+        return {status: 'not_configured', profile: value.profile, endpointPath: null, version: row.sha256};
+      }
       return {status: 'ready', profile: value.profile, endpointPath: value.endpointPath, version: row.sha256};
     }
   } catch { /* fail closed */ }

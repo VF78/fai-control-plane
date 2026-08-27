@@ -59,13 +59,18 @@ export function ProjectRegistrationControl() {
 export function ProjectAgentActivationControl({projectId,status,profile}:Readonly<{projectId:string;
   status:'not_configured'|'ready';profile:string|null}>) {
   const command=useAsyncCommand(); const activate=()=>void command.run(()=>post(`/api/projects/${projectId}/agent-profile`,
-    {idempotencyKey:`agent-profile:${id()}`}),{success:(result)=>result.status==='ready'?'ИИ агент готов к работе.':'Настройка не подтверждена.',
+    {idempotencyKey:`agent-profile:${id()}`,force:status==='ready'}),
+    {success:(result)=>result.status==='ready'?'ИИ агент готов к работе.':'Настройка не подтверждена.',
       error:(error)=>error instanceof Error&&error.message==='agent_profile_probe_failed'
         ?'Профиль создан, но Hermes ещё не подтвердил готовность. Повторите активацию после запуска gateway.'
         :'Не удалось активировать ИИ агента. Существующая конфигурация не изменена.'});
   return <div className="fcp-agent-activation"><div><strong>{status==='ready'?'ИИ агент готов':'ИИ агент не настроен'}</strong>
-    <small>{status==='ready'?`Постоянный профиль ${profile??''} активен для этого проекта.`:'Будет создан отдельный постоянный Hermes-профиль из общего шаблона.'}</small></div>
-    {status==='ready'?null:<AsyncButton type="button" pending={command.pending} pendingLabel="Настраиваем…" onClick={activate}>Активировать ИИ агента</AsyncButton>}
+    <small>{status==='ready'?`Постоянный профиль ${profile??''} активен для этого проекта.`:profile===null
+      ?'Будет создан отдельный постоянный Hermes-профиль из общего шаблона.'
+      :`Профиль ${profile} сохранён и требует обновления настройки.`}</small></div>
+    <AsyncButton type="button" pending={command.pending} pendingLabel="Настраиваем…" onClick={activate}>
+      {status==='ready'?'Обновить настройку':'Настроить ИИ агента'}
+    </AsyncButton>
     <CommandNoticeView notice={command.notice}/></div>;
 }
 
@@ -117,9 +122,8 @@ function RoutingSetting({label, value, editing, editable, pending, editor, onEdi
 }
 
 const contextSourceLabel: Readonly<Record<string,string>> = {
-  'repo:agents':'AGENTS.md', 'repo:ai-context':'docs/AI_CONTEXT.md',
-  'repo:adr-0006':'ADR 0006 · Lifecycle gates',
-  'composition:project-process-policy':'ASCON process policy'
+  'repo:agents':'AGENTS.md', 'repo:passport':'Паспорт проекта',
+  'composition:project-process-policy':'Процесс проекта'
 };
 const contextTime = (value: string) => new Intl.DateTimeFormat('ru-RU', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'}).format(new Date(value));
 

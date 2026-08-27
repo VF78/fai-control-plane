@@ -26,7 +26,9 @@ import {
 import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, decideApproval,
   type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
-import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeMembership, parseAgentRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
+import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeMembership, parseAgentRoutingPolicy,
+  projectPassportPaths, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind,
+  type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
@@ -163,7 +165,8 @@ export const projectAgentProfile = async (request:Request,projectId:string):Prom
     if(request.method!=='POST') return new Response(null,{status:405,headers:{allow:'GET, POST'}});
     requireCsrf(request); const body=await json(request);
     return Response.json(await ensureProjectAgentProfile(database,{workspaceId:session.workspaceId,actorId:session.actorId,
-      projectId,idempotencyKey:string(body.idempotencyKey,128)}),{headers:{'cache-control':'no-store'}});
+      projectId,idempotencyKey:string(body.idempotencyKey,128),force:body.force===true}),
+    {headers:{'cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
 };
 
@@ -395,8 +398,7 @@ const envSecret = (prefix: string, purpose: string): OpaqueSecretRef => ({
 
 const watchedContextPaths = new Map([
   ['AGENTS.md', 'repo:agents'],
-  ['docs/AI_CONTEXT.md', 'repo:ai-context'],
-  ['docs/adr/0006-thin-control-plane-authority.md', 'repo:adr-0006']
+  ...projectPassportPaths.map((path) => [path, 'repo:passport'] as const)
 ]);
 export const pushChangedPaths = (body: Uint8Array, expected: Readonly<{repository: string; branch: string}>):
   Readonly<{after: string; paths: readonly string[]; removed: readonly string[]}> | null => {
@@ -450,32 +452,37 @@ export const githubRuntimeCoordinates = (binding: Readonly<{provider: string; pr
 };
 export const refreshGitHubContextSources = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
   projectId: string; actorId: string; owner: string; repository: string; credentialRef: OpaqueSecretRef;
-  after: string; paths: readonly string[]; requiredPaths?: readonly string[];
+  after: string; paths: readonly string[]; requiredKeys?: readonly string[];
 }>): Promise<void> => {
   const token = (await secretResolver.resolve(input.credentialRef, 'tracker_read')).value;
   if (token.length === 0 || token.length > 65_536 || token.includes('\0')) throw new Error('github_credential_invalid');
+  const resolved = new Set<string>(); const missing = new Map<string, string>();
   for (const path of input.paths) {
+    const key = watchedContextPaths.get(path);
+    if (key === undefined) throw new Error('github_context_read_invalid');
+    if (resolved.has(key)) continue;
     const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${input.after}`, {
       headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28'},
       signal: AbortSignal.timeout(15_000)
     });
-    if (response.status === 404 && !input.requiredPaths?.includes(path)) {
-      await invalidateRemovedGitHubContextSources(database, {...input, paths: [path]});
-      continue;
-    }
+    if (response.status === 404) { missing.set(key, path); continue; }
     if (!response.ok) throw new Error('github_context_read_failed');
     const value = await response.json() as Record<string, unknown>;
     if (value.type !== 'file' || typeof value.content !== 'string' || value.encoding !== 'base64') throw new Error('github_context_read_invalid');
     const content = Buffer.from(value.content.replace(/\s/g, ''), 'base64').toString('utf8');
     if (content.length === 0 || content.length > 200_000 || content.includes('\0')) throw new Error('github_context_read_invalid');
-    const key = watchedContextPaths.get(path);
-    if (key === undefined) throw new Error('github_context_read_invalid');
     const serialized = JSON.stringify({contract:'fai.project-context-source.v1', key, content});
     await addSourceArtifact(database, {projectId: input.projectId, actorId: input.actorId,
       kind: 'project_context_source_v1', name: key, mediaType: 'application/json', contentText: serialized,
       sha256: createHash('sha256').update(serialized).digest('hex'),
       sourceUrl: `https://github.com/${input.owner}/${input.repository}/blob/${input.after}/${path}`,
       provenance: `repo-file:${path}@${input.after}`});
+    resolved.add(key);
+  }
+  for (const [key, path] of missing) {
+    if (resolved.has(key)) continue;
+    await invalidateRemovedGitHubContextSources(database, {...input, paths: [path]});
+    if (input.requiredKeys?.includes(key)) throw new Error('project_context_not_configured');
   }
 };
 
@@ -496,7 +503,7 @@ const refreshBoundGitHubContextSources = async (database: ReturnType<typeof getD
   if (typeof value.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(value.sha)) throw new Error('github_context_read_invalid');
   await refreshGitHubContextSources(database, {projectId, actorId, owner: coordinates.owner,
     repository: coordinates.repository, credentialRef: binding.trackerCredentialRef, after: value.sha.toLowerCase(),
-    paths: [...watchedContextPaths.keys()], requiredPaths: ['AGENTS.md']});
+    paths: [...watchedContextPaths.keys()], requiredKeys: ['repo:agents', 'repo:passport']});
 };
 
 const invalidateRemovedGitHubContextSources = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
@@ -545,13 +552,12 @@ export const githubWebhook = async (request: Request): Promise<Response> => {
       }
       await refreshGitHubContextSources(database, {projectId: runtime.projectId, actorId: runtime.ownerActorId,
         owner: coordinates.owner, repository: coordinates.repository, credentialRef: runtime.trackerCredentialRef,
-        after: push.after, paths: push.paths});
-      await invalidateRemovedGitHubContextSources(database,{projectId:runtime.projectId,actorId:runtime.ownerActorId,
-        after:push.after,paths:push.removed});
-      if (push.removed.length === 0) await refreshProjectContext(database, {workspaceId: runtime.workspaceId,
-          projectId: runtime.projectId, actorId: runtime.ownerActorId,
-          idempotencyKey: `project-context:webhook:${verified.deliveryId}`,
-          occurredAt: new Date().toISOString()});
+        after: push.after, paths: [...watchedContextPaths.keys()],
+        requiredKeys: ['repo:agents', 'repo:passport']});
+      await refreshProjectContext(database, {workspaceId: runtime.workspaceId,
+        projectId: runtime.projectId, actorId: runtime.ownerActorId,
+        idempotencyKey: `project-context:webhook:${verified.deliveryId}`,
+        occurredAt: new Date().toISOString()});
     }
     return Response.json({status: result}, {status: result === 'recorded' ? 202 : 200});
   } catch (error) { return jsonError(error); }

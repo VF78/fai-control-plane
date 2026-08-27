@@ -182,7 +182,7 @@ describe('active project context projection', () => {
     expect(source).toContain('boundedCapsule(source.content, 600)');
   });
 
-  it('requires project instructions and process policy but keeps repository supplements optional', async () => {
+  it('requires project instructions, passport and process policy', async () => {
     const source = (id: string, name: string, content: string, provenance = 'repo-file:test') => {
       const contentText = serializeProjectContextSource({contract:'fai.project-context-source.v1',key:name,content});
       return {id,name,kind:projectContextSourceKind,contentText,provenance,
@@ -190,7 +190,8 @@ describe('active project context projection', () => {
     };
     const rows = [
       source('00000000-0000-4000-8000-000000000001','repo:agents','ASCON instructions'),
-      source('00000000-0000-4000-8000-000000000002','composition:project-process-policy','ASCON process','composition-file')
+      source('00000000-0000-4000-8000-000000000002','repo:passport','ASCON passport'),
+      source('00000000-0000-4000-8000-000000000003','composition:project-process-policy','ASCON process','composition-file')
     ];
     const query = vi.fn().mockResolvedValue({rows});
     const transactionQuery = vi.fn(async (statement: string) => {
@@ -203,7 +204,7 @@ describe('active project context projection', () => {
     await expect(refreshProjectContext(database,{workspaceId:'workspace',projectId:'project',actorId:'actor',
       idempotencyKey:'refresh:one',occurredAt:'2026-08-27T00:00:00.000Z'})).resolves.toMatchObject({status:'completed'});
     expect(query.mock.calls[0]?.[1]).toEqual(['project',projectContextSourceKind,
-      ['repo:agents','repo:ai-context','repo:adr-0006','composition:project-process-policy']]);
+      ['repo:agents','repo:passport','composition:project-process-policy']]);
   });
 
   it('does not revive an older repository source after a newer removal tombstone', async () => {

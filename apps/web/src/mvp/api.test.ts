@@ -95,10 +95,30 @@ describe('project context push selection', () => {
     });
     await expect(refreshGitHubContextSources({query} as unknown as Database,{projectId:'project-a',actorId:'owner-a',
       owner:'VF78',repository:'ascon',credentialRef:{id:'tracker-a',purpose:'tracker_read',locator:token},
-      after:'a'.repeat(40),paths:['docs/AI_CONTEXT.md'],requiredPaths:['AGENTS.md']})).resolves.toBeUndefined();
+      after:'a'.repeat(40),paths:['docs/project-passport.md']})).resolves.toBeUndefined();
     expect(query.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
-      'project-a','owner-a','repo:ai-context',expect.stringContaining('Source removed')
+      'project-a','owner-a','repo:passport',expect.stringContaining('Source removed')
     ]));
+    await rm(root,{recursive:true});
+  });
+
+  it('uses the first available passport path without recording missing alternatives', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fai-webhook-passport-'));
+    const token = join(root, 'tracker-token'); await writeFile(token, 'github-token');
+    const fetch = vi.fn(async (value: string | URL | Request) => String(value).includes('project-passport.md')
+      ? new Response('{}',{status:404})
+      : new Response(JSON.stringify({type:'file',encoding:'base64',
+        content:Buffer.from('Canonical passport').toString('base64')})));
+    vi.stubGlobal('fetch', fetch);
+    const query = vi.fn(async () => ({rowCount:1,rows:[{id:'artifact-passport'}]}));
+    await expect(refreshGitHubContextSources({query} as unknown as Database,{projectId:'project-a',actorId:'owner-a',
+      owner:'VF78',repository:'ascon',credentialRef:{id:'tracker-a',purpose:'tracker_read',locator:token},
+      after:'a'.repeat(40),paths:['docs/project-passport.md','docs/product-passport.md','PROJECT.md'],
+      requiredKeys:['repo:passport']})).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenCalledOnce();
+    expect(JSON.stringify(query.mock.calls)).toContain('Canonical passport');
+    expect(JSON.stringify(query.mock.calls)).not.toContain('Source removed');
     await rm(root,{recursive:true});
   });
 });

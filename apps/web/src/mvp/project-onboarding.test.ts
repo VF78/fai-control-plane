@@ -3,6 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import type {Database} from '@fai-control-plane/db';
+import {projectAgentProfileTemplateVersion} from '@fai-control-plane/db';
 import {activateProjectAgentProfile, ensureProjectAgentProfile, resolveAndRegisterProject} from './project-onboarding.ts';
 
 const environments = ['GITHUB_PROJECTS_TOKEN_FILE', 'HERMES_MANAGEMENT_URL', 'HERMES_MANAGEMENT_USERNAME_FILE',
@@ -27,7 +28,7 @@ const secretFiles = async () => {
 };
 
 describe('project onboarding composition', () => {
-  it('requires AGENTS.md but skips absent optional project context documents', async () => {
+  it('requires AGENTS.md and discovers one repository passport without copying unrelated documents', async () => {
     const files = await secretFiles(); process.env.GITHUB_PROJECTS_TOKEN_FILE = files.token;
     const requests: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request) => {
@@ -40,6 +41,8 @@ describe('project onboarding composition', () => {
       }}));
       if (url.endsWith('/AGENTS.md')) return new Response(JSON.stringify({type: 'file', encoding: 'base64',
         content: Buffer.from('Project instructions').toString('base64')}));
+      if (url.endsWith('/docs/product-passport.md')) return new Response(JSON.stringify({type: 'file', encoding: 'base64',
+        content: Buffer.from('Project passport').toString('base64')}));
       return new Response('{}', {status: 404});
     }));
     const query = vi.fn(async (sql: string) => {
@@ -54,7 +57,7 @@ describe('project onboarding composition', () => {
       slug: 'control', projectUrl: 'https://github.com/users/VF78/projects/1',
       repositoryUrl: 'https://github.com/VF78/control', idempotencyKey: 'register:1'})).resolves.toMatchObject({created: true});
     expect(requests.filter((url) => url.includes('/contents/'))).toHaveLength(3);
-    expect(query.mock.calls.filter(([sql]) => String(sql).includes('insert into project_source_artifacts'))).toHaveLength(4);
+    expect(query.mock.calls.filter(([sql]) => String(sql).includes('insert into project_source_artifacts'))).toHaveLength(5);
     await rm(files.root, {recursive: true});
   });
 
@@ -156,7 +159,7 @@ describe('project onboarding composition', () => {
     await rm(files.root, {recursive: true});
   });
 
-  it('checks a configured stored profile without rewriting its durable state', async () => {
+  it('keeps a configured profile stable during normal checks and rewrites it only on explicit refresh', async () => {
     const files = await secretFiles();
     process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
     process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
@@ -180,7 +183,7 @@ describe('project onboarding composition', () => {
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
         content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
-          endpointPath: '/p/internal/v1/runs'})}]};
+          endpointPath: '/p/internal/v1/runs', templateVersion: projectAgentProfileTemplateVersion})}]};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace',
         projectId: 'project', requesterRole: 'project_owner', bindingId: 'binding', provider: 'github',
         externalProjectId: 'PVT_1', projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
@@ -200,6 +203,16 @@ describe('project onboarding composition', () => {
     expect(calls.filter((call) => call.startsWith('PUT '))).toEqual([]);
     expect(calls).not.toContain('POST /api/files/mkdir');
     expect(database.connect).toHaveBeenCalledOnce();
+
+    calls.length = 0;
+    await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
+      projectId: 'project', idempotencyKey: 'ensure:forced', force: true})).resolves.toMatchObject({
+      status: 'ready', profile: 'internal', endpointPath: '/p/internal/v1/runs'
+    });
+    expect(calls).toContain('POST /api/files/mkdir');
+    expect(calls).toContain('PUT /api/env?profile=internal');
+    expect(calls).toContain('PUT /api/config?profile=internal');
+    expect(calls).toContain('PUT /api/profiles/internal/soul');
     await rm(files.root, {recursive: true});
   });
 

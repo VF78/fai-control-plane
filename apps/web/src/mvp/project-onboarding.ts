@@ -7,7 +7,8 @@ import {
   type Database,
   type ProjectAgentProfileView
 } from '@fai-control-plane/db';
-import {parseProjectContextSource, type OpaqueSecretRef} from '@fai-control-plane/domain';
+import {parseProjectContextSource, projectPassportPaths, type OpaqueSecretRef,
+  type ProjectContextSource} from '@fai-control-plane/domain';
 import {readSecretFile, secretResolver} from './runtime.ts';
 
 const githubUrls = (projectValue: string, repositoryValue: string) => {
@@ -69,18 +70,13 @@ export const resolveAndRegisterProject = async (database: Database, input: Reado
     fields?.pageInfo?.hasNextPage === true || agentOwnerOptionId === null || doneStatusOptionId === null) {
     throw new Error('github_binding_invalid');
   }
-  const files = [
-    {key: 'repo:agents', path: 'AGENTS.md', required: true},
-    {key: 'repo:ai-context', path: 'docs/AI_CONTEXT.md', required: false},
-    {key: 'repo:adr-0006', path: 'docs/adr/0006-thin-control-plane-authority.md', required: false}
-  ] as const;
-  const contextSources = [];
-  for (const {key, path, required} of files) {
+  const contextSources: ProjectContextSource[] = [];
+  const readContextFile = async (key: string, path: string): Promise<'found'|'missing'> => {
     const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(urls.owner)}/${encodeURIComponent(urls.repository)}/contents/${path.split('/').map(encodeURIComponent).join('/')}`, {
       headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${token}`,
         'x-github-api-version': '2022-11-28'}, signal: AbortSignal.timeout(15_000)
     });
-    if (response.status === 404 && !required) continue;
+    if (response.status === 404) return 'missing';
     if (!response.ok) throw new Error('github_read_failed');
     const value = await response.json() as {type?: string; content?: string; encoding?: string};
     if (value.type !== 'file' || value.encoding !== 'base64' || typeof value.content !== 'string') {
@@ -90,7 +86,14 @@ export const resolveAndRegisterProject = async (database: Database, input: Reado
       content: Buffer.from(value.content.replace(/\s/g, ''), 'base64').toString('utf8')});
     if (source === null) throw new Error('github_context_read_invalid');
     contextSources.push(source);
+    return 'found';
+  };
+  if (await readContextFile('repo:agents', 'AGENTS.md') !== 'found') throw new Error('project_context_not_configured');
+  let passportFound = false;
+  for (const path of projectPassportPaths) {
+    if (await readContextFile('repo:passport', path) === 'found') { passportFound = true; break; }
   }
+  if (!passportFound) throw new Error('project_passport_not_configured');
   return registerProject(database, {...input, projectUrl: urls.projectUrl, repositoryUrl: urls.repositoryUrl,
     externalProjectId, repositoryId, contextSources,
     trackerCapabilities: {provider: 'github', agentOwnerOptionId, doneStatusOptionId, defaultBranch}});
@@ -142,6 +145,10 @@ only task and status truth. For every task trigger, read the issue, comments, Pr
 native git/gh access, and read repository AGENTS.md before project work. Never interpret Control Plane internal
 identifiers as GitHub Project identifiers.
 
+The repository project/product passport is the authoritative project overview. Use its compact indexed context for
+orientation and read the full passport or documents it references from the repository only when the current question or
+task needs them. Do not copy the full passport into memory, Telegram history or every Codex prompt.
+
 Perform planning and Project operations directly. If scope or acceptance criteria are incomplete, update the same issue
 and request confirmation in Telegram before execution. For implementation, documentation, QA and DevOps evidence, run
 one fresh bounded Codex CLI task using the role, CLI, model and reasoning route from the trigger, with only the issue URL
@@ -184,6 +191,7 @@ const projectConfigMatches = (value: unknown, workDirectory: string): boolean =>
 
 const ensureProjectProfileConfiguration = async (client: CookieClient, input: Readonly<{
   profile: string; slug: string; repositoryUrl: string; projectUrl: string; workDirectory: string; token: string;
+  force: boolean;
 }>): Promise<void> => {
   const soulPath = `/api/profiles/${encodeURIComponent(input.profile)}/soul`;
   const soulValue = await expectJson<unknown>(await client.request(soulPath));
@@ -192,7 +200,7 @@ const ensureProjectProfileConfiguration = async (client: CookieClient, input: Re
   const configured = typeof soul === 'string' && soul.includes(projectProfileMarker(input.slug)) &&
     soul.includes(input.repositoryUrl) && soul.includes(input.projectUrl) &&
     projectConfigMatches(configValue, input.workDirectory);
-  if (configured) return;
+  if (configured && !input.force) return;
   await expectJson(await client.request('/api/files/mkdir', {method: 'POST',
     headers: {'content-type': 'application/json'}, body: JSON.stringify({path: input.workDirectory})}));
   await expectJson(await client.request(`/api/env?profile=${encodeURIComponent(input.profile)}`, {method: 'PUT',
@@ -225,7 +233,7 @@ const profileCapabilitiesAvailable = async (
 };
 
 export const activateProjectAgentProfile = async (database: Database, input: Readonly<{
-  workspaceId: string; actorId: string; projectId: string; idempotencyKey: string;
+  workspaceId: string; actorId: string; projectId: string; idempotencyKey: string; force?: boolean;
 }>): Promise<ProjectAgentProfileView> => {
   const binding = await resolveAgentSubmissionBinding(database, input.actorId, input.projectId);
   if (binding === null || binding.agentCredentialRef === null || binding.requesterRole !== 'project_owner') {
@@ -237,8 +245,7 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
     'select slug from projects where id=$1 and workspace_id=$2', [input.projectId, input.workspaceId]);
   const slug = project.rows[0]?.slug;
   if (slug === undefined) throw new Error('agent_profile_denied');
-  const profile = stored.status === 'ready' && stored.profile !== null
-    ? stored.profile : slug === 'ascon' ? 'internal' : `project-${slug}`;
+  const profile = stored.profile ?? `project-${slug}`;
   const template = process.env.HERMES_PROFILE_TEMPLATE ?? 'fai-project-template';
   const workDirectory = '/opt/data/work/project';
   const client = await managementClient();
@@ -250,7 +257,7 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
         no_skills: false, description: `Project manager for ${slug}`})}));
   }
   await ensureProjectProfileConfiguration(client, {profile, slug, repositoryUrl: binding.repositoryUrl,
-    projectUrl: binding.projectUrl, workDirectory, token});
+    projectUrl: binding.projectUrl, workDirectory, token, force: input.force === true});
   const endpointPath = `/p/${encodeURIComponent(profile)}/v1/runs`;
   if (!await profileCapabilitiesAvailable(profile, token)) {
     const restarted = await client.request('/api/gateway/restart', {method: 'POST'});
@@ -263,7 +270,7 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
 };
 
 export const ensureProjectAgentProfile = async (database: Database, input: Readonly<{
-  workspaceId: string; actorId: string; projectId: string; idempotencyKey: string;
+  workspaceId: string; actorId: string; projectId: string; idempotencyKey: string; force?: boolean;
 }>): Promise<ProjectAgentProfileView> => {
   return activateProjectAgentProfile(database, input);
 };

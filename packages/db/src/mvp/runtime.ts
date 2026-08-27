@@ -765,11 +765,10 @@ export const readActiveProjectContext = async (database: Database, actorId: stri
 };
 
 export const canonicalProjectContextKeys = Object.freeze([
-  'repo:agents', 'repo:ai-context', 'repo:adr-0006',
-  'composition:project-process-policy'
+  'repo:agents', 'repo:passport', 'composition:project-process-policy'
 ] as const);
 const requiredProjectContextKeys = Object.freeze([
-  'repo:agents', 'composition:project-process-policy'
+  'repo:agents', 'repo:passport', 'composition:project-process-policy'
 ] as const);
 
 const boundedCapsule = (value: string, maximum = 4_000): string => {
