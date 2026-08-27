@@ -90,7 +90,7 @@ export type ProjectTaskView = ProjectRow & Readonly<{
 
 export type ProjectSourceView = Readonly<{
   id: string; projectId: string; kind: string; name: string; mediaType: string;
-  sha256: string; sourceUrl: string | null; provenance: string; createdAt: string;
+  sha256: string; sizeBytes: number; sourceUrl: string | null; provenance: string; createdAt: string;
 }>;
 
 export type ApprovalEvidenceView = Readonly<{
@@ -337,6 +337,7 @@ export const listProjectSourceViews = async (
 ): Promise<readonly ProjectSourceView[]> => {
   const result = await database.query<Omit<ProjectSourceView, 'createdAt'> & {createdAt: Date}>(
     `select s.id,s.project_id as "projectId",s.kind,s.name,s.media_type as "mediaType",s.sha256,
+       s.size_bytes::int as "sizeBytes",
        s.source_url as "sourceUrl",s.provenance,s.created_at as "createdAt"
      from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
      where m.actor_id=$1 and m.active=true order by s.created_at desc`, [actorId]

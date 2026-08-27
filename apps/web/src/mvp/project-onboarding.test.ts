@@ -1,6 +1,7 @@
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import type {Database} from '@fai-control-plane/db';
 import {projectAgentProfileTemplateVersion} from '@fai-control-plane/db';
@@ -26,9 +27,14 @@ const secretFiles = async () => {
   await Promise.all([writeFile(token, 'agent-secret'), writeFile(username, 'operator'), writeFile(password, 'password')]);
   return {root, token, username, password};
 };
+const documentRows=()=>['requirements','passport'].map((category,index)=>({id:`document-${index}`,projectId:'project',
+  kind:`project_document_v1:${category}`,name:`${category}.txt`,mediaType:'text/plain',sha256:String(index+1).repeat(64),
+  sizeBytes:10,provenance:'operator-upload',createdAt:new Date('2026-08-27T10:00:00Z')}));
+const documentFingerprint=createHash('sha256').update(documentRows().slice().sort((a,b)=>
+  a.kind.localeCompare(b.kind)).map(({kind,sha256})=>`${kind}:${sha256}`).join('\n')).digest('hex');
 
 describe('project onboarding composition', () => {
-  it('requires AGENTS.md and discovers one repository passport without copying unrelated documents', async () => {
+  it('registers before authoritative documents exist without reading repository documents', async () => {
     const files = await secretFiles(); process.env.GITHUB_PROJECTS_TOKEN_FILE = files.token;
     const requests: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request) => {
@@ -56,8 +62,8 @@ describe('project onboarding composition', () => {
     await expect(resolveAndRegisterProject(database, {workspaceId: 'workspace', actorId: 'actor', name: 'Control',
       slug: 'control', projectUrl: 'https://github.com/users/VF78/projects/1',
       repositoryUrl: 'https://github.com/VF78/control', idempotencyKey: 'register:1'})).resolves.toMatchObject({created: true});
-    expect(requests.filter((url) => url.includes('/contents/'))).toHaveLength(3);
-    expect(query.mock.calls.filter(([sql]) => String(sql).includes('insert into project_source_artifacts'))).toHaveLength(5);
+    expect(requests.filter((url) => url.includes('/contents/'))).toHaveLength(0);
+    expect(query.mock.calls.filter(([sql]) => String(sql).includes('insert into project_source_artifacts'))).toHaveLength(3);
     await rm(files.root, {recursive: true});
   });
 
@@ -84,6 +90,7 @@ describe('project onboarding composition', () => {
     }));
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 0, rows: []};
+      if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace', projectId: 'project',
         requesterRole: 'project_owner', bindingId: 'binding', provider: 'github', externalProjectId: 'PVT_1',
         projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
@@ -126,6 +133,7 @@ describe('project onboarding composition', () => {
     }));
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 0, rows: []};
+      if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace', projectId: 'project',
         requesterRole: 'project_owner', bindingId: 'binding', provider: 'github', externalProjectId: 'PVT_1',
         projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
@@ -175,15 +183,17 @@ describe('project onboarding composition', () => {
         content: '<!-- fai-project-profile:v2026.8.27-fai-project-v2:ascon -->\nhttps://github.com/VF78/control\nhttps://github.com/users/VF78/projects/1'
       }));
       if (url.pathname === '/api/config') return new Response(JSON.stringify({terminal: {backend: 'local',
-        cwd: '/opt/data/work/project'}, agent: {max_turns: 500},
+        cwd: '/opt/data/work/projects/ascon'}, agent: {max_turns: 500},
       platform_toolsets: {api_server: ['terminal', 'fai_internal', 'no_mcp']},
       toolsets: ['terminal', 'memory', 'session_search', 'fai_internal']}));
       return new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
     }));
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
         content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
-          endpointPath: '/p/internal/v1/runs', templateVersion: projectAgentProfileTemplateVersion})}]};
+          endpointPath: '/p/internal/v1/runs', templateVersion: projectAgentProfileTemplateVersion,
+          documentFingerprint})}]};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace',
         projectId: 'project', requesterRole: 'project_owner', bindingId: 'binding', provider: 'github',
         externalProjectId: 'PVT_1', projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
@@ -239,6 +249,7 @@ describe('project onboarding composition', () => {
       return new Response('{}');
     }));
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
         content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
           endpointPath: '/p/internal/v1/runs'})}]};

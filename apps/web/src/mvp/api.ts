@@ -9,6 +9,8 @@ import {
   databaseMvpReady,
   executeAgentSubmissionTransaction,
   listProjects,
+  listProjectDocuments,
+  projectDocumentMaxFileBytes,
   onboardProjectMember,
   resolveAgentSubmissionBinding,
   resolveProjectRuntimeByRepository,
@@ -17,12 +19,15 @@ import {
   readProjectAgentProfile,
   readProjectExecutionMode,
   readProjectTrackerCapabilities,
+  readProjectDocumentPayload,
   readActiveProjectContext,
   refreshProjectContext,
   saveAgentRoutingPolicy,
   saveProjectExecutionMode,
+  uploadProjectDocument,
   subjectHash
 } from '@fai-control-plane/db';
+import {projectDocumentCategories, type ProjectDocumentCategory} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, decideApproval,
   type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
@@ -148,9 +153,6 @@ export const projects = async (request: Request): Promise<Response> => {
       const result=await resolveAndRegisterProject(database,{workspaceId:session.workspaceId,actorId:session.actorId,
         name:string(body.name,200),slug,projectUrl:string(body.projectUrl,2_048),repositoryUrl:string(body.repositoryUrl,2_048),
         idempotencyKey:string(body.idempotencyKey,128)});
-      await refreshBoundGitHubContextSources(database, session.actorId, result.projectId);
-      await refreshProjectContext(database,{workspaceId:session.workspaceId,projectId:result.projectId,actorId:session.actorId,
-        idempotencyKey:`project-context:register:${result.projectId}`,occurredAt:new Date().toISOString()});
       return Response.json(result,{status:result.created?201:200});
     }
     if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET, POST'}});
@@ -248,6 +250,42 @@ export const source = async (request: Request, projectId: string): Promise<Respo
     });
     return Response.json({id: sourceId}, {status: 201});
   } catch (error) { return jsonError(error); }
+};
+
+export const projectDocuments = async (request: Request, projectId: string): Promise<Response> => {
+  try {
+    const database = getDatabase(); const session = await requireSession();
+    if (request.method === 'GET') return Response.json({documents: await listProjectDocuments(database,session.actorId,projectId)},
+      {headers:{'cache-control':'no-store'}});
+    if (request.method !== 'POST') return new Response(null,{status:405,headers:{allow:'GET, POST'}});
+    requireCsrf(request);
+    if (!request.headers.get('content-type')?.startsWith('multipart/form-data')) throw new Error('media_type_invalid');
+    const contentLength=Number(request.headers.get('content-length'));
+    if(Number.isFinite(contentLength)&&contentLength>projectDocumentMaxFileBytes+1024*1024)
+      throw new Error('project_document_invalid');
+    const form = await request.formData(); const file = form.get('file'); const category = form.get('category');
+    if (!(file instanceof File) || typeof category !== 'string' ||
+      !projectDocumentCategories.includes(category as ProjectDocumentCategory)) throw new Error('project_document_invalid');
+    const result = await uploadProjectDocument(database,{workspaceId:session.workspaceId,projectId,actorId:session.actorId,
+      category:category as ProjectDocumentCategory,name:string(file.name,200),mediaType:string(file.type,100),
+      bytes:Buffer.from(await file.arrayBuffer()),provenance:'operator-upload',
+      idempotencyKey:string(form.get('idempotencyKey'),128),occurredAt:new Date().toISOString()});
+    return Response.json(result,{status:201,headers:{'cache-control':'no-store'}});
+  } catch(error){return jsonError(error);}
+};
+
+export const projectDocumentDownload = async (projectId:string,documentId:string):Promise<Response>=>{
+  try { const database=getDatabase(); const session=await requireSession();
+    const document=await readProjectDocumentPayload(database,session.actorId,projectId,documentId);
+    if(document===null)return new Response(null,{status:404});
+    const filename=document.name.replace(/[^A-Za-z0-9._-]/g,'_')||'project-document';
+    const encodedFilename=encodeURIComponent(document.name)
+      .replace(/['()*]/g,(character)=>`%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+    return new Response(new Uint8Array(document.bytes),{headers:{'content-type':document.mediaType,
+      'content-length':String(document.bytes.byteLength),
+      'content-disposition':`attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`,
+      'cache-control':'private, no-store','x-content-type-options':'nosniff'}});
+  }catch(error){return jsonError(error);}
 };
 
 export const agentRouting = async (request: Request, projectId: string): Promise<Response> => {

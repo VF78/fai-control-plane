@@ -17,6 +17,8 @@ const artifactIdentity = readFileSync(fileURLToPath(
   new URL('../../mvp-drizzle/0002_source_artifact_kind_identity.sql', import.meta.url)), 'utf8');
 const attemptLifecycle = readFileSync(fileURLToPath(
   new URL('../../mvp-drizzle/0003_agent_attempt_lifecycle_index.sql', import.meta.url)), 'utf8');
+const binaryArtifact = readFileSync(fileURLToPath(
+  new URL('../../mvp-drizzle/0004_source_artifact_binary_payload.sql', import.meta.url)), 'utf8');
 
 describe('MVP fresh schema', () => {
   it('declares exactly the approved 16 tables', () => {
@@ -49,6 +51,13 @@ describe('MVP fresh schema', () => {
     expect(sql).toContain('"project_source_artifacts_kind_hash_unique" UNIQUE ("project_id", "kind", "sha256")');
     expect(artifactIdentity).toContain('("project_id", "kind", "sha256")');
     expect(artifactIdentity).not.toMatch(/DROP\s+(?:TABLE|TYPE)|CASCADE|TRUNCATE|DELETE/i);
+  });
+
+  it('adds bounded binary originals to the existing artifact table without a seventeenth table',()=>{
+    expect(binaryArtifact).toContain('"content_bytes" bytea');
+    expect(binaryArtifact).toContain('52428800');
+    expect(binaryArtifact).not.toMatch(/CREATE\s+TABLE|DROP\s+TABLE|DELETE|TRUNCATE|CASCADE/i);
+    expect(sql).toContain('"size_bytes" bigint GENERATED ALWAYS');
   });
 
   it('stores references and hashes, not secret values or chat transcripts', () => {

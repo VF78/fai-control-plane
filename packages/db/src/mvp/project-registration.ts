@@ -8,7 +8,7 @@ export const projectAgentProfileTemplateVersion = 'v2026.8.27-fai-project-v2';
 
 export type RegisterProjectInput = Readonly<{
   workspaceId: string; actorId: string; name: string; slug: string; repositoryUrl: string; repositoryId: string;
-  projectUrl: string; externalProjectId: string; contextSources: readonly ProjectContextSource[];
+  projectUrl: string; externalProjectId: string; contextSources?: readonly ProjectContextSource[];
   trackerCapabilities: ProjectTrackerCapabilities;
   idempotencyKey: string;
 }>;
@@ -101,7 +101,7 @@ export const registerProject = async (database: Database, input: RegisterProject
       (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
       values($1,$2,$3,$4,$5,'application/json',$6,$7,null,'control-plane:project-registration')`,
     [randomUUID(), projectId, input.actorId, policy.kind, policy.name, policy.version, policy.content]);
-    for (const source of input.contextSources) {
+    for (const source of input.contextSources ?? []) {
       const content = serializeProjectContextSource(source);
       const version = projectContextSnapshotVersion(content);
       await client.query(`insert into project_source_artifacts
@@ -198,6 +198,7 @@ export type ProjectAgentProfileView = Readonly<{
   profile: string | null;
   endpointPath: string | null;
   version: string | null;
+  documentFingerprint: string | null;
 }>;
 
 export const readProjectAgentProfile = async (
@@ -211,7 +212,7 @@ export const readProjectAgentProfile = async (
     order by s.created_at desc limit 1`, [projectId, actorId]);
   const row = result.rows[0];
   if (row === undefined) {
-    return {status: 'not_configured', profile: null, endpointPath: null, version: null};
+    return {status: 'not_configured', profile: null, endpointPath: null, version: null, documentFingerprint: null};
   }
   try {
     const value = JSON.parse(row.content) as Record<string, unknown>;
@@ -219,20 +220,24 @@ export const readProjectAgentProfile = async (
       typeof value.profile === 'string' &&
       /^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(value.profile) &&
       value.endpointPath === `/p/${encodeURIComponent(value.profile)}/v1/runs`) {
+      const documentFingerprint = typeof value.documentFingerprint === 'string' &&
+        /^[a-f0-9]{64}$/.test(value.documentFingerprint) ? value.documentFingerprint : null;
       if (value.templateVersion !== projectAgentProfileTemplateVersion) {
-        return {status: 'not_configured', profile: value.profile, endpointPath: null, version: row.sha256};
+        return {status: 'not_configured', profile: value.profile, endpointPath: null, version: row.sha256,
+          documentFingerprint};
       }
-      return {status: 'ready', profile: value.profile, endpointPath: value.endpointPath, version: row.sha256};
+      return {status: 'ready', profile: value.profile, endpointPath: value.endpointPath, version: row.sha256,
+        documentFingerprint};
     }
   } catch { /* fail closed */ }
-  return {status: 'not_configured', profile: null, endpointPath: null, version: null};
+  return {status: 'not_configured', profile: null, endpointPath: null, version: null, documentFingerprint: null};
 };
 
 export const recordProjectAgentProfile = async (
   database: Database,
   input: Readonly<{
     workspaceId: string; projectId: string; actorId: string; profile: string; endpointPath: string;
-    templateVersion: string; idempotencyKey: string; occurredAt: string;
+    templateVersion: string; documentFingerprint: string; idempotencyKey: string; occurredAt: string;
   }>
 ): Promise<ProjectAgentProfileView> => {
   const client = await database.connect();
@@ -242,7 +247,8 @@ export const recordProjectAgentProfile = async (
       and role='project_owner' and active=true for update`, [input.projectId, input.actorId]);
     if (allowed.rowCount !== 1) throw new Error('agent_profile_denied');
     const value = {contract: 'fai.project-agent-profile.v1', status: 'ready', profile: input.profile,
-      endpointPath: input.endpointPath, templateVersion: input.templateVersion};
+      endpointPath: input.endpointPath, templateVersion: input.templateVersion,
+      documentFingerprint: input.documentFingerprint};
     const {content, version} = jsonVersion(value);
     await client.query(`insert into project_source_artifacts
       (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
@@ -253,9 +259,11 @@ export const recordProjectAgentProfile = async (
       select $1,$2,$3,'project.agent.activate',$4,$5,$6,$7 where not exists
       (select 1 from audit_events where project_id=$2 and action='project.agent.activate' and target_reference=$4)`,
     [input.workspaceId, input.projectId, input.actorId, version, input.idempotencyKey,
-      JSON.stringify({profile: input.profile, templateVersion: input.templateVersion}), input.occurredAt]);
+      JSON.stringify({profile: input.profile, templateVersion: input.templateVersion,
+        documentFingerprint: input.documentFingerprint}), input.occurredAt]);
     await client.query('commit');
-    return {status: 'ready', profile: input.profile, endpointPath: input.endpointPath, version};
+    return {status: 'ready', profile: input.profile, endpointPath: input.endpointPath, version,
+      documentFingerprint: input.documentFingerprint};
   } catch (error) {
     await client.query('rollback');
     throw error;

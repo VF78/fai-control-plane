@@ -77,11 +77,17 @@ CREATE TABLE "project_source_artifacts" (
   "name" text NOT NULL,
   "media_type" text NOT NULL,
   "sha256" text NOT NULL,
-  "content_text" text NOT NULL,
+  "content_text" text,
+  "content_bytes" bytea,
+  "size_bytes" bigint GENERATED ALWAYS AS (coalesce(octet_length("content_bytes"), octet_length("content_text"))) STORED,
   "source_url" text,
   "provenance" text NOT NULL,
   "created_at" timestamptz DEFAULT now() NOT NULL,
-  CONSTRAINT "project_source_artifacts_kind_hash_unique" UNIQUE ("project_id", "kind", "sha256")
+  CONSTRAINT "project_source_artifacts_kind_hash_unique" UNIQUE ("project_id", "kind", "sha256"),
+  CONSTRAINT "project_source_artifacts_payload_check" CHECK (
+    ("content_text" IS NOT NULL AND "content_bytes" IS NULL) OR
+    ("content_text" IS NULL AND "content_bytes" IS NOT NULL AND octet_length("content_bytes") BETWEEN 1 AND 52428800)
+  )
 );
 
 CREATE TABLE "secret_refs" (
