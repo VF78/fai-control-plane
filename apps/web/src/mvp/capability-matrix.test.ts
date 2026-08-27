@@ -4,8 +4,8 @@ import {operatorCapabilityMatrix} from './capability-matrix.ts';
 describe('operator capability matrix', () => {
   it('keeps every safe core fact or command on a visible operator seam', () => {
     expect(operatorCapabilityMatrix.map((row) => row[0])).toEqual([
-      'GitHub Project snapshot', 'ASCON process policy', 'Logout', 'Add source', 'Exact approval', 'Onboard member',
-      'Change membership', 'Task executor', 'Messenger delivery'
+      'GitHub Project snapshot', 'ASCON process policy', 'Logout', 'Onboard member', 'Change membership',
+      'Task executor', 'Messenger delivery'
     ]);
     for (const [, boundary, surface, evidence] of operatorCapabilityMatrix) {
       expect(boundary).not.toHaveLength(0); expect(surface).not.toHaveLength(0); expect(evidence).not.toHaveLength(0);

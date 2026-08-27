@@ -30,3 +30,22 @@ Forbidden in operator UI:
   transport payloads, stack traces, or internal diagnostics;
 - tracker lifecycle, provider configuration, or runtime controls that do not
   correspond to a canonical operator command.
+
+Future screens start with the existing GitHub/legacy grammar: calm white
+surfaces, compact density and token-based separators before any new treatment.
+State the operator goal first and expose its create/add action as a direct
+primary button, never a disclosure control. Keep forms progressively disclosed
+after that button; pending state locks duplicate submission and every outcome
+is explicit. Use operator language: do not expose internal nouns such as
+source, receipt, audit, provenance or provider IDs unless an operator must act
+on that exact fact. Task screens do not contain debug or event feeds, and
+settings show only editable or decision-useful facts. Verify each changed
+screen at 1440×900 and 390×844: no horizontal overflow, primary controls are
+at least 44px, and closed forms do not add scroll merely to reveal an action.
+
+Navigation has two levels. The global state is **Все проекты** and shows the
+portfolio list plus only global settings. Selecting any project always opens
+its overview; it never retains a prior section or behaves as a global filter.
+Within a project, show its identity, a visible **Все проекты** return link,
+and only project-scoped navigation. The desktop top bar, breadcrumbs and
+mobile menu must express the same `Все проекты → проект → раздел` hierarchy.

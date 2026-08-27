@@ -34,14 +34,8 @@ export function LogoutControl() {
   }, {success: 'Сеанс завершён.', refresh: false})}>Выйти</AsyncButton><CommandNoticeView notice={command.notice}/></div>;
 }
 
-export function SourceAddControl({projectId}: Readonly<{projectId: string}>) {
-  const command = useAsyncCommand();
-  const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); void command.run(() => post(`/api/projects/${projectId}/sources`, {kind: form.get('kind'), name: form.get('name'), mediaType: 'text/plain', contentText: form.get('contentText'), sourceUrl: empty(form.get('sourceUrl')), provenance: form.get('provenance')}), {success: 'Источник добавлен.'}); };
-  return <details className="fcp-control"><summary>Добавить источник</summary><form onSubmit={submit} aria-busy={command.pending}><label>Название<input name="name" required maxLength={200} disabled={command.pending}/></label><label>Тип<input name="kind" defaultValue="operator_note" required maxLength={64} disabled={command.pending}/></label><label>Ссылка на источник <input name="sourceUrl" type="url" disabled={command.pending}/></label><label>Происхождение<input name="provenance" defaultValue="operator" required maxLength={500} disabled={command.pending}/></label><label>Содержание<textarea name="contentText" required maxLength={200000} disabled={command.pending}/></label><AsyncButton pending={command.pending} pendingLabel="Сохраняем…">Сохранить источник</AsyncButton></form><CommandNoticeView notice={command.notice}/></details>;
-}
-
 export function ProjectDocumentUploadControl({projectId}:Readonly<{projectId:string}>) {
-  const command=useAsyncCommand();
+  const command=useAsyncCommand(); const [open,setOpen]=useState(false);
   const error=(value:unknown):string=>({
     project_document_pdf_text_layer_required:'В PDF нет текстового слоя. Загрузите текстовый PDF или DOCX.',
     project_document_set_too_large:'Лимит набора: до 10 файлов и 100 МиБ.',
@@ -52,8 +46,8 @@ export function ProjectDocumentUploadControl({projectId}:Readonly<{projectId:str
     form.append('idempotencyKey',`project-document:${id()}`);
     void command.run(async()=>{const response=await fetch(`/api/projects/${projectId}/documents`,{method:'POST',body:form});
       const value=await response.json().catch(()=>({})) as Result;if(!response.ok)throw new Error(value.error??'request_failed');
-      return value;},{success:'Документ загружен как новая неизменяемая версия.',error});};
-  return <details className="fcp-control"><summary>Загрузить документ</summary><form onSubmit={submit} aria-busy={command.pending}>
+      return value;},{success:()=>{setOpen(false);return 'Документ загружен.';},error});};
+  return <div className="fcp-inline-control"><AsyncButton type="button" pending={command.pending} pendingLabel="Загружаем…" onClick={()=>setOpen((value)=>!value)}>{open?'Скрыть форму':'Загрузить документ'}</AsyncButton>{open?<form className="fcp-inline-form" onSubmit={submit} aria-busy={command.pending}>
     <label>Категория<select name="category" required disabled={command.pending} defaultValue="requirements">
       <option value="requirements">Требования / ТЗ</option><option value="passport">Паспорт проекта</option>
       <option value="combined">Требования + паспорт</option><option value="architecture">Архитектура</option>
@@ -62,23 +56,23 @@ export function ProjectDocumentUploadControl({projectId}:Readonly<{projectId:str
       accept=".docx,.pdf,.md,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/markdown,text/plain"
       disabled={command.pending}/></label><small>До 50 МиБ на файл и 100 МиБ на активный набор. PDF должен содержать текстовый слой.</small>
     <AsyncButton pending={command.pending} pendingLabel="Загружаем…">Загрузить версию</AsyncButton>
-  </form><CommandNoticeView notice={command.notice}/></details>;
+  </form>:null}<CommandNoticeView notice={command.notice}/></div>;
 }
 
 export function ProjectRegistrationControl() {
-  const command=useAsyncCommand();
+  const command=useAsyncCommand(); const [open,setOpen]=useState(false);
   const submit=(event:FormEvent<HTMLFormElement>)=>{event.preventDefault();const form=new FormData(event.currentTarget);
     void command.run(()=>post('/api/projects',{name:form.get('name'),slug:form.get('slug'),projectUrl:form.get('projectUrl'),
       repositoryUrl:form.get('repositoryUrl'),idempotencyKey:`project-register:${id()}`}),
-      {success:'Проект подключён. Теперь выберите его и активируйте ИИ агента.'});};
-  return <details className="fcp-control"><summary>Подключить проект</summary><form onSubmit={submit} aria-busy={command.pending}>
+      {success:()=>{setOpen(false);return 'Проект добавлен. Выберите его, чтобы настроить документы и ИИ-агента.';}});};
+  return <div className="fcp-project-registration"><AsyncButton type="button" pending={command.pending} pendingLabel="Добавляем…" onClick={()=>setOpen((value)=>!value)}>{open?'Скрыть форму':'Добавить проект'}</AsyncButton>{open?<form className="fcp-inline-form" onSubmit={submit} aria-busy={command.pending}>
     <label>Название<input name="name" required maxLength={200} disabled={command.pending}/></label>
     <label>Короткое имя<input name="slug" required maxLength={100} pattern="[a-z0-9][a-z0-9-]+[a-z0-9]" placeholder="fai-control-plane" disabled={command.pending}/></label>
     <label>Ссылка на GitHub Project<input name="projectUrl" type="url" required placeholder="https://github.com/users/VF78/projects/1" disabled={command.pending}/></label>
     <label>Ссылка на репозиторий<input name="repositoryUrl" type="url" required placeholder="https://github.com/VF78/fai-control-plane" disabled={command.pending}/></label>
     <small>Секреты не вводятся: используются защищённые подключения рабочего пространства.</small>
-    <AsyncButton pending={command.pending} pendingLabel="Подключаем…">Подключить</AsyncButton>
-  </form><CommandNoticeView notice={command.notice}/></details>;
+    <AsyncButton pending={command.pending} pendingLabel="Добавляем…">Добавить проект</AsyncButton>
+  </form>:null}<CommandNoticeView notice={command.notice}/></div>;
 }
 
 export function ProjectAgentActivationControl({projectId,status,profile,documentsReady}:Readonly<{projectId:string;

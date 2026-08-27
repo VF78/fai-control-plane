@@ -69,3 +69,19 @@ describe('Task detail operator surface', () => {
     expect(page).not.toContain('TaskApprovalEvidence');
   });
 });
+
+describe('Project-first navigation', () => {
+  it('opens a project overview instead of retaining the current section', async () => {
+    const [view, page] = await Promise.all([
+      source(),
+      readFile(new URL('../../app/page.tsx', import.meta.url), 'utf8')
+    ]);
+    expect(view).toContain("phaseHref('dashboard',project.slug)");
+    expect(view).toContain('Все проекты');
+    expect(view).toContain('fcp-selected-project');
+    expect(view).toContain('fcp-topbar-context');
+    expect(page).toContain("query.project === undefined ? null");
+    expect(page).toContain('projects={selected === null ? projects : [selected]}');
+    expect(view).not.toContain('phaseHref(view,project.slug)');
+  });
+});

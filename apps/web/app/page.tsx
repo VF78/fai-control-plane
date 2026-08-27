@@ -1,4 +1,4 @@
-import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,
+import {listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,
   projectAgentDeliveryConfigured, readAgentRoutingPolicy, readProjectAgentProfile, readProjectAgentSubmissionView,
   readProjectContextStatus, readProjectExecutionMode, readProjectMembershipRole, readProjectProcessPolicy,
   readProjectTrackerCapabilities, type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
@@ -26,10 +26,10 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
   const view = current(query.view);
   const database = getDatabase();
   const projects = await listProjectTaskViews(database, session.actorId);
-  const selected = projects.find((project) => project.slug === query.project) ?? projects[0] ?? null;
+  const selected = query.project === undefined ? null : projects.find((project) => project.slug === query.project) ?? null;
   let content: ReactNode;
   if (view === 'dashboard') {
-    content = <Dashboard projects={projects}/>;
+    content = <Dashboard projects={selected === null ? projects : [selected]} selected={selected !== null}/>;
   } else if (view === 'tasks') {
     const [trackerCapabilities, run] = selected === null ? [null, null] as const : await Promise.all([
       readProjectTrackerCapabilities(database, session.actorId, selected.id),
@@ -67,17 +67,16 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     const evidenceSections = new Set<ProjectOperatorEvidenceSection>(view === 'conversations'
       ? ['people','messenger','conversations'] : view === 'people' ? ['people']
         : view === 'systems' ? ['receipts','audit','agentSubmissions'] : []);
-    const [operatorEvidence, sources, approvals, agentProfile, agentDeliveryConfigured] = selected === null
-      ? [[], [], [], null, false] as const : await Promise.all([
+    const [operatorEvidence, sources, agentProfile, agentDeliveryConfigured] = selected === null
+      ? [[], [], null, false] as const : await Promise.all([
         needsEvidence ? listProjectOperatorEvidenceViews(database, session.actorId, evidenceSections) : Promise.resolve([]),
         view === 'settings' ? listProjectSourceViews(database, session.actorId) : Promise.resolve([]),
-        view === 'settings' ? listApprovalEvidenceViews(database, session.actorId) : Promise.resolve([]),
         view === 'settings' ? readProjectAgentProfile(database, session.actorId, selected.id) : Promise.resolve(null),
         view === 'systems' ? projectAgentDeliveryConfigured(database, session.actorId, selected.id) : Promise.resolve(false)
       ]);
     const evidence = selected === null ? null
       : operatorEvidence.find((item) => item.projectId === selected.id) ?? null;
-    content = <PhaseB view={view} project={selected} evidence={evidence} sources={sources} approvals={approvals}
+    content = <PhaseB view={view} project={selected} evidence={evidence} sources={sources}
       actorId={session.actorId} config={integrationConfig(process.env, agentDeliveryConfigured)} agentProfile={agentProfile}/>;
   }
 
