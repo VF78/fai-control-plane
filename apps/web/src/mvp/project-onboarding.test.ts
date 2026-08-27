@@ -129,10 +129,14 @@ describe('project onboarding composition', () => {
       if (url.pathname.endsWith('/v1/capabilities')) {
         return new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
       }
+      if(url.pathname.endsWith('/v1/runs')&&init?.method==='POST')
+        return new Response(JSON.stringify({run_id:'run_context_1',status:'started'}),{status:202});
       return new Response('{}');
     }));
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 0, rows: []};
+      if(sql.includes('s.content_bytes as bytes'))return {rowCount:1,rows:[{name:'source.txt',mediaType:'text/plain',
+        bytes:Buffer.from('exact source')}]};
       if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace', projectId: 'project',
         requesterRole: 'project_owner', bindingId: 'binding', provider: 'github', externalProjectId: 'PVT_1',
@@ -147,11 +151,12 @@ describe('project onboarding composition', () => {
     const clientQuery = vi.fn(async (sql: string, parameters?: readonly unknown[]) => {
       persisted.push([sql, parameters]);
       if (sql.includes("role='project_owner'")) return {rowCount: 1, rows: [{}]};
+      if(sql.includes("command_type='project.context-bootstrap.start'"))return {rowCount:0,rows:[]};
       return {rowCount: 1, rows: []};
     });
     const database = {query, connect: vi.fn(async () => ({query: clientQuery, release: vi.fn()}))} as unknown as Database;
     await expect(activateProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
-      projectId: 'project', idempotencyKey: 'activate:1'})).resolves.toMatchObject({status: 'ready', profile: 'project-control'});
+      projectId: 'project', idempotencyKey: 'activate:1'})).resolves.toMatchObject({status: 'configuring', profile: 'project-control'});
     const ordered = calls.map(({request}) => request);
     const positions = [
       'POST /api/profiles', 'POST /api/files/mkdir', 'PUT /api/env?profile=project-control',
@@ -163,7 +168,7 @@ describe('project onboarding composition', () => {
       key: 'API_SERVER_KEY', value: 'agent-secret', profile: 'project-control'
     });
     expect(JSON.stringify(persisted)).not.toContain('agent-secret');
-    expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining("'project.agent.activate'"), expect.any(Array));
+    expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining("'project.context-bootstrap.start'"), expect.any(Array));
     await rm(files.root, {recursive: true});
   });
 
@@ -188,7 +193,10 @@ describe('project onboarding composition', () => {
       toolsets: ['terminal', 'memory', 'session_search', 'fai_internal']}));
       return new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
     }));
-    const query = vi.fn(async (sql: string) => {
+    const query = vi.fn(async (sql: string,parameters?:readonly unknown[]) => {
+      if(typeof parameters?.[2]==='string'&&parameters[2].startsWith('project_context_compact_v1:'))
+        return {rowCount:1,rows:[{sha256:'a'.repeat(64),
+        content:'approved compact context'}]};
       if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
         content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
@@ -212,7 +220,7 @@ describe('project onboarding composition', () => {
     expect(calls).toContain('GET /p/internal/v1/capabilities');
     expect(calls.filter((call) => call.startsWith('PUT '))).toEqual([]);
     expect(calls).not.toContain('POST /api/files/mkdir');
-    expect(database.connect).toHaveBeenCalledOnce();
+    expect(database.connect).not.toHaveBeenCalled();
 
     calls.length = 0;
     await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
@@ -226,7 +234,7 @@ describe('project onboarding composition', () => {
     await rm(files.root, {recursive: true});
   });
 
-  it('repairs an old stored profile once, preserves it and restarts only when unavailable', async () => {
+  it('keeps an existing ready profile read-only and restarts only when unavailable', async () => {
     const files = await secretFiles();
     process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
     process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
@@ -248,11 +256,15 @@ describe('project onboarding composition', () => {
       }
       return new Response('{}');
     }));
-    const query = vi.fn(async (sql: string) => {
+    const query = vi.fn(async (sql: string,parameters?:readonly unknown[]) => {
       if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
+      if(typeof parameters?.[2]==='string'&&parameters[2].startsWith('project_context_compact_v1:'))
+        return {rowCount:1,rows:[{sha256:'a'.repeat(64),
+        content:'approved compact context'}]};
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
         content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
-          endpointPath: '/p/internal/v1/runs'})}]};
+          endpointPath: '/p/internal/v1/runs',templateVersion:projectAgentProfileTemplateVersion,
+          documentFingerprint})}]};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace', projectId: 'project',
         requesterRole: 'project_owner', bindingId: 'binding', provider: 'github', externalProjectId: 'PVT_1',
         projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
@@ -269,11 +281,11 @@ describe('project onboarding composition', () => {
       projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'internal'});
     const requests = calls.map(({request}) => request);
     expect(requests).toContain('POST /api/gateway/restart');
-    expect(requests).toContain('POST /api/files/mkdir');
-    expect(requests).toContain('PUT /api/env?profile=internal');
+    expect(requests).not.toContain('POST /api/files/mkdir');
+    expect(requests).not.toContain('PUT /api/env?profile=internal');
     expect(requests).not.toContain('POST /api/profiles');
-    expect(requests).toContain('PUT /api/config?profile=internal');
-    expect(requests).toContain('PUT /api/profiles/internal/soul');
+    expect(requests).not.toContain('PUT /api/config?profile=internal');
+    expect(requests).not.toContain('PUT /api/profiles/internal/soul');
     expect(requests).toContain('POST /api/gateway/restart');
     expect(probes).toBe(2);
     await rm(files.root, {recursive: true});

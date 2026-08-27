@@ -20,6 +20,7 @@ import {
   readProjectExecutionMode,
   readProjectTrackerCapabilities,
   readProjectDocumentPayload,
+  readProjectArchitectureProposal,
   readActiveProjectContext,
   refreshProjectContext,
   saveAgentRoutingPolicy,
@@ -239,6 +240,15 @@ export const source = async (request: Request, projectId: string): Promise<Respo
   try {
     const database = getDatabase();
     const session = await requireSession();
+    if(request.method==='GET'){
+      const proposalSha=new URL(request.url).searchParams.get('architectureProposal');
+      if(proposalSha===null)throw new Error('body_invalid');
+      const proposal=await readProjectArchitectureProposal(database,session.actorId,projectId,proposalSha);
+      if(proposal===null)return new Response(null,{status:404});
+      return new Response(proposal.content,{headers:{'content-type':'text/markdown; charset=utf-8',
+        'content-disposition':'attachment; filename="architecture-proposal.md"','cache-control':'no-store'}});
+    }
+    if(request.method!=='POST')return new Response(null,{status:405,headers:{allow:'GET, POST'}});
     requireCsrf(request);
     const body = await json(request);
     const contentText = string(body.contentText, 200_000);
@@ -343,7 +353,8 @@ export const approval = async (request: Request, approvalId: string): Promise<Re
         if (snapshot.items.some((item) => item.projectId !== projectId)) throw new Error('tracker_project_mismatch');
         await stores.snapshots.replace(snapshot);
         const fact = snapshot.items.find((item) => item.itemId === target.targetReference || item.issueId === target.targetReference);
-        return fact === undefined ? null : {id: target.targetReference, url: fact.url, version: fact.version};
+        return fact === undefined ? persistence.targets.resolve(target)
+          : {id: target.targetReference, url: fact.url, version: fact.version};
       }}, transaction: persistence.transaction});
     return Response.json({status: result}, {status: result === 'recorded' || result === 'duplicate' ? 200 : 409});
   } catch (error) { return jsonError(error); }

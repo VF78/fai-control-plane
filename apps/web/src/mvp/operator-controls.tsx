@@ -81,24 +81,44 @@ export function ProjectRegistrationControl() {
   </form><CommandNoticeView notice={command.notice}/></details>;
 }
 
-export function ProjectAgentActivationControl({projectId,status,profile}:Readonly<{projectId:string;
-  status:'not_configured'|'ready';profile:string|null}>) {
+export function ProjectAgentActivationControl({projectId,status,profile,documentsReady}:Readonly<{projectId:string;
+  status:'not_configured'|'configuring'|'awaiting_architecture'|'ready'|'error';profile:string|null;
+  documentsReady:boolean}>) {
   const command=useAsyncCommand(); const activate=()=>void command.run(()=>post(`/api/projects/${projectId}/agent-profile`,
-    {idempotencyKey:`agent-profile:${id()}`,force:status==='ready'}),
+    {idempotencyKey:`agent-profile:${id()}`,force:status==='ready'||status==='error'}),
     {success:(result)=>result.status==='ready'?'ИИ агент готов к работе.':'Настройка не подтверждена.',
       error:(error)=>error instanceof Error&&error.message==='project_documents_required'
         ?'Сначала загрузите ТЗ и паспорт проекта или один объединённый документ.'
         :error instanceof Error&&error.message==='agent_profile_probe_failed'
           ?'Профиль создан, но Hermes ещё не подтвердил готовность. Повторите активацию после запуска gateway.'
           :'Не удалось активировать ИИ агента. Существующая конфигурация не изменена.'});
-  return <div className="fcp-agent-activation"><div><strong>{status==='ready'?'ИИ агент готов':'ИИ агент не настроен'}</strong>
-    <small>{status==='ready'?`Постоянный профиль ${profile??''} активен для этого проекта.`:profile===null
-      ?'Будет создан отдельный постоянный Hermes-профиль из общего шаблона.'
-      :`Профиль ${profile} сохранён и требует обновления настройки.`}</small></div>
-    <AsyncButton type="button" pending={command.pending} pendingLabel="Настраиваем…" onClick={activate}>
-      {status==='ready'?'Обновить настройку':'Настроить ИИ агента'}
+  const title=!documentsReady?'Нужны документы':status==='not_configured'?'Готов к настройке':
+    status==='configuring'?'Настраивается':status==='awaiting_architecture'?'Ожидает согласования архитектуры':
+      status==='ready'?'ИИ агент готов':'Ошибка настройки';
+  const detail=!documentsReady?'Загрузите ТЗ и паспорт проекта или один объединённый документ.':
+    status==='configuring'?'Hermes собирает компактный контекст в фоне.':
+      status==='awaiting_architecture'?'Согласуйте точную версию архитектурного предложения; повторный анализ не требуется.':
+        status==='ready'?`Постоянный профиль ${profile??''} активен для этого проекта.`:profile===null
+          ?'Будет создан отдельный постоянный Hermes-профиль из общего шаблона.':
+          `Профиль ${profile} сохранён и может быть настроен повторно.`;
+  return <div className="fcp-agent-activation"><div><strong>{title}</strong><small>{detail}</small></div>
+    <AsyncButton type="button" disabled={!documentsReady||status==='configuring'||status==='awaiting_architecture'}
+      pending={command.pending} pendingLabel="Настраиваем…" onClick={activate}>
+      {status==='ready'||status==='error'?'Обновить настройку':'Настроить ИИ агента'}
     </AsyncButton>
     <CommandNoticeView notice={command.notice}/></div>;
+}
+
+export function ArchitectureProposalDecision({projectId,proposalSha}:Readonly<{projectId:string;
+  proposalSha:string}>) {
+  const command=useAsyncCommand();
+  const approve=()=>void command.run(()=>post(`/api/approvals/${id()}`,{projectId,targetReference:proposalSha,
+    kind:'plan',decision:'approved',idempotencyKey:`architecture-approval:${id()}`}),
+  {success:'Архитектурное предложение согласовано. ИИ агент станет готов после обработки worker.'});
+  return <div className="fcp-agent-activation"><div><strong>Архитектурное предложение готово</strong>
+    <small><a href={`/api/projects/${projectId}/sources?architectureProposal=${proposalSha}`}>Скачать точную версию</a> и согласуйте её без повторного анализа документов.</small></div>
+    <AsyncButton type="button" pending={command.pending} pendingLabel="Согласуем…" onClick={approve}>
+      Согласовать архитектуру</AsyncButton><CommandNoticeView notice={command.notice}/></div>;
 }
 
 export function ProjectExecutionModeControl({projectId, mode, canManage}: Readonly<{

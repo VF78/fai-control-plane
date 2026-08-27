@@ -1,6 +1,9 @@
 import {
   readProjectAgentProfile,
+  readLatestCompactProjectContext,
   readActiveProjectDocumentSet,
+  readProjectDocumentPayload,
+  recordProjectAgentBootstrapStart,
   recordProjectAgentProfile,
   projectAgentProfileTemplateVersion,
   registerProject,
@@ -105,8 +108,8 @@ const expectJson = async <T>(response: Response): Promise<T> => {
   return response.json() as Promise<T>;
 };
 
-const projectProfileVersion = projectAgentProfileTemplateVersion;
-const projectProfileMarker = (slug: string): string => `<!-- fai-project-profile:${projectProfileVersion}:${slug} -->`;
+const projectProfileMarker = (slug: string): string =>
+  `<!-- fai-project-profile:${projectAgentProfileTemplateVersion}:${slug} -->`;
 const projectSoul = (input: Readonly<{slug: string; repositoryUrl: string; projectUrl: string}>): string => {
   const coordinates = githubUrls(input.projectUrl, input.repositoryUrl);
   return `${projectProfileMarker(input.slug)}
@@ -125,6 +128,7 @@ Original project documents and their approved compact context in f(AI) Control a
 are execution copies or supplemental sources unless the Product Owner explicitly imports them. Read staged originals only
 during initial setup, after their fingerprint changes, or for an explicit relevant question. Do not copy full originals
 into memory, Telegram history or every Codex prompt.
+The approved compact context is restored at PROJECT_CONTEXT.md in this project work directory; read it before project work.
 
 Perform planning and Project operations directly. If scope or acceptance criteria are incomplete, update the same issue
 and request confirmation in Telegram before execution. For implementation, documentation, QA and DevOps evidence, run
@@ -209,6 +213,67 @@ const profileCapabilitiesAvailable = async (
   return false;
 };
 
+const stagingFileName = (index:number,name:string):string => {
+  const extension=/\.(docx|pdf|md|txt)$/i.exec(name)?.[0].toLowerCase();
+  if(extension===undefined)throw new Error('project_document_invalid');
+  return `${String(index+1).padStart(2,'0')}${extension}`;
+};
+
+const stageProjectDocuments = async (client:CookieClient,database:Database,input:Readonly<{
+  actorId:string;projectId:string;workDirectory:string;
+  documents:Awaited<ReturnType<typeof readActiveProjectDocumentSet>>['documents'];
+}>):Promise<readonly string[]> => {
+  const root=`${input.workDirectory}/.fai-context/source`;
+  const removed=await client.request(`/api/files?path=${encodeURIComponent(root)}&recursive=true`,{method:'DELETE'});
+  if(!removed.ok&&removed.status!==404)await expectJson(removed);
+  await expectJson(await client.request('/api/files/mkdir',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({path:root})}));
+  const paths:string[]=[];
+  for(const [index,document] of input.documents.slice().sort((left,right)=>
+    left.artifactKind.localeCompare(right.artifactKind)||left.sha256.localeCompare(right.sha256)).entries()){
+    const payload=await readProjectDocumentPayload(database,input.actorId,input.projectId,document.id);
+    if(payload===null)throw new Error('project_document_unavailable');
+    const path=`${root}/${stagingFileName(index,payload.name)}`;
+    if(path.length>512)throw new Error('project_document_invalid');
+    const form=new FormData();form.set('path',path);form.set('overwrite','true');
+    form.set('file',new Blob([new Uint8Array(payload.bytes)],{type:payload.mediaType}),payload.name);
+    await expectJson(await client.request('/api/files/upload-stream',{method:'POST',body:form}));
+    paths.push(path);
+  }
+  return paths;
+};
+
+const restoreCompactContext=async(client:CookieClient,database:Database,input:Readonly<{actorId:string;projectId:string;
+  workDirectory:string;documentFingerprint:string}>):Promise<void>=>{
+  const compact=await readLatestCompactProjectContext(database,input.actorId,input.projectId,input.documentFingerprint);
+  if(compact===null)throw new Error('project_context_not_configured');
+  const form=new FormData();form.set('path',`${input.workDirectory}/PROJECT_CONTEXT.md`);form.set('overwrite','true');
+  form.set('file',new Blob([compact.content],{type:'text/markdown'}),'PROJECT_CONTEXT.md');
+  await expectJson(await client.request('/api/files/upload-stream',{method:'POST',body:form}));
+};
+
+const startContextBootstrap = async (input:Readonly<{profile:string;token:string;slug:string;repositoryUrl:string;
+  projectUrl:string;workDirectory:string;fingerprint:string;architecturePresent:boolean;paths:readonly string[];reason:string;
+}>):Promise<string> => {
+  const base=process.env.HERMES_GATEWAY_INTERNAL_BASE_URL;
+  if(base===undefined)throw new Error('agent_profile_unavailable');
+  const response=await fetch(new URL(`/p/${encodeURIComponent(input.profile)}/v1/runs`,base),{method:'POST',headers:{
+    accept:'application/json',authorization:`Bearer ${input.token}`,'content-type':'application/json'},body:JSON.stringify({
+      input:JSON.stringify({contract:'fai.project-context-bootstrap.v1',repository:input.repositoryUrl,
+        githubProject:input.projectUrl,documentFingerprint:input.fingerprint,stagedDocuments:input.paths,
+        architectureOriginalPresent:input.architecturePresent,
+        contextFile:`${input.workDirectory}/PROJECT_CONTEXT.md`}),
+      instructions:`Read the staged exact project documents, repository and the bound GitHub Project natively. Produce a compact project context and write exactly that context to the contextFile from the input before returning. Then return only compact JSON (max 65536 UTF-8 bytes): {contract:"fai.project-context-result.v1",context:string,architectureProposal:string|null}. Never copy full source documents. When an Architecture original is absent, include the proposed architecture in the context and return the same bounded proposal separately; otherwise architectureProposal must be null. Do not mutate tasks, repository, deployment or production.`,
+      session_id:`project-context-${input.slug}-${input.fingerprint.slice(0,16)}`,provider:'openai-codex',
+      model:input.architecturePresent?'gpt-5.6-terra':'gpt-5.6-sol',model_options:{reasoning_effort:'medium'},orchestration:{kind:'project-context-bootstrap',
+        attempts:1,reason:input.reason}}),signal:AbortSignal.timeout(15_000)});
+  if(response.status!==202)throw new Error('agent_profile_unavailable');
+  const value=await response.json().catch(()=>null) as {run_id?:unknown;status?:unknown}|null;
+  if(typeof value?.run_id!=='string'||!/^run_[A-Za-z0-9_-]{1,250}$/.test(value.run_id)||value.status!=='started')
+    throw new Error('agent_profile_unavailable');
+  return value.run_id;
+};
+
 export const activateProjectAgentProfile = async (database: Database, input: Readonly<{
   workspaceId: string; actorId: string; projectId: string; idempotencyKey: string; force?: boolean;
 }>): Promise<ProjectAgentProfileView> => {
@@ -219,6 +284,8 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
   const stored = await readProjectAgentProfile(database, input.actorId, input.projectId);
   const documentSet = await readActiveProjectDocumentSet(database, input.actorId, input.projectId);
   if (!documentSet.configured) throw new Error('project_documents_required');
+  if(['configuring','awaiting_architecture'].includes(stored.status)&&
+    stored.documentFingerprint===documentSet.fingerprint)return stored;
   const token = (await secretResolver.resolve(binding.agentCredentialRef, 'agent_delivery')).value;
   const project = await database.query<{slug: string}>(
     'select slug from projects where id=$1 and workspace_id=$2', [input.projectId, input.workspaceId]);
@@ -235,9 +302,13 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
       headers: {'content-type': 'application/json'}, body: JSON.stringify({name: profile, clone_from: template,
         no_skills: false, description: `Project manager for ${slug}`})}));
   }
-  await ensureProjectProfileConfiguration(client, {profile, slug, repositoryUrl: binding.repositoryUrl,
-    projectUrl: binding.projectUrl, workDirectory, token,
-    force: input.force === true || stored.documentFingerprint !== documentSet.fingerprint});
+  const changed=stored.documentFingerprint!==documentSet.fingerprint;
+  const compact=changed?null:await readLatestCompactProjectContext(database,input.actorId,input.projectId,
+    documentSet.fingerprint);
+  const needsBootstrap=changed||compact===null;
+  const reapplyConfiguration=created||stored.status==='not_configured'||(input.force===true&&!changed);
+  if(reapplyConfiguration)await ensureProjectProfileConfiguration(client, {profile, slug,
+    repositoryUrl: binding.repositoryUrl,projectUrl: binding.projectUrl, workDirectory, token,force:true});
   const endpointPath = `/p/${encodeURIComponent(profile)}/v1/runs`;
   if (!await profileCapabilitiesAvailable(profile, token)) {
     const restarted = await client.request('/api/gateway/restart', {method: 'POST'});
@@ -245,9 +316,25 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
       throw new Error('agent_profile_probe_failed');
     }
   }
-  return recordProjectAgentProfile(database, {...input, profile, endpointPath,
-    templateVersion: projectProfileVersion, documentFingerprint: documentSet.fingerprint,
-    occurredAt: new Date().toISOString()});
+  if(!needsBootstrap){
+    if(created||input.force===true||stored.status!=='ready')await restoreCompactContext(client,database,{actorId:input.actorId,
+      projectId:input.projectId,workDirectory,documentFingerprint:documentSet.fingerprint});
+    if(stored.status==='ready')return stored;
+    return recordProjectAgentProfile(database,{...input,profile,endpointPath,
+      templateVersion:projectAgentProfileTemplateVersion,documentFingerprint:documentSet.fingerprint,
+      idempotencyKey:`project-context-restore:${input.projectId}:${profile}:${documentSet.fingerprint}`,
+      occurredAt:new Date().toISOString()});
+  }
+  const paths=await stageProjectDocuments(client,database,{actorId:input.actorId,projectId:input.projectId,
+    workDirectory,documents:documentSet.documents});
+  const reason=stored.profile===null?'initial':created?'agent_replaced':changed?'documents_changed':'manual';
+  const attemptSeed=stored.status==='error'?input.idempotencyKey:'first';
+  return recordProjectAgentBootstrapStart(database,{...input,
+    idempotencyKey:`project-context:${input.projectId}:${profile}:${documentSet.fingerprint}:${attemptSeed}`,profile,endpointPath,
+    documentFingerprint:documentSet.fingerprint,architecturePresent:documentSet.architecturePresent,
+    reason,occurredAt:new Date().toISOString()},()=>startContextBootstrap({profile,token,slug,
+    repositoryUrl:binding.repositoryUrl,projectUrl:binding.projectUrl,workDirectory,fingerprint:documentSet.fingerprint,
+      architecturePresent:documentSet.architecturePresent,paths,reason}));
 };
 
 export const ensureProjectAgentProfile = async (database: Database, input: Readonly<{

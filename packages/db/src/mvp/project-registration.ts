@@ -194,11 +194,12 @@ export const resolveProjectRuntimeByRepository = async (database: Database, work
 };
 
 export type ProjectAgentProfileView = Readonly<{
-  status: 'not_configured' | 'ready';
+  status: 'not_configured' | 'configuring' | 'awaiting_architecture' | 'ready' | 'error';
   profile: string | null;
   endpointPath: string | null;
   version: string | null;
   documentFingerprint: string | null;
+  proposalSha?: string | null;
 }>;
 
 export const readProjectAgentProfile = async (
@@ -216,21 +217,83 @@ export const readProjectAgentProfile = async (
   }
   try {
     const value = JSON.parse(row.content) as Record<string, unknown>;
-    if (value.contract === 'fai.project-agent-profile.v1' && value.status === 'ready' &&
+    if (value.contract === 'fai.project-agent-profile.v1' &&
+      ['configuring','awaiting_architecture','ready','error'].includes(String(value.status)) &&
       typeof value.profile === 'string' &&
       /^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(value.profile) &&
       value.endpointPath === `/p/${encodeURIComponent(value.profile)}/v1/runs`) {
       const documentFingerprint = typeof value.documentFingerprint === 'string' &&
         /^[a-f0-9]{64}$/.test(value.documentFingerprint) ? value.documentFingerprint : null;
+      const proposalSha=typeof value.proposalSha==='string'&&/^[a-f0-9]{64}$/.test(value.proposalSha)
+        ?value.proposalSha:null;
       if (value.templateVersion !== projectAgentProfileTemplateVersion) {
         return {status: 'not_configured', profile: value.profile, endpointPath: null, version: row.sha256,
-          documentFingerprint};
+          documentFingerprint,...(proposalSha===null?{}:{proposalSha})};
       }
-      return {status: 'ready', profile: value.profile, endpointPath: value.endpointPath, version: row.sha256,
-        documentFingerprint};
+      return {status: value.status as ProjectAgentProfileView['status'], profile: value.profile,
+        endpointPath: value.endpointPath, version: row.sha256,
+        documentFingerprint,...(proposalSha===null?{}:{proposalSha})};
     }
   } catch { /* fail closed */ }
   return {status: 'not_configured', profile: null, endpointPath: null, version: null, documentFingerprint: null};
+};
+
+export const readLatestCompactProjectContext = async (database:Database,actorId:string,projectId:string,
+  documentFingerprint:string):Promise<Readonly<{
+  content:string;sha256:string;
+}>|null> => {
+  if(!/^[a-f0-9]{64}$/.test(documentFingerprint))return null;
+  const result=await database.query<{content:string;sha256:string}>(`select s.content_text as content,s.sha256
+    from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
+    where s.project_id=$1 and m.actor_id=$2 and m.active=true and s.kind=$3
+    order by s.created_at desc,s.id desc limit 1`,[projectId,actorId,`project_context_compact_v1:${documentFingerprint}`]);
+  return result.rows[0]??null;
+};
+
+export const recordProjectAgentBootstrapStart = async (
+  database: Database,
+  input: Readonly<{
+    workspaceId: string; projectId: string; actorId: string; profile: string; endpointPath: string;
+    documentFingerprint: string; architecturePresent: boolean;
+    idempotencyKey: string; occurredAt: string; reason: 'initial'|'documents_changed'|'agent_replaced'|'manual';
+  }>,submit:()=>Promise<string>
+): Promise<ProjectAgentProfileView> => {
+  const client = await database.connect();
+  try {
+    await client.query('begin');
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))',
+      [`project-context-bootstrap:${input.projectId}:${input.profile}`]);
+    const allowed = await client.query(`select 1 from project_memberships where project_id=$1 and actor_id=$2
+      and role='project_owner' and active=true for update`, [input.projectId, input.actorId]);
+    if (allowed.rowCount !== 1) throw new Error('agent_profile_denied');
+    const prior = await client.query<{reference:string}>(`select result_reference as reference from command_receipts
+      where idempotency_key=$1 and command_type='project.context-bootstrap.start'`, [input.idempotencyKey]);
+    if (prior.rows[0] !== undefined) {
+      await client.query('rollback');
+      return (await readProjectAgentProfile(database,input.actorId,input.projectId));
+    }
+    const deliveryReference=await submit();
+    const value = {contract:'fai.project-agent-profile.v1',status:'configuring',profile:input.profile,
+      endpointPath:input.endpointPath,templateVersion:projectAgentProfileTemplateVersion,
+      documentFingerprint:input.documentFingerprint,bootstrapRunId:deliveryReference,
+      architecturePresent:input.architecturePresent};
+    const {content,version}=jsonVersion(value);
+    await client.query(`insert into project_source_artifacts
+      (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
+      values($1,$2,$3,'project_agent_profile_v1','Project AI agent profile','application/json',$4,$5,null,'hermes:context-bootstrap')
+      on conflict(project_id,kind,sha256) do nothing`,[randomUUID(),input.projectId,input.actorId,version,content]);
+    await client.query(`insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
+      values($1,$2,$3,'project.context-bootstrap.start',$4,$5)`,
+    [input.projectId,input.actorId,input.idempotencyKey,deliveryReference,input.occurredAt]);
+    await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,
+      correlation_id,details,occurred_at) values($1,$2,$3,'project.context-bootstrap.start',$4,$5,$6,$7)`,
+    [input.workspaceId,input.projectId,input.actorId,input.documentFingerprint,input.idempotencyKey,
+      JSON.stringify({deliveryReference,profile:input.profile,reason:input.reason,
+        architecturePresent:input.architecturePresent}),input.occurredAt]);
+    await client.query('commit');
+    return {status:'configuring',profile:input.profile,endpointPath:input.endpointPath,version,
+      documentFingerprint:input.documentFingerprint};
+  } catch(error){await client.query('rollback');throw error;} finally{client.release();}
 };
 
 export const recordProjectAgentProfile = async (

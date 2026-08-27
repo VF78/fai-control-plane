@@ -1,6 +1,8 @@
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, createStores,
+  completeProjectContextBootstrap, failProjectContextBootstrap, listProjectContextBootstrapAttempts,
+  promoteApprovedProjectArchitectures,
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
   readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, composeAgentTerminalNotification, continueExplicitAgentChain,
@@ -197,8 +199,37 @@ export const createWorker = (database: Database = createDatabase()) => {
       `Hermes восстановлен. Та же стадия задачи поставлена повторно: ${attempt.itemTitle ?? attempt.itemId}`);
     return {status: 'started' as const};
   };
+  const observeContextBootstraps=async()=>{
+    for(const attempt of await listProjectContextBootstrapAttempts(database,workspaceId,20)){
+      try{
+        const credential=await secrets.resolve({id:attempt.agentSecretId,purpose:'agent_delivery',
+          locator:attempt.agentSecretLocator},'agent_delivery');
+        const endpoint=new URL(`${attempt.endpointPath}/${encodeURIComponent(attempt.deliveryReference)}`,gatewayBase);
+        const request=()=>fetch(endpoint,{headers:{accept:'application/json',authorization:`Bearer ${credential.value}`},
+          signal:AbortSignal.timeout(15_000)});
+        let response=await request();
+        if(response.status>=400&&response.status<500){await restartHermesGateway();response=await request();
+          if(response.status>=400&&response.status<500){await failProjectContextBootstrap(database,attempt,
+            response.status===404?'run_not_found':'provider_authentication_failed');continue;}}
+        if(!response.ok){await notifyRecovery(attempt.projectId,attempt.deliveryReference,'bootstrap-unavailable',
+          'Hermes временно недоступен во время настройки контекста. Worker продолжает контроль.');continue;}
+        const value=await response.json().catch(()=>null) as {run_id?:unknown;status?:unknown;output?:unknown}|null;
+        if(value?.run_id!==attempt.deliveryReference||typeof value.status!=='string')continue;
+        if(value.status==='completed')await completeProjectContextBootstrap(database,attempt,value.output);
+        else if(['failed','cancelled'].includes(value.status))
+          await failProjectContextBootstrap(database,attempt,`provider_${value.status}`);
+      }catch(error){
+        if(error instanceof Error&&error.message==='project_context_result_invalid')
+          await failProjectContextBootstrap(database,attempt,'project_context_result_invalid');
+        else await notifyRecovery(attempt.projectId,attempt.deliveryReference,'bootstrap-unavailable',
+          'Hermes временно недоступен во время настройки контекста. Worker продолжает контроль.');
+      }
+    }
+  };
   return {
     async observe() {
+      await promoteApprovedProjectArchitectures(database,workspaceId);
+      await observeContextBootstraps();
       const results = await runProjectBindingsIsolated(await activeProjects(), async (project) => {
         const runtime = projectRuntime(project);
         const projectAttempts = createAgentAttemptStore(database, project.projectId);
