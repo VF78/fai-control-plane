@@ -66,6 +66,9 @@ describe('MVP agent role request', () => {
     expect(rendered).not.toContain('sources');
     expect(rendered).not.toContain('chatHistory');
     expect(rendered).not.toContain('approval');
+    expect(rendered).not.toContain('project-1');
+    expect(rendered).not.toContain('repo-1');
+    expect(rendered).not.toContain('issue-1');
   });
 
   it('rejects a stale policy version while allowing the manager work route to be configured', () => {

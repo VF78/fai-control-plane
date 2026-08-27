@@ -30,7 +30,7 @@ describe('project registration',()=>{
   it('fails closed when the readiness artifact is malformed',async()=>{
     const database={query:vi.fn(async()=>({rows:[{sha256:'v',content:'{}'}]}))} as unknown as Database;
     await expect(readProjectAgentProfile(database,'actor','project')).resolves.toEqual({status:'not_configured',
-      profile:null,endpointPath:null,version:null});
+      profile:null,endpointPath:null,version:null,documentFingerprint:null});
   });
 
   it('resolves two repositories to distinct canonical project runtimes',async()=>{

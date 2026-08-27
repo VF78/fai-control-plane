@@ -90,7 +90,7 @@ export type ProjectTaskView = ProjectRow & Readonly<{
 
 export type ProjectSourceView = Readonly<{
   id: string; projectId: string; kind: string; name: string; mediaType: string;
-  sha256: string; sourceUrl: string | null; provenance: string; createdAt: string;
+  sha256: string; sizeBytes: number; sourceUrl: string | null; provenance: string; createdAt: string;
 }>;
 
 export type ApprovalEvidenceView = Readonly<{
@@ -337,6 +337,7 @@ export const listProjectSourceViews = async (
 ): Promise<readonly ProjectSourceView[]> => {
   const result = await database.query<Omit<ProjectSourceView, 'createdAt'> & {createdAt: Date}>(
     `select s.id,s.project_id as "projectId",s.kind,s.name,s.media_type as "mediaType",s.sha256,
+       s.size_bytes::int as "sizeBytes",
        s.source_url as "sourceUrl",s.provenance,s.created_at as "createdAt"
      from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
      where m.actor_id=$1 and m.active=true order by s.created_at desc`, [actorId]
@@ -765,8 +766,10 @@ export const readActiveProjectContext = async (database: Database, actorId: stri
 };
 
 export const canonicalProjectContextKeys = Object.freeze([
-  'repo:agents', 'repo:ai-context', 'repo:adr-0006',
-  'composition:project-process-policy'
+  'repo:agents', 'repo:passport', 'composition:project-process-policy'
+] as const);
+const requiredProjectContextKeys = Object.freeze([
+  'repo:agents', 'repo:passport', 'composition:project-process-policy'
 ] as const);
 
 const boundedCapsule = (value: string, maximum = 4_000): string => {
@@ -789,27 +792,26 @@ export const refreshProjectContext = async (database: Database, input: Readonly<
       and name=any($3::text[]) order by name,created_at desc,id desc`,
   [input.projectId, projectContextSourceKind, canonicalProjectContextKeys]);
   const current = new Map<string, {id: string; content: string}>();
+  const resolved = new Set<string>();
   for (const source of sources.rows) {
-    if (current.has(source.name)) continue;
+    if (resolved.has(source.name)) continue;
+    resolved.add(source.name);
     if (source.provenance.startsWith('repo-file-removed:')) continue;
     let decoded: unknown;
     try { decoded = JSON.parse(source.contentText); } catch { continue; }
     const parsed = parseProjectContextSource(decoded);
     if (parsed !== null && parsed.key === source.name) current.set(source.name, {id: source.id, content: parsed.content});
   }
-  if (canonicalProjectContextKeys.some((key) => !current.has(key))) throw new Error('project_context_not_configured');
-  const ordered = canonicalProjectContextKeys.map((key) => [key, current.get(key)!] as const);
-  // Four concise source slices make every canonical input visible in the
-  // ephemeral capsule; full source text remains in its provenance artifact.
+  if (requiredProjectContextKeys.some((key) => !current.has(key))) throw new Error('project_context_not_configured');
+  const ordered = canonicalProjectContextKeys.flatMap((key) => {
+    const source = current.get(key); return source === undefined ? [] : [[key, source] as const];
+  });
+  // Concise source slices make every available project input visible in the
+  // ephemeral capsule; optional repository documents stay optional.
   const content = ordered.map(([key, source]) => `# ${key}\n${boundedCapsule(source.content, 600)}`).join('\n\n');
   if (new TextEncoder().encode(content).byteLength === 0) throw new Error('project_context_not_configured');
   const sourceIds = ordered.map(([,source]) => source.id);
-  // Bootstrap is safely repeatable while still activating changed repository
-  // sources after a reinstall or document update.
-  const idempotencyKey = input.idempotencyKey.startsWith('bootstrap-context:')
-    ? `${input.idempotencyKey}:${createHash('sha256').update(sourceIds.join('\0')).digest('hex').slice(0,32)}`
-    : input.idempotencyKey;
-  return activateProjectContextSnapshot(database, {...input, idempotencyKey, sourceIds, content});
+  return activateProjectContextSnapshot(database, {...input, sourceIds, content});
 };
 
 export const appendIncomingEvent = async (database: Database, input: Readonly<{
@@ -969,7 +971,13 @@ export const createApprovalPersistence = (database: Database): Readonly<{
     );
     const fact = result.rows[0]?.facts.items?.find((item) =>
       item.itemId === input.targetReference || item.issueId === input.targetReference);
-    return fact === undefined ? null : {id: input.targetReference, url: fact.url, version: fact.version};
+    if(fact!==undefined)return {id:input.targetReference,url:fact.url,version:fact.version};
+    if(!/^[a-f0-9]{64}$/.test(input.targetReference))return null;
+    const proposal=await database.query<{url:string;version:string}>(`select b.project_url as url,s.sha256 as version
+      from project_source_artifacts s join tracker_bindings b on b.project_id=s.project_id
+      where s.project_id=$1 and s.kind='project_architecture_proposal_v1' and s.sha256=$2 limit 1`,
+    [input.projectId,input.targetReference]);
+    return proposal.rows[0]===undefined?null:{id:input.targetReference,...proposal.rows[0]};
   }},
   transaction: {async record(input) {
     const client = await database.connect();
@@ -979,8 +987,16 @@ export const createApprovalPersistence = (database: Database): Readonly<{
       const current = await client.query<{facts: {items?: ApprovalTargetFact[]}}>(
         `select s.facts from tracker_snapshots s join tracker_bindings b on b.id=s.binding_id
          where b.project_id=$1 order by s.observed_at desc limit 1`, [input.evidence.projectId]);
-      const currentFact = current.rows[0]?.facts.items?.find((item) => item.itemId === input.evidence.target.id ||
+      let currentFact = current.rows[0]?.facts.items?.find((item) => item.itemId === input.evidence.target.id ||
         item.issueId === input.evidence.target.id);
+      if(currentFact===undefined&&input.evidence.kind==='plan'&&/^[a-f0-9]{64}$/.test(input.evidence.target.id)){
+        const proposal=await client.query<{url:string;version:string}>(`select b.project_url as url,s.sha256 as version
+          from project_source_artifacts s join tracker_bindings b on b.project_id=s.project_id
+          where s.project_id=$1 and s.kind='project_architecture_proposal_v1' and s.sha256=$2 limit 1`,
+        [input.evidence.projectId,input.evidence.target.id]);
+        const row=proposal.rows[0];if(row!==undefined)currentFact={itemId:input.evidence.target.id,issueId:'',
+          url:row.url,version:row.version};
+      }
       if (currentFact?.version !== input.evidence.target.version || currentFact.url !== input.evidence.target.url) {
         await client.query('rollback'); return 'conflict';
       }

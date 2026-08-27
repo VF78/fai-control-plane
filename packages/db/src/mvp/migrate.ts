@@ -27,6 +27,10 @@ export const migrate = async (): Promise<void> => {
       ? new URL('../mvp-drizzle/0003_agent_attempt_lifecycle_index.sql', import.meta.url)
       : new URL('../../mvp-drizzle/0003_agent_attempt_lifecycle_index.sql', import.meta.url);
     const attemptLifecycle = await readFile(fileURLToPath(attemptLifecycleMigration), 'utf8');
+    const binaryArtifactMigration = import.meta.url.includes('/dist/')
+      ? new URL('../mvp-drizzle/0004_source_artifact_binary_payload.sql', import.meta.url)
+      : new URL('../../mvp-drizzle/0004_source_artifact_binary_payload.sql', import.meta.url);
+    const binaryArtifact = await readFile(fileURLToPath(binaryArtifactMigration), 'utf8');
     const applyCleanup = async (): Promise<void> => {
       const constraint = await database.query<{definition: string}>(
         `select pg_get_constraintdef(oid) as definition from pg_constraint
@@ -39,6 +43,11 @@ export const migrate = async (): Promise<void> => {
       if (definition.includes('agent-role-request')) await database.query(`begin;\n${cleanup}\ncommit;`);
       await database.query(`begin;\n${artifactIdentity}\ncommit;`);
       await database.query(`begin;\n${attemptLifecycle}\ncommit;`);
+      const columns = await database.query<{name: string}>(`select column_name as name from information_schema.columns
+        where table_schema='public' and table_name='project_source_artifacts'`);
+      if (!columns.rows.some(({name}) => name === 'content_bytes')) {
+        await database.query(`begin;\n${binaryArtifact}\ncommit;`);
+      }
     };
     if (names.length > 0) {
       if (JSON.stringify(names) !== JSON.stringify(expected) || !await databaseMvpReady(database)) {

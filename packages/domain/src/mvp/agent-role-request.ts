@@ -45,7 +45,10 @@ export const validateAgentRoleRequest = (value: AgentRoleRequest): boolean => {
  * or approval material. */
 export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSON.stringify({
   contract: 'fai.agent-role-request.v1',
-  task: {role: request.role, repository: request.repository, projectItem: request.projectItem,
+  task: {role: request.role,
+    repository: {url: request.repository.url, defaultBranch: request.repository.defaultBranch,
+      defaultBranchSha: request.repository.defaultBranchSha},
+    projectItem: {id: request.projectItem.id, title: request.projectItem.title, url: request.projectItem.url},
     observedVersion: request.observedVersion},
   process: request.process,
   routing: request.routing,

@@ -9,6 +9,8 @@ import {
   databaseMvpReady,
   executeAgentSubmissionTransaction,
   listProjects,
+  listProjectDocuments,
+  projectDocumentMaxFileBytes,
   onboardProjectMember,
   resolveAgentSubmissionBinding,
   resolveProjectRuntimeByRepository,
@@ -17,16 +19,22 @@ import {
   readProjectAgentProfile,
   readProjectExecutionMode,
   readProjectTrackerCapabilities,
+  readProjectDocumentPayload,
+  readProjectArchitectureProposal,
   readActiveProjectContext,
   refreshProjectContext,
   saveAgentRoutingPolicy,
   saveProjectExecutionMode,
+  uploadProjectDocument,
   subjectHash
 } from '@fai-control-plane/db';
+import {projectDocumentCategories, type ProjectDocumentCategory} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, decideApproval,
   type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
-import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeMembership, parseAgentRoutingPolicy, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind, type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
+import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeMembership, parseAgentRoutingPolicy,
+  projectPassportPaths, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind,
+  type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
@@ -146,8 +154,6 @@ export const projects = async (request: Request): Promise<Response> => {
       const result=await resolveAndRegisterProject(database,{workspaceId:session.workspaceId,actorId:session.actorId,
         name:string(body.name,200),slug,projectUrl:string(body.projectUrl,2_048),repositoryUrl:string(body.repositoryUrl,2_048),
         idempotencyKey:string(body.idempotencyKey,128)});
-      await refreshProjectContext(database,{workspaceId:session.workspaceId,projectId:result.projectId,actorId:session.actorId,
-        idempotencyKey:`project-context:register:${result.projectId}`,occurredAt:new Date().toISOString()});
       return Response.json(result,{status:result.created?201:200});
     }
     if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET, POST'}});
@@ -162,7 +168,8 @@ export const projectAgentProfile = async (request:Request,projectId:string):Prom
     if(request.method!=='POST') return new Response(null,{status:405,headers:{allow:'GET, POST'}});
     requireCsrf(request); const body=await json(request);
     return Response.json(await ensureProjectAgentProfile(database,{workspaceId:session.workspaceId,actorId:session.actorId,
-      projectId,idempotencyKey:string(body.idempotencyKey,128)}),{headers:{'cache-control':'no-store'}});
+      projectId,idempotencyKey:string(body.idempotencyKey,128),force:body.force===true}),
+    {headers:{'cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
 };
 
@@ -233,6 +240,15 @@ export const source = async (request: Request, projectId: string): Promise<Respo
   try {
     const database = getDatabase();
     const session = await requireSession();
+    if(request.method==='GET'){
+      const proposalSha=new URL(request.url).searchParams.get('architectureProposal');
+      if(proposalSha===null)throw new Error('body_invalid');
+      const proposal=await readProjectArchitectureProposal(database,session.actorId,projectId,proposalSha);
+      if(proposal===null)return new Response(null,{status:404});
+      return new Response(proposal.content,{headers:{'content-type':'text/markdown; charset=utf-8',
+        'content-disposition':'attachment; filename="architecture-proposal.md"','cache-control':'no-store'}});
+    }
+    if(request.method!=='POST')return new Response(null,{status:405,headers:{allow:'GET, POST'}});
     requireCsrf(request);
     const body = await json(request);
     const contentText = string(body.contentText, 200_000);
@@ -244,6 +260,42 @@ export const source = async (request: Request, projectId: string): Promise<Respo
     });
     return Response.json({id: sourceId}, {status: 201});
   } catch (error) { return jsonError(error); }
+};
+
+export const projectDocuments = async (request: Request, projectId: string): Promise<Response> => {
+  try {
+    const database = getDatabase(); const session = await requireSession();
+    if (request.method === 'GET') return Response.json({documents: await listProjectDocuments(database,session.actorId,projectId)},
+      {headers:{'cache-control':'no-store'}});
+    if (request.method !== 'POST') return new Response(null,{status:405,headers:{allow:'GET, POST'}});
+    requireCsrf(request);
+    if (!request.headers.get('content-type')?.startsWith('multipart/form-data')) throw new Error('media_type_invalid');
+    const contentLength=Number(request.headers.get('content-length'));
+    if(Number.isFinite(contentLength)&&contentLength>projectDocumentMaxFileBytes+1024*1024)
+      throw new Error('project_document_invalid');
+    const form = await request.formData(); const file = form.get('file'); const category = form.get('category');
+    if (!(file instanceof File) || typeof category !== 'string' ||
+      !projectDocumentCategories.includes(category as ProjectDocumentCategory)) throw new Error('project_document_invalid');
+    const result = await uploadProjectDocument(database,{workspaceId:session.workspaceId,projectId,actorId:session.actorId,
+      category:category as ProjectDocumentCategory,name:string(file.name,200),mediaType:string(file.type,100),
+      bytes:Buffer.from(await file.arrayBuffer()),provenance:'operator-upload',
+      idempotencyKey:string(form.get('idempotencyKey'),128),occurredAt:new Date().toISOString()});
+    return Response.json(result,{status:201,headers:{'cache-control':'no-store'}});
+  } catch(error){return jsonError(error);}
+};
+
+export const projectDocumentDownload = async (projectId:string,documentId:string):Promise<Response>=>{
+  try { const database=getDatabase(); const session=await requireSession();
+    const document=await readProjectDocumentPayload(database,session.actorId,projectId,documentId);
+    if(document===null)return new Response(null,{status:404});
+    const filename=document.name.replace(/[^A-Za-z0-9._-]/g,'_')||'project-document';
+    const encodedFilename=encodeURIComponent(document.name)
+      .replace(/['()*]/g,(character)=>`%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+    return new Response(new Uint8Array(document.bytes),{headers:{'content-type':document.mediaType,
+      'content-length':String(document.bytes.byteLength),
+      'content-disposition':`attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`,
+      'cache-control':'private, no-store','x-content-type-options':'nosniff'}});
+  }catch(error){return jsonError(error);}
 };
 
 export const agentRouting = async (request: Request, projectId: string): Promise<Response> => {
@@ -269,6 +321,7 @@ export const refreshContext = async (request: Request, projectId: string): Promi
     if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'POST'}});
     const database = getDatabase(); const session = await requireSession(); requireCsrf(request);
     const body = await json(request);
+    await refreshBoundGitHubContextSources(database, session.actorId, projectId);
     const result = await refreshProjectContext(database, {workspaceId: session.workspaceId, projectId, actorId: session.actorId,
       idempotencyKey: string(body.idempotencyKey), occurredAt: new Date().toISOString()});
     return Response.json(result, {headers: {'cache-control': 'no-store'}});
@@ -300,7 +353,8 @@ export const approval = async (request: Request, approvalId: string): Promise<Re
         if (snapshot.items.some((item) => item.projectId !== projectId)) throw new Error('tracker_project_mismatch');
         await stores.snapshots.replace(snapshot);
         const fact = snapshot.items.find((item) => item.itemId === target.targetReference || item.issueId === target.targetReference);
-        return fact === undefined ? null : {id: target.targetReference, url: fact.url, version: fact.version};
+        return fact === undefined ? persistence.targets.resolve(target)
+          : {id: target.targetReference, url: fact.url, version: fact.version};
       }}, transaction: persistence.transaction});
     return Response.json({status: result}, {status: result === 'recorded' || result === 'duplicate' ? 200 : 409});
   } catch (error) { return jsonError(error); }
@@ -393,8 +447,7 @@ const envSecret = (prefix: string, purpose: string): OpaqueSecretRef => ({
 
 const watchedContextPaths = new Map([
   ['AGENTS.md', 'repo:agents'],
-  ['docs/AI_CONTEXT.md', 'repo:ai-context'],
-  ['docs/adr/0006-thin-control-plane-authority.md', 'repo:adr-0006']
+  ...projectPassportPaths.map((path) => [path, 'repo:passport'] as const)
 ]);
 export const pushChangedPaths = (body: Uint8Array, expected: Readonly<{repository: string; branch: string}>):
   Readonly<{after: string; paths: readonly string[]; removed: readonly string[]}> | null => {
@@ -448,29 +501,58 @@ export const githubRuntimeCoordinates = (binding: Readonly<{provider: string; pr
 };
 export const refreshGitHubContextSources = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
   projectId: string; actorId: string; owner: string; repository: string; credentialRef: OpaqueSecretRef;
-  after: string; paths: readonly string[];
+  after: string; paths: readonly string[]; requiredKeys?: readonly string[];
 }>): Promise<void> => {
   const token = (await secretResolver.resolve(input.credentialRef, 'tracker_read')).value;
   if (token.length === 0 || token.length > 65_536 || token.includes('\0')) throw new Error('github_credential_invalid');
+  const resolved = new Set<string>(); const missing = new Map<string, string>();
   for (const path of input.paths) {
+    const key = watchedContextPaths.get(path);
+    if (key === undefined) throw new Error('github_context_read_invalid');
+    if (resolved.has(key)) continue;
     const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${input.after}`, {
       headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28'},
       signal: AbortSignal.timeout(15_000)
     });
+    if (response.status === 404) { missing.set(key, path); continue; }
     if (!response.ok) throw new Error('github_context_read_failed');
     const value = await response.json() as Record<string, unknown>;
     if (value.type !== 'file' || typeof value.content !== 'string' || value.encoding !== 'base64') throw new Error('github_context_read_invalid');
     const content = Buffer.from(value.content.replace(/\s/g, ''), 'base64').toString('utf8');
     if (content.length === 0 || content.length > 200_000 || content.includes('\0')) throw new Error('github_context_read_invalid');
-    const key = watchedContextPaths.get(path);
-    if (key === undefined) throw new Error('github_context_read_invalid');
     const serialized = JSON.stringify({contract:'fai.project-context-source.v1', key, content});
     await addSourceArtifact(database, {projectId: input.projectId, actorId: input.actorId,
       kind: 'project_context_source_v1', name: key, mediaType: 'application/json', contentText: serialized,
       sha256: createHash('sha256').update(serialized).digest('hex'),
       sourceUrl: `https://github.com/${input.owner}/${input.repository}/blob/${input.after}/${path}`,
       provenance: `repo-file:${path}@${input.after}`});
+    resolved.add(key);
   }
+  for (const [key, path] of missing) {
+    if (resolved.has(key)) continue;
+    await invalidateRemovedGitHubContextSources(database, {...input, paths: [path]});
+    if (input.requiredKeys?.includes(key)) throw new Error('project_context_not_configured');
+  }
+};
+
+const refreshBoundGitHubContextSources = async (database: ReturnType<typeof getDatabase>, actorId: string,
+  projectId: string): Promise<void> => {
+  const binding = await resolveAgentSubmissionBinding(database, actorId, projectId);
+  if (binding === null) throw new Error('github_binding_invalid');
+  const coordinates = githubRuntimeCoordinates(binding);
+  const capabilities = await readProjectTrackerCapabilities(database, actorId, projectId);
+  if (coordinates === null || capabilities?.provider !== 'github') throw new Error('github_binding_invalid');
+  const token = (await secretResolver.resolve(binding.trackerCredentialRef, 'tracker_read')).value;
+  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(coordinates.owner)}/${encodeURIComponent(coordinates.repository)}/commits/${encodeURIComponent(capabilities.defaultBranch)}`, {
+    headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${token}`,
+      'x-github-api-version': '2022-11-28'}, signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok) throw new Error('github_context_read_failed');
+  const value = await response.json() as {sha?: unknown};
+  if (typeof value.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(value.sha)) throw new Error('github_context_read_invalid');
+  await refreshGitHubContextSources(database, {projectId, actorId, owner: coordinates.owner,
+    repository: coordinates.repository, credentialRef: binding.trackerCredentialRef, after: value.sha.toLowerCase(),
+    paths: [...watchedContextPaths.keys()], requiredKeys: ['repo:agents', 'repo:passport']});
 };
 
 const invalidateRemovedGitHubContextSources = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
@@ -519,13 +601,12 @@ export const githubWebhook = async (request: Request): Promise<Response> => {
       }
       await refreshGitHubContextSources(database, {projectId: runtime.projectId, actorId: runtime.ownerActorId,
         owner: coordinates.owner, repository: coordinates.repository, credentialRef: runtime.trackerCredentialRef,
-        after: push.after, paths: push.paths});
-      await invalidateRemovedGitHubContextSources(database,{projectId:runtime.projectId,actorId:runtime.ownerActorId,
-        after:push.after,paths:push.removed});
-      if (push.removed.length === 0) await refreshProjectContext(database, {workspaceId: runtime.workspaceId,
-          projectId: runtime.projectId, actorId: runtime.ownerActorId,
-          idempotencyKey: `project-context:webhook:${verified.deliveryId}`,
-          occurredAt: new Date().toISOString()});
+        after: push.after, paths: [...watchedContextPaths.keys()],
+        requiredKeys: ['repo:agents', 'repo:passport']});
+      await refreshProjectContext(database, {workspaceId: runtime.workspaceId,
+        projectId: runtime.projectId, actorId: runtime.ownerActorId,
+        idempotencyKey: `project-context:webhook:${verified.deliveryId}`,
+        occurredAt: new Date().toISOString()});
     }
     return Response.json({status: result}, {status: result === 'recorded' ? 202 : 200});
   } catch (error) { return jsonError(error); }

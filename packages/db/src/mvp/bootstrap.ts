@@ -1,6 +1,6 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
-import {createDatabase, refreshProjectContext, subjectHash} from './runtime.ts';
+import {createDatabase, subjectHash} from './runtime.ts';
 import {parseProjectContextSource, parseProjectProcessPolicy, projectContextSnapshotVersion, projectContextSourceKind, serializeProjectContextSource} from '@fai-control-plane/domain';
 import type {PoolClient} from 'pg';
 
@@ -66,7 +66,7 @@ export const bootstrap = async (): Promise<void> => {
     await seedProjectProcessPolicy(client, {workspaceId, projectId, actorId: ownerId,
       path: required('FCP_PROJECT_PROCESS_POLICY_FILE')});
     await seedCanonicalProjectContextSources(client, {projectId, actorId: ownerId,
-      root: required('FCP_CONTEXT_SOURCE_ROOT'), processPolicyPath: required('FCP_PROJECT_PROCESS_POLICY_FILE')});
+      processPolicyPath: required('FCP_PROJECT_PROCESS_POLICY_FILE')});
     const result = await client.query<{workspaceId:string;repositoryUrl:string;ownerRole:string;bindingProjectId:string}>(
       `select p.workspace_id as "workspaceId",p.repository_url as "repositoryUrl",m.role as "ownerRole",
        b.project_id as "bindingProjectId" from projects p join project_memberships m on m.project_id=p.id and m.actor_id=$2
@@ -75,8 +75,6 @@ export const bootstrap = async (): Promise<void> => {
     if (row?.workspaceId !== workspaceId || row.repositoryUrl !== repositoryUrl || row.ownerRole !== 'project_owner' ||
       row.bindingProjectId !== projectId) throw new Error('bootstrap_existing_state_conflict');
     await client.query('commit');
-    await refreshProjectContext(database, {workspaceId, projectId, actorId: ownerId,
-      idempotencyKey: `bootstrap-context:${projectId}`, occurredAt: new Date().toISOString()});
   } catch (error) { await client.query('rollback'); throw error; }
   finally { client.release(); await database.end(); }
 };
@@ -100,18 +98,13 @@ const seedTrackerCapabilities = async (client: Pick<PoolClient, 'query'>, input:
 };
 
 const seedCanonicalProjectContextSources = async (client: Pick<PoolClient, 'query'>, input: Readonly<{
-  projectId: string; actorId: string; root: string; processPolicyPath: string;
+  projectId: string; actorId: string; processPolicyPath: string;
 }>): Promise<void> => {
-  if (!input.root.startsWith('/') || input.root.includes('\0')) throw new Error('FCP_CONTEXT_SOURCE_ROOT_invalid');
   const sources = [
-    ['repo:agents', 'AGENTS.md'],
-    ['repo:ai-context', 'docs/AI_CONTEXT.md'],
-    ['repo:adr-0006', 'docs/adr/0006-thin-control-plane-authority.md'],
     ['composition:project-process-policy', input.processPolicyPath]
   ] as const;
   for (const [key, path] of sources) {
-    const resolved = path.startsWith('/') ? path : `${input.root.replace(/\/$/, '')}/${path}`;
-    const content = await readFile(resolved, 'utf8');
+    const content = await readFile(path, 'utf8');
     const source = parseProjectContextSource({contract:'fai.project-context-source.v1', key, content});
     if (source === null) throw new Error('project_context_source_invalid');
     const serialized = serializeProjectContextSource(source);
@@ -120,8 +113,7 @@ const seedCanonicalProjectContextSources = async (client: Pick<PoolClient, 'quer
       (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
       values($1,$2,$3,$4,$5,'application/json',$6,$7,null,$8)
       on conflict(project_id,kind,sha256) do nothing`,
-    [randomUUID(),input.projectId,input.actorId,projectContextSourceKind,key,sha256,serialized,
-      path.startsWith('/') ? 'composition-file' : `repo-file:${path}`]);
+    [randomUUID(),input.projectId,input.actorId,projectContextSourceKind,key,sha256,serialized,'composition-file']);
   }
 };
 

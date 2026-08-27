@@ -1,8 +1,10 @@
 import {
   boolean,
   check,
+  customType,
   index,
   integer,
+  bigint,
   jsonb,
   pgTable,
   text,
@@ -13,6 +15,7 @@ import {
 import {sql} from 'drizzle-orm';
 
 const createdAt = () => timestamp('created_at', {withTimezone: true}).notNull().defaultNow();
+const bytea = customType<{data: Buffer}>({dataType: () => 'bytea'});
 
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -92,11 +95,20 @@ export const projectSourceArtifacts = pgTable('project_source_artifacts', {
   name: text('name').notNull(),
   mediaType: text('media_type').notNull(),
   sha256: text('sha256').notNull(),
-  contentText: text('content_text').notNull(),
+  contentText: text('content_text'),
+  contentBytes: bytea('content_bytes'),
+  sizeBytes: bigint('size_bytes', {mode: 'number'}).generatedAlwaysAs(
+    sql`coalesce(octet_length("content_bytes"),octet_length("content_text"))`
+  ),
   sourceUrl: text('source_url'),
   provenance: text('provenance').notNull(),
   createdAt: createdAt()
-}, (table) => [uniqueIndex('project_source_artifacts_kind_hash_unique').on(table.projectId, table.kind, table.sha256)]);
+}, (table) => [uniqueIndex('project_source_artifacts_kind_hash_unique').on(table.projectId, table.kind, table.sha256),
+  check('project_source_artifacts_payload_check', sql`(
+    (${table.contentText} is not null and ${table.contentBytes} is null) or
+    (${table.contentText} is null and ${table.contentBytes} is not null
+      and octet_length(${table.contentBytes}) between 1 and 52428800)
+  )`)]);
 
 export const secretRefs = pgTable('secret_refs', {
   id: uuid('id').primaryKey().defaultRandom(),
