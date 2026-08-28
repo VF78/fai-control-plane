@@ -4,14 +4,14 @@ import {describe, expect, it} from 'vitest';
 const source = () => readFile(new URL('./phase-a-ui.tsx', import.meta.url), 'utf8');
 
 describe('sections-first operator navigation', () => {
-  it('keeps internal workspace navigation in the persistent router without background prefetches', async () => {
+  it('keeps query-only workspace navigation on the reliable document path', async () => {
     const [phaseA,phaseB]=await Promise.all([source(),readFile(new URL('./phase-b-ui.tsx',import.meta.url),'utf8')]);
     for (const view of [phaseA,phaseB]) {
-      expect(view).toContain("import Link from 'next/link'");
-      expect(view).toContain('prefetch={false}');
-      expect(view).not.toMatch(/<a[^>]+href=\{phaseHref/);
+      expect(view).not.toContain("import Link from 'next/link'");
+      expect(view).not.toContain('prefetch={false}');
     }
-    expect(phaseA).not.toContain('<a href={item.href}');
+    expect(phaseA).toMatch(/<a[^>]+href=\{phaseHref/);
+    expect(phaseA).toContain('<a href={item.href}');
   });
 
   it('keeps one complete section list without project navigation modes', async () => {
@@ -29,7 +29,7 @@ describe('sections-first operator navigation', () => {
     expect(view).toContain('className="fcp-task-project-selector"');
     expect(view).toContain('<nav aria-label="Выберите проект">');
     expect(view).toContain("aria-current={item.id === project.id ? 'page' : undefined}");
-    expect(view).toContain("href={phaseHref('tasks',item.slug)} prefetch={false}");
+    expect(view).toContain("href={phaseHref('tasks',item.slug)}");
     expect(page).toContain("const selected = view === 'tasks'");
     expect(page).toContain('?? projects[0] ?? null');
     expect(page).toContain('<Tasks projects={projects} project={selected}');
