@@ -1,6 +1,6 @@
-import {listApprovalEvidenceViews, listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,
-  projectAgentDeliveryConfigured, readAgentRoutingPolicy, readProjectAgentProfile, readProjectAgentSubmissionView,
-  readProjectContextStatus, readProjectExecutionMode, readProjectMembershipRole, readProjectProcessPolicy,
+import {listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,
+  projectAgentDeliveryConfigured, readProjectAgentProfile, readProjectAgentSubmissionView,
+  readAgentRoutingPolicy, readProjectContextStatus, readProjectExecutionMode, readProjectMembershipRole, readProjectProcessPolicy,
   readProjectTrackerCapabilities, type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import type {ReactNode} from 'react';
@@ -8,8 +8,8 @@ import {Dashboard, Process, Shell, Tasks} from '../src/mvp/phase-a-ui.tsx';
 import {executorFact} from '../src/mvp/phase-a-view.ts';
 import {TaskExecutorControl} from '../src/mvp/operator-controls.tsx';
 import {PhaseB, type PhaseBView} from '../src/mvp/phase-b-ui.tsx';
-import {hermesExecutorCatalog} from '../src/mvp/hermes-executor-readiness.ts';
 import {integrationConfig} from '../src/mvp/integration-config.ts';
+import {hermesExecutorCatalog} from '../src/mvp/hermes-executor-readiness.ts';
 import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +26,9 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
   const view = current(query.view);
   const database = getDatabase();
   const projects = await listProjectTaskViews(database, session.actorId);
-  const selected = projects.find((project) => project.slug === query.project) ?? projects[0] ?? null;
+  const selected = view === 'tasks'
+    ? projects.find((project) => project.slug === query.project) ?? projects[0] ?? null
+    : null;
   let content: ReactNode;
   if (view === 'dashboard') {
     content = <Dashboard projects={projects}/>;
@@ -36,7 +38,7 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
       query.task === undefined ? Promise.resolve(null)
         : readProjectAgentSubmissionView(database, session.actorId, selected.id, query.task)
     ]);
-    content = <Tasks project={selected} task={query.task} filter={query.filter}
+    content = <Tasks projects={projects} project={selected} task={query.task} filter={query.filter}
       hermesOwnerOptionId={trackerCapabilities?.agentOwnerOptionId}
       executorControl={(task) => selected === null ? null : <TaskExecutorControl
         key={`${run?.deliveryReference ?? task.itemId}:${run?.status ?? 'none'}`}
@@ -45,41 +47,39 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
         confirmedRun={run}
         task={{itemId: task.itemId, status: task.statusOptionName, blocked: task.blocked}}/>}/>;
   } else if (view === 'process') {
-    const tab = query.filter === 'hermes' ? 'hermes' : query.filter === 'context' ? 'context' : 'stages';
-    const [role, processPolicy, agentRouting, activeContext, executionMode] = selected === null
-      ? [null, null, null, null, {mode:'manual' as const, actorId:null, changedAt:null}] as const
-      : await Promise.all([
-        readProjectMembershipRole(database, session.actorId, selected.id),
-        readProjectProcessPolicy(database, session.actorId, selected.id),
-        tab === 'hermes' ? readAgentRoutingPolicy(database, session.actorId, selected.id) : Promise.resolve(null),
-        tab === 'context' ? readProjectContextStatus(database, session.actorId, selected.id) : Promise.resolve(null),
-        tab === 'stages' ? readProjectExecutionMode(database, session.actorId, selected.id)
-          : Promise.resolve({mode:'manual' as const, actorId:null, changedAt:null})
+    const executorCatalog = hermesExecutorCatalog();
+    const processProjects = await Promise.all(projects.map(async (project) => {
+      const [role, processPolicy, executionMode, agentRouting, context] = await Promise.all([
+        readProjectMembershipRole(database, session.actorId, project.id),
+        readProjectProcessPolicy(database, session.actorId, project.id),
+        readProjectExecutionMode(database, session.actorId, project.id),
+        readAgentRoutingPolicy(database, session.actorId, project.id),
+        readProjectContextStatus(database, session.actorId, project.id)
       ]);
-    const routing = {policy: agentRouting?.policy ?? defaultAgentRoutingPolicy, version: agentRouting?.version ?? null,
-      provenance: agentRouting?.provenance ?? null, createdAt: agentRouting?.createdAt ?? null,
-      executorCatalog: hermesExecutorCatalog()};
-    content = <Process project={selected} filter={query.filter} routing={routing} processPolicy={processPolicy}
-      executionMode={executionMode} activeContext={activeContext} canManageRouting={role === 'project_owner'}
-      canManageContext={role === 'project_owner' || role === 'operator'}/>;
+      return {project, processPolicy, executionMode, context,
+        routing:{policy:agentRouting?.policy??defaultAgentRoutingPolicy,executorCatalog},
+        canManageRouting:role==='project_owner',canManageContext:role==='project_owner'||role==='operator'};
+    }));
+    content = <Process projects={processProjects}/>;
   } else {
-    const needsEvidence = view !== 'settings';
+    const needsEvidence = view === 'conversations' || view === 'people';
     const evidenceSections = new Set<ProjectOperatorEvidenceSection>(view === 'conversations'
-      ? ['people','messenger','conversations'] : view === 'people' ? ['people']
-        : view === 'systems' ? ['receipts','audit','agentSubmissions'] : []);
-    const [operatorEvidence, sources, approvals, agentProfile, agentDeliveryConfigured] = selected === null
-      ? [[], [], [], null, false] as const : await Promise.all([
-        needsEvidence ? listProjectOperatorEvidenceViews(database, session.actorId, evidenceSections) : Promise.resolve([]),
-        view === 'settings' ? listProjectSourceViews(database, session.actorId) : Promise.resolve([]),
-        view === 'settings' ? listApprovalEvidenceViews(database, session.actorId) : Promise.resolve([]),
-        view === 'settings' ? readProjectAgentProfile(database, session.actorId, selected.id) : Promise.resolve(null),
-        view === 'systems' ? projectAgentDeliveryConfigured(database, session.actorId, selected.id) : Promise.resolve(false)
-      ]);
-    const evidence = selected === null ? null
-      : operatorEvidence.find((item) => item.projectId === selected.id) ?? null;
-    content = <PhaseB view={view} project={selected} evidence={evidence} sources={sources} approvals={approvals}
-      actorId={session.actorId} config={integrationConfig(process.env, agentDeliveryConfigured)} agentProfile={agentProfile}/>;
+      ? ['people'] : view === 'people' ? ['people'] : []);
+    const [operatorEvidence, sources, projectDetails] = await Promise.all([
+      needsEvidence ? listProjectOperatorEvidenceViews(database, session.actorId, evidenceSections) : Promise.resolve([]),
+      view === 'settings' ? listProjectSourceViews(database, session.actorId) : Promise.resolve([]),
+      Promise.all(projects.map(async (project) => {
+        const [agentProfile, agentDeliveryConfigured] = await Promise.all([
+          view === 'settings' ? readProjectAgentProfile(database, session.actorId, project.id) : Promise.resolve(null),
+          view === 'systems' ? projectAgentDeliveryConfigured(database, session.actorId, project.id) : Promise.resolve(false)
+        ]);
+        return {project, agentProfile, config: integrationConfig(process.env, agentDeliveryConfigured)};
+      }))
+    ]);
+    const phaseBProjects = projectDetails.map((item) => ({...item, sources,
+      evidence: operatorEvidence.find((evidence) => evidence.projectId === item.project.id) ?? null}));
+    content = <PhaseB view={view} projects={phaseBProjects} actorId={session.actorId}/>;
   }
 
-  return <Shell view={view} projects={projects} selected={selected} operatorName={session.displayName}>{content}</Shell>;
+  return <Shell view={view} projects={projects} operatorName={session.displayName}>{content}</Shell>;
 }

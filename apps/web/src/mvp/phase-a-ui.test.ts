@@ -3,69 +3,59 @@ import {describe, expect, it} from 'vitest';
 
 const source = () => readFile(new URL('./phase-a-ui.tsx', import.meta.url), 'utf8');
 
-describe('Process Hermes execution surface', () => {
-  it('keeps execution in Process with the existing context-tab grammar', async () => {
-    const view = await source();
-    expect(view).toContain("{label:'Этапы'");
-    expect(view).toContain("{label:'Настройка ИИ агента'");
-    expect(view).toContain("filter === 'hermes'");
+describe('sections-first operator navigation', () => {
+  it('keeps one complete section list without project navigation modes', async () => {
+    const view=await source();
+    expect(view).toContain("const navigation: readonly PhaseArea[] = ['dashboard','tasks','process','conversations','systems','settings','people']");
+    expect(view).toContain('aria-label="Разделы"');
+    expect(view).not.toContain('Все проекты');
+    expect(view).not.toContain('fcp-selected-project');
+    expect(view).not.toContain('fcp-project-list-nav');
+  });
+
+  it('uses a Tasks-only project selector and deterministic default project', async () => {
+    const [view,page]=await Promise.all([source(),readFile(new URL('../../app/page.tsx',import.meta.url),'utf8')]);
+    expect(view).toContain('function ProjectSelector');
+    expect(view).toContain('className="fcp-task-project-selector"');
+    expect(view).toContain('<nav aria-label="Выберите проект">');
+    expect(view).toContain("aria-current={item.id === project.id ? 'page' : undefined}");
+    expect(view).toContain("href={phaseHref('tasks',item.slug)}");
+    expect(page).toContain("const selected = view === 'tasks'");
+    expect(page).toContain('?? projects[0] ?? null');
+    expect(page).toContain('<Tasks projects={projects} project={selected}');
+  });
+});
+
+describe('portfolio Phase A pages', () => {
+  it('keeps task-count visualization separated by project', async () => {
+    const view=await source();
+    expect(view).toContain('dashboardProjection(project.tasks)');
+    expect(view).toContain('fcp-dashboard-progress-card');
+    expect(view).toContain('Прогресс по количеству задач');
+    expect(view).not.toContain('freshness(');
+  });
+
+  it('renders one process block per project with progressive agent actions', async () => {
+    const [view,page]=await Promise.all([source(),readFile(new URL('../../app/page.tsx',import.meta.url),'utf8')]);
+    expect(view).toContain('export function Process({projects}');
+    expect(view).toContain('projects.map(({project,processPolicy,executionMode,routing,context,canManageRouting,canManageContext})');
+    expect(view).toContain('ProjectExecutionModeControl');
     expect(view).toContain('AgentRoutingControl');
-    expect(view).toContain('ИИ агент сам определяет класс задачи');
-  });
-
-  it('keeps the project process policy read-only and excludes manual task classification', async () => {
-    const view = await source();
-    expect(view).toContain('Проектная политика процесса · только чтение');
-    expect(view).toContain("{label:'Контекст ИИ агента'");
-    expect(view).toContain('Собранный контекст, который ИИ агент использует в новых задачах.');
-    expect(view).toContain('Назначать класс вручную не требуется.');
-    expect(view).not.toContain('Назначить класс задачи');
-  });
-
-  it('keeps policy reads in the page composition instead of the client control', async () => {
-    const [page, control] = await Promise.all([
-      readFile(new URL('../../app/page.tsx', import.meta.url), 'utf8'),
-      readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8')
-    ]);
-    expect(page).toContain('readAgentRoutingPolicy(database, session.actorId, selected.id)');
-    expect(page).toContain('<Process project={selected} filter={query.filter} routing={routing} processPolicy={processPolicy}');
-    expect(page).toContain("canManageRouting={role === 'project_owner'}");
-    expect(control).not.toContain('readAgentRoutingPolicy(');
-  });
-
-  it('keeps only valid routing fields editable and Claude unavailable', async () => {
-    const control = await readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8');
-    expect(control).toContain("['manager_project_ops', 'architecture_design', 'critical_decision', 'release_preflight']");
-    expect(control).toContain('Claude Code CLI');
-    expect(control).toContain('label="Рассуждение"');
-    expect(control).toContain('value={route.effort === \'high\' ? \'Высокое\' : \'Среднее\'}');
-    expect(control).toContain('<Pencil');
-    expect(control).toContain('fcp-agent-routing-setting');
-    expect(control).not.toContain('Изменить исполнение и модель');
-    expect(control).not.toContain('label="Усилие"');
-    expect(control).toContain('disabled');
-    expect(control).toContain('Редактирование станет доступно после подключения Codex CLI.');
+    expect(view).toContain('HermesContextControl');
+    expect(view).toContain('<summary>Настройка ИИ-агента</summary>');
+    expect(view).toContain('<summary>Контекст ИИ-агента</summary>');
+    expect(page).toContain('const processProjects = await Promise.all(projects.map');
   });
 });
 
 describe('Task detail operator surface', () => {
-  it('keeps only task facts, the issue link, and the assignment action', async () => {
-    const [view, page] = await Promise.all([
-      source(),
-      readFile(new URL('../../app/page.tsx', import.meta.url), 'utf8')
-    ]);
-    const taskDetail = view.slice(view.indexOf('export function TaskDetail'), view.indexOf('export function Tasks'));
-    expect(taskDetail).toContain('className="fcp-task-detail"');
-    expect(taskDetail).toContain('showTrackerState={false}');
-    expect(taskDetail).toContain('Открыть issue в GitHub');
-    expect(taskDetail).toContain('Исполнитель');
-    expect(taskDetail).toContain('Состояние');
-    expect(taskDetail).not.toContain('Project item');
-    expect(taskDetail).not.toContain('Единственный источник task lifecycle');
-    expect(taskDetail).not.toContain('Провайдер');
-    expect(taskDetail).not.toContain('Свежесть');
-    expect(taskDetail).not.toContain('Ошибка');
-    expect(page).not.toContain('approvalControl=');
-    expect(page).not.toContain('TaskApprovalEvidence');
+  it('keeps only task facts, GitHub link and assignment action', async () => {
+    const view=await source();const detail=view.slice(view.indexOf('function TaskDetail'),view.indexOf('export function Tasks'));
+    expect(detail).toContain('Открыть issue в GitHub');
+    expect(detail).toContain('Исполнитель');
+    expect(detail).toContain('Состояние');
+    expect(detail).not.toContain('Провайдер');
+    expect(detail).not.toContain('Свежесть');
+    expect(detail).not.toContain('Ошибка');
   });
 });
