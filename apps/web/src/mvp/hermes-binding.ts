@@ -2,7 +2,6 @@ import {createHash} from 'node:crypto';
 import {subjectHash} from '@fai-control-plane/db';
 import {parseConversationEnvelope} from '@fai-control-plane/domain';
 
-export type HermesProfile = 'internal';
 type Source = Readonly<{provider: 'telegram'; updateId: string; messageId: string; userId: string; chatId: string;
   observedAt: string}>;
 
@@ -12,7 +11,7 @@ const bounded = (value: unknown, max = 256): string => {
 };
 const ref = (kind: string, value: string): string => createHash('sha256').update(`${kind}\0${value}`).digest('hex');
 
-export const bindHermesConversation = (input: Readonly<{profile: HermesProfile; source: Source; action: unknown;
+export const bindHermesConversation = (input: Readonly<{source: Source; action: unknown;
   projectId: string; telegramChatId: string; telegramUserIds: readonly string[]}>) => {
   if (input.source.chatId !== input.telegramChatId || !input.telegramUserIds.includes(input.source.userId) ||
     !/^[0-9]{1,20}$/.test(input.source.updateId) || !/^[0-9]{1,20}$/.test(input.source.messageId)) {

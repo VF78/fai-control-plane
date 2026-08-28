@@ -34,9 +34,6 @@ const env = (name: string): string => {
   if (value === undefined || value.length === 0) throw new Error(`${name}_required`);
   return value;
 };
-const secret = (id: string, purpose: string, variable: string): OpaqueSecretRef => ({
-  id, purpose, locator: env(variable)
-});
 const secrets: SecretResolverPort = {async resolve(reference, expectedPurpose) {
   if (reference.purpose !== expectedPurpose || !reference.locator.startsWith('/')) {
     throw new Error('secret_reference_denied');
@@ -47,22 +44,27 @@ const secrets: SecretResolverPort = {async resolve(reference, expectedPurpose) {
 }};
 
 const pause = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
-const restartHermesGateway = async (): Promise<void> => {
-  const endpoint = new URL(env('HERMES_MANAGEMENT_URL'));
-  if (!['http:', 'https:'].includes(endpoint.protocol) || (endpoint.protocol === 'http:' &&
-    endpoint.hostname.includes('.') && !['127.0.0.1', 'localhost'].includes(endpoint.hostname))) {
+export const restartHermesGateway = async (
+  runtime: WorkerProjectBinding['runtime'],
+  request: typeof fetch = fetch,
+  credentialResolver: SecretResolverPort = secrets
+): Promise<void> => {
+  const endpoint = new URL(runtime.managementEndpoint);
+  const gateway = new URL(runtime.gatewayEndpoint);
+  if (endpoint.toString() !== `http://${runtime.runtimeId}-management:9119/` ||
+    gateway.toString() !== `http://${runtime.runtimeId}-gateway:8642/v1/runs`) {
     throw new Error('hermes_management_denied');
   }
-  const username = (await readFile(env('HERMES_MANAGEMENT_USERNAME_FILE'), 'utf8')).trim();
-  const password = (await readFile(env('HERMES_MANAGEMENT_PASSWORD_FILE'), 'utf8')).trim();
-  const login = await fetch(new URL('/auth/password-login', endpoint), {method: 'POST',
+  const username = (await credentialResolver.resolve(runtime.managementUsernameRef, 'hermes_management_username')).value;
+  const password = (await credentialResolver.resolve(runtime.managementPasswordRef, 'hermes_management_password')).value;
+  const login = await request(new URL('/auth/password-login', endpoint), {method: 'POST',
     headers: {'content-type': 'application/json'}, body: JSON.stringify({provider: 'basic', username, password}),
     signal: AbortSignal.timeout(10_000)});
   if (!login.ok) throw new Error('hermes_management_unavailable');
   const values = typeof login.headers.getSetCookie === 'function'
     ? login.headers.getSetCookie() : [login.headers.get('set-cookie') ?? ''];
   const cookie = values.map((value) => value.split(';', 1)[0]).filter(Boolean).join('; ');
-  const restarted = await fetch(new URL('/api/gateway/restart', endpoint), {method: 'POST', headers: {cookie},
+  const restarted = await request(new URL('/api/gateway/restart', endpoint), {method: 'POST', headers: {cookie},
     signal: AbortSignal.timeout(10_000)});
   if (!restarted.ok) throw new Error('hermes_restart_failed');
 };
@@ -71,14 +73,14 @@ export const createWorker = (database: Database = createDatabase()) => {
   const workspaceId = env('FCP_WORKSPACE_ID');
   const stores = createStores(database, workspaceId);
   const continuations = createAgentContinuationStore(database);
-  const gatewayBase = env('HERMES_GATEWAY_INTERNAL_BASE_URL');
   const clientMessenger: MessengerDeliveryPort = {async send() {
     throw new Error('client_messenger_not_configured');
   }};
   const internalMessenger: MessengerDeliveryPort = {async send(message) {
-    return createTelegramDeliveryAdapter({config: {projectId: message.projectId,
-      chatId: env('TELEGRAM_INTERNAL_CHAT_ID'),
-      tokenRef: secret('telegram', 'messenger_delivery', 'TELEGRAM_BOT_TOKEN_FILE')}, secrets}).send(message);
+    const project = (await activeProjects()).find((candidate) => candidate.projectId === message.projectId);
+    if (project === undefined) throw new Error('telegram_config_invalid');
+    return createTelegramDeliveryAdapter({config: {projectId: project.projectId,
+      chatId: project.runtime.telegramChatId, tokenRef: project.runtime.telegramCredentialRef}, secrets}).send(message);
   }};
   const executorCatalog: AgentExecutorCatalog = {'codex-cli': {available: true,
     models: ['gpt-5.6-terra','gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}};
@@ -92,11 +94,11 @@ export const createWorker = (database: Database = createDatabase()) => {
     const tracker = createGitHubTrackerReadAdapter({binding: trackerBinding, secrets});
     const repository = createGitHubRepositoryReadAdapter({...coordinates, repositoryId: project.repositoryId,
       credentialRef: project.trackerCredentialRef, secrets});
-    const agentSignature = `${project.bindingId}:${project.endpointPath}:${project.agentCredentialRef.id}`;
+    const agentSignature = `${project.bindingId}:${project.runtime.artifactVersion}`;
     const existingDelivery = agentDeliveries.get(project.projectId);
     const agentDelivery = existingDelivery?.signature === agentSignature ? existingDelivery.delivery
-      : createHermesDeliveryAdapter({endpoint: new URL(project.endpointPath, gatewayBase).toString(),
-        credentialRef: project.agentCredentialRef, secrets, allowPrivateHttp: true});
+      : createHermesDeliveryAdapter({endpoint: project.runtime.gatewayEndpoint,
+        credentialRef: project.runtime.agentCredentialRef, secrets, allowPrivateHttp: true});
     if (existingDelivery?.signature !== agentSignature) {
       agentDeliveries.set(project.projectId, {signature: agentSignature, delivery: agentDelivery});
     }
@@ -167,7 +169,7 @@ export const createWorker = (database: Database = createDatabase()) => {
     if (attempt.retryOf !== null && attempt.retryOf !== undefined) throw new Error('agent_recovery_exhausted');
     await notifyRecovery(attempt.projectId, attempt.deliveryReference, 'restart',
       `Hermes недоступен. Перезапускаю ИИ агента и сохраняю текущую задачу: ${attempt.itemTitle ?? attempt.itemId}${attempt.itemUrl === null ? '' : ` — ${attempt.itemUrl}`}`);
-    await restartHermesGateway();
+    await restartHermesGateway(runtime.project.runtime);
     let observed: Awaited<ReturnType<AgentDeliveryPort['observe']>> = {status: 'unknown'};
     for (let probe = 0; probe < 5; probe += 1) {
       await pause(probe === 0 ? 500 : 1_000);
@@ -200,15 +202,18 @@ export const createWorker = (database: Database = createDatabase()) => {
     return {status: 'started' as const};
   };
   const observeContextBootstraps=async()=>{
+    const projects = new Map((await activeProjects()).map((project) => [project.projectId, project]));
     for(const attempt of await listProjectContextBootstrapAttempts(database,workspaceId,20)){
       try{
-        const credential=await secrets.resolve({id:attempt.agentSecretId,purpose:'agent_delivery',
-          locator:attempt.agentSecretLocator},'agent_delivery');
-        const endpoint=new URL(`${attempt.endpointPath}/${encodeURIComponent(attempt.deliveryReference)}`,gatewayBase);
+        const runtime=projects.get(attempt.projectId)?.runtime;
+        if(runtime===undefined)throw new Error('project_hermes_runtime_unavailable');
+        const credential=await secrets.resolve(runtime.agentCredentialRef,'agent_delivery');
+        const runs=new URL(runtime.gatewayEndpoint);
+        const endpoint=new URL(`${runs.pathname}/${encodeURIComponent(attempt.deliveryReference)}`,runs);
         const request=()=>fetch(endpoint,{headers:{accept:'application/json',authorization:`Bearer ${credential.value}`},
           signal:AbortSignal.timeout(15_000)});
         let response=await request();
-        if(response.status>=400&&response.status<500){await restartHermesGateway();response=await request();
+        if(response.status>=400&&response.status<500){await restartHermesGateway(runtime);response=await request();
           if(response.status>=400&&response.status<500){await failProjectContextBootstrap(database,attempt,
             response.status===404?'run_not_found':'provider_authentication_failed');continue;}}
         if(!response.ok){await notifyRecovery(attempt.projectId,attempt.deliveryReference,'bootstrap-unavailable',

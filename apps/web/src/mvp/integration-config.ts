@@ -5,16 +5,16 @@ export type IntegrationConfig = Readonly<{
 }>;
 
 type Environment = Readonly<Record<string, string | undefined>>;
+type ProjectRuntimeConfig = Readonly<{telegramAllowedUserIds: readonly string[]}> | null;
 
 export const integrationConfig = (
   environment: Environment = process.env,
-  agentDeliveryConfigured = false
+  runtime: ProjectRuntimeConfig = null
 ): IntegrationConfig => ({
-  hermes: Boolean(environment.HERMES_ROLE_REQUEST_URL) && agentDeliveryConfigured,
+  hermes: runtime !== null,
   telegram: {
-    configured: Boolean(environment.TELEGRAM_INTERNAL_CHAT_ID && environment.TELEGRAM_INTERNAL_ALLOWED_USER_IDS &&
-      environment.HERMES_INTERNAL_ACTION_TOKEN_FILE),
-    allowedUsers: environment.TELEGRAM_INTERNAL_ALLOWED_USER_IDS?.split(',').filter(Boolean).length ?? 0
+    configured: runtime !== null,
+    allowedUsers: runtime?.telegramAllowedUserIds.length ?? 0
   },
   bitrix: {
     configured: Boolean(environment.BITRIX24_TASK_ID),

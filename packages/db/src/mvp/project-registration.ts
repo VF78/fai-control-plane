@@ -4,7 +4,7 @@ import {defaultAgentRoutingPolicy, defaultProjectProcessPolicy, projectContextSn
 import type {OpaqueSecretRef} from '@fai-control-plane/domain';
 import type {Database} from './runtime.ts';
 
-export const projectAgentProfileTemplateVersion = 'v2026.8.27-fai-project-v2';
+export const projectAgentProfileTemplateVersion = 'v2026.8.28-dedicated-runtime-v1';
 
 export type RegisterProjectInput = Readonly<{
   workspaceId: string; actorId: string; name: string; slug: string; repositoryUrl: string; repositoryId: string;
@@ -221,7 +221,7 @@ export const readProjectAgentProfile = async (
       ['configuring','awaiting_architecture','ready','error'].includes(String(value.status)) &&
       typeof value.profile === 'string' &&
       /^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(value.profile) &&
-      value.endpointPath === `/p/${encodeURIComponent(value.profile)}/v1/runs`) {
+      value.endpointPath === '/v1/runs') {
       const documentFingerprint = typeof value.documentFingerprint === 'string' &&
         /^[a-f0-9]{64}$/.test(value.documentFingerprint) ? value.documentFingerprint : null;
       const proposalSha=typeof value.proposalSha==='string'&&/^[a-f0-9]{64}$/.test(value.proposalSha)

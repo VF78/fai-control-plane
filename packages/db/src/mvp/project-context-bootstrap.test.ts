@@ -4,14 +4,14 @@ import {completeProjectContextBootstrap,listProjectContextBootstrapAttempts,
   promoteApprovedProjectArchitectures,type ProjectContextBootstrapAttempt} from './project-context-bootstrap.ts';
 
 const attempt:ProjectContextBootstrapAttempt={workspaceId:'workspace',projectId:'project',actorId:'actor',
-  profile:'project-control',endpointPath:'/p/project-control/v1/runs',deliveryReference:'run_context_1',
-  documentFingerprint:'a'.repeat(64),architecturePresent:false,agentSecretId:'agent-secret',
-  agentSecretLocator:'/run/agent',correlationId:'project-context:project:project-control:fingerprint'};
+  profile:'project-control',endpointPath:'/v1/runs',deliveryReference:'run_context_1',
+  documentFingerprint:'a'.repeat(64),architecturePresent:false,
+  correlationId:'project-context:project:project-control:fingerprint'};
 
 describe('project context bootstrap persistence',()=>{
   it('isolates a corrupt configuring artifact instead of crashing worker polling',async()=>{
     const database={query:vi.fn(async()=>({rows:[{workspaceId:'workspace',projectId:'project',actorId:'actor',
-      content:'{',agentSecretId:'agent',agentSecretLocator:'/run/agent',correlationId:'key'}]}))} as unknown as Database;
+      content:'{',correlationId:'key'}]}))} as unknown as Database;
     await expect(listProjectContextBootstrapAttempts(database,'workspace')).resolves.toEqual([]);
   });
 
@@ -38,7 +38,7 @@ describe('project context bootstrap persistence',()=>{
   it('promotes an exact approved proposal once without rerunning document synthesis',async()=>{
     const proposalSha='b'.repeat(64);let receiptAttempts=0;
     const content=JSON.stringify({contract:'fai.project-agent-profile.v1',status:'awaiting_architecture',
-      profile:'project-control',endpointPath:'/p/project-control/v1/runs',documentFingerprint:'a'.repeat(64),
+      profile:'project-control',endpointPath:'/v1/runs',documentFingerprint:'a'.repeat(64),
       contextSha:'c'.repeat(64),proposalSha});
     const databaseQuery=vi.fn(async()=>({rows:[{projectId:'project',actorId:'actor',content}]}));
     const clientQuery=vi.fn(async(sql:string)=>{

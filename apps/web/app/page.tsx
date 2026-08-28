@@ -1,5 +1,5 @@
 import {listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,
-  projectAgentDeliveryConfigured, readProjectAgentProfile, readProjectAgentSubmissionView,
+  listProjectHermesRuntimeBindings, readProjectAgentProfile, readProjectAgentSubmissionView,
   readAgentRoutingPolicy, readProjectContextStatus, readProjectExecutionMode, readProjectMembershipRole, readProjectProcessPolicy,
   readProjectTrackerCapabilities, type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
@@ -65,17 +65,15 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     const needsEvidence = view === 'conversations' || view === 'people';
     const evidenceSections = new Set<ProjectOperatorEvidenceSection>(view === 'conversations'
       ? ['people'] : view === 'people' ? ['people'] : []);
-    const [operatorEvidence, sources, projectDetails] = await Promise.all([
+    const [operatorEvidence, sources, runtimes] = await Promise.all([
       needsEvidence ? listProjectOperatorEvidenceViews(database, session.actorId, evidenceSections) : Promise.resolve([]),
       view === 'settings' ? listProjectSourceViews(database, session.actorId) : Promise.resolve([]),
-      Promise.all(projects.map(async (project) => {
-        const [agentProfile, agentDeliveryConfigured] = await Promise.all([
-          view === 'settings' ? readProjectAgentProfile(database, session.actorId, project.id) : Promise.resolve(null),
-          view === 'systems' ? projectAgentDeliveryConfigured(database, session.actorId, project.id) : Promise.resolve(false)
-        ]);
-        return {project, agentProfile, config: integrationConfig(process.env, agentDeliveryConfigured)};
-      }))
+      listProjectHermesRuntimeBindings(database, session.workspaceId)
     ]);
+    const runtimeByProject = new Map(runtimes.map((runtime) => [runtime.projectId, runtime]));
+    const projectDetails = await Promise.all(projects.map(async (project) => ({project,
+      agentProfile: view === 'settings' ? await readProjectAgentProfile(database, session.actorId, project.id) : null,
+      config: integrationConfig(process.env, runtimeByProject.get(project.id) ?? null)})));
     const phaseBProjects = projectDetails.map((item) => ({...item, sources,
       evidence: operatorEvidence.find((evidence) => evidence.projectId === item.project.id) ?? null}));
     content = <PhaseB view={view} projects={phaseBProjects} actorId={session.actorId}/>;

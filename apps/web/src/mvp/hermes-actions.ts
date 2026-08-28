@@ -1,14 +1,12 @@
 import {timingSafeEqual} from 'node:crypto';
-import type {InternalConversationEnvelope, InternalMessengerInbound} from '@fai-control-plane/domain';
+import type {InternalConversationEnvelope, InternalMessengerInbound, SecretResolverPort} from '@fai-control-plane/domain';
+import type {ProjectHermesRuntimeBinding} from '@fai-control-plane/db';
 import {bindHermesConversation} from './hermes-binding.ts';
 
 type DispatchResult = Readonly<{status: 'completed' | 'duplicate' | 'denied'; referenceId?: string}>;
 export type HermesActionDependencies = Readonly<{
-  internalToken(): Promise<string>;
+  resolveRuntime(bearer: string): Promise<ProjectHermesRuntimeBinding | null>;
   dispatchInternal(envelope: InternalConversationEnvelope): Promise<DispatchResult>;
-  projectId: string;
-  telegramChatId: string;
-  telegramUserIds: readonly string[];
   readInternalContext(input: Readonly<{message: InternalMessengerInbound; ifVersion: string | null}>): Promise<Readonly<{
     status: 'completed' | 'duplicate'; version: string; capsule?: string; sourceCount: number; refreshedAt: string | null;
   }>>;
@@ -34,21 +32,34 @@ const json = async (request: Request): Promise<Record<string, unknown>> => {
   return value as Record<string, unknown>;
 };
 
+export const resolveInboundHermesRuntime = async (
+  runtimes: readonly ProjectHermesRuntimeBinding[],
+  secrets: SecretResolverPort,
+  bearer: string
+): Promise<ProjectHermesRuntimeBinding | null> => {
+  const matches: ProjectHermesRuntimeBinding[] = [];
+  for (const runtime of runtimes) {
+    const value = (await secrets.resolve(runtime.inboundActionCredentialRef, 'hermes_inbound_actions')).value;
+    if (equal(bearer, value)) matches.push(runtime);
+  }
+  return matches.length === 1 ? matches[0]! : null;
+};
+
 export const createHermesConversationActionHandler = (dependencies: HermesActionDependencies) =>
   async (request: Request): Promise<Response> => {
     try {
       if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'POST'}});
       const bearer = token(request);
-      const internal = await dependencies.internalToken();
-      if (!equal(bearer, internal)) throw new Error('authentication_denied');
+      const runtime = await dependencies.resolveRuntime(bearer);
+      if (runtime === null) throw new Error('authentication_denied');
       const body = await json(request);
       if (!Object.hasOwn(body, 'source') || !Object.hasOwn(body, 'action') || Object.keys(body).length !== 2) {
         throw new Error('body_invalid');
       }
       const source = body.source as Record<string, unknown>;
-      const envelope = bindHermesConversation({profile: 'internal', source: source as never, action: body.action,
-        projectId: dependencies.projectId, telegramChatId: dependencies.telegramChatId,
-        telegramUserIds: dependencies.telegramUserIds});
+      const envelope = bindHermesConversation({source: source as never, action: body.action,
+        projectId: runtime.projectId, telegramChatId: runtime.telegramChatId,
+        telegramUserIds: runtime.telegramAllowedUserIds});
       if (envelope.action.type === 'project_context.read') {
         if (envelope.message.contour !== 'trusted-main') throw new Error('action_denied');
         const result = await dependencies.readInternalContext({message: envelope.message,

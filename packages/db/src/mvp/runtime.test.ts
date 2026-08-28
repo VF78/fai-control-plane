@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from 'vitest';
 import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSnapshotVersion,
   projectContextSourceKind, serializeProjectContextSnapshot, serializeProjectContextSource,
   trackerPollIntervalMs, trackerStaleAfterMs} from '@fai-control-plane/domain';
-import {activateProjectContextSnapshot, addSourceArtifact, projectAgentDeliveryConfigured, readActiveProjectContext, readAgentRoutingPolicy,
+import {activateProjectContextSnapshot, addSourceArtifact, readActiveProjectContext, readAgentRoutingPolicy,
   createAgentAttemptStore,
   readProjectAgentSubmissionView, readProjectContextStatus,
   readProjectExecutionMode, readProjectProcessPolicy, refreshProjectContext, trackerSnapshotFreshness,
@@ -49,23 +49,6 @@ describe('tracker snapshot freshness', () => {
 
   it('reports unavailable before the first successful observation', () => {
     expect(trackerSnapshotFreshness(null, observedAt)).toBe('unavailable');
-  });
-});
-
-describe('agent delivery readiness', () => {
-  it('uses the authorized project DB projection without exposing the secret locator', async () => {
-    const query = vi.fn().mockResolvedValue({rows: [{configured: true}]});
-    await expect(projectAgentDeliveryConfigured({query} as unknown as Database, 'actor', 'project'))
-      .resolves.toBe(true);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("s.purpose='agent_delivery'"),
-      ['actor', 'project']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("a.kind='project_agent_profile_v1'"),
-      ['actor', 'project']);
-  });
-
-  it('fails closed when no canonical reference is visible', async () => {
-    const query = vi.fn().mockResolvedValue({rows: [{configured: false}]});
-    await expect(projectAgentDeliveryConfigured({query} as unknown as Database, 'actor', 'project')).resolves.toBe(false);
   });
 });
 

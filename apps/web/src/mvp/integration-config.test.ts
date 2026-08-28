@@ -7,10 +7,12 @@ describe('integration configuration', () => {
       .toEqual({configured: true, clientActionsEnabled: false});
   });
 
-  it('reports Hermes ready only when endpoint and canonical DB credential reference are both present', () => {
-    expect(integrationConfig({HERMES_ROLE_REQUEST_URL: 'https://hermes.example/v1/runs'}, false).hermes).toBe(false);
-    expect(integrationConfig({}, true).hermes).toBe(false);
-    expect(integrationConfig({HERMES_ROLE_REQUEST_URL: 'https://hermes.example/v1/runs'}, true).hermes).toBe(true);
+  it('derives Hermes and Telegram readiness only from the project runtime binding', () => {
+    expect(integrationConfig({}, null)).toMatchObject({hermes: false,
+      telegram: {configured: false, allowedUsers: 0}});
+    expect(integrationConfig({TELEGRAM_INTERNAL_CHAT_ID: '-1'},
+      {telegramAllowedUserIds: ['42', '43']})).toMatchObject({hermes: true,
+      telegram: {configured: true, allowedUsers: 2}});
   });
 
 });

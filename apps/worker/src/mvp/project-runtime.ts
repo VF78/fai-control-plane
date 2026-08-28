@@ -1,4 +1,4 @@
-import {projectAgentProfileTemplateVersion, type Database} from '@fai-control-plane/db';
+import {listProjectHermesRuntimeBindings, type Database, type ProjectHermesRuntimeBinding} from '@fai-control-plane/db';
 import type {OpaqueSecretRef} from '@fai-control-plane/domain';
 
 export type WorkerProjectBinding = Readonly<{
@@ -13,39 +13,20 @@ export type WorkerProjectBinding = Readonly<{
   repositoryUrl: string;
   cursor: string | null;
   trackerCredentialRef: OpaqueSecretRef;
-  agentCredentialRef: OpaqueSecretRef;
-  profile: string;
-  endpointPath: string;
+  runtime: ProjectHermesRuntimeBinding;
   agentOwnerOptionId: string;
   doneStatusOptionId: string;
   defaultBranch: string;
 }>;
 
 type BindingRow = Omit<WorkerProjectBinding,
-  'trackerCredentialRef' | 'agentCredentialRef' | 'profile' | 'endpointPath' |
+  'trackerCredentialRef' | 'runtime' |
   'agentOwnerOptionId' | 'doneStatusOptionId' | 'defaultBranch'> & Readonly<{
   trackerSecretId: string;
   trackerSecretPurpose: string;
   trackerSecretLocator: string;
-  agentSecretId: string;
-  agentSecretLocator: string;
-  profileArtifact: string;
   trackerCapabilitiesArtifact: string;
 }>;
-
-const profileEndpoint = (content: string): Readonly<{profile: string; endpointPath: string}> | null => {
-  try {
-    const value = JSON.parse(content) as Record<string, unknown>;
-    if (value.contract !== 'fai.project-agent-profile.v1' || value.status !== 'ready' ||
-      value.templateVersion !== projectAgentProfileTemplateVersion ||
-      typeof value.profile !== 'string' ||
-      !/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(value.profile) ||
-      value.endpointPath !== `/p/${encodeURIComponent(value.profile)}/v1/runs`) return null;
-    return {profile: value.profile, endpointPath: value.endpointPath as string};
-  } catch {
-    return null;
-  }
-};
 
 const trackerCapabilities = (content: string): Readonly<{
   agentOwnerOptionId: string;
@@ -71,21 +52,17 @@ export const listWorkerProjectBindings = async (
   database: Database,
   workspaceId: string
 ): Promise<readonly WorkerProjectBinding[]> => {
+  const runtimes = new Map((await listProjectHermesRuntimeBindings(database, workspaceId)).map((runtime) =>
+    [runtime.projectId, runtime]));
   const result = await database.query<BindingRow>(
     `select p.workspace_id as "workspaceId",p.id as "projectId",p.slug,
        b.id as "bindingId",b.provider,b.external_project_id as "externalProjectId",b.project_url as "projectUrl",
        b.repository_id as "repositoryId",b.repository_url as "repositoryUrl",b.cursor,
        tracker_secret.id as "trackerSecretId",tracker_secret.purpose as "trackerSecretPurpose",
-       tracker_secret.locator as "trackerSecretLocator",agent_secret.id as "agentSecretId",
-       agent_secret.locator as "agentSecretLocator",profile.content_text as "profileArtifact",
-       capabilities.content_text as "trackerCapabilitiesArtifact"
+       tracker_secret.locator as "trackerSecretLocator",capabilities.content_text as "trackerCapabilitiesArtifact"
      from projects p
      join tracker_bindings b on b.project_id=p.id and b.enabled=true
      join secret_refs tracker_secret on tracker_secret.id=b.secret_ref_id and tracker_secret.workspace_id=p.workspace_id
-     join secret_refs agent_secret on agent_secret.workspace_id=p.workspace_id and agent_secret.purpose='agent_delivery'
-     join lateral (select content_text from project_source_artifacts
-       where project_id=p.id and kind='project_agent_profile_v1'
-       order by created_at desc,id desc limit 1) profile on true
      join lateral (select content_text from project_source_artifacts
        where project_id=p.id and kind='project_tracker_capabilities_v1'
        order by created_at desc,id desc limit 1) capabilities on true
@@ -93,16 +70,15 @@ export const listWorkerProjectBindings = async (
     [workspaceId]
   );
   return result.rows.flatMap((row) => {
-    const endpoint = profileEndpoint(row.profileArtifact);
+    const runtime = runtimes.get(row.projectId);
     const capabilities = trackerCapabilities(row.trackerCapabilitiesArtifact);
     if (row.trackerSecretPurpose !== 'tracker_read' || !row.trackerSecretLocator.startsWith('/') ||
-      !row.agentSecretLocator.startsWith('/') || endpoint === null || capabilities === null) return [];
+      runtime === undefined || capabilities === null) return [];
     return [{workspaceId: row.workspaceId, projectId: row.projectId, slug: row.slug,
       bindingId: row.bindingId, provider: row.provider, externalProjectId: row.externalProjectId,
       projectUrl: row.projectUrl, repositoryId: row.repositoryId, repositoryUrl: row.repositoryUrl,
-      cursor: row.cursor, ...endpoint, ...capabilities,
-      trackerCredentialRef: {id: row.trackerSecretId, purpose: 'tracker_read', locator: row.trackerSecretLocator},
-      agentCredentialRef: {id: row.agentSecretId, purpose: 'agent_delivery', locator: row.agentSecretLocator}}];
+      cursor: row.cursor, runtime, ...capabilities,
+      trackerCredentialRef: {id: row.trackerSecretId, purpose: 'tracker_read', locator: row.trackerSecretLocator}}];
   });
 };
 

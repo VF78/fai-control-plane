@@ -4,11 +4,11 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import type {Database} from '@fai-control-plane/db';
-import {projectAgentProfileTemplateVersion} from '@fai-control-plane/db';
+import {projectAgentProfileTemplateVersion,projectHermesSecretPurpose,
+  readProjectHermesRuntimeBinding,type ProjectHermesSecretKind} from '@fai-control-plane/db';
 import {activateProjectAgentProfile, ensureProjectAgentProfile, resolveAndRegisterProject} from './project-onboarding.ts';
 
-const environments = ['GITHUB_PROJECTS_TOKEN_FILE', 'HERMES_MANAGEMENT_URL', 'HERMES_MANAGEMENT_USERNAME_FILE',
-  'HERMES_MANAGEMENT_PASSWORD_FILE', 'HERMES_GATEWAY_INTERNAL_BASE_URL'] as const;
+const environments = ['GITHUB_PROJECTS_TOKEN_FILE'] as const;
 const originals = Object.fromEntries(environments.map((name) => [name, process.env[name]]));
 
 afterEach(() => {
@@ -23,9 +23,38 @@ afterEach(() => {
 
 const secretFiles = async () => {
   const root = await mkdtemp(join(tmpdir(), 'fai-project-onboarding-'));
-  const token = join(root, 'token'); const username = join(root, 'username'); const password = join(root, 'password');
-  await Promise.all([writeFile(token, 'agent-secret'), writeFile(username, 'operator'), writeFile(password, 'password')]);
-  return {root, token, username, password};
+  const tracker = join(root, 'tracker'); const agent = join(root, 'agent'); const username = join(root, 'username');
+  const password = join(root, 'password'); const telegram = join(root, 'telegram'); const inbound = join(root, 'inbound');
+  await Promise.all([writeFile(tracker, 'tracker-secret'),writeFile(agent, 'agent-secret'),
+    writeFile(username, 'operator'), writeFile(password, 'password'),writeFile(telegram,'telegram-secret'),
+    writeFile(inbound,'inbound-secret')]);
+  return {root, tracker, agent, username, password, telegram, inbound};
+};
+const projectId='project';const runtimeId='control';
+const runtimeSecretIds={
+  'agent-delivery':'00000000-0000-4000-8100-000000000001',
+  'management-username':'00000000-0000-4000-8100-000000000002',
+  'management-password':'00000000-0000-4000-8100-000000000003',
+  'telegram-bot':'00000000-0000-4000-8100-000000000004',
+  'inbound-actions':'00000000-0000-4000-8100-000000000005'} as const;
+const runtimeKinds=Object.keys(runtimeSecretIds) as ProjectHermesSecretKind[];
+const runtimeArtifact=JSON.stringify({contract:'fai.project-hermes-runtime.v1',status:'ready',runtimeId,
+  gatewayEndpoint:'http://control-gateway:8642/v1/runs',managementEndpoint:'http://control-management:9119/',
+  workspacePath:'/opt/hermes/control',telegram:{chatId:'-1001',allowedUserIds:['42']},secretRefs:{
+    agentDelivery:runtimeSecretIds['agent-delivery'],managementUsername:runtimeSecretIds['management-username'],
+    managementPassword:runtimeSecretIds['management-password'],telegramBot:runtimeSecretIds['telegram-bot'],
+    inboundActions:runtimeSecretIds['inbound-actions']}});
+const runtimeQuery=(sql:string,files:Awaited<ReturnType<typeof secretFiles>>) => {
+  if(sql.includes('runtime.sha256'))return {rowCount:1,rows:[{workspaceId:'workspace',projectId,slug:'control',
+    artifactVersion:'r'.repeat(64),content:runtimeArtifact}]};
+  if(sql.includes('select p.workspace_id as "workspaceId"')&&!sql.includes('tracker_secret.id as'))
+    return {rowCount:1,rows:[{workspaceId:'workspace'}]};
+  if(sql.includes('from secret_refs')&&sql.includes('id=any')){const locators:Record<ProjectHermesSecretKind,string>={
+    'agent-delivery':files.agent,'management-username':files.username,'management-password':files.password,
+    'telegram-bot':files.telegram,'inbound-actions':files.inbound};
+    return {rowCount:5,rows:runtimeKinds.map((kind)=>({id:runtimeSecretIds[kind],
+      purpose:projectHermesSecretPurpose(projectId,kind),locator:locators[kind]}))};}
+  return null;
 };
 const documentRows=()=>['requirements','passport'].map((category,index)=>({id:`document-${index}`,projectId:'project',
   kind:`project_document_v1:${category}`,name:`${category}.txt`,mediaType:'text/plain',sha256:String(index+1).repeat(64),
@@ -35,7 +64,7 @@ const documentFingerprint=createHash('sha256').update(documentRows().slice().sor
 
 describe('project onboarding composition', () => {
   it('registers before authoritative documents exist without reading repository documents', async () => {
-    const files = await secretFiles(); process.env.GITHUB_PROJECTS_TOKEN_FILE = files.token;
+    const files = await secretFiles(); process.env.GITHUB_PROJECTS_TOKEN_FILE = files.tracker;
     const requests: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request) => {
       const url = String(value); requests.push(url);
@@ -70,18 +99,12 @@ describe('project onboarding composition', () => {
   it('never records readiness when the native capabilities probe is not authenticated', async () => {
     const files = await secretFiles();
     vi.useFakeTimers({toFake: ['setTimeout']});
-    process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
-    process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
-    process.env.HERMES_MANAGEMENT_PASSWORD_FILE = files.password;
-    process.env.HERMES_GATEWAY_INTERNAL_BASE_URL = 'http://hermes-gateway:8642';
     const calls: string[] = [];
     let firstProbe!: () => void;
     const probeStarted = new Promise<void>((resolve) => { firstProbe = resolve; });
     vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(value)); calls.push(`${init?.method ?? 'GET'} ${url.pathname}${url.search}`);
       if (url.pathname === '/auth/password-login') return new Response('{}', {headers: {'set-cookie': 'session=ok; Path=/'}});
-      if (url.pathname === '/api/profiles' && init?.method === undefined) return new Response(JSON.stringify({profiles: []}));
-      if (url.pathname === '/api/config' && init?.method === undefined) return new Response(JSON.stringify({gateway: {multiplex_profile_allowlist: []}}));
       if (url.pathname.endsWith('/v1/capabilities')) {
         firstProbe();
         return new Response('{}', {status: 401});
@@ -89,43 +112,37 @@ describe('project onboarding composition', () => {
       return new Response('{}');
     }));
     const query = vi.fn(async (sql: string) => {
+      const runtime=runtimeQuery(sql,files);if(runtime!==null)return runtime;
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 0, rows: []};
       if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace', projectId: 'project',
         requesterRole: 'project_owner', bindingId: 'binding', provider: 'github', externalProjectId: 'PVT_1',
         projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
         repositoryUrl: 'https://github.com/VF78/control', cursor: null, trackerSecretId: 'tracker-secret',
-        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.token, agentSecretId: 'agent-secret',
-        agentSecretLocator: files.token}]};
+        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.tracker}]};
       if (sql.startsWith('select slug from projects')) return {rowCount: 1, rows: [{slug: 'control'}]};
       return {rowCount: 0, rows: []};
     });
     const database = {query, connect: vi.fn()} as unknown as Database;
     const activation = activateProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
       projectId: 'project', idempotencyKey: 'activate:1'});
-    const rejection = expect(activation).rejects.toThrow('agent_profile_probe_failed');
+    const rejection = activation.catch((error:unknown)=>error);
     await probeStarted;
     await vi.runAllTimersAsync();
-    await rejection;
+    await expect(rejection).resolves.toMatchObject({message:'agent_profile_probe_failed'});
     expect(database.connect).not.toHaveBeenCalled();
-    expect(calls).toContain('PUT /api/config?profile=project-control');
+    expect(calls.some((call)=>call.includes('/api/profiles')||call.includes('?profile='))).toBe(false);
     expect(calls.filter((call) => call.endsWith('/v1/capabilities'))).toHaveLength(13);
     await rm(files.root, {recursive: true});
   });
 
   it('persists readiness only after the ordered native activation contract succeeds', async () => {
     const files = await secretFiles();
-    process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
-    process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
-    process.env.HERMES_MANAGEMENT_PASSWORD_FILE = files.password;
-    process.env.HERMES_GATEWAY_INTERNAL_BASE_URL = 'http://hermes-gateway:8642';
     const calls: {request: string; body: string}[] = [];
     vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(value));
       calls.push({request: `${init?.method ?? 'GET'} ${url.pathname}${url.search}`, body: String(init?.body ?? '')});
       if (url.pathname === '/auth/password-login') return new Response('{}', {headers: {'set-cookie': 'session=ok; Path=/'}});
-      if (url.pathname === '/api/profiles' && init?.method === undefined) return new Response(JSON.stringify({profiles: []}));
-      if (url.pathname === '/api/config' && init?.method === undefined) return new Response(JSON.stringify({gateway: {multiplex_profile_allowlist: []}}));
       if (url.pathname.endsWith('/v1/capabilities')) {
         return new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
       }
@@ -134,6 +151,7 @@ describe('project onboarding composition', () => {
       return new Response('{}');
     }));
     const query = vi.fn(async (sql: string) => {
+      const runtime=runtimeQuery(sql,files);if(runtime!==null)return runtime;
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 0, rows: []};
       if(sql.includes('s.content_bytes as bytes'))return {rowCount:1,rows:[{name:'source.txt',mediaType:'text/plain',
         bytes:Buffer.from('exact source')}]};
@@ -142,8 +160,7 @@ describe('project onboarding composition', () => {
         requesterRole: 'project_owner', bindingId: 'binding', provider: 'github', externalProjectId: 'PVT_1',
         projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
         repositoryUrl: 'https://github.com/VF78/control', cursor: null, trackerSecretId: 'tracker-secret',
-        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.token, agentSecretId: 'agent-secret',
-        agentSecretLocator: files.token}]};
+        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.tracker}]};
       if (sql.startsWith('select slug from projects')) return {rowCount: 1, rows: [{slug: 'control'}]};
       return {rowCount: 0, rows: []};
     });
@@ -155,69 +172,56 @@ describe('project onboarding composition', () => {
       return {rowCount: 1, rows: []};
     });
     const database = {query, connect: vi.fn(async () => ({query: clientQuery, release: vi.fn()}))} as unknown as Database;
+    await expect(readProjectHermesRuntimeBinding(database,'actor','project')).resolves.toMatchObject({runtimeId:'control'});
     await expect(activateProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
-      projectId: 'project', idempotencyKey: 'activate:1'})).resolves.toMatchObject({status: 'configuring', profile: 'project-control'});
+      projectId: 'project', idempotencyKey: 'activate:1'})).resolves.toMatchObject({status: 'configuring', profile: 'control'});
     const ordered = calls.map(({request}) => request);
     const positions = [
-      'POST /api/profiles', 'POST /api/files/mkdir', 'PUT /api/env?profile=project-control',
-      'PUT /api/config?profile=project-control', 'GET /p/project-control/v1/capabilities'
+      'POST /auth/password-login', 'GET /v1/capabilities', 'DELETE /api/files?path=%2Fopt%2Fhermes%2Fcontrol%2F.fai-context%2Fsource&recursive=true',
+      'POST /api/files/mkdir', 'POST /v1/runs'
     ].map((request) => ordered.indexOf(request));
     expect(positions).toEqual([...positions].sort((left, right) => left - right));
     expect(positions.every((position) => position >= 0)).toBe(true);
-    expect(JSON.parse(calls.find(({request}) => request.startsWith('PUT /api/env'))!.body)).toEqual({
-      key: 'API_SERVER_KEY', value: 'agent-secret', profile: 'project-control'
-    });
+    expect(ordered.some((request)=>request.includes('/api/profiles')||request.includes('?profile='))).toBe(false);
     expect(JSON.stringify(persisted)).not.toContain('agent-secret');
     expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining("'project.context-bootstrap.start'"), expect.any(Array));
     await rm(files.root, {recursive: true});
   });
 
-  it('keeps a configured profile stable during normal checks and rewrites it only on explicit refresh', async () => {
+  it('keeps a configured runtime stable and restores compact context only on explicit refresh', async () => {
     const files = await secretFiles();
-    process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
-    process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
-    process.env.HERMES_MANAGEMENT_PASSWORD_FILE = files.password;
-    process.env.HERMES_GATEWAY_INTERNAL_BASE_URL = 'http://hermes-gateway:8642';
     const calls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(value));
       calls.push(`${init?.method ?? 'GET'} ${url.pathname}${url.search}`);
       if (url.pathname === '/auth/password-login') return new Response('{}', {headers: {'set-cookie': 'session=ok; Path=/'}});
-      if (url.pathname === '/api/profiles') return new Response(JSON.stringify({profiles: [{name: 'internal'}]}));
-      if (url.pathname.endsWith('/soul')) return new Response(JSON.stringify({
-        content: '<!-- fai-project-profile:v2026.8.27-fai-project-v2:ascon -->\nhttps://github.com/VF78/control\nhttps://github.com/users/VF78/projects/1'
-      }));
-      if (url.pathname === '/api/config') return new Response(JSON.stringify({terminal: {backend: 'local',
-        cwd: '/opt/data/work/projects/ascon'}, agent: {max_turns: 500},
-      platform_toolsets: {api_server: ['terminal', 'fai_internal', 'no_mcp']},
-      toolsets: ['terminal', 'memory', 'session_search', 'fai_internal']}));
       return new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
     }));
     const query = vi.fn(async (sql: string,parameters?:readonly unknown[]) => {
+      const runtime=runtimeQuery(sql,files);if(runtime!==null)return runtime;
       if(typeof parameters?.[2]==='string'&&parameters[2].startsWith('project_context_compact_v1:'))
         return {rowCount:1,rows:[{sha256:'a'.repeat(64),
         content:'approved compact context'}]};
       if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
-        content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
-          endpointPath: '/p/internal/v1/runs', templateVersion: projectAgentProfileTemplateVersion,
+        content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'control',
+          endpointPath: '/v1/runs', templateVersion: projectAgentProfileTemplateVersion,
           documentFingerprint})}]};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace',
         projectId: 'project', requesterRole: 'project_owner', bindingId: 'binding', provider: 'github',
         externalProjectId: 'PVT_1', projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
         repositoryUrl: 'https://github.com/VF78/control', cursor: null, trackerSecretId: 'tracker-secret',
-        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.token, agentSecretId: 'agent-secret',
-        agentSecretLocator: files.token}]};
-      if (sql.startsWith('select slug from projects')) return {rowCount: 1, rows: [{slug: 'ascon'}]};
+        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.tracker}]};
+      if (sql.startsWith('select slug from projects')) return {rowCount: 1, rows: [{slug: 'control'}]};
       return {rowCount: 0, rows: []};
     });
     const clientQuery = vi.fn(async (sql: string) => sql.includes("role='project_owner'")
       ? {rowCount: 1, rows: [{}]} : {rowCount: 1, rows: []});
     const database = {query, connect: vi.fn(async () => ({query: clientQuery, release: vi.fn()}))} as unknown as Database;
     await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
-      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'internal',
-      endpointPath: '/p/internal/v1/runs'});
-    expect(calls).toContain('GET /p/internal/v1/capabilities');
+      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'control',
+      endpointPath: '/v1/runs'});
+    expect(calls).toContain('GET /v1/capabilities');
     expect(calls.filter((call) => call.startsWith('PUT '))).toEqual([]);
     expect(calls).not.toContain('POST /api/files/mkdir');
     expect(database.connect).not.toHaveBeenCalled();
@@ -225,21 +229,15 @@ describe('project onboarding composition', () => {
     calls.length = 0;
     await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
       projectId: 'project', idempotencyKey: 'ensure:forced', force: true})).resolves.toMatchObject({
-      status: 'ready', profile: 'internal', endpointPath: '/p/internal/v1/runs'
+      status: 'ready', profile: 'control', endpointPath: '/v1/runs'
     });
-    expect(calls).toContain('POST /api/files/mkdir');
-    expect(calls).toContain('PUT /api/env?profile=internal');
-    expect(calls).toContain('PUT /api/config?profile=internal');
-    expect(calls).toContain('PUT /api/profiles/internal/soul');
+    expect(calls).toContain('POST /api/files/upload-stream');
+    expect(calls.some((call)=>call.includes('/api/profiles')||call.includes('?profile='))).toBe(false);
     await rm(files.root, {recursive: true});
   });
 
-  it('keeps an existing ready profile read-only and restarts only when unavailable', async () => {
+  it('keeps an existing ready runtime read-only and restarts only when unavailable', async () => {
     const files = await secretFiles();
-    process.env.HERMES_MANAGEMENT_URL = 'http://hermes-management:9119';
-    process.env.HERMES_MANAGEMENT_USERNAME_FILE = files.username;
-    process.env.HERMES_MANAGEMENT_PASSWORD_FILE = files.password;
-    process.env.HERMES_GATEWAY_INTERNAL_BASE_URL = 'http://hermes-gateway:8642';
     const calls: {request: string; body: string}[] = [];
     let probes = 0;
     vi.stubGlobal('fetch', vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
@@ -251,41 +249,35 @@ describe('project onboarding composition', () => {
           : new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
       }
       if (url.pathname === '/auth/password-login') return new Response('{}', {headers: {'set-cookie': 'session=ok; Path=/'}});
-      if (url.pathname === '/api/profiles' && init?.method === undefined) {
-        return new Response(JSON.stringify({profiles: [{name: 'internal'}]}));
-      }
       return new Response('{}');
     }));
     const query = vi.fn(async (sql: string,parameters?:readonly unknown[]) => {
+      const runtime=runtimeQuery(sql,files);if(runtime!==null)return runtime;
       if (sql.includes("s.kind like 'project_document_v1:%'")) return {rowCount: 2, rows: documentRows()};
       if(typeof parameters?.[2]==='string'&&parameters[2].startsWith('project_context_compact_v1:'))
         return {rowCount:1,rows:[{sha256:'a'.repeat(64),
         content:'approved compact context'}]};
       if (sql.includes("s.kind='project_agent_profile_v1'")) return {rowCount: 1, rows: [{sha256: 'version-1',
-        content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'internal',
-          endpointPath: '/p/internal/v1/runs',templateVersion:projectAgentProfileTemplateVersion,
+        content: JSON.stringify({contract: 'fai.project-agent-profile.v1', status: 'ready', profile: 'control',
+          endpointPath: '/v1/runs',templateVersion:projectAgentProfileTemplateVersion,
           documentFingerprint})}]};
       if (sql.includes('tracker_secret.id as')) return {rowCount: 1, rows: [{workspaceId: 'workspace', projectId: 'project',
         requesterRole: 'project_owner', bindingId: 'binding', provider: 'github', externalProjectId: 'PVT_1',
         projectUrl: 'https://github.com/users/VF78/projects/1', repositoryId: 'R_1',
         repositoryUrl: 'https://github.com/VF78/control', cursor: null, trackerSecretId: 'tracker-secret',
-        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.token, agentSecretId: 'agent-secret',
-        agentSecretLocator: files.token}]};
-      if (sql.startsWith('select slug from projects')) return {rowCount: 1, rows: [{slug: 'ascon'}]};
+        trackerSecretPurpose: 'tracker_read', trackerSecretLocator: files.tracker}]};
+      if (sql.startsWith('select slug from projects')) return {rowCount: 1, rows: [{slug: 'control'}]};
       return {rowCount: 0, rows: []};
     });
     const clientQuery = vi.fn(async (sql: string) => sql.includes("role='project_owner'")
       ? {rowCount: 1, rows: [{}]} : {rowCount: 1, rows: []});
     const database = {query, connect: vi.fn(async () => ({query: clientQuery, release: vi.fn()}))} as unknown as Database;
     await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
-      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'internal'});
+      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'control'});
     const requests = calls.map(({request}) => request);
     expect(requests).toContain('POST /api/gateway/restart');
     expect(requests).not.toContain('POST /api/files/mkdir');
-    expect(requests).not.toContain('PUT /api/env?profile=internal');
-    expect(requests).not.toContain('POST /api/profiles');
-    expect(requests).not.toContain('PUT /api/config?profile=internal');
-    expect(requests).not.toContain('PUT /api/profiles/internal/soul');
+    expect(requests.some((request)=>request.includes('/api/profiles')||request.includes('?profile='))).toBe(false);
     expect(requests).toContain('POST /api/gateway/restart');
     expect(probes).toBe(2);
     await rm(files.root, {recursive: true});
