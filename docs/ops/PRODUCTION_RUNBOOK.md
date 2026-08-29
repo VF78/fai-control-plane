@@ -98,7 +98,7 @@ Reviewed non-secret Hermes environment example SHA-256:
 `e1f067f8a2f6cebe8157e72b74144db7623c79312b8e465e7d84dd6a90161e46`.
 
 Reviewed non-secret Control Plane environment example SHA-256:
-`739e0e80c490b8a9b1a58ec0e120238ee63f769f747a7ed8a4f172e8a965f456`.
+`b4af3dd5981eb2b4d4c46d8f05bccb248f4f9219b59556901525b0c1c806f132`.
 
 - Mount one persistent project-scoped GitHub credential into the
   isolated Hermes gateway. Store its canonical value at
@@ -206,12 +206,16 @@ production authorization.
 `scripts/deploy-prod.sh` is the source of truth. It accepts only exact current
 `origin/main`, a clean isolated checkout, healthy neighbours and approved
 host-owned configuration. It builds/replaces only the MVP web/worker/migration
-image and keeps Bitrix client actions disabled. The application image is built
-once per release; after all health checks pass, the script removes only older
-`fai-control-plane-mvp` images and dangling images carrying that Compose
-project label. Project containers rotate JSON logs at 10 MiB with three files.
-Unused Docker build cache is removed after successful release checks; runtime
-images, containers and volumes are not pruned.
+image and keeps Bitrix client actions disabled. The same approved deploy builds
+the pinned generic `infra/hermes-project` image, inspects its exact Docker image
+ID and passes that ID directly to the worker; it does not persist runtime
+settings into `production.env`. The bounded project runtime root is created as
+UID/GID `10000:10000`, mode `0700`. Preflight uses a non-runtime placeholder
+only to validate Compose and remains read-only. After all health checks pass,
+the script removes only older `fai-control-plane-mvp` images and dangling images
+carrying that Compose project label. It never removes the generic project
+runtime image. Project containers rotate JSON logs at 10 MiB with three files.
+Runtime images, containers and volumes are not pruned.
 
 After local acceptance, merge approval and a separate production approval:
 

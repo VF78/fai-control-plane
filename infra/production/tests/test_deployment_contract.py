@@ -266,6 +266,51 @@ render_target_environment
         self.assertNotIn("docker stop", deploy)
         self.assertNotIn(" down", deploy)
 
+    def test_deploy_builds_and_pins_the_generic_project_runtime_without_env_migration(self):
+        script = (ROOT / "scripts/deploy-prod.sh").read_text()
+        compose = (ROOT / "infra/production/compose.yaml").read_text()
+        environment = (ROOT / "infra/production/production.env.example").read_text()
+        deploy = script[script.index("log 'deploy: fetching exact origin/main'") :]
+        worker = compose.split("  worker:\n", 1)[1].split("\nnetworks:", 1)[0]
+        web = compose.split("  web:\n", 1)[1].split("  worker:\n", 1)[0]
+
+        self.assertIn("FCP_WORKER_INTERNAL_URL: http://worker:3001", web)
+        self.assertIn("FCP_PROJECT_RUNTIME_HOST_DIR: /var/lib/fai-project-runtimes", worker)
+        self.assertIn("FCP_PROJECT_HERMES_IMAGE: fai-hermes-project:codex-0.144.1", worker)
+        self.assertIn("FCP_PROJECT_HERMES_IMAGE_ID: ${FCP_PROJECT_HERMES_IMAGE_ID:?required}", worker)
+        self.assertIn("FCP_HERMES_MANAGEMENT_NETWORK: fai-hermes-management", worker)
+        self.assertIn("- /var/lib/fai-project-runtimes:/var/lib/fai-project-runtimes", worker)
+        for variable in (
+            "FCP_PROJECT_RUNTIME_HOST_DIR=",
+            "FCP_PROJECT_HERMES_IMAGE=",
+            "FCP_PROJECT_HERMES_IMAGE_ID=",
+            "FCP_HERMES_MANAGEMENT_NETWORK=",
+            "FCP_WORKER_INTERNAL_URL=",
+        ):
+            self.assertNotIn(variable, environment)
+
+        ordered = (
+            "docker build --pull --tag \"$project_runtime_image\"",
+            "project_runtime_image_id=$(docker image inspect",
+            'export FCP_PROJECT_HERMES_IMAGE_ID="$project_runtime_image_id"',
+            '"${candidate_compose[@]}" build web',
+            'mv -f "$temporary_environment" "$environment_file"',
+            "prepare_project_runtime_root",
+            '"${compose[@]}" up -d --no-deps web worker',
+        )
+        positions = [deploy.index(item) for item in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(
+            script.count('FCP_PROJECT_HERMES_IMAGE_ID="$project_runtime_config_placeholder"'),
+            2,
+        )
+        self.assertIn('install -d -o 10000 -g 10000 -m 0700 -- "$project_runtime_root"', script)
+        self.assertIn("stat -c '%u:%g:%a'", script)
+
+        cleanup = script.split("prune_superseded_project_images() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("docker image ls fai-control-plane-mvp", cleanup)
+        self.assertNotIn("fai-hermes-project", cleanup)
+
     def test_project_logs_are_bounded(self):
         compose = (ROOT / "infra/production/compose.yaml").read_text()
 

@@ -55,6 +55,9 @@ readonly secret_names=(
   hermes-token telegram-bot-token hermes-internal-action-token
 )
 readonly hermes_management_network=fai-hermes-management
+readonly project_runtime_root=/var/lib/fai-project-runtimes
+readonly project_runtime_image=fai-hermes-project:codex-0.144.1
+readonly project_runtime_config_placeholder=sha256:0000000000000000000000000000000000000000000000000000000000000000
 readonly -a hermes_management_secret_variables=(
   HERMES_DASHBOARD_USERNAME_HOST_FILE HERMES_DASHBOARD_PASSWORD_HOST_FILE
 )
@@ -161,6 +164,15 @@ normalize_checkout_modes() {
   [[ -z $(git status --porcelain) ]] || fail 'checkout mode normalization changed tracked Git state'
 }
 
+prepare_project_runtime_root() {
+  [[ ! -L "$project_runtime_root" ]] || fail 'project runtime root must not be a symlink'
+  install -d -o 10000 -g 10000 -m 0700 -- "$project_runtime_root"
+  [[ -d "$project_runtime_root" && ! -L "$project_runtime_root" ]] ||
+    fail 'project runtime root is not a directory'
+  [[ $(stat -c '%u:%g:%a' "$project_runtime_root") == 10000:10000:700 ]] ||
+    fail 'project runtime root owner or mode is invalid'
+}
+
 render_target_environment() {
   local release_count bitrix_count
   release_count=$(grep -Ec '^FCP_RELEASE_COMMIT=' "$environment_file")
@@ -211,7 +223,8 @@ check_host_contract() {
     "$hermes_management_network" 2>/dev/null) == bridge:true ]] ||
     fail 'Hermes management network is missing or is not an internal bridge'
   current_compose=(docker compose --project-name fai-control-plane-mvp --env-file "$environment_file" -f "$compose_file")
-  "${current_compose[@]}" config --quiet
+  FCP_PROJECT_HERMES_IMAGE_ID="$project_runtime_config_placeholder" \
+    "${current_compose[@]}" config --quiet
   protected_health || fail 'protected-neighbour health check failed'
   active_mvp_health || fail 'active isolated MVP health check failed'
   active_upstream_unchanged || fail 'app.f-ai.studio is not exclusively routed to 13010'
@@ -276,7 +289,15 @@ chmod 0600 "$temporary_environment"
   fail 'Bitrix client actions must remain disabled'
 
 candidate_compose=(docker compose --project-name fai-control-plane-mvp --env-file "$temporary_environment" -f "$compose_file")
-"${candidate_compose[@]}" config --quiet
+FCP_PROJECT_HERMES_IMAGE_ID="$project_runtime_config_placeholder" \
+  "${candidate_compose[@]}" config --quiet
+log 'deploy: building exact generic project runtime image'
+docker build --pull --tag "$project_runtime_image" \
+  --file "$deploy_root/infra/hermes-project/Dockerfile" "$deploy_root"
+project_runtime_image_id=$(docker image inspect --format '{{.Id}}' "$project_runtime_image")
+[[ "$project_runtime_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+  fail 'generic project runtime image ID is invalid'
+export FCP_PROJECT_HERMES_IMAGE_ID="$project_runtime_image_id"
 log 'deploy: building exact application images'
 "${candidate_compose[@]}" build web
 
@@ -284,6 +305,7 @@ mv -f "$temporary_environment" "$environment_file"
 trap - EXIT
 compose=(docker compose --project-name fai-control-plane-mvp --env-file "$environment_file" -f "$compose_file")
 "${compose[@]}" config --quiet
+prepare_project_runtime_root
 
 log 'deploy: ensuring isolated PostgreSQL is healthy'
 "${compose[@]}" up -d postgres
