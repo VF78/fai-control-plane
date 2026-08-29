@@ -263,23 +263,6 @@ export const readProjectAgentSubmissionView = async (
   return row === undefined ? null : {...row, occurredAt: row.occurredAt.toISOString()};
 };
 
-export const projectAgentDeliveryConfigured = async (
-  database: Database,
-  actorId: string,
-  projectId: string
-): Promise<boolean> => {
-  const result = await database.query<{configured: boolean}>(
-    `select exists(select 1 from projects p
-       join project_memberships m on m.project_id=p.id and m.actor_id=$1 and m.active=true
-       join secret_refs s on s.workspace_id=p.workspace_id and s.purpose='agent_delivery'
-       where p.id=$2 and s.locator like '/%' and
-         exists(select 1 from project_source_artifacts a
-           where a.project_id=p.id and a.kind='project_agent_profile_v1')
-       ) as configured`, [actorId, projectId]
-  );
-  return result.rows[0]?.configured === true;
-};
-
 export const listProjectTaskViews = async (
   database: Database,
   actorId: string,
@@ -1073,34 +1056,29 @@ export const canApprove = async (
 export type AgentSubmissionBinding = Readonly<{
   workspaceId: string; projectId: string; requesterRole: ProjectRole; bindingId: string;
   provider: string; externalProjectId: string; projectUrl: string; repositoryId: string; repositoryUrl: string;
-  cursor: string | null; trackerCredentialRef: OpaqueSecretRef; agentCredentialRef: OpaqueSecretRef | null;
+  cursor: string | null; trackerCredentialRef: OpaqueSecretRef;
 }>;
 
 export const resolveAgentSubmissionBinding = async (
   database: Database, actorId: string, projectId: string
 ): Promise<AgentSubmissionBinding | null> => {
-  type Row = Omit<AgentSubmissionBinding, 'trackerCredentialRef' | 'agentCredentialRef'> & Readonly<{
+  type Row = Omit<AgentSubmissionBinding, 'trackerCredentialRef'> & Readonly<{
     trackerSecretId: string; trackerSecretPurpose: string; trackerSecretLocator: string;
-    agentSecretId: string | null; agentSecretLocator: string | null;
   }>;
   const result = await database.query<Row>(
     `select p.workspace_id as "workspaceId",p.id as "projectId",m.role as "requesterRole",
        b.id as "bindingId",b.provider,b.external_project_id as "externalProjectId",b.project_url as "projectUrl",
        b.repository_id as "repositoryId",b.repository_url as "repositoryUrl",b.cursor,
        tracker_secret.id as "trackerSecretId",tracker_secret.purpose as "trackerSecretPurpose",
-       tracker_secret.locator as "trackerSecretLocator",agent_secret.id as "agentSecretId",
-       agent_secret.locator as "agentSecretLocator"
+       tracker_secret.locator as "trackerSecretLocator"
      from projects p join project_memberships m on m.project_id=p.id and m.actor_id=$1 and m.active=true
      join tracker_bindings b on b.project_id=p.id and b.enabled=true
      join secret_refs tracker_secret on tracker_secret.id=b.secret_ref_id and tracker_secret.workspace_id=p.workspace_id
-     left join secret_refs agent_secret on agent_secret.workspace_id=p.workspace_id and agent_secret.purpose='agent_delivery'
      where p.id=$2`, [actorId, projectId]);
   const row = result.rows[0];
   if (row === undefined || row.trackerSecretPurpose !== 'tracker_read') return null;
   return {...row,
-    trackerCredentialRef: {id: row.trackerSecretId, purpose: 'tracker_read', locator: row.trackerSecretLocator},
-    agentCredentialRef: row.agentSecretId === null || row.agentSecretLocator === null ? null
-      : {id: row.agentSecretId, purpose: 'agent_delivery', locator: row.agentSecretLocator}};
+    trackerCredentialRef: {id: row.trackerSecretId, purpose: 'tracker_read', locator: row.trackerSecretLocator}};
 };
 
 export const resolveAgentSourceReferences = async (database: Database, input: Readonly<{

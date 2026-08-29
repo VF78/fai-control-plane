@@ -4,7 +4,7 @@ import type {Database} from './runtime.ts';
 
 export type ProjectContextBootstrapAttempt=Readonly<{workspaceId:string;projectId:string;actorId:string;profile:string;
   endpointPath:string;deliveryReference:string;documentFingerprint:string;architecturePresent:boolean;
-  agentSecretId:string;agentSecretLocator:string;correlationId:string}>;
+  correlationId:string}>;
 
 const object=(value:unknown):Record<string,unknown>|null=>value!==null&&typeof value==='object'&&!Array.isArray(value)
   ?value as Record<string,unknown>:null;
@@ -19,10 +19,9 @@ const profileValue=(input:Readonly<{status:'ready'|'awaiting_architecture'|'erro
 
 export const listProjectContextBootstrapAttempts=async(database:Database,workspaceId:string,limit=20):Promise<readonly ProjectContextBootstrapAttempt[]>=>{
   const result=await database.query<{workspaceId:string;projectId:string;actorId:string;content:string;
-    agentSecretId:string;agentSecretLocator:string;correlationId:string;targetReference:string}>(`select p.workspace_id as "workspaceId",p.id as "projectId",
-    a.actor_id as "actorId",profile.content_text as content,secret.id as "agentSecretId",secret.locator as "agentSecretLocator",
+    correlationId:string;targetReference:string}>(`select p.workspace_id as "workspaceId",p.id as "projectId",
+    a.actor_id as "actorId",profile.content_text as content,
     a.correlation_id as "correlationId",a.target_reference as "targetReference" from projects p
-    join secret_refs secret on secret.workspace_id=p.workspace_id and secret.purpose='agent_delivery'
     join lateral(select content_text from project_source_artifacts where project_id=p.id and kind='project_agent_profile_v1'
       order by created_at desc,id desc limit 1)profile on true
     join lateral(select actor_id,correlation_id,target_reference from audit_events where project_id=p.id and action='project.context-bootstrap.start'
@@ -31,12 +30,11 @@ export const listProjectContextBootstrapAttempts=async(database:Database,workspa
   return result.rows.flatMap(row=>{let value:Record<string,unknown>|null=null;try{value=object(JSON.parse(row.content));}
     catch{return [];}
     return value?.status==='configuring'&&typeof value.profile==='string'&&typeof value.endpointPath==='string'&&typeof value.bootstrapRunId==='string'&&
-      typeof value.documentFingerprint==='string'&&typeof value.architecturePresent==='boolean'&&row.agentSecretLocator.startsWith('/')
+      typeof value.documentFingerprint==='string'&&typeof value.architecturePresent==='boolean'
       &&row.targetReference===value.documentFingerprint
       ?[{workspaceId:row.workspaceId,projectId:row.projectId,actorId:row.actorId,profile:value.profile,
         endpointPath:value.endpointPath,deliveryReference:value.bootstrapRunId,documentFingerprint:value.documentFingerprint,
-        architecturePresent:value.architecturePresent,agentSecretId:row.agentSecretId,
-        agentSecretLocator:row.agentSecretLocator,correlationId:row.correlationId}]:[];});
+        architecturePresent:value.architecturePresent,correlationId:row.correlationId}]:[];});
 };
 
 const parseResult=(output:unknown,architecturePresent:boolean):Readonly<{context:string;proposal:string|null}>|null=>{

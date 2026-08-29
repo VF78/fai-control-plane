@@ -17,6 +17,7 @@ import {
   readAgentRoutingPolicy,
   readProjectProcessPolicy,
   readProjectAgentProfile,
+  readProjectHermesRuntimeBinding,
   readProjectExecutionMode,
   readProjectTrackerCapabilities,
   readProjectDocumentPayload,
@@ -64,27 +65,19 @@ export const effectiveAgentRouting = (routing: Awaited<ReturnType<typeof readAge
   policy: defaultAgentRoutingPolicy,
   version: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex')
 };
-const agentEndpoint = async (
+const agentRuntime = async (
   database: ReturnType<typeof getDatabase>,
   actorId: string,
   projectId: string
-): Promise<string | undefined> => {
+ ) => {
   const profile = await readProjectAgentProfile(database, actorId, projectId);
-  if (profile.status === 'ready' && profile.endpointPath !== null) {
-    const base = process.env.HERMES_GATEWAY_INTERNAL_BASE_URL;
-    if (base === undefined) throw new Error('agent_provider_unavailable');
-    return new URL(profile.endpointPath, base).toString();
-  }
-  return undefined;
+  if (profile.status !== 'ready') return null;
+  return readProjectHermesRuntimeBinding(database, actorId, projectId);
 };
-const privateAgentEndpoint = (endpoint: string): boolean => {
-  const base = process.env.HERMES_GATEWAY_INTERNAL_BASE_URL;
-  if (base === undefined) return false;
+const privateAgentEndpoint = (runtime: NonNullable<Awaited<ReturnType<typeof agentRuntime>>>): boolean => {
   try {
-    const gateway = new URL(base);
-    const target = new URL(endpoint);
-    return gateway.protocol === 'http:' && gateway.origin === target.origin &&
-      /^\/p\/[a-z0-9][a-z0-9-]{1,98}[a-z0-9]\/v1\/runs$/.test(target.pathname);
+    return new URL(runtime.gatewayEndpoint).toString() ===
+      `http://${runtime.runtimeId}-gateway:8642/v1/runs`;
   } catch {
     return false;
   }
@@ -134,12 +127,11 @@ export const startGitHubProcess = async (database: ReturnType<typeof getDatabase
   actorId: string; projectId: string; task: Readonly<{kind: 'existing'; itemId: string}>;
   sourceReference: string; idempotencyKey: string;
 }>) => {
-  const endpoint = await agentEndpoint(database,input.actorId,input.projectId);
-  const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, input.actorId, input.projectId);
-  if (endpoint === undefined || binding?.agentCredentialRef == null) throw new Error('agent_provider_unavailable');
-  const delivery = createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048),
-    credentialRef: binding.agentCredentialRef, secrets: secretResolver,
-    allowPrivateHttp: privateAgentEndpoint(endpoint)});
+  const runtime = await agentRuntime(database,input.actorId,input.projectId);
+  if (runtime === null) throw new Error('agent_provider_unavailable');
+  const delivery = createHermesDeliveryAdapter({endpoint: string(runtime.gatewayEndpoint, 2_048),
+    credentialRef: runtime.agentCredentialRef, secrets: secretResolver,
+    allowPrivateHttp: privateAgentEndpoint(runtime)});
   const {ports} = await githubAssignment(database, input.actorId, input.projectId, delivery);
   return startProcess(input, ports);
 };
@@ -393,11 +385,11 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     if (kind !== 'human' && kind !== 'hermes') throw new Error('body_invalid');
     const candidate = kind === 'human' ? choice.candidate : undefined;
     if (kind === 'human' && (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))) throw new Error('body_invalid');
-    const endpoint = kind === 'hermes' ? await agentEndpoint(database,session.actorId,projectId) : undefined;
-    const binding = endpoint === undefined ? null : await resolveAgentSubmissionBinding(database, session.actorId, projectId);
-    const delivery = endpoint === undefined || binding?.agentCredentialRef == null ? unavailableDelivery
-      : createHermesDeliveryAdapter({endpoint: string(endpoint, 2_048), credentialRef: binding.agentCredentialRef,
-        secrets: secretResolver, allowPrivateHttp: privateAgentEndpoint(endpoint)});
+    const runtime = kind === 'hermes' ? await agentRuntime(database,session.actorId,projectId) : null;
+    const delivery = runtime === null ? unavailableDelivery
+      : createHermesDeliveryAdapter({endpoint: string(runtime.gatewayEndpoint, 2_048),
+        credentialRef: runtime.agentCredentialRef, secrets: secretResolver,
+        allowPrivateHttp: privateAgentEndpoint(runtime)});
     const {ports} = await githubAssignment(database, session.actorId, projectId, kind === 'hermes' ? delivery : unavailableDelivery);
     const retryValue = body.retry;
     const retry = retryValue === undefined ? undefined : (() => {
