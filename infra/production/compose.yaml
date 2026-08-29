@@ -81,6 +81,7 @@ services:
       NODE_ENV: production
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
+      FCP_WORKER_INTERNAL_URL: http://worker:3001
     secrets:
       - source: postgres-password
         target: source-postgres-password
@@ -125,6 +126,10 @@ services:
       <<: *database-environment
       NODE_ENV: production
       PORT: "3001"
+      FCP_PROJECT_RUNTIME_HOST_DIR: /var/lib/fai-project-runtimes
+      FCP_PROJECT_HERMES_IMAGE: fai-hermes-project:codex-0.144.1
+      FCP_PROJECT_HERMES_IMAGE_ID: ${FCP_PROJECT_HERMES_IMAGE_ID:?required}
+      FCP_HERMES_MANAGEMENT_NETWORK: fai-hermes-management
     secrets:
       - source: postgres-password
         target: source-postgres-password
@@ -144,7 +149,7 @@ services:
       - hermes-management
     volumes:
       - ${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro
-      - ${FCP_PROJECT_RUNTIME_HOST_DIR:?required}:${FCP_PROJECT_RUNTIME_HOST_DIR:?required}
+      - /var/lib/fai-project-runtimes:/var/lib/fai-project-runtimes
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migrate:
