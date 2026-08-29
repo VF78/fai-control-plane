@@ -3,6 +3,15 @@ import type {Database} from './runtime.ts';
 
 export const projectHermesRuntimeArtifactKind = 'project_hermes_runtime_v1';
 export const projectHermesRuntimeContract = 'fai.project-hermes-runtime.v1';
+export const projectHermesRuntimeImageVersion = 'v2026.8.29-codex-0.144.1';
+
+export type ProjectHermesRuntimeStatus =
+  | 'not_configured'
+  | 'messenger_ready'
+  | 'installing'
+  | 'auth_required'
+  | 'ready'
+  | 'error';
 
 export type ProjectHermesSecretKind =
   | 'agent-delivery'
@@ -40,7 +49,8 @@ type ArtifactRow = Readonly<{
   content: string;
 }>;
 type SecretRow = Readonly<{id: string; purpose: string; locator: string}>;
-type ParsedArtifact = Readonly<{
+export type ParsedProjectHermesRuntimeArtifact = Readonly<{
+  status: Exclude<ProjectHermesRuntimeStatus, 'not_configured'>;
   runtimeId: string;
   gatewayEndpoint: string;
   managementEndpoint: string;
@@ -48,6 +58,9 @@ type ParsedArtifact = Readonly<{
   telegramChatId: string;
   telegramAllowedUserIds: readonly string[];
   secretIds: Readonly<Record<ProjectHermesSecretKind, string>>;
+  imageVersion: string;
+  auth?: Readonly<{verificationUrl: string; userCode: string}>;
+  failure?: 'runtime_unavailable' | 'authentication_expired' | 'readiness_failed';
 }>;
 
 const object = (value: unknown): Record<string, unknown> | null =>
@@ -64,7 +77,7 @@ const exactEndpoint = (value: unknown, expected: string): string | null => {
 const workspacePath = (value: unknown): value is string => typeof value === 'string' &&
   /^\/(?!.*(?:^|\/)\.\.(?:\/|$))[^\0\r\n]{1,511}$/.test(value) && value !== '/';
 
-export const parseProjectHermesRuntimeArtifact = (content: string): ParsedArtifact | null => {
+export const parseProjectHermesRuntimeArtifact = (content: string): ParsedProjectHermesRuntimeArtifact | null => {
   try {
     const value = object(JSON.parse(content));
     const telegram = object(value?.telegram); const refs = object(value?.secretRefs);
@@ -82,15 +95,31 @@ export const parseProjectHermesRuntimeArtifact = (content: string): ParsedArtifa
       'telegram-bot': refs?.telegramBot,
       'inbound-actions': refs?.inboundActions
     };
-    if (value?.contract !== projectHermesRuntimeContract || value.status !== 'ready' ||
+    const legacyReady=(value?.status===undefined||value?.status==='ready')&&value?.imageVersion===undefined;
+    const status = value?.status===undefined&&legacyReady?'ready':typeof value?.status === 'string' &&
+      ['messenger_ready','installing','auth_required','ready','error'].includes(value.status)
+      ? value.status as ParsedProjectHermesRuntimeArtifact['status'] : null;
+    const auth = object(value?.auth);
+    const parsedAuth = status === 'auth_required' && typeof auth?.verificationUrl === 'string' &&
+      /^https:\/\/[^\s\0]{1,2040}$/.test(auth.verificationUrl) &&
+      typeof auth.userCode === 'string' && /^[A-Z0-9-]{4,32}$/.test(auth.userCode)
+      ? {verificationUrl: auth.verificationUrl, userCode: auth.userCode} : undefined;
+    const failure = status === 'error' &&
+      ['runtime_unavailable','authentication_expired','readiness_failed'].includes(String(value?.failure))
+      ? value?.failure as ParsedProjectHermesRuntimeArtifact['failure'] : undefined;
+    if (value?.contract !== projectHermesRuntimeContract || status === null ||
       runtimeId === null || gatewayEndpoint === null || managementEndpoint === null || !workspacePath(value.workspacePath) ||
       typeof telegram?.chatId !== 'string' || !/^-?[1-9][0-9]{0,19}$/.test(telegram.chatId) ||
       !Array.isArray(allowed) || allowed.length === 0 || allowed.length > 100 ||
       allowed.some((id) => typeof id !== 'string' || !/^[1-9][0-9]{0,19}$/.test(id)) ||
-      new Set(allowed).size !== allowed.length || Object.values(secretIds).some((id) => !uuid(id))) return null;
-    return {runtimeId, gatewayEndpoint, managementEndpoint,
+      new Set(allowed).size !== allowed.length || Object.values(secretIds).some((id) => !uuid(id)) ||
+      (!legacyReady&&value.imageVersion !== projectHermesRuntimeImageVersion) ||
+      (status === 'auth_required' && parsedAuth === undefined) || (status === 'error' && failure === undefined)) return null;
+    return {status,runtimeId, gatewayEndpoint, managementEndpoint,
       workspacePath: value.workspacePath, telegramChatId: telegram.chatId,
-      telegramAllowedUserIds: allowed as string[], secretIds: secretIds as Record<ProjectHermesSecretKind, string>};
+      telegramAllowedUserIds: allowed as string[], secretIds: secretIds as Record<ProjectHermesSecretKind, string>,
+      imageVersion:legacyReady?'legacy':value.imageVersion as string,...(parsedAuth===undefined?{}:{auth:parsedAuth}),
+      ...(failure===undefined?{}:{failure})};
   } catch { return null; }
 };
 
@@ -120,7 +149,7 @@ export const listProjectHermesRuntimeBindings = async (
   [workspaceId, projectHermesRuntimeArtifactKind]);
   const parsed = artifacts.rows.flatMap((row) => {
     const artifact = parseProjectHermesRuntimeArtifact(row.content);
-    return artifact === null ? [] : [{row, artifact}];
+    return artifact === null || artifact.status !== 'ready' ? [] : [{row, artifact}];
   });
   const ids = [...new Set(parsed.flatMap(({artifact}) => Object.values(artifact.secretIds)))];
   if (ids.length === 0) return [];
@@ -154,6 +183,28 @@ export const listProjectHermesRuntimeBindings = async (
   });
   if (duplicateCoordinates(bindings)) throw new Error('project_hermes_runtime_conflict');
   return bindings;
+};
+
+export type ProjectHermesRuntimeSetupView = Readonly<{
+  status: ProjectHermesRuntimeStatus;
+  telegramConfigured: boolean;
+  auth: Readonly<{verificationUrl: string; userCode: string}> | null;
+  failure: ParsedProjectHermesRuntimeArtifact['failure'] | null;
+}>;
+
+export const readProjectHermesRuntimeSetup = async (
+  database: Database,
+  actorId: string,
+  projectId: string
+): Promise<ProjectHermesRuntimeSetupView> => {
+  const result=await database.query<{content:string}>(`select s.content_text as content
+    from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
+    where s.project_id=$1 and m.actor_id=$2 and m.role='project_owner' and m.active=true and s.kind=$3
+    order by s.created_at desc,s.id desc limit 1`,[projectId,actorId,projectHermesRuntimeArtifactKind]);
+  const artifact=result.rows[0]===undefined?null:parseProjectHermesRuntimeArtifact(result.rows[0].content);
+  return artifact===null?{status:'not_configured',telegramConfigured:false,auth:null,failure:null}:
+    {status:artifact.status,telegramConfigured:true,auth:artifact.auth??null,
+      failure:artifact.failure??null};
 };
 
 export const readProjectHermesRuntimeBinding = async (

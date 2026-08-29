@@ -59,22 +59,6 @@ export function ProjectDocumentUploadControl({projectId}:Readonly<{projectId:str
   </form>:null}<CommandNoticeView notice={command.notice}/></div>;
 }
 
-export function ProjectRegistrationControl() {
-  const command=useAsyncCommand(); const [open,setOpen]=useState(false);
-  const submit=(event:FormEvent<HTMLFormElement>)=>{event.preventDefault();const form=new FormData(event.currentTarget);
-    void command.run(()=>post('/api/projects',{name:form.get('name'),slug:form.get('slug'),projectUrl:form.get('projectUrl'),
-      repositoryUrl:form.get('repositoryUrl'),idempotencyKey:`project-register:${id()}`}),
-      {success:()=>{setOpen(false);return 'Проект добавлен. Выберите его, чтобы настроить документы и ИИ-агента.';}});};
-  return <div className="fcp-project-registration"><AsyncButton type="button" pending={command.pending} pendingLabel="Добавляем…" onClick={()=>setOpen((value)=>!value)}>{open?'Скрыть форму':'Добавить проект'}</AsyncButton>{open?<form className="fcp-inline-form" onSubmit={submit} aria-busy={command.pending}>
-    <label>Название<input name="name" required maxLength={200} disabled={command.pending}/></label>
-    <label>Короткое имя<input name="slug" required maxLength={100} pattern="[a-z0-9][a-z0-9-]+[a-z0-9]" placeholder="fai-control-plane" disabled={command.pending}/></label>
-    <label>Ссылка на GitHub Project<input name="projectUrl" type="url" required placeholder="https://github.com/users/VF78/projects/1" disabled={command.pending}/></label>
-    <label>Ссылка на репозиторий<input name="repositoryUrl" type="url" required placeholder="https://github.com/VF78/fai-control-plane" disabled={command.pending}/></label>
-    <small>Секреты не вводятся: используются защищённые подключения рабочего пространства.</small>
-    <AsyncButton pending={command.pending} pendingLabel="Добавляем…">Добавить проект</AsyncButton>
-  </form>:null}<CommandNoticeView notice={command.notice}/></div>;
-}
-
 export function ProjectAgentActivationControl({projectId,status,profile,documentsReady}:Readonly<{projectId:string;
   status:'not_configured'|'configuring'|'awaiting_architecture'|'ready'|'error';profile:string|null;
   documentsReady:boolean}>) {

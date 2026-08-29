@@ -38,6 +38,7 @@ const normalizeTrackerItems = (value: unknown): TrackerSnapshot['items'] => Arra
   ? value.map((item) => typeof item === 'object' && item !== null
     ? {...item,
       ...(!('ownerOptionId' in item) ? {ownerOptionId: null} : {}),
+      ...(!('statement' in item) ? {statement: null} : {}),
       ...(!('assignees' in item) ? {assignees: []} : {})
     } : item) as TrackerSnapshot['items']
   : [];

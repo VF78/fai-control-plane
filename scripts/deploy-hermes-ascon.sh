@@ -50,6 +50,7 @@ readonly codex_contract=fai.hermes-codex-readiness.v1
 readonly -a readable_directories=(
   "$deploy_root/infra/hermes-ascon/extensions/fai-control-plane"
   "$deploy_root/infra/hermes-ascon/extensions/fai-identity"
+  "$deploy_root/infra/hermes-project/profile-template"
 )
 readonly -a readable_files=(
   "$deploy_root/infra/hermes-ascon/config.yaml"
@@ -59,9 +60,12 @@ readonly -a readable_files=(
   "$deploy_root/infra/hermes-ascon/extensions/fai-control-plane/__init__.py"
   "$deploy_root/infra/hermes-ascon/extensions/fai-identity/HOOK.yaml"
   "$deploy_root/infra/hermes-ascon/extensions/fai-identity/handler.py"
-  "$deploy_root/infra/hermes-ascon/native-entrypoint.sh"
-  "$deploy_root/infra/hermes-ascon/management-entrypoint.sh"
-  "$deploy_root/infra/hermes-ascon/Dockerfile"
+  "$deploy_root/infra/hermes-project/profile-template/config.yaml"
+  "$deploy_root/infra/hermes-project/profile-template/SOUL.md"
+  "$deploy_root/infra/hermes-project/profile-template/skills/fai-project-operator/SKILL.md"
+  "$deploy_root/infra/hermes-project/native-entrypoint.sh"
+  "$deploy_root/infra/hermes-project/management-entrypoint.sh"
+  "$deploy_root/infra/hermes-project/Dockerfile"
 )
 
 fail() {
@@ -135,7 +139,7 @@ grep -Eq '^HERMES_IMAGE=' "$environment_file" ||
 [[ $(sed -n 's/^HERMES_IMAGE=//p' "$environment_file") == "$derived_image" ]] ||
   fail 'configured derived image is invalid'
 [[ $(sed -n 's/^ARG HERMES_UPSTREAM_IMAGE=//p' \
-  "$deploy_root/infra/hermes-ascon/Dockerfile") == "$HERMES_APPROVED_IMAGE" ]] ||
+  "$deploy_root/infra/hermes-project/Dockerfile") == "$HERMES_APPROVED_IMAGE" ]] ||
   fail 'Dockerfile upstream image is not approved'
 grep -Eq '^[A-Z0-9_]+=(REQUIRED_.*|REPLACE_.*)?$' "$environment_file" &&
   fail 'production environment contains a placeholder'

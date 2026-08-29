@@ -1,14 +1,18 @@
 import {createHash} from 'node:crypto';
-import type {ProjectAgentProfileView, ProjectOperatorEvidenceView, ProjectSourceView, ProjectTaskView} from '@fai-control-plane/db';
+import type {ProjectAgentProfileView, ProjectHermesRuntimeSetupView, ProjectOperatorEvidenceView,
+  ProjectSourceView, ProjectTaskView, ProjectTrackerCapabilities} from '@fai-control-plane/db';
 import type {ReactNode} from 'react';
 import {Bot, CheckCircle2, CircleDot, FileText, MessageSquareText, ShieldCheck, UsersRound} from 'lucide-react';
-import {AccessControls, ArchitectureProposalDecision, ProjectAgentActivationControl, ProjectDocumentUploadControl, ProjectRegistrationControl} from './operator-controls.tsx';
+import {AccessControls, ArchitectureProposalDecision, ProjectAgentActivationControl, ProjectDocumentUploadControl} from './operator-controls.tsx';
+import {ProjectSetupWizard} from './project-wizard.tsx';
 import type {IntegrationConfig} from './integration-config.ts';
 import {phaseHref} from './phase-a-ui.tsx';
 
 export type PhaseBView = 'conversations'|'people'|'systems'|'settings';
-export type PhaseBProject = Readonly<{project:ProjectTaskView;evidence:ProjectOperatorEvidenceView|null;sources:readonly ProjectSourceView[];config:IntegrationConfig;agentProfile:ProjectAgentProfileView|null}>;
-type Props = Readonly<{view:PhaseBView;projects:readonly PhaseBProject[];actorId:string}>;
+export type PhaseBProject = Readonly<{project:ProjectTaskView;evidence:ProjectOperatorEvidenceView|null;
+  sources:readonly ProjectSourceView[];config:IntegrationConfig;agentProfile:ProjectAgentProfileView|null;
+  runtimeSetup:ProjectHermesRuntimeSetupView|null;trackerCapabilities:ProjectTrackerCapabilities|null}>;
+type Props = Readonly<{view:PhaseBView;projects:readonly PhaseBProject[];actorId:string;setup:string|undefined}>;
 
 function Header({title,detail,action}: Readonly<{title:string;detail:string;action?:ReactNode}>) { return <div className="fcp-phase-b-header"><div><h1>{title}</h1><p>{detail}</p></div>{action}</div>; }
 function EmptyProjects() { return <section className="fcp-blank"><div><h2>Нет доступных проектов</h2><p>Добавьте проект в настройках.</p></div></section>; }
@@ -23,17 +27,31 @@ function Conversations({projects}: Readonly<{projects:readonly PhaseBProject[]}>
 function People({projects,actorId}: Readonly<{projects:readonly PhaseBProject[];actorId:string}>) { return <div className="fcp-phase-b"><Header title="Роли и доступы" detail="Участники и управление доступом по каждому проекту."/>{projects.length===0?<EmptyProjects/>:<div className="fcp-portfolio-blocks">{projects.map(({project,evidence})=>{const people=evidence?.people??[];const canManage=people.some((person)=>person.actorId===actorId&&person.active&&person.role==='project_owner');return <ProjectBlock project={project} key={project.id}><div className="fcp-people-list">{people.length===0?<p className="fcp-empty">Участники ещё не добавлены.</p>:people.map((person)=><article key={person.membershipId}><UsersRound aria-hidden="true" size={18}/><div><strong>{person.displayName}</strong><small>{roleLabel[person.role]??'Участник'} · {person.kind==='human'?'человек':'система'}</small></div><span className={`fcp-status ${person.active?'success':'neutral'}`}><CheckCircle2 aria-hidden="true" size={14}/>{person.active?'Активен':'Неактивен'}</span></article>)}</div><div className="fcp-block-actions"><ShieldCheck aria-hidden="true" size={17}/><span>Управление составом</span><AccessControls projectId={project.id} canManage={canManage} members={people}/></div></ProjectBlock>;})}</div>}</div>; }
 
 const category=(kind:string)=>({requirements:'Требования / ТЗ',passport:'Паспорт проекта',combined:'Требования + паспорт',architecture:'Архитектура',supplemental:'Дополнительный'}[kind.split(':')[1]??'']??'Документ');
-function SettingsProject({project,sources,agentProfile}: PhaseBProject) {
+const projectDocumentState=({project,sources}:PhaseBProject)=>{
   const projectSources=sources.filter((source)=>source.projectId===project.id);const documents=projectSources.filter(({kind})=>kind.startsWith('project_document_v1:'));
   const activeFixed=new Map<string,ProjectSourceView>();const activeSupplemental:ProjectSourceView[]=[];
   for(const document of documents){const key=document.kind.split(':')[1]??'';if(key==='supplemental')activeSupplemental.push(document);else if(!activeFixed.has(key))activeFixed.set(key,document);}
   const activeDocuments=[...activeFixed.values(),...activeSupplemental];const documentCategories=new Set(activeDocuments.map(({kind})=>kind.split(':')[1]));
   const documentsReady=documentCategories.has('combined')||(documentCategories.has('requirements')&&documentCategories.has('passport'));
   const fingerprint=createHash('sha256').update(activeDocuments.slice().sort((left,right)=>left.kind.localeCompare(right.kind)||left.sha256.localeCompare(right.sha256)).map(({kind,sha256})=>`${kind}:${sha256}`).join('\n')).digest('hex');
+  return {projectSources,activeDocuments,documentsReady,fingerprint};
+};
+function SettingsProject(item: PhaseBProject) {
+  const {project,agentProfile}=item;const {projectSources,activeDocuments,documentsReady,fingerprint}=projectDocumentState(item);
   const agentStatus=documentsReady&&agentProfile?.documentFingerprint!==null&&agentProfile?.documentFingerprint!==fingerprint?'not_configured':agentProfile?.status??'not_configured';
   const proposal=projectSources.find(({kind,sha256})=>kind==='project_architecture_proposal_v1'&&sha256===agentProfile?.proposalSha)??null;
   return <ProjectBlock project={project}><div className="fcp-settings-connections"><div><span>Репозиторий</span><a href={project.repositoryUrl} target="_blank" rel="noreferrer">{project.repositoryUrl.replace(/^https:\/\/github\.com\//,'')||'Открыть'} ↗</a></div><div><span>GitHub Project</span>{project.tracker.sourceUrl===null?<span>Не подключён</span>:<a href={project.tracker.sourceUrl} target="_blank" rel="noreferrer">Открыть ↗</a>}</div></div><div className="fcp-settings-sections"><section><header><div><h2>Документы</h2><p>Активные материалы проекта.</p></div><FileText aria-hidden="true" size={18}/></header><div className="fcp-phase-b-source-list">{activeDocuments.length===0?<p className="fcp-empty">Документы ещё не загружены.</p>:activeDocuments.map((source)=><article key={source.id}><div><strong>{source.name}</strong><small>{category(source.kind)}</small></div><a href={`/api/projects/${project.id}/documents/${source.id}`}>Скачать</a></article>)}</div><ProjectDocumentUploadControl projectId={project.id}/></section><section><header><div><h2>ИИ-агент</h2><p>Подключение и контекст работы.</p></div><Bot aria-hidden="true" size={18}/></header><ProjectAgentActivationControl projectId={project.id} status={agentStatus} profile={agentProfile?.profile??null} documentsReady={documentsReady}/>{agentStatus==='awaiting_architecture'&&proposal!==null?<ArchitectureProposalDecision projectId={project.id} proposalSha={proposal.sha256}/>:null}</section></div></ProjectBlock>;
 }
-function Settings({projects}: Readonly<{projects:readonly PhaseBProject[]}>) { return <div className="fcp-phase-b fcp-settings"><Header title="Настройки проектов" detail="Репозитории, документы и ИИ-агенты портфеля." action={<ProjectRegistrationControl/>}/>{projects.length===0?<section className="fcp-settings-panel"><p className="fcp-empty">Добавьте первый проект.</p></section>:<div className="fcp-portfolio-blocks">{projects.map((item)=><SettingsProject {...item} key={item.project.id}/>)}</div>}</div>; }
+function Settings({projects,setup}: Readonly<{projects:readonly PhaseBProject[];setup:string|undefined}>) {
+  const selected=setup===undefined?null:projects.find(({project})=>project.slug===setup)??null;
+  const selectedContextCurrent=selected!==null&&selected.agentProfile?.status==='ready'&&
+    selected.agentProfile.documentFingerprint===projectDocumentState(selected).fingerprint;
+  return <div className={`fcp-phase-b fcp-settings ${setup!==undefined?'fcp-settings-wizard-open':''}`}><Header title="Настройки проектов"
+    detail="Репозитории, документы и ИИ-агенты портфеля."
+    action={<a className="fcp-primary fcp-add-project" href="/?view=settings&setup=new">Добавить проект</a>}/>
+    {setup!==undefined?<ProjectSetupWizard item={selected} contextCurrent={selectedContextCurrent}/>:null}
+    {setup===undefined?(projects.length===0?<section className="fcp-settings-panel"><p className="fcp-empty">Добавьте первый проект.</p></section>:<div className="fcp-portfolio-blocks">{projects.map((item)=><SettingsProject {...item} key={item.project.id}/>)}</div>):null}
+  </div>;
+}
 
-export function PhaseB(props:Props) { switch(props.view){case'conversations':return <Conversations projects={props.projects}/>;case'people':return <People projects={props.projects} actorId={props.actorId}/>;case'systems':return <Systems projects={props.projects}/>;case'settings':return <Settings projects={props.projects}/>;} }
+export function PhaseB(props:Props) { switch(props.view){case'conversations':return <Conversations projects={props.projects}/>;case'people':return <People projects={props.projects} actorId={props.actorId}/>;case'systems':return <Systems projects={props.projects}/>;case'settings':return <Settings projects={props.projects} setup={props.setup}/>;} }

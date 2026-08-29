@@ -18,6 +18,8 @@ export type TrackerItemFact = Readonly<{
   projectId: string;
   issueId: string;
   title: string;
+  /** Bounded provider-native task statement used for exact operator confirmation. */
+  statement?: string | null;
   url: string;
   version: string;
   statusOptionId: string | null;
@@ -97,7 +99,9 @@ export const validateTrackerSnapshot = (value: TrackerSnapshot): boolean =>
   isHttpsUrl(value.sourceUrl) && (value.cursor === null || isBoundedId(value.cursor)) &&
   value.items.length <= 1_000 && value.items.every((item) =>
     isBoundedId(item.itemId) && isBoundedId(item.projectId) && isBoundedId(item.issueId) &&
-    singleLine(item.title, 512) && isHttpsUrl(item.url) && isBoundedId(item.version) &&
+    singleLine(item.title, 512) && (item.statement === undefined || item.statement === null ||
+      (typeof item.statement === 'string' && item.statement.length <= 20_000 && !item.statement.includes('\0'))) &&
+    isHttpsUrl(item.url) && isBoundedId(item.version) &&
     (item.statusOptionId === null || isBoundedId(item.statusOptionId)) &&
     (item.statusOptionName === null || singleLine(item.statusOptionName, 512)) &&
     (item.ownerOptionId === null || isBoundedId(item.ownerOptionId)) &&

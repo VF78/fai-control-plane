@@ -28,8 +28,8 @@ RUN if ! getent group 10000 >/dev/null; then groupadd --gid 10000 hermes-runtime
     && install -d -o 10000 -g 10000 -m 0700 \
       /opt/data /opt/data/codex-home /opt/data/work /opt/data/work/project
 
-COPY --chown=root:root --chmod=0555 infra/hermes-ascon/native-entrypoint.sh /opt/fai/native-entrypoint.sh
-COPY --chown=root:root --chmod=0555 infra/hermes-ascon/management-entrypoint.sh /opt/fai/management-entrypoint.sh
+COPY --chown=root:root --chmod=0555 infra/hermes-project/native-entrypoint.sh /opt/fai/native-entrypoint.sh
+COPY --chown=root:root --chmod=0555 infra/hermes-project/management-entrypoint.sh /opt/fai/management-entrypoint.sh
 
 ENV CODEX_HOME=/opt/data/codex-home
 WORKDIR /opt/data/work/project

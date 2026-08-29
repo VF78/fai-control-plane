@@ -10,13 +10,9 @@ terminal:
 platform_toolsets:
   api_server:
     - terminal
-    - fai_internal
     - no_mcp
 agent:
   max_turns: 500
-plugins:
-  enabled:
-    - fai-control-plane
 toolsets:
   - file
   - terminal
@@ -26,7 +22,6 @@ toolsets:
   - todo
   - memory
   - session_search
-  - fai_internal
   - clarify
 tool_loop_guardrails:
   hard_stop_enabled: true

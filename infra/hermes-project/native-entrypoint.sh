@@ -26,6 +26,20 @@ if ! GH_CONFIG_DIR="$gh_config_dir" gh auth setup-git >/dev/null 2>&1; then
 fi
 unset GH_TOKEN
 export GH_CONFIG_DIR="$gh_config_dir"
+for binding in \
+  "API_SERVER_KEY:${HERMES_API_SERVER_KEY_FILE:-}" \
+  "TELEGRAM_BOT_TOKEN:${HERMES_TELEGRAM_BOT_TOKEN_FILE:-}"; do
+  name=${binding%%:*}
+  secret_file=${binding#*:}
+  if [[ -n "$secret_file" ]]; then
+    [[ -f "$secret_file" && ! -L "$secret_file" && -r "$secret_file" ]] || {
+      printf 'Hermes runtime credential is unavailable\n' >&2
+      exit 1
+    }
+    printf -v "$name" '%s' "$(tr -d '\r\n' < "$secret_file")"
+    export "$name"
+  fi
+done
 if [[ ${1:-} == --exec ]]; then
   shift
   exec "$@"
