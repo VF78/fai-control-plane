@@ -16,6 +16,9 @@ import {
   resolveProjectRuntimeByRepository,
   readAgentRoutingPolicy,
   readProjectProcessPolicy,
+  readProjectTrackerPreparation,
+  readProjectWizardProgress,
+  recordProjectWizardDecision,
   readProjectAgentProfile,
   readProjectHermesRuntimeBinding,
   readProjectHermesRuntimeSetup,
@@ -40,7 +43,7 @@ import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeM
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
 import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
-import {ensureProjectAgentProfile, resolveAndRegisterProject} from './project-onboarding.ts';
+import {ensureProjectAgentProfile, prepareProjectTracker, resolveAndRegisterProject} from './project-onboarding.ts';
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('media_type_invalid');
@@ -164,6 +167,27 @@ export const projectAgentProfile = async (request:Request,projectId:string):Prom
       projectId,idempotencyKey:string(body.idempotencyKey,128),force:body.force===true}),
     {headers:{'cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
+};
+
+export const projectTrackerPreparation=async(request:Request,projectId:string):Promise<Response>=>{
+  try{const database=getDatabase();const session=await requireSession();
+    if(request.method==='GET')return Response.json(await readProjectTrackerPreparation(database,session.actorId,projectId),
+      {headers:{'cache-control':'no-store'}});
+    if(request.method!=='POST')return new Response(null,{status:405,headers:{allow:'GET, POST'}});
+    requireCsrf(request);const body=await json(request);return Response.json(await prepareProjectTracker(database,{workspaceId:session.workspaceId,
+      actorId:session.actorId,projectId,idempotencyKey:string(body.idempotencyKey,128)}),{headers:{'cache-control':'no-store'}});
+  }catch(error){return jsonError(error);}
+};
+
+export const projectWizardProgress=async(request:Request,projectId:string):Promise<Response>=>{
+  try{const database=getDatabase();const session=await requireSession();if(request.method==='GET')return Response.json(
+    await readProjectWizardProgress(database,session.actorId,projectId),{headers:{'cache-control':'no-store'}});
+    if(request.method!=='POST')return new Response(null,{status:405,headers:{allow:'GET, POST'}});requireCsrf(request);const body=await json(request);
+    const action=string(body.action,32);const decision=action==='confirm_process'?'project.wizard.process-confirm':action==='skip_team'?
+      'project.wizard.team-skip':action==='skip_communications'?'project.wizard.communications-skip':null;if(decision===null)throw new Error('body_invalid');
+    return Response.json(await recordProjectWizardDecision(database,{workspaceId:session.workspaceId,projectId,actorId:session.actorId,
+      decision,idempotencyKey:string(body.idempotencyKey,128),occurredAt:new Date().toISOString()}),{headers:{'cache-control':'no-store'}});
+  }catch(error){return jsonError(error);}
 };
 
 export const projectRuntimeSetup=async(request:Request,projectId:string):Promise<Response>=>{
@@ -347,19 +371,20 @@ export const approval = async (request: Request, approvalId: string): Promise<Re
     const kind = string(body.kind, 32) as ApprovalKind;
     const persistence = createApprovalPersistence(database);
     const projectId = string(body.projectId);
-    const assignment = await githubAssignment(database, session.actorId, projectId, unavailableDelivery);
-    const tracker = assignment.trackerRead;
-    const bindingId = assignment.context.bindingId;
+    const targetReference=string(body.targetReference);
+    const artifactTarget=kind==='internal_operation'?await persistence.targets.resolve({projectId,targetReference}):null;
+    const assignment=artifactTarget===null?await githubAssignment(database,session.actorId,projectId,unavailableDelivery):null;
     const stores = createStores(database, session.workspaceId);
     const result = await decideApproval({workspaceId: session.workspaceId, request: {
       id: approvalId, projectId, kind,
       decision: string(body.decision, 16) as ApprovalEvidence['decision'], actorId: session.actorId,
-      targetReference: string(body.targetReference), decidedAt: new Date().toISOString(),
+      targetReference, decidedAt: new Date().toISOString(),
       idempotencyKey: string(body.idempotencyKey)
     }, authority: {
         canDecide: (actorId, projectId, approvalKind) => canApprove(database, actorId, projectId, approvalKind)
       }, targets: {async resolve(target) {
-        const snapshot = await tracker.readSnapshot(bindingId, null);
+        if(artifactTarget!==null)return target.targetReference===artifactTarget.id?artifactTarget:null;
+        const snapshot = await assignment!.trackerRead.readSnapshot(assignment!.context.bindingId, null);
         if (snapshot.items.some((item) => item.projectId !== projectId)) throw new Error('tracker_project_mismatch');
         await stores.snapshots.replace(snapshot);
         const fact = snapshot.items.find((item) => item.itemId === target.targetReference || item.issueId === target.targetReference);
@@ -625,7 +650,7 @@ export const githubWebhook = async (request: Request): Promise<Response> => {
     const runtime = await resolveProjectRuntimeByRepository(database, string(process.env.FCP_WORKSPACE_ID),
       `https://github.com/${fullName}`);
     const coordinates = runtime === null ? null : githubRuntimeCoordinates(runtime);
-    if (runtime === null || coordinates === null) throw new Error('webhook_denied');
+    if (runtime === null || coordinates === null || runtime.trackerCapabilities === null) throw new Error('webhook_denied');
     const result = await appendIncomingEvent(database, {projectId: runtime.projectId, provider: 'github',
       providerDeliveryId: verified.deliveryId, eventType: verified.eventType, payloadHash: verified.payloadHash,
       receivedAt: new Date().toISOString()});

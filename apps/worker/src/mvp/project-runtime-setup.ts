@@ -125,9 +125,20 @@ export const installProjectRuntime=async(database:Database,input:Readonly<{works
   return idempotentCommand(database,{...input,commandType:'project.runtime.install'},
     ()=>readProjectHermesRuntimeSetup(database,input.actorId,input.projectId),async()=>{
       const setup=await readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);
-      if(!['messenger_ready','error'].includes(setup.status))throw new Error('project_runtime_unavailable');
+      if(!['not_configured','messenger_ready','error'].includes(setup.status))throw new Error('project_runtime_unavailable');
       await verifyProjectCredential(input.githubToken,bound.repositoryUrl,bound.projectUrl);
       const directory=await projectDirectory(input.workspaceId,input.projectId);await safeWrite(`${directory}/secrets/github-token`,input.githubToken);
+      if(setup.status==='not_configured'){
+        const secretRefs=await refs(database,input.workspaceId,input.projectId,directory);
+        const coordinates=projectHermesRuntimeCoordinates(bound.slug,input.projectId);
+        await existingOrCreate(secretRefs['agent-delivery'].locator,token);
+        await existingOrCreate(secretRefs['management-username'].locator,()=>`operator-${coordinates.runtimeId}`);
+        await existingOrCreate(secretRefs['management-password'].locator,token);
+        await existingOrCreate(secretRefs['inbound-actions'].locator,token);
+        await existingOrCreate(`${directory}/secrets/management-signing`,token);
+        await recordProjectMessengerSetup(database,{workspaceId:input.workspaceId,actorId:input.actorId,projectId:input.projectId,
+          telegramChatId:null,telegramAllowedUserIds:[],secrets:secretRefs,idempotencyKey:`${input.idempotencyKey}:runtime-base`,occurredAt:new Date().toISOString()});
+      }
       await requestProjectRuntimeInstall(database,{workspaceId:input.workspaceId,projectId:input.projectId,actorId:input.actorId,
         idempotencyKey:input.idempotencyKey,occurredAt:new Date().toISOString()});
       return readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);

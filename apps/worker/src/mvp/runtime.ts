@@ -2,7 +2,11 @@ import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, createStores,
   completeProjectContextBootstrap, failProjectContextBootstrap, listProjectContextBootstrapAttempts,
+  listApprovedProjectTrackerPreparations,listProjectHermesRuntimeBindings,listProjectTrackerPreparationAttempts,
+  listRejectedProjectTrackerPreparations,
   listProjectRuntimeProvisioningRequests,recordProjectRuntimeProvisioningState,
+  projectTrackerPreparationAssignment,recordProjectTrackerPreparationBlocker,recordProjectTrackerPreparationResult,
+  recordProjectTrackerPreparationStart,recordVerifiedProjectTrackerCapabilities,
   promoteApprovedProjectArchitectures,
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
   readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
@@ -45,6 +49,38 @@ const secrets: SecretResolverPort = {async resolve(reference, expectedPurpose) {
 }};
 
 const pause = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+type TrackerPreparationBinding=Readonly<{projectUrl:string;repositoryUrl:string;token:string}>;
+export const trackerPreparationDeltaShrank=(prior:readonly string[],next:readonly string[])=>next.length<prior.length&&
+  next.every((item)=>prior.includes(item));
+export const inspectConfirmedGitHubProject=async(input:Readonly<{projectUrl:string;repositoryUrl:string;token:string;
+  stages:readonly string[]}>,request:typeof fetch=fetch):Promise<Readonly<{remainingDelta:readonly string[];capabilities:null|Readonly<{
+    provider:'github';agentOwnerOptionId:string;doneStatusOptionId:string;defaultBranch:string}>}>>=>{let projectUrl:URL;let repositoryUrl:URL;
+  try{projectUrl=new URL(input.projectUrl);repositoryUrl=new URL(input.repositoryUrl);}catch{throw new Error('github_binding_invalid');}
+  const projectMatch=/^\/users\/([^/]+)\/projects\/(\d+)\/?$/.exec(projectUrl.pathname);
+  const repositoryMatch=/^\/([^/]+)\/([^/]+)\/?$/.exec(repositoryUrl.pathname);
+  if(projectUrl.origin!=='https://github.com'||repositoryUrl.origin!=='https://github.com'||projectMatch===null||repositoryMatch===null||
+    projectMatch[1]!.toLowerCase()!==repositoryMatch[1]!.toLowerCase())
+    throw new Error('github_binding_invalid');
+  const query=`query($owner:String!,$number:Int!,$repositoryOwner:String!,$repository:String!){
+    user(login:$owner){projectV2(number:$number){fields(first:100){nodes{... on ProjectV2SingleSelectField{id name options{id name}}}pageInfo{hasNextPage}}}}
+    repository(owner:$repositoryOwner,name:$repository){defaultBranchRef{name}}}`;
+  const response=await request('https://api.github.com/graphql',{method:'POST',headers:{accept:'application/vnd.github+json',
+    authorization:`Bearer ${input.token}`,'content-type':'application/json','x-github-api-version':'2022-11-28'},body:JSON.stringify({query,
+      variables:{owner:projectMatch[1],number:Number(projectMatch[2]),repositoryOwner:repositoryMatch[1],repository:repositoryMatch[2]}}),
+    signal:AbortSignal.timeout(15_000)});if(!response.ok)throw new Error('github_read_failed');const payload=await response.json() as {data?:{
+      user?:{projectV2?:{fields?:{nodes?:readonly {id?:string;name?:string;options?:readonly {id?:string;name?:string}[]}[];pageInfo?:{hasNextPage?:boolean}}}},
+      repository?:{defaultBranchRef?:{name?:string}}}};const fields=payload.data?.user?.projectV2?.fields;
+  if(fields===undefined||fields.pageInfo?.hasNextPage===true)throw new Error('github_response_invalid');const nodes=fields.nodes??[];
+  const field=(name:string)=>nodes.find((candidate)=>candidate.name===name);const status=field('Status');const owner=field('Owner');const blocked=field('Blocked');
+  const names=(value:typeof status)=>value?.options?.map((option)=>option.name).filter((name):name is string=>typeof name==='string')??[];
+  const remainingDelta:string[]=[];if(JSON.stringify(names(status))!==JSON.stringify(input.stages))remainingDelta.push(`Status: ${input.stages.join(' -> ')}`);
+  const hermes=owner?.options?.find((option)=>option.name==='Hermes');if(typeof hermes?.id!=='string')remainingDelta.push('Owner: Hermes');
+  if(JSON.stringify(names(blocked))!==JSON.stringify(['No','Yes']))remainingDelta.push('Blocked: No, Yes');
+  const done=status?.options?.find((option)=>option.name==='Done');const defaultBranch=payload.data?.repository?.defaultBranchRef?.name;
+  if(typeof defaultBranch!=='string')remainingDelta.push('Repository: default branch');
+  return {remainingDelta,capabilities:remainingDelta.length===0&&typeof hermes?.id==='string'&&typeof done?.id==='string'&&
+    typeof defaultBranch==='string'?{provider:'github',agentOwnerOptionId:hermes.id,doneStatusOptionId:done.id,defaultBranch}:null};};
 export const restartHermesGateway = async (
   runtime: WorkerProjectBinding['runtime'],
   request: typeof fetch = fetch,
@@ -79,7 +115,7 @@ export const createWorker = (database: Database = createDatabase()) => {
   }};
   const internalMessenger: MessengerDeliveryPort = {async send(message) {
     const project = (await activeProjects()).find((candidate) => candidate.projectId === message.projectId);
-    if (project === undefined) throw new Error('telegram_config_invalid');
+    if (project === undefined || project.runtime.telegramChatId === null) throw new Error('telegram_config_invalid');
     return createTelegramDeliveryAdapter({config: {projectId: project.projectId,
       chatId: project.runtime.telegramChatId, tokenRef: project.runtime.telegramCredentialRef}, secrets}).send(message);
   }};
@@ -232,6 +268,51 @@ export const createWorker = (database: Database = createDatabase()) => {
       }
     }
   };
+  const trackerPreparationBinding=async(projectId:string,actorId:string):Promise<TrackerPreparationBinding&Readonly<{
+    endpoint:string;process:NonNullable<Awaited<ReturnType<typeof readActiveProjectProcessPolicy>>>}>>=>{
+    const [binding,runtimes,process]=await Promise.all([resolveAgentSubmissionBinding(database,actorId,projectId),
+      listProjectHermesRuntimeBindings(database,workspaceId),readActiveProjectProcessPolicy(database,projectId)]);
+    const runtime=runtimes.find((candidate)=>candidate.projectId===projectId);
+    if(binding===null||runtime===undefined||process===null)throw new Error('project_tracker_preparation_unavailable');
+    const token=(await secrets.resolve(runtime.agentCredentialRef,'agent_delivery')).value;
+    return {projectUrl:binding.projectUrl,repositoryUrl:binding.repositoryUrl,token,endpoint:runtime.gatewayEndpoint,process};
+  };
+  const submitTrackerPreparation=async(input:Readonly<{projectId:string;actorId:string;remainingDelta:readonly string[];
+    processVersion:string;idempotencyKey:string}>)=>{const binding=await trackerPreparationBinding(input.projectId,input.actorId);
+    if(binding.process.version!==input.processVersion)throw new Error('project_process_changed');const assignment=projectTrackerPreparationAssignment({
+      repositoryUrl:binding.repositoryUrl,projectUrl:binding.projectUrl,process:binding.process.policy,remainingDelta:input.remainingDelta});
+    return recordProjectTrackerPreparationStart(database,{workspaceId,projectId:input.projectId,actorId:input.actorId,
+      processVersion:input.processVersion,remainingDelta:input.remainingDelta,idempotencyKey:input.idempotencyKey,
+      occurredAt:new Date().toISOString()},async()=>{const response=await fetch(binding.endpoint,{method:'POST',headers:{accept:'application/json',
+        authorization:`Bearer ${binding.token}`,'content-type':'application/json'},body:JSON.stringify(assignment),signal:AbortSignal.timeout(15_000)});
+      if(response.status!==202)throw new Error('project_tracker_preparation_unavailable');const value=await response.json().catch(()=>null) as
+        {run_id?:unknown;status?:unknown}|null;if(typeof value?.run_id!=='string'||value.status!=='started')
+        throw new Error('project_tracker_preparation_unavailable');return value.run_id;});};
+  const observeTrackerPreparations=async()=>{
+    for(const rejected of await listRejectedProjectTrackerPreparations(database,workspaceId,20))await recordProjectTrackerPreparationBlocker(database,{...rejected,
+      blocker:'Владелец проекта отклонил запрошенную Hermes операцию. Подготовка Project остановлена.',occurredAt:new Date().toISOString()});
+    for(const approved of await listApprovedProjectTrackerPreparations(database,workspaceId,20)){try{await submitTrackerPreparation({
+      projectId:approved.projectId,actorId:approved.actorId,remainingDelta:approved.remainingDelta,processVersion:approved.processVersion,
+      idempotencyKey:`${approved.correlationId}:approved:${approved.approvalVersion}`});}catch(error){await recordProjectTrackerPreparationBlocker(database,{...approved,
+        blocker:error instanceof Error?error.message:'project_tracker_preparation_unavailable',occurredAt:new Date().toISOString()});}}
+    for(const attempt of await listProjectTrackerPreparationAttempts(database,workspaceId,20)){try{const binding=await trackerPreparationBinding(
+      attempt.projectId,attempt.actorId);const endpoint=new URL(binding.endpoint);endpoint.pathname=`${endpoint.pathname}/${encodeURIComponent(attempt.runId)}`;
+      const response=await fetch(endpoint,{headers:{accept:'application/json',authorization:`Bearer ${binding.token}`},signal:AbortSignal.timeout(15_000)});
+      if(!response.ok)continue;const value=await response.json().catch(()=>null) as {run_id?:unknown;status?:unknown;output?:unknown}|null;
+      if(value?.run_id!==attempt.runId||typeof value.status!=='string')continue;if(['failed','cancelled'].includes(value.status)){await recordProjectTrackerPreparationBlocker(database,{...attempt,
+        blocker:`Hermes завершил подготовку Project со статусом ${value.status}.`,occurredAt:new Date().toISOString()});continue;}
+      if(value.status!=='completed')continue;const result=await recordProjectTrackerPreparationResult(database,attempt,value.output);
+      if(result.status!=='verifying')continue;const inspected=await inspectConfirmedGitHubProject({projectUrl:binding.projectUrl,
+        repositoryUrl:binding.repositoryUrl,token:binding.token,stages:binding.process.policy.stages.map((stage)=>stage.title)});
+      if(inspected.capabilities!==null){await recordVerifiedProjectTrackerCapabilities(database,{attempt,capabilities:inspected.capabilities,
+        occurredAt:new Date().toISOString()});continue;}if(trackerPreparationDeltaShrank(attempt.remainingDelta,inspected.remainingDelta)){await submitTrackerPreparation({
+          projectId:attempt.projectId,actorId:attempt.actorId,remainingDelta:inspected.remainingDelta,processVersion:attempt.processVersion,
+          idempotencyKey:`${attempt.correlationId}:retry:${createHash('sha256').update(JSON.stringify(inspected.remainingDelta)).digest('hex')}`});continue;}
+      await recordProjectTrackerPreparationBlocker(database,{...attempt,remainingDelta:inspected.remainingDelta,
+        blocker:'Project по-прежнему не соответствует подтверждённому процессу; повтор Hermes не дал наблюдаемого прогресса.',
+        occurredAt:new Date().toISOString()});}catch(error){await recordProjectTrackerPreparationBlocker(database,{...attempt,
+        blocker:error instanceof Error?error.message:'project_tracker_preparation_unavailable',occurredAt:new Date().toISOString()});}}
+  };
   const provisionProjectRuntimes=async()=>{
     for(const request of await listProjectRuntimeProvisioningRequests(database,workspaceId)){
       const outcome=await provisionProjectHermesRuntime(request);
@@ -244,6 +325,7 @@ export const createWorker = (database: Database = createDatabase()) => {
       await provisionProjectRuntimes();
       await promoteApprovedProjectArchitectures(database,workspaceId);
       await observeContextBootstraps();
+      await observeTrackerPreparations();
       const results = await runProjectBindingsIsolated(await activeProjects(), async (project) => {
         const runtime = projectRuntime(project);
         const projectAttempts = createAgentAttemptStore(database, project.projectId);

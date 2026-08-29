@@ -24,7 +24,7 @@ describe('portfolio Phase B operator surfaces', () => {
 
   it('keeps one resumable project wizard and per-project settings', async () => {
     const [view,wizard]=await Promise.all([source('phase-b-ui.tsx'),source('project-wizard.tsx')]);
-    expect(view).toContain('<ProjectSetupWizard item={selected} contextCurrent={selectedContextCurrent}/>');
+    expect(view).toContain('<ProjectSetupWizard item={selected} contextCurrent={selectedContextCurrent} actorId={actorId}/>');
     expect(view).toContain('/?view=settings&setup=new');
     expect(wizard).toContain('export function ProjectSetupWizard');
     expect(wizard).toContain("action:'confirm_and_start'");
@@ -52,5 +52,24 @@ describe('portfolio Phase B operator surfaces', () => {
     expect(control).toContain('AsyncButton');
     expect(control).toContain('aria-busy={command.pending}');
     expect(control).not.toContain('export function ApprovalControl');
+  });
+
+  it('renders the exact persisted Hermes approval through the canonical approval API',async()=>{
+    const [wizard,api]=await Promise.all([source('project-wizard.tsx'),source('api.ts')]);
+    expect(wizard).toContain("kind:'internal_operation'");
+    expect(wizard).toContain('targetReference:approval.version');
+    expect(wizard).toContain('/api/approvals/${encodeURIComponent(approval.id)}');
+    expect(wizard).toContain('preparation.approval.text');
+    expect(api).toContain("kind==='internal_operation'?await persistence.targets.resolve");
+    expect(api).toContain('if(artifactTarget!==null)return');
+  });
+
+  it('keeps the approved ten-step order and persists optional skips outside local state',async()=>{
+    const wizard=await source('project-wizard.tsx');const titles=['Репозиторий и задачи','Документы','Процесс','Команда и роли',
+      'Коммуникации','ИИ-агент','Контекст','Подготовка Project','Проверка готовности','Первая задача'];
+    let offset=-1;for(const title of titles){const next=wizard.indexOf(`title="${title}"`);expect(next).toBeGreaterThan(offset);offset=next;}
+    expect(wizard).toContain("action:'confirm_process'");expect(wizard).toContain("action:'skip_team'");
+    expect(wizard).toContain("action:'skip_communications'");expect(wizard).toContain('<AccessControls');
+    expect(wizard).toContain('<TelegramSettingsControl');expect(wizard).not.toContain('function Messenger(');
   });
 });

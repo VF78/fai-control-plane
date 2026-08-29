@@ -92,7 +92,7 @@ describe('project onboarding composition', () => {
       slug: 'control', projectUrl: 'https://github.com/users/VF78/projects/1',
       repositoryUrl: 'https://github.com/VF78/control', idempotencyKey: 'register:1'})).resolves.toMatchObject({created: true});
     expect(requests.filter((url) => url.includes('/contents/'))).toHaveLength(0);
-    expect(query.mock.calls.filter(([sql]) => String(sql).includes('insert into project_source_artifacts'))).toHaveLength(3);
+    expect(query.mock.calls.filter(([sql]) => String(sql).includes('insert into project_source_artifacts'))).toHaveLength(2);
     await rm(files.root, {recursive: true});
   });
 

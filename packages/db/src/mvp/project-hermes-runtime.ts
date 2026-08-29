@@ -32,7 +32,7 @@ export type ProjectHermesRuntimeBinding = Readonly<{
   gatewayEndpoint: string;
   managementEndpoint: string;
   workspacePath: string;
-  telegramChatId: string;
+  telegramChatId: string | null;
   telegramAllowedUserIds: readonly string[];
   agentCredentialRef: OpaqueSecretRef;
   managementUsernameRef: OpaqueSecretRef;
@@ -55,7 +55,7 @@ export type ParsedProjectHermesRuntimeArtifact = Readonly<{
   gatewayEndpoint: string;
   managementEndpoint: string;
   workspacePath: string;
-  telegramChatId: string;
+  telegramChatId: string | null;
   telegramAllowedUserIds: readonly string[];
   secretIds: Readonly<Record<ProjectHermesSecretKind, string>>;
   imageVersion: string;
@@ -109,15 +109,15 @@ export const parseProjectHermesRuntimeArtifact = (content: string): ParsedProjec
       ? value?.failure as ParsedProjectHermesRuntimeArtifact['failure'] : undefined;
     if (value?.contract !== projectHermesRuntimeContract || status === null ||
       runtimeId === null || gatewayEndpoint === null || managementEndpoint === null || !workspacePath(value.workspacePath) ||
-      typeof telegram?.chatId !== 'string' || !/^-?[1-9][0-9]{0,19}$/.test(telegram.chatId) ||
-      !Array.isArray(allowed) || allowed.length === 0 || allowed.length > 100 ||
+      (telegram !== null && (typeof telegram?.chatId !== 'string' || !/^-?[1-9][0-9]{0,19}$/.test(telegram.chatId))) ||
+      (telegram !== null && (!Array.isArray(allowed) || allowed.length === 0 || allowed.length > 100 ||
       allowed.some((id) => typeof id !== 'string' || !/^[1-9][0-9]{0,19}$/.test(id)) ||
-      new Set(allowed).size !== allowed.length || Object.values(secretIds).some((id) => !uuid(id)) ||
+      new Set(allowed).size !== allowed.length)) || Object.values(secretIds).some((id) => !uuid(id)) ||
       (!legacyReady&&value.imageVersion !== projectHermesRuntimeImageVersion) ||
       (status === 'auth_required' && parsedAuth === undefined) || (status === 'error' && failure === undefined)) return null;
     return {status,runtimeId, gatewayEndpoint, managementEndpoint,
-      workspacePath: value.workspacePath, telegramChatId: telegram.chatId,
-      telegramAllowedUserIds: allowed as string[], secretIds: secretIds as Record<ProjectHermesSecretKind, string>,
+      workspacePath: value.workspacePath, telegramChatId: typeof telegram?.chatId === 'string' ? telegram.chatId : null,
+      telegramAllowedUserIds: telegram?.allowedUserIds as string[] ?? [], secretIds: secretIds as Record<ProjectHermesSecretKind, string>,
       imageVersion:legacyReady?'legacy':value.imageVersion as string,...(parsedAuth===undefined?{}:{auth:parsedAuth}),
       ...(failure===undefined?{}:{failure})};
   } catch { return null; }
@@ -129,7 +129,7 @@ const duplicateCoordinates = (bindings: readonly ProjectHermesRuntimeBinding[]):
     `gateway:${binding.gatewayEndpoint}`,
     `management:${binding.managementEndpoint}`,
     `workspace:${binding.workspacePath}`,
-    `telegram:${binding.telegramChatId}`,
+    ...(binding.telegramChatId===null?[]:[`telegram:${binding.telegramChatId}`]),
     ...[binding.agentCredentialRef, binding.managementUsernameRef, binding.managementPasswordRef,
       binding.telegramCredentialRef, binding.inboundActionCredentialRef].flatMap((reference) =>
         [`secret:${reference.id}`, `secret-locator:${reference.locator}`])
@@ -203,7 +203,7 @@ export const readProjectHermesRuntimeSetup = async (
     order by s.created_at desc,s.id desc limit 1`,[projectId,actorId,projectHermesRuntimeArtifactKind]);
   const artifact=result.rows[0]===undefined?null:parseProjectHermesRuntimeArtifact(result.rows[0].content);
   return artifact===null?{status:'not_configured',telegramConfigured:false,auth:null,failure:null}:
-    {status:artifact.status,telegramConfigured:true,auth:artifact.auth??null,
+    {status:artifact.status,telegramConfigured:artifact.telegramChatId!==null,auth:artifact.auth??null,
       failure:artifact.failure??null};
 };
 

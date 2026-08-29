@@ -9,7 +9,8 @@ export const projectAgentProfileTemplateVersion = 'v2026.8.28-dedicated-runtime-
 export type RegisterProjectInput = Readonly<{
   workspaceId: string; actorId: string; name: string; slug: string; repositoryUrl: string; repositoryId: string;
   projectUrl: string; externalProjectId: string; contextSources?: readonly ProjectContextSource[];
-  trackerCapabilities: ProjectTrackerCapabilities;
+  /** Absent until Hermes has prepared an arbitrary existing GitHub Project. */
+  trackerCapabilities?: ProjectTrackerCapabilities;
   idempotencyKey: string;
 }>;
 
@@ -50,9 +51,10 @@ const jsonVersion = (value: unknown): Readonly<{content: string; version: string
 export const registerProject = async (database: Database, input: RegisterProjectInput): Promise<Readonly<{
   projectId: string; slug: string; created: boolean;
 }>> => {
-  if (!validProviderId(input.trackerCapabilities.agentOwnerOptionId) ||
-    !validProviderId(input.trackerCapabilities.doneStatusOptionId) ||
-    !/^[^\0\r\n]{1,256}$/.test(input.trackerCapabilities.defaultBranch)) {
+  const capabilities = input.trackerCapabilities;
+  if (capabilities !== undefined && (!validProviderId(capabilities.agentOwnerOptionId) ||
+    !validProviderId(capabilities.doneStatusOptionId) ||
+    !/^[^\0\r\n]{1,256}$/.test(capabilities.defaultBranch))) {
     throw new Error('project_tracker_capabilities_invalid');
   }
   const client = await database.connect();
@@ -94,8 +96,8 @@ export const registerProject = async (database: Database, input: RegisterProject
     const policies = [
       {kind: 'project_process_policy_v1', name: 'Project process policy', ...jsonVersion(defaultProjectProcessPolicy)},
       {kind: 'agent_routing_policy_v1', name: 'Agent routing policy', ...jsonVersion(defaultAgentRoutingPolicy)},
-      {kind: 'project_tracker_capabilities_v1', name: 'Project tracker capabilities',
-        ...jsonVersion(trackerCapabilitiesValue(input.trackerCapabilities))}
+      ...(capabilities === undefined ? [] : [{kind: 'project_tracker_capabilities_v1',
+        name: 'Project tracker capabilities', ...jsonVersion(trackerCapabilitiesValue(capabilities))}])
     ];
     for (const policy of policies) await client.query(`insert into project_source_artifacts
       (id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,source_url,provenance)
@@ -143,7 +145,7 @@ export type ProjectRuntimeBinding = Readonly<{
   repositoryUrl: string;
   cursor: string | null;
   trackerCredentialRef: OpaqueSecretRef;
-  trackerCapabilities: ProjectTrackerCapabilities;
+  trackerCapabilities: ProjectTrackerCapabilities | null;
 }>;
 
 type ProjectRuntimeRow = Omit<ProjectRuntimeBinding,
@@ -151,13 +153,13 @@ type ProjectRuntimeRow = Omit<ProjectRuntimeBinding,
   trackerSecretId: string;
   trackerSecretPurpose: string;
   trackerSecretLocator: string;
-  trackerCapabilitiesContent: string;
+  trackerCapabilitiesContent: string | null;
 }>;
 
 const runtimeBinding = (rows: readonly ProjectRuntimeRow[]): ProjectRuntimeBinding | null => {
   const candidates = rows.flatMap((row) => {
-    const capabilities = parseTrackerCapabilities(row.trackerCapabilitiesContent);
-    if (capabilities === null || row.trackerSecretPurpose !== 'tracker_read' ||
+    const capabilities = row.trackerCapabilitiesContent === null ? null : parseTrackerCapabilities(row.trackerCapabilitiesContent);
+    if (row.trackerSecretPurpose !== 'tracker_read' ||
       !row.trackerSecretLocator.startsWith('/')) return [];
     return [{workspaceId: row.workspaceId, projectId: row.projectId, ownerActorId: row.ownerActorId,
       bindingId: row.bindingId, provider: row.provider, projectUrl: row.projectUrl,
@@ -179,7 +181,7 @@ const projectRuntimeRows = async (database: Database, workspaceId: string,
     join secret_refs secret on secret.id=b.secret_ref_id and secret.workspace_id=p.workspace_id
     join lateral (select actor_id from project_memberships where project_id=p.id and role='project_owner' and active=true
       order by created_at,id limit 1) owner on true
-    join lateral (select content_text from project_source_artifacts where project_id=p.id
+    left join lateral (select content_text from project_source_artifacts where project_id=p.id
       and kind='project_tracker_capabilities_v1' order by created_at desc,id desc limit 1) capabilities on true
     where p.workspace_id=$1 and lower(b.repository_url)=lower($2)`, [workspaceId, repositoryUrl]);
   return result.rows;

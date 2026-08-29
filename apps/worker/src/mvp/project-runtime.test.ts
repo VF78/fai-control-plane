@@ -3,7 +3,7 @@ import {projectHermesSecretPurpose, type Database, type ProjectHermesSecretKind}
 import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProjectBindings,
   runProjectBindingsIsolated,
   type WorkerProjectBinding} from './project-runtime.ts';
-import {restartHermesGateway} from './runtime.ts';
+import {inspectConfirmedGitHubProject,restartHermesGateway,trackerPreparationDeltaShrank} from './runtime.ts';
 
 const ids={one:'00000000-0000-4000-8000-000000000001',two:'00000000-0000-4000-8000-000000000002'} as const;
 const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','management-username','management-password','telegram-bot','inbound-actions'];
@@ -26,6 +26,24 @@ const row = (project: 'one'|'two', repository: string) => ({
 });
 
 describe('multi-project worker composition', () => {
+  it('retries preparation only for an exact strict subset of the prior delta',()=>{
+    expect(trackerPreparationDeltaShrank(['Status','Owner','Blocked'],['Owner','Blocked'])).toBe(true);
+    expect(trackerPreparationDeltaShrank(['Status','Owner'],['Blocked'])).toBe(false);
+    expect(trackerPreparationDeltaShrank(['Status'],['Status'])).toBe(false);
+  });
+  it('verifies only the bound Project fields with one read-only GraphQL request',async()=>{
+    const request=vi.fn(async(_input:URL|RequestInfo,init?:RequestInit)=>new Response(JSON.stringify({data:{user:{projectV2:{fields:{nodes:[
+      {id:'status',name:'Status',options:['Backlog','Ready','In Dev','QA','Acceptance','Done'].map((name,index)=>({id:`s${index}`,name}))},
+      {id:'owner',name:'Owner',options:[{id:'hermes',name:'Hermes'}]},
+      {id:'blocked',name:'Blocked',options:[{id:'no',name:'No'},{id:'yes',name:'Yes'}]}],pageInfo:{hasNextPage:false}}}},
+      repository:{defaultBranchRef:{name:'main'}}}}),{status:200}));
+    const result=await inspectConfirmedGitHubProject({projectUrl:'https://github.com/users/VF78/projects/1',
+      repositoryUrl:'https://github.com/VF78/control',token:'secret',stages:['Backlog','Ready','In Dev','QA','Acceptance','Done']},
+    request as typeof fetch);
+    expect(result).toEqual({remainingDelta:[],capabilities:{provider:'github',agentOwnerOptionId:'hermes',
+      doneStatusOptionId:'s5',defaultBranch:'main'}});
+    expect(request).toHaveBeenCalledTimes(1);expect(request.mock.calls[0]?.[1]?.method).toBe('POST');
+  });
   it('resolves separate repository, Project and dedicated Hermes runtime for each binding', async () => {
     const trackerRows=[row('one','control'),row('two','ascon')];
     const database = {query: vi.fn(async (sql:string) => {
