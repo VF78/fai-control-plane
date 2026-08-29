@@ -138,7 +138,7 @@ Reviewed non-secret Control Plane environment example SHA-256:
 ### Isolated Hermes Codex CLI credential
 
 The Hermes-derived image is built from the exact upstream digest recorded in
-`infra/hermes-ascon/Dockerfile` and pins `@openai/codex` `0.144.1`. The gateway
+`infra/hermes-project/Dockerfile` and pins `@openai/codex` `0.144.1`. The gateway
 runs as UID/GID `10000:10000`. The isolated credential lives at
 `/var/lib/fai-codex-ascon/home` and is mounted into the ASCON gateway and the
 one-shot `codex-cli` auth service. Never mount root's Codex home or another

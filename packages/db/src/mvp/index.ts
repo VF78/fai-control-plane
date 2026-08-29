@@ -5,3 +5,4 @@ export * from './project-registration.ts';
 export * from './project-documents.ts';
 export * from './project-context-bootstrap.ts';
 export * from './project-hermes-runtime.ts';
+export * from './project-runtime-provisioning.ts';

@@ -5,6 +5,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).parents[3]
 HERMES = ROOT / "infra/hermes-ascon"
+PROJECT_RUNTIME = ROOT / "infra/hermes-project"
 
 
 class DeploymentContractTest(unittest.TestCase):
@@ -30,7 +31,7 @@ class DeploymentContractTest(unittest.TestCase):
         configs = (
             HERMES / "config.yaml",
             HERMES / "profiles/internal/config.yaml",
-            HERMES / "profile-template/config.yaml",
+            PROJECT_RUNTIME / "profile-template/config.yaml",
         )
         for config in configs:
             lines = config.read_text().splitlines()
@@ -67,7 +68,7 @@ class DeploymentContractTest(unittest.TestCase):
     def test_stage_prepares_uid_boundary_and_fails_closed(self):
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
         readable_block = script.split("readonly -a readable_files=(", 1)[1].split(")", 1)[0]
-        self.assertEqual(readable_block.count('"$deploy_root/'), 10)
+        self.assertEqual(readable_block.count('"$deploy_root/'), 13)
         self.assertNotIn('agent-executor-result.schema.json', script)
         self.assertIn('chmod 0644 "${readable_files[@]}"', script)
         self.assertIn('chmod 0755 "${readable_directories[@]}"', script)
@@ -126,7 +127,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("Hermes model is invalid", script)
 
     def test_derived_image_and_separate_codex_oauth_are_pinned(self):
-        dockerfile = (HERMES / "Dockerfile").read_text()
+        dockerfile = (PROJECT_RUNTIME / "Dockerfile").read_text()
         compose = (HERMES / "compose.yaml").read_text()
         environment = (HERMES / "production.env.example").read_text()
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
@@ -226,7 +227,7 @@ class DeploymentContractTest(unittest.TestCase):
         compose = (HERMES / "compose.yaml").read_text()
         gateway = compose.split("  gateway:\n", 1)[1].split("\n  codex-cli:", 1)[0]
         codex = compose.split("  codex-cli:\n", 1)[1]
-        entrypoint = (HERMES / "native-entrypoint.sh").read_text()
+        entrypoint = (PROJECT_RUNTIME / "native-entrypoint.sh").read_text()
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()
         self.assertIn('entrypoint: ["/opt/fai/native-entrypoint.sh"]', gateway)
         self.assertIn('/var/lib/fai-codex-ascon/home:/opt/data/codex-home', gateway)
@@ -246,7 +247,7 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertNotIn('github-repository-token', codex)
 
     def test_private_management_and_direct_devops_runtime_are_bounded(self):
-        dockerfile = (HERMES / "Dockerfile").read_text()
+        dockerfile = (PROJECT_RUNTIME / "Dockerfile").read_text()
         compose = (HERMES / "compose.yaml").read_text()
         environment = (HERMES / "production.env.example").read_text()
         script = (ROOT / "scripts/deploy-hermes-ascon.sh").read_text()

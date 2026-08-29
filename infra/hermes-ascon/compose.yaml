@@ -11,7 +11,7 @@ services:
     image: ${HERMES_IMAGE:?required}
     build:
       context: ../..
-      dockerfile: infra/hermes-ascon/Dockerfile
+      dockerfile: infra/hermes-project/Dockerfile
     user: "10000:10000"
     working_dir: /opt/data/work/project
     entrypoint: ["/opt/fai/native-entrypoint.sh"]
@@ -51,7 +51,7 @@ services:
       - ${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro
       - ./extensions/fai-control-plane:/opt/data/plugins/fai-control-plane:ro
       - ./extensions/fai-identity:/opt/data/hooks/fai-identity:ro
-      - ./profile-template:/opt/data/profiles/fai-project-template:ro
+      - ../hermes-project/profile-template:/opt/data/profiles/fai-project-template:ro
       - ./profiles/internal/config.yaml:/opt/data/profiles/internal/config.yaml:ro
       - ${HERMES_INTERNAL_BRIDGE_TOKEN_FILE:?required}:/opt/data/profiles/internal/bridge-token:ro
     networks:
@@ -80,7 +80,7 @@ services:
     image: ${HERMES_IMAGE:?required}
     build:
       context: ../..
-      dockerfile: infra/hermes-ascon/Dockerfile
+      dockerfile: infra/hermes-project/Dockerfile
     user: "10000:10000"
     working_dir: /opt/data
     entrypoint: ["/opt/fai/management-entrypoint.sh"]
@@ -92,7 +92,7 @@ services:
     volumes:
       - /var/lib/fai-hermes-ascon:/opt/data
       - ${HERMES_RENDERED_CONFIG_FILE:?required}:/opt/data/config.yaml:ro
-      - ./profile-template:/opt/data/profiles/fai-project-template:ro
+      - ../hermes-project/profile-template:/opt/data/profiles/fai-project-template:ro
       - ${HERMES_DASHBOARD_USERNAME_FILE:?required}:/run/secrets/hermes-dashboard-username:ro
       - ${HERMES_DASHBOARD_PASSWORD_FILE:?required}:/run/secrets/hermes-dashboard-password:ro
       - ${HERMES_DASHBOARD_SIGNING_SECRET_FILE:?required}:/run/secrets/hermes-dashboard-signing-secret:ro
@@ -117,7 +117,7 @@ services:
     image: ${HERMES_IMAGE:?required}
     build:
       context: ../..
-      dockerfile: infra/hermes-ascon/Dockerfile
+      dockerfile: infra/hermes-project/Dockerfile
     user: "10000:10000"
     working_dir: /opt/data/work/project
     entrypoint: ["codex"]

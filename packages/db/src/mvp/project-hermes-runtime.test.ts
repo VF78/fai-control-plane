@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import type {Database} from './runtime.ts';
-import {listProjectHermesRuntimeBindings,parseProjectHermesRuntimeArtifact,projectHermesSecretPurpose,
+import {listProjectHermesRuntimeBindings,parseProjectHermesRuntimeArtifact,projectHermesRuntimeImageVersion,projectHermesSecretPurpose,
   type ProjectHermesSecretKind} from './project-hermes-runtime.ts';
 
 const projects={one:'00000000-0000-4000-8000-000000000001',two:'00000000-0000-4000-8000-000000000002'} as const;
@@ -46,6 +46,16 @@ describe('dedicated project Hermes runtime binding',()=>{
   it('rejects another private service even when it has a single-label host',()=>{
     const value=JSON.parse(artifact('one')) as Record<string,unknown>;
     value.managementEndpoint='http://database:9119/';
+    expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toBeNull();
+  });
+
+  it('returns only a bounded device-auth prompt for a current installing runtime',()=>{
+    const value=JSON.parse(artifact('one')) as Record<string,unknown>;
+    value.status='auth_required';value.imageVersion=projectHermesRuntimeImageVersion;
+    value.auth={verificationUrl:'https://auth.openai.com/codex/device',userCode:'ABCD-EFGH'};
+    expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toMatchObject({status:'auth_required',
+      auth:{verificationUrl:'https://auth.openai.com/codex/device',userCode:'ABCD-EFGH'}});
+    value.auth={verificationUrl:'http://worker:3001/auth',userCode:'ABCD-EFGH'};
     expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toBeNull();
   });
 });

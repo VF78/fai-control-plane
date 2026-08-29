@@ -1,5 +1,6 @@
 import {listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,
   listProjectHermesRuntimeBindings, readProjectAgentProfile, readProjectAgentSubmissionView,
+  readProjectHermesRuntimeSetup,
   readAgentRoutingPolicy, readProjectContextStatus, readProjectExecutionMode, readProjectMembershipRole, readProjectProcessPolicy,
   readProjectTrackerCapabilities, type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
@@ -14,7 +15,7 @@ import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
 
 export const dynamic = 'force-dynamic';
 type Area = 'dashboard'|'tasks'|'process'|PhaseBView;
-type Query = Readonly<{view?: string; project?: string; task?: string; filter?: string}>;
+type Query = Readonly<{view?: string; project?: string; task?: string; filter?: string; setup?: string}>;
 const current = (view?: string): Area => ['dashboard','tasks','process','conversations','people','systems','settings'].includes(view ?? '') ? view as Area : 'dashboard';
 
 export default async function Home({searchParams}: Readonly<{searchParams: Promise<Query>}>) {
@@ -71,12 +72,18 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
       listProjectHermesRuntimeBindings(database, session.workspaceId)
     ]);
     const runtimeByProject = new Map(runtimes.map((runtime) => [runtime.projectId, runtime]));
-    const projectDetails = await Promise.all(projects.map(async (project) => ({project,
-      agentProfile: view === 'settings' ? await readProjectAgentProfile(database, session.actorId, project.id) : null,
-      config: integrationConfig(process.env, runtimeByProject.get(project.id) ?? null)})));
+    const projectDetails = await Promise.all(projects.map(async (project) => {
+      const [agentProfile,runtimeSetup,trackerCapabilities]=view==='settings'?await Promise.all([
+        readProjectAgentProfile(database,session.actorId,project.id),
+        readProjectHermesRuntimeSetup(database,session.actorId,project.id),
+        readProjectTrackerCapabilities(database,session.actorId,project.id)
+      ]):[null,null,null];
+      return {project,agentProfile,runtimeSetup,trackerCapabilities,
+        config: integrationConfig(process.env, runtimeByProject.get(project.id) ?? null)};
+    }));
     const phaseBProjects = projectDetails.map((item) => ({...item, sources,
       evidence: operatorEvidence.find((evidence) => evidence.projectId === item.project.id) ?? null}));
-    content = <PhaseB view={view} projects={phaseBProjects} actorId={session.actorId}/>;
+    content = <PhaseB view={view} projects={phaseBProjects} actorId={session.actorId} setup={query.setup}/>;
   }
 
   return <Shell view={view} projects={projects} operatorName={session.displayName}>{content}</Shell>;

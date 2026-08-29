@@ -87,7 +87,7 @@ const projectQuery = `query MvpProject($owner: String!, $number: Int!, $after: S
         ... on ProjectV2ItemFieldDateValue { date }
       }
       content { __typename ... on Issue {
-        id databaseId number title url repository { nameWithOwner }
+        id databaseId number title body url repository { nameWithOwner }
         assignees(first: 20) { nodes { id login name } }
         parent { databaseId repository { nameWithOwner } }
         subIssues(first: 100) { nodes { databaseId repository { nameWithOwner } } pageInfo { hasNextPage } }
@@ -185,6 +185,9 @@ export const createGitHubTrackerReadAdapter = (input: Readonly<{
       return [{
         itemId: item.id as string, projectId: input.binding.projectId,
         issueId: String(positiveInteger(content.databaseId)), title: content.title as string,
+        statement: content.body === null || content.body === undefined ? null :
+          typeof content.body === 'string' && content.body.length <= 20_000 && !content.body.includes('\0')
+            ? content.body : (() => { throw new Error('github_response_invalid'); })(),
         url: content.url as string,
         version: `github:updated-at:${item.updatedAt as string}`,
         statusOptionId: bounded(status?.optionId, 512) ? status.optionId : null,
@@ -363,7 +366,8 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
   };
   return {
     async createIssue(command) {
-      if (command.projectId !== input.binding.projectId || !bounded(command.title, 160) || !bounded(command.statement, 4_000)) {
+      if (command.projectId !== input.binding.projectId || !bounded(command.title, 160) || !bounded(command.statement, 4_000) ||
+        (command.initialStage!==undefined&&!bounded(command.initialStage,200))) {
         throw new Error('github_mutation_denied');
       }
       const credential = await token();
@@ -399,7 +403,8 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
       if (!membership.ok || !Array.isArray(connection?.nodes) || object(connection.pageInfo)?.hasNextPage === true) {
         throw new Error('github_mutation_failed');
       }
-      const alreadyAdded = connection.nodes.some((entry) => object(object(entry)?.project)?.id === projectNodeId);
+      const existingItem=connection.nodes.map(object).find((entry)=>object(entry?.project)?.id===projectNodeId)??null;
+      const alreadyAdded = existingItem!==null;let projectItemId=existingItem?.id;
       if (!alreadyAdded) {
         const add = await request('https://api.github.com/graphql', {method: 'POST', headers: apiHeaders(credential),
           body: JSON.stringify({query: `mutation($project:ID!,$content:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}`,
@@ -408,6 +413,14 @@ export const createGitHubTrackerMutationAdapter = (input: Readonly<{
         const errors = addValue?.errors;
         const returned = object(object(object(addValue?.data)?.addProjectV2ItemById)?.item)?.id;
         if (!add.ok || (Array.isArray(errors) && errors.length > 0) || !bounded(returned,512)) throw new Error('github_mutation_failed');
+        projectItemId=returned;
+      }
+      if(command.initialStage!==undefined){if(!bounded(projectItemId,512))throw new Error('github_mutation_failed');
+        const fields=await projectFields(credential);const stage=fields.status.options.find((option)=>option.name===command.initialStage);
+        const no=fields.blocked.options.find((option)=>option.name==='No');if(stage===undefined||no===undefined)
+          throw new Error('github_status_unavailable');
+        await setSingleSelect(credential,fields.projectId,projectItemId,fields.status.id,stage.id);
+        await setSingleSelect(credential,fields.projectId,projectItemId,fields.blocked.id,no.id);
       }
       return {referenceId: String(number), url, version: `github:updated-at:${value.updated_at as string}`};
     },

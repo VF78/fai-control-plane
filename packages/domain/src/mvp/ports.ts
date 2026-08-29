@@ -16,6 +16,7 @@ export type TrackerMutationPort = Readonly<{
     title: string;
     statement: string;
     idempotencyKey: string;
+    initialStage?: string;
   }>): Promise<Readonly<{referenceId: string; url: string; version: string}>>;
   addIssueContext(input: Readonly<{
     referenceId: string;

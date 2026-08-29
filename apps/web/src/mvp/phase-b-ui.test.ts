@@ -22,9 +22,12 @@ describe('portfolio Phase B operator surfaces', () => {
     expect(page).not.toMatch(/'receipts'|'audit'|'agentSubmissions'|'messenger'/);
   });
 
-  it('keeps direct portfolio registration and per-project settings', async () => {
-    const view=await source('phase-b-ui.tsx');
-    expect(view).toContain('action={<ProjectRegistrationControl/>}');
+  it('keeps one resumable project wizard and per-project settings', async () => {
+    const [view,wizard]=await Promise.all([source('phase-b-ui.tsx'),source('project-wizard.tsx')]);
+    expect(view).toContain('<ProjectSetupWizard item={selected} contextCurrent={selectedContextCurrent}/>');
+    expect(view).toContain('/?view=settings&setup=new');
+    expect(wizard).toContain('export function ProjectSetupWizard');
+    expect(wizard).toContain("action:'confirm_and_start'");
     expect(view).toContain('activeDocuments.map');
     expect(view).toContain('ProjectDocumentUploadControl');
     expect(view).toContain('ProjectAgentActivationControl');
@@ -41,8 +44,9 @@ describe('portfolio Phase B operator surfaces', () => {
   });
 
   it('uses shared async controls for all mutations', async () => {
-    const control=await source('operator-controls.tsx');
-    expect(control).toContain('export function ProjectRegistrationControl');
+    const [control,wizard]=await Promise.all([source('operator-controls.tsx'),source('project-wizard.tsx')]);
+    expect(wizard).toContain('useAsyncCommand');
+    expect(control).not.toContain('export function ProjectRegistrationControl');
     expect(control).toContain('export function ProjectDocumentUploadControl');
     expect(control).toContain('export function AccessControls');
     expect(control).toContain('AsyncButton');

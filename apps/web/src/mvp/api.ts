@@ -18,6 +18,7 @@ import {
   readProjectProcessPolicy,
   readProjectAgentProfile,
   readProjectHermesRuntimeBinding,
+  readProjectHermesRuntimeSetup,
   readProjectExecutionMode,
   readProjectTrackerCapabilities,
   readProjectDocumentPayload,
@@ -163,6 +164,23 @@ export const projectAgentProfile = async (request:Request,projectId:string):Prom
       projectId,idempotencyKey:string(body.idempotencyKey,128),force:body.force===true}),
     {headers:{'cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
+};
+
+export const projectRuntimeSetup=async(request:Request,projectId:string):Promise<Response>=>{
+  try{const database=getDatabase();const session=await requireSession();
+    if(request.method==='GET')return Response.json(await readProjectHermesRuntimeSetup(database,session.actorId,projectId),
+      {headers:{'cache-control':'no-store'}});
+    if(request.method!=='POST')return new Response(null,{status:405,headers:{allow:'GET, POST'}});
+    requireCsrf(request);const body=await json(request);const action=string(body.action,32);
+    if(!['connect_messenger','install'].includes(action))throw new Error('body_invalid');
+    const endpoint=new URL(process.env.FCP_WORKER_INTERNAL_URL??'http://worker:3001');
+    if(endpoint.toString()!=='http://worker:3001/')throw new Error('project_runtime_unavailable');
+    const response=await fetch(new URL(`/project-runtime/${encodeURIComponent(projectId)}`,endpoint),{method:'POST',
+      headers:{'content-type':'application/json',cookie:request.headers.get('cookie')??''},body:JSON.stringify(body),
+      signal:AbortSignal.timeout(30_000)});
+    return new Response(await response.text(),{status:response.status,headers:{'content-type':'application/json',
+      'cache-control':'no-store'}});
+  }catch(error){return jsonError(error);}
 };
 
 export const projectExecutionMode = async (request: Request, projectId: string): Promise<Response> => {
@@ -377,6 +395,37 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     const database = getDatabase(); const session = await requireSession(); requireCsrf(request);
     const body = await json(request); const projectId = string(body.projectId);
     const action = body.action === undefined ? 'assign' : string(body.action, 32);
+    if(action==='confirm_and_start'){
+      if(body.confirmed!==true)throw new Error('body_invalid');const itemId=string(body.projectItemId);
+      const expectedVersion=string(body.version,1_024);const exactStatement=string(body.exactStatement,20_000);
+      const runtime=await agentRuntime(database,session.actorId,projectId);if(runtime===null)throw new Error('agent_provider_unavailable');
+      const delivery=createHermesDeliveryAdapter({endpoint:string(runtime.gatewayEndpoint,2_048),
+        credentialRef:runtime.agentCredentialRef,secrets:secretResolver,allowPrivateHttp:privateAgentEndpoint(runtime)});
+      const assignment=await githubAssignment(database,session.actorId,projectId,delivery);
+      const snapshot=await assignment.trackerRead.readSnapshot(assignment.context.bindingId,null);
+      await assignment.ports.persistSnapshot(snapshot);const item=snapshot.items.find((candidate)=>candidate.itemId===itemId);
+      if(item===undefined||item.version!==expectedVersion||item.statement!==exactStatement)throw new Error('task_executor_conflict');
+      const result=await startGitHubProcess(database,{actorId:session.actorId,projectId,task:{kind:'existing',itemId},
+        sourceReference:'ui:project-wizard',idempotencyKey:string(body.idempotencyKey,128)});
+      return Response.json({...result,itemId:item.itemId,itemUrl:item.url});
+    }
+    if(action==='create_and_start'){
+      const title=string(body.title,160);const scope=string(body.scope,1_500);const acceptance=string(body.acceptance,1_500);
+      if(body.confirmed!==true)throw new Error('body_invalid');const runtime=await agentRuntime(database,session.actorId,projectId);
+      if(runtime===null)throw new Error('agent_provider_unavailable');const delivery=createHermesDeliveryAdapter({
+        endpoint:string(runtime.gatewayEndpoint,2_048),credentialRef:runtime.agentCredentialRef,secrets:secretResolver,
+        allowPrivateHttp:privateAgentEndpoint(runtime)});const assignment=await githubAssignment(database,session.actorId,projectId,delivery);
+      const processPolicy=await readProjectProcessPolicy(database,session.actorId,projectId);const initialStage=processPolicy?.policy.stages[0]?.title;
+      if(initialStage===undefined)throw new Error('project_process_policy_unavailable');const idempotencyKey=string(body.idempotencyKey,128);
+      const created=await assignment.tracker.createIssue({projectId,title,statement:`## Scope\n\n${scope}\n\n## Acceptance\n\n${acceptance}`,
+        initialStage,idempotencyKey:`${idempotencyKey}:create`});
+      const snapshot=await assignment.trackerRead.readSnapshot(assignment.context.bindingId,null);
+      await assignment.ports.persistSnapshot(snapshot);const item=snapshot.items.find((candidate)=>candidate.url===created.url);
+      if(item===undefined)throw new Error('tracker_item_unavailable');
+      const result=await startGitHubProcess(database,{actorId:session.actorId,projectId,task:{kind:'existing',itemId:item.itemId},
+        sourceReference:'ui:project-wizard',idempotencyKey:`${idempotencyKey}:start`});
+      return Response.json({...result,itemId:item.itemId,itemUrl:item.url});
+    }
     if (action !== 'assign') throw new Error('body_invalid');
     const executor = body.executor;
     if (executor === null || typeof executor !== 'object' || Array.isArray(executor)) throw new Error('body_invalid');

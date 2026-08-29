@@ -3,6 +3,7 @@ export const mvpApiRoutes = Object.freeze([
   '/api/auth/logout',
   '/api/projects',
   '/api/projects/[projectId]/agent-profile',
+  '/api/projects/[projectId]/runtime',
   '/api/projects/[projectId]/execution-mode',
   '/api/access/onboarding',
   '/api/access/memberships/[id]',

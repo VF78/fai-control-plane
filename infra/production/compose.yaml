@@ -144,6 +144,8 @@ services:
       - hermes-management
     volumes:
       - ${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro
+      - ${FCP_PROJECT_RUNTIME_HOST_DIR:?required}:${FCP_PROJECT_RUNTIME_HOST_DIR:?required}
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migrate:
         condition: service_completed_successfully

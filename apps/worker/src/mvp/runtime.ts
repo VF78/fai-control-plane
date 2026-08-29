@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, createStores,
   completeProjectContextBootstrap, failProjectContextBootstrap, listProjectContextBootstrapAttempts,
+  listProjectRuntimeProvisioningRequests,recordProjectRuntimeProvisioningState,
   promoteApprovedProjectArchitectures,
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
   readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
@@ -20,7 +21,6 @@ import type {
   AgentDeliveryPort,
   MessengerDeliveryPort,
   MessengerDeliveryInput,
-  OpaqueSecretRef,
   SecretResolverPort,
   TrackerItemFact
 } from '@fai-control-plane/domain';
@@ -28,6 +28,7 @@ import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProjectBindings,
   runProjectBindingsIsolated,
   type WorkerProjectBinding} from './project-runtime.ts';
+import {provisionProjectHermesRuntime} from './docker-project-runtime.ts';
 
 const env = (name: string): string => {
   const value = process.env[name];
@@ -231,8 +232,16 @@ export const createWorker = (database: Database = createDatabase()) => {
       }
     }
   };
+  const provisionProjectRuntimes=async()=>{
+    for(const request of await listProjectRuntimeProvisioningRequests(database,workspaceId)){
+      const outcome=await provisionProjectHermesRuntime(request);
+      if(outcome.status==='installing')continue;
+      await recordProjectRuntimeProvisioningState(database,{request,...outcome});
+    }
+  };
   return {
     async observe() {
+      await provisionProjectRuntimes();
       await promoteApprovedProjectArchitectures(database,workspaceId);
       await observeContextBootstraps();
       const results = await runProjectBindingsIsolated(await activeProjects(), async (project) => {
