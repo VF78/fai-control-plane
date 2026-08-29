@@ -959,7 +959,8 @@ export const createApprovalPersistence = (database: Database): Readonly<{
     if(!/^[a-f0-9]{64}$/.test(input.targetReference))return null;
     const proposal=await database.query<{url:string;version:string}>(`select b.project_url as url,s.sha256 as version
       from project_source_artifacts s join tracker_bindings b on b.project_id=s.project_id
-      where s.project_id=$1 and s.kind='project_architecture_proposal_v1' and s.sha256=$2 limit 1`,
+      where s.project_id=$1 and s.kind in ('project_architecture_proposal_v1','project_tracker_preparation_approval_v1')
+        and s.sha256=$2 limit 1`,
     [input.projectId,input.targetReference]);
     return proposal.rows[0]===undefined?null:{id:input.targetReference,...proposal.rows[0]};
   }},
@@ -973,10 +974,11 @@ export const createApprovalPersistence = (database: Database): Readonly<{
          where b.project_id=$1 order by s.observed_at desc limit 1`, [input.evidence.projectId]);
       let currentFact = current.rows[0]?.facts.items?.find((item) => item.itemId === input.evidence.target.id ||
         item.issueId === input.evidence.target.id);
-      if(currentFact===undefined&&input.evidence.kind==='plan'&&/^[a-f0-9]{64}$/.test(input.evidence.target.id)){
+      if(currentFact===undefined&&['plan','internal_operation'].includes(input.evidence.kind)&&/^[a-f0-9]{64}$/.test(input.evidence.target.id)){
         const proposal=await client.query<{url:string;version:string}>(`select b.project_url as url,s.sha256 as version
           from project_source_artifacts s join tracker_bindings b on b.project_id=s.project_id
-          where s.project_id=$1 and s.kind='project_architecture_proposal_v1' and s.sha256=$2 limit 1`,
+          where s.project_id=$1 and s.kind in ('project_architecture_proposal_v1','project_tracker_preparation_approval_v1')
+            and s.sha256=$2 limit 1`,
         [input.evidence.projectId,input.evidence.target.id]);
         const row=proposal.rows[0];if(row!==undefined)currentFact={itemId:input.evidence.target.id,issueId:'',
           url:row.url,version:row.version};

@@ -2,7 +2,7 @@ import {listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTas
   listProjectHermesRuntimeBindings, readProjectAgentProfile, readProjectAgentSubmissionView,
   readProjectHermesRuntimeSetup,
   readAgentRoutingPolicy, readProjectContextStatus, readProjectExecutionMode, readProjectMembershipRole, readProjectProcessPolicy,
-  readProjectTrackerCapabilities, type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
+  readProjectTrackerCapabilities,readProjectTrackerPreparation,readProjectWizardProgress,type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import type {ReactNode} from 'react';
 import {Dashboard, Process, Shell, Tasks} from '../src/mvp/phase-a-ui.tsx';
@@ -63,9 +63,9 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     }));
     content = <Process projects={processProjects}/>;
   } else {
-    const needsEvidence = view === 'conversations' || view === 'people';
+    const needsEvidence = view === 'conversations' || view === 'people' || view === 'settings';
     const evidenceSections = new Set<ProjectOperatorEvidenceSection>(view === 'conversations'
-      ? ['people'] : view === 'people' ? ['people'] : []);
+      ? ['people'] : view === 'people' || view === 'settings' ? ['people'] : []);
     const [operatorEvidence, sources, runtimes] = await Promise.all([
       needsEvidence ? listProjectOperatorEvidenceViews(database, session.actorId, evidenceSections) : Promise.resolve([]),
       view === 'settings' ? listProjectSourceViews(database, session.actorId) : Promise.resolve([]),
@@ -73,12 +73,14 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     ]);
     const runtimeByProject = new Map(runtimes.map((runtime) => [runtime.projectId, runtime]));
     const projectDetails = await Promise.all(projects.map(async (project) => {
-      const [agentProfile,runtimeSetup,trackerCapabilities]=view==='settings'?await Promise.all([
+      const [agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress]=view==='settings'?await Promise.all([
         readProjectAgentProfile(database,session.actorId,project.id),
         readProjectHermesRuntimeSetup(database,session.actorId,project.id),
-        readProjectTrackerCapabilities(database,session.actorId,project.id)
-      ]):[null,null,null];
-      return {project,agentProfile,runtimeSetup,trackerCapabilities,
+        readProjectTrackerCapabilities(database,session.actorId,project.id),
+        readProjectTrackerPreparation(database,session.actorId,project.id),
+        readProjectWizardProgress(database,session.actorId,project.id)
+      ]):[null,null,null,null,null];
+      return {project,agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress,
         config: integrationConfig(process.env, runtimeByProject.get(project.id) ?? null)};
     }));
     const phaseBProjects = projectDetails.map((item) => ({...item, sources,

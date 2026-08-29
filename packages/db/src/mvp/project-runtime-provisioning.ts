@@ -29,11 +29,11 @@ export const projectHermesRuntimeCoordinates=(slug:string,projectId:string):Coor
 type SecretLocator=Readonly<{id:string;locator:string}>;
 export type ProjectRuntimeSecretLocators=Readonly<Record<ProjectHermesSecretKind,SecretLocator>>;
 const artifactValue=(input:Readonly<{
-  coordinates:Coordinates;telegramChatId:string;telegramAllowedUserIds:readonly string[];
+  coordinates:Coordinates;telegramChatId:string|null;telegramAllowedUserIds:readonly string[];
   secrets:ProjectRuntimeSecretLocators;status:ParsedProjectHermesRuntimeArtifact['status'];generation:string;
   auth?:Readonly<{verificationUrl:string;userCode:string}>;failure?:ParsedProjectHermesRuntimeArtifact['failure'];
 }>)=>({contract:projectHermesRuntimeContract,status:input.status,imageVersion:projectHermesRuntimeImageVersion,
-  ...input.coordinates,telegram:{chatId:input.telegramChatId,allowedUserIds:input.telegramAllowedUserIds},
+  ...input.coordinates,...(input.telegramChatId===null?{}:{telegram:{chatId:input.telegramChatId,allowedUserIds:input.telegramAllowedUserIds}}),
   secretRefs:{agentDelivery:input.secrets['agent-delivery'].id,
     managementUsername:input.secrets['management-username'].id,
     managementPassword:input.secrets['management-password'].id,
@@ -53,12 +53,12 @@ const insertArtifact=async(client:Pick<Database,'query'>,input:Readonly<{project
 };
 
 export const recordProjectMessengerSetup=async(database:Database,input:Readonly<{
-  workspaceId:string;projectId:string;actorId:string;telegramChatId:string;telegramAllowedUserIds:readonly string[];
+  workspaceId:string;projectId:string;actorId:string;telegramChatId:string|null;telegramAllowedUserIds:readonly string[];
   secrets:ProjectRuntimeSecretLocators;idempotencyKey:string;occurredAt:string;
 }>):Promise<void>=>{
-  if(!isUuid(input.projectId)||!isUuid(input.workspaceId)||!/^-?[1-9][0-9]{0,19}$/.test(input.telegramChatId)||
-    input.telegramAllowedUserIds.length===0||input.telegramAllowedUserIds.some((id)=>!/^[1-9][0-9]{0,19}$/.test(id))||
-    new Set(input.telegramAllowedUserIds).size!==input.telegramAllowedUserIds.length)throw new Error('project_runtime_invalid');
+  if(!isUuid(input.projectId)||!isUuid(input.workspaceId)||
+    (input.telegramChatId!==null&&(!/^-?[1-9][0-9]{0,19}$/.test(input.telegramChatId)||input.telegramAllowedUserIds.length===0||
+    input.telegramAllowedUserIds.some((id)=>!/^[1-9][0-9]{0,19}$/.test(id))||new Set(input.telegramAllowedUserIds).size!==input.telegramAllowedUserIds.length)))throw new Error('project_runtime_invalid');
   const client=await database.connect();try{await client.query('begin');
     const allowed=await client.query<{slug:string}>(`select p.slug from projects p join project_memberships m on m.project_id=p.id
       where p.id=$1 and p.workspace_id=$2 and m.actor_id=$3 and m.role='project_owner' and m.active=true for update`,
@@ -80,7 +80,7 @@ export const recordProjectMessengerSetup=async(database:Database,input:Readonly<
     [input.projectId,input.actorId,input.idempotencyKey,coordinates.runtimeId,input.occurredAt]);
     await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
       values($1,$2,$3,'project.messenger.connect',$4,$5,$6,$7)`,[input.workspaceId,input.projectId,input.actorId,
-      coordinates.runtimeId,input.idempotencyKey,JSON.stringify({provider:'telegram'}),input.occurredAt]);
+      coordinates.runtimeId,input.idempotencyKey,JSON.stringify({provider:input.telegramChatId===null?'none':'telegram'}),input.occurredAt]);
     await client.query('commit');
   }catch(error){await client.query('rollback');throw error;}finally{client.release();}
 };

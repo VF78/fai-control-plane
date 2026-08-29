@@ -109,14 +109,15 @@ export const provisionProjectHermesRuntime=async(request:ProjectRuntimeProvision
     const env=['HOME=/opt/data','CODEX_HOME=/opt/data/codex-home','API_SERVER_ENABLED=true','API_SERVER_HOST=0.0.0.0',
       'API_SERVER_PORT=8642','HERMES_DASHBOARD=0','HERMES_GATEWAY_NO_SUPERVISE=1','HERMES_PROVIDER=openai-codex',
       'HERMES_MODEL=gpt-5.6-terra','TERMINAL_MAX_FOREGROUND_TIMEOUT=1800','HERMES_GITHUB_REPOSITORY_TOKEN_FILE=/run/secrets/github-token',
-      'HERMES_API_SERVER_KEY_FILE=/run/secrets/agent-delivery','HERMES_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram-bot',
+      'HERMES_API_SERVER_KEY_FILE=/run/secrets/agent-delivery',
+      ...(request.artifact.telegramChatId===null?[]:['HERMES_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram-bot',
       `TELEGRAM_ALLOWED_USERS=${request.artifact.telegramAllowedUserIds.join(',')}`,
       `TELEGRAM_ALLOWED_CHATS=${request.artifact.telegramChatId}`,
       `TELEGRAM_GROUP_ALLOWED_USERS=${request.artifact.telegramAllowedUserIds.join(',')}`,
-      `TELEGRAM_GROUP_ALLOWED_CHATS=${request.artifact.telegramChatId}`];
+      `TELEGRAM_GROUP_ALLOWED_CHATS=${request.artifact.telegramChatId}`])];
     const gatewayName=names.gateway;const gatewayBinds=[...baseBinds,
       `${root}/secrets/github-token:/run/secrets/github-token:ro`,`${request.secrets['agent-delivery'].locator}:/run/secrets/agent-delivery:ro`,
-      `${request.secrets['telegram-bot'].locator}:/run/secrets/telegram-bot:ro`,
+      ...(request.artifact.telegramChatId===null?[]:[`${request.secrets['telegram-bot'].locator}:/run/secrets/telegram-bot:ro`]),
       `${assets.generated}/config.yaml:/opt/data/config.yaml:ro`,`${assets.profile}/config.yaml:/opt/data/profiles/internal/config.yaml:ro`,
       `${assets.profile}/SOUL.md:/opt/data/profiles/internal/SOUL.md:ro`];
     const gateway=await ensureContainer(docker,request,gatewayName,'gateway',expectedImageId,{Image:image,User:'10000:10000',

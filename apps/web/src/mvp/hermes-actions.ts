@@ -56,6 +56,7 @@ export const createHermesConversationActionHandler = (dependencies: HermesAction
       if (!Object.hasOwn(body, 'source') || !Object.hasOwn(body, 'action') || Object.keys(body).length !== 2) {
         throw new Error('body_invalid');
       }
+      if (runtime.telegramChatId === null) throw new Error('authentication_denied');
       const source = body.source as Record<string, unknown>;
       const envelope = bindHermesConversation({source: source as never, action: body.action,
         projectId: runtime.projectId, telegramChatId: runtime.telegramChatId,

@@ -25,6 +25,12 @@ const database=(sharedChat=false,sharedLocator=false)=>{
 };
 
 describe('dedicated project Hermes runtime binding',()=>{
+  it('accepts a dedicated Hermes runtime before a messenger is configured',()=>{
+    const value=JSON.parse(artifact('one')) as Record<string,unknown>;
+    value.imageVersion=projectHermesRuntimeImageVersion;delete value.telegram;
+    expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toMatchObject({telegramChatId:null,telegramAllowedUserIds:[]});
+  });
+
   it('resolves two projects to distinct endpoints, workspaces, Telegram and credentials',async()=>{
     const bindings=await listProjectHermesRuntimeBindings(database(),'workspace');
     expect(bindings.map((binding)=>({projectId:binding.projectId,gateway:binding.gatewayEndpoint,

@@ -26,13 +26,14 @@ toolsets:
   - todo
   - memory
   - session_search
-gateway:
+${request.artifact.telegramChatId===null?'':`gateway:
   multiplex_profiles: true
   profile_routes:
     - name: ${yamlString(`${request.slug}-project`)}
       platform: telegram
       chat_id: ${yamlString(request.artifact.telegramChatId)}
       profile: internal
+`}
 tool_loop_guardrails:
   hard_stop_enabled: true
   hard_stop_after:

@@ -4,8 +4,12 @@ import {
   readActiveProjectDocumentSet,
   readProjectDocumentPayload,
   readProjectHermesRuntimeBinding,
+  readProjectProcessPolicy,
+  readProjectTrackerPreparation,
   recordProjectAgentBootstrapStart,
   recordProjectAgentProfile,
+  recordProjectTrackerPreparationStart,
+  projectTrackerPreparationAssignment,
   projectAgentProfileTemplateVersion,
   registerProject,
   resolveAgentSubmissionBinding,
@@ -45,38 +49,24 @@ export const resolveAndRegisterProject = async (database: Database, input: Reado
 }>) => {
   const urls = githubUrls(input.projectUrl, input.repositoryUrl);
   const token = (await secretResolver.resolve(githubTokenRef(), 'tracker_read')).value;
-  const query = `query($owner:String!,$number:Int!,$repository:String!){user(login:$owner){projectV2(number:$number){id
-    fields(first:100){nodes{... on ProjectV2SingleSelectField{name options{id name}}}pageInfo{hasNextPage}}}}
-    repository(owner:$owner,name:$repository){id defaultBranchRef{name}}}`;
+  const query = `query($owner:String!,$number:Int!,$repository:String!){
+    user(login:$owner){projectV2(number:$number){id}} repository(owner:$owner,name:$repository){id defaultBranchRef{name}}}`;
   const graph = await githubRequest('https://api.github.com/graphql', token, {method: 'POST',
     headers: {'content-type': 'application/json'}, body: JSON.stringify({query, variables: {
       owner: urls.owner, number: urls.projectNumber, repository: urls.repository
     }})});
-  const payload = await graph.json() as {data?: {user?: {projectV2?: {id?: string; fields?: {
-    nodes?: readonly {name?: string; options?: readonly {id?: string; name?: string}[]}[];
-    pageInfo?: {hasNextPage?: boolean};
-  }}}, repository?: {id?: string; defaultBranchRef?: {name?: string}}}};
+  const payload = await graph.json() as {data?: {user?: {projectV2?: {id?: string}},
+    repository?: {id?: string; defaultBranchRef?: {name?: string}}}};
   const project = payload.data?.user?.projectV2;
   const externalProjectId = project?.id;
   const repositoryId = payload.data?.repository?.id;
   const defaultBranch = payload.data?.repository?.defaultBranchRef?.name;
-  const fields = project?.fields;
-  const single = (fieldName: string, optionName: string): string | null => {
-    const field = fields?.nodes?.find((candidate) => candidate.name === fieldName);
-    const option = field?.options?.find((candidate) => candidate.name === optionName);
-    return typeof option?.id === 'string' && option.id.length > 0 && option.id.length <= 512
-      ? option.id : null;
-  };
-  const agentOwnerOptionId = single('Owner', 'Hermes');
-  const doneStatusOptionId = single('Status', 'Done');
   if (typeof externalProjectId !== 'string' || typeof repositoryId !== 'string' ||
-    typeof defaultBranch !== 'string' || !/^[^\0\r\n]{1,256}$/.test(defaultBranch) ||
-    fields?.pageInfo?.hasNextPage === true || agentOwnerOptionId === null || doneStatusOptionId === null) {
+    typeof defaultBranch !== 'string' || !/^[^\0\r\n]{1,256}$/.test(defaultBranch)) {
     throw new Error('github_binding_invalid');
   }
   return registerProject(database, {...input, projectUrl: urls.projectUrl, repositoryUrl: urls.repositoryUrl,
-    externalProjectId, repositoryId,
-    trackerCapabilities: {provider: 'github', agentOwnerOptionId, doneStatusOptionId, defaultBranch}});
+    externalProjectId, repositoryId});
 };
 
 type CookieClient = Readonly<{request: (path: string, init?: RequestInit) => Promise<Response>}>;
@@ -238,3 +228,29 @@ export const ensureProjectAgentProfile = async (database: Database, input: Reado
 }>): Promise<ProjectAgentProfileView> => {
   return activateProjectAgentProfile(database, input);
 };
+
+const startTrackerPreparationRun=async(input:Readonly<{endpoint:string;token:string;assignment:unknown}>):Promise<string>=>{
+  const response=await fetch(input.endpoint,{method:'POST',headers:{accept:'application/json',authorization:`Bearer ${input.token}`,
+    'content-type':'application/json'},body:JSON.stringify(input.assignment),signal:AbortSignal.timeout(15_000)});
+  if(response.status!==202)throw new Error('project_tracker_preparation_unavailable');
+  const value=await response.json().catch(()=>null) as {run_id?:unknown;status?:unknown}|null;
+  if(typeof value?.run_id!=='string'||!/^run_[A-Za-z0-9_-]{1,250}$/.test(value.run_id)||value.status!=='started')
+    throw new Error('project_tracker_preparation_unavailable');return value.run_id;
+};
+
+export const prepareProjectTracker=async(database:Database,input:Readonly<{workspaceId:string;actorId:string;
+  projectId:string;idempotencyKey:string}>)=>{const current=await readProjectTrackerPreparation(database,input.actorId,input.projectId);
+  if(['configuring','approval_required','verifying','ready'].includes(current.status))return current;
+  const [binding,runtime,profile,process]=await Promise.all([resolveAgentSubmissionBinding(database,input.actorId,input.projectId),
+    readProjectHermesRuntimeBinding(database,input.actorId,input.projectId),readProjectAgentProfile(database,input.actorId,input.projectId),
+    readProjectProcessPolicy(database,input.actorId,input.projectId)]);
+  if(binding===null||runtime===null||binding.requesterRole!=='project_owner')throw new Error('project_tracker_preparation_denied');
+  if(profile.status!=='ready')throw new Error('agent_profile_not_ready');
+  if(process===null)throw new Error('project_process_not_configured');
+  const token=(await secretResolver.resolve(runtime.agentCredentialRef,'agent_delivery')).value;
+  const remainingDelta=current.remainingDelta.length===0?[`Status: ${process.policy.stages.map((stage)=>stage.title).join(' -> ')}`,
+    'Owner: Hermes','Blocked: No, Yes']:current.remainingDelta;
+  const assignment=projectTrackerPreparationAssignment({repositoryUrl:binding.repositoryUrl,projectUrl:binding.projectUrl,
+    process:process.policy,remainingDelta});return recordProjectTrackerPreparationStart(database,{...input,processVersion:process.version,
+      remainingDelta,idempotencyKey:input.idempotencyKey,occurredAt:new Date().toISOString()},()=>startTrackerPreparationRun({
+        endpoint:runtime.gatewayEndpoint,token,assignment}));};
