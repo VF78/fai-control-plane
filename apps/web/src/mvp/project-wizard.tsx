@@ -19,6 +19,9 @@ const json=async(path:string,body:Record<string,unknown>):Promise<Result>=>{cons
 const errorText=(error:unknown)=>{const code=error instanceof Error?error.message:'request_failed';return ({
   github_binding_invalid:'GitHub не подтвердил репозиторий и Project. Проверьте ссылки и поля Owner, Status и Blocked.',
   github_read_failed:'GitHub сейчас не подтвердил подключение. Повторите позже.',
+  project_registration_conflict:'Проект с таким коротким именем уже подключён к другому репозиторию или Project.',
+  project_registration_denied:'Только владелец проекта может добавить новый проект.',
+  project_registration_unavailable:'Подключение GitHub для рабочего пространства не настроено.',
   project_document_pdf_text_layer_required:'В PDF нет текстового слоя. Загрузите текстовый PDF или DOCX.',
   project_document_set_too_large:'Активный набор документов превышает лимит.',
   project_document_invalid:'Поддерживаются DOCX, PDF с текстовым слоем, MD и TXT.',
