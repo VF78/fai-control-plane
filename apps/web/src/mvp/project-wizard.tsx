@@ -10,6 +10,7 @@ import type {PhaseBProject} from './phase-b-ui.tsx';
 import {AccessControls,ArchitectureProposalDecision,ProjectDeleteControl,ProjectDocumentsEditor,TelegramSettingsControl} from './operator-controls.tsx';
 import {AsyncButton,CommandNoticeView,useAsyncCommand} from './async-command.tsx';
 import {ProcessStages} from './phase-a-ui.tsx';
+import {projectSetupState} from './project-setup-state.ts';
 
 type Result=Readonly<{error?:string;projectId?:string;slug?:string;status?:string;itemId?:string;itemUrl?:string}>;
 const id=()=>globalThis.crypto?.randomUUID?.()??`${Date.now()}-${Math.random()}`;
@@ -40,12 +41,6 @@ const documentFacts=(item:PhaseBProject|null)=>{const documents=(item?.sources??
   source.projectId===item?.project.id&&source.kind.startsWith('project_document_v1:'));
   const latest=new Set<string>();for(const source of documents)latest.add(source.kind.split(':')[1]??'');
   return {documents,ready:latest.has('combined')||(latest.has('requirements')&&latest.has('passport'))};};
-export const projectSetupState=(item:PhaseBProject,contextCurrent:boolean)=>{const docsReady=documentFacts(item).ready;
-  const states=[true,docsReady,item.wizardProgress?.processConfirmed===true,
-    (item.evidence?.people.filter((person)=>person.active).length??0)>1||item.wizardProgress?.teamSkipped===true,
-    item.runtimeSetup?.telegramConfigured===true||item.wizardProgress?.communicationsSkipped===true,
-    item.runtimeSetup?.status==='ready',contextCurrent,item.trackerPreparation?.status==='ready'];
-  const pending=states.findIndex((value)=>!value);return {states,complete:pending===-1,nextStep:pending===-1?9:pending};};
 const done=(task:TrackerItemFact,doneOptionId:string)=>task.statusOptionId===doneOptionId;
 const taskUrl=(value:string):string=>{try{const url=new URL(value);url.search='';url.hash='';return url.toString().replace(/\/$/,'');}catch{return value.trim().replace(/\/$/,'');}};
 
@@ -170,7 +165,7 @@ function FirstTask({item}:Readonly<{item:PhaseBProject}>) {const command=useAsyn
 }
 
 export function ProjectSetupWizard({item,contextCurrent,actorId,workspacePeople}:Readonly<{item:PhaseBProject|null;contextCurrent:boolean;actorId:string;workspacePeople:readonly WorkspaceHumanActorView[]}>) {const documents=documentFacts(item);
-  const projectReady=item!==null;const setup=item===null?null:projectSetupState(item,contextCurrent);
+  const projectReady=item!==null;const setup=item===null?null:projectSetupState(item,documents.ready,contextCurrent);
   const states=setup?.states??[false,false,false,false,false,false,false,false];const processReady=states[2]===true;
   const teamReady=states[3]===true;const communicationsReady=states[4]===true;const runtimeReady=states[5]===true;
   const contextReady=states[6]===true;const trackerReady=states[7]===true;
