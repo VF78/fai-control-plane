@@ -12,5 +12,5 @@ describe('persisted project wizard progress',()=>{
       release:vi.fn()})),query} as unknown as Database;await expect(recordProjectWizardDecision(database,{workspaceId:'workspace',projectId:'project',
         actorId:'actor',decision:'project.wizard.team-skip',idempotencyKey:'skip-team:one',occurredAt:'2026-08-30T00:00:00.000Z'}))
       .resolves.toMatchObject({teamSkipped:true});expect(statements.some((sql)=>sql.includes('insert into command_receipts'))).toBe(true);
-    expect(statements.some((sql)=>sql.includes('$2::text'))).toBe(true);});
+    expect(statements.some((sql)=>sql.includes('$2::uuid::text'))).toBe(true);});
 });

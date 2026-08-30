@@ -18,7 +18,7 @@ export const recordProjectWizardDecision=async(database:Database,input:Readonly<
       `insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
        values($1,$2,$3,$4,$5,$6) on conflict(idempotency_key) do nothing`,[input.projectId,input.actorId,input.idempotencyKey,input.decision,
       input.projectId,input.occurredAt]);await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,
-      correlation_id,details,occurred_at) select $1,$2,$3,$4,$2::text,$5,$6,$7 where not exists(select 1 from audit_events where project_id=$2
+      correlation_id,details,occurred_at) select $1,$2,$3,$4,$2::uuid::text,$5,$6,$7 where not exists(select 1 from audit_events where project_id=$2
       and action=$4 and correlation_id=$5)`,[input.workspaceId,input.projectId,input.actorId,input.decision,input.idempotencyKey,
       JSON.stringify({wizard:true}),input.occurredAt]);await client.query('commit');return readProjectWizardProgress(database,input.actorId,input.projectId);
   }catch(error){await client.query('rollback');throw error;}finally{client.release();}};
