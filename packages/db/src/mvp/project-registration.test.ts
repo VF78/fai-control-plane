@@ -22,7 +22,7 @@ describe('project registration',()=>{
     await expect(registerProject(database,input)).resolves.toMatchObject({slug:input.slug,created:true});
     expect(queries.some((sql)=>sql.startsWith('insert into tracker_bindings'))).toBe(true);
     expect(queries.filter((sql)=>sql.startsWith('insert into project_source_artifacts'))).toHaveLength(4);
-    expect(queries.some((sql)=>sql.includes("'project.register',$2::text"))).toBe(true);
+    expect(queries.some((sql)=>sql.includes("'project.register',$2::uuid::text"))).toBe(true);
     expect(queries.at(-1)).toBe('commit');
     expect(JSON.stringify(query.mock.calls)).not.toContain('github_pat_');
   });
