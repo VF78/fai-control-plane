@@ -29,7 +29,7 @@ const githubUrls = (projectValue: string, repositoryValue: string) => {
     throw new Error('github_binding_invalid');
   }
   return {
-    projectUrl: projectUrl.toString(), repositoryUrl: repositoryUrl.toString(), owner: project[1]!,
+    projectUrl: projectUrl.toString().replace(/\/$/, ''), repositoryUrl: repositoryUrl.toString().replace(/\/$/, ''), owner: project[1]!,
     projectNumber: Number(project[2]), repository: repository[2]!
   };
 };
@@ -65,7 +65,8 @@ export const resolveAndRegisterProject = async (database: Database, input: Reado
     typeof defaultBranch !== 'string' || !/^[^\0\r\n]{1,256}$/.test(defaultBranch)) {
     throw new Error('github_binding_invalid');
   }
-  return registerProject(database, {...input, projectUrl: urls.projectUrl, repositoryUrl: urls.repositoryUrl,
+  return registerProject(database, {...input, name: input.name.trim(), slug: input.slug.trim(),
+    projectUrl: urls.projectUrl, repositoryUrl: urls.repositoryUrl,
     externalProjectId, repositoryId});
 };
 

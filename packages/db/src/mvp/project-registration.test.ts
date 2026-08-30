@@ -27,6 +27,20 @@ describe('project registration',()=>{
     expect(JSON.stringify(query.mock.calls)).not.toContain('github_pat_');
   });
 
+  it('resumes an existing binding when only display whitespace or URL spelling differs',async()=>{
+    const query=vi.fn(async(sql:string)=>{
+      if(sql.includes("m.role='project_owner'"))return {rowCount:1,rows:[{}]};
+      if(sql.includes('from projects p join tracker_bindings'))return {rowCount:1,rows:[{
+        id:'project',name:'Control ',repositoryUrl:'https://github.com/VF78/fai-control-plane/',
+        projectUrl:'https://github.com/users/VF78/projects/1/',repositoryId:'R_1',externalProjectId:'PVT_1'}]};
+      return {rowCount:1,rows:[]};
+    });
+    const client={query,release:vi.fn()};const database={connect:vi.fn(async()=>client)} as unknown as Database;
+    await expect(registerProject(database,input)).resolves.toEqual({projectId:'project',slug:input.slug,created:false});
+    expect(query.mock.calls.some(([sql])=>String(sql).startsWith('insert into projects'))).toBe(false);
+    expect(query.mock.calls.at(-1)?.[0]).toBe('commit');
+  });
+
   it('fails closed when the readiness artifact is malformed',async()=>{
     const database={query:vi.fn(async()=>({rows:[{sha256:'v',content:'{}'}]}))} as unknown as Database;
     await expect(readProjectAgentProfile(database,'actor','project')).resolves.toEqual({status:'not_configured',

@@ -4,8 +4,8 @@ import type {ProjectAgentProfileView, ProjectHermesRuntimeSetupView, ProjectOper
   WorkspaceHumanActorView} from '@fai-control-plane/db';
 import type {ReactNode} from 'react';
 import {Bot, CheckCircle2, CircleDot, FileText, MessageSquareText, ShieldCheck, UsersRound} from 'lucide-react';
-import {AccessControls, ArchitectureProposalDecision, ProjectAgentActivationControl, ProjectDocumentUploadControl, projectRoleLabel,TelegramSettingsControl} from './operator-controls.tsx';
-import {ProjectSetupWizard} from './project-wizard.tsx';
+import {AccessControls, ArchitectureProposalDecision, ProjectAgentActivationControl, ProjectDeleteControl,ProjectDocumentUploadControl, projectRoleLabel,TelegramSettingsControl} from './operator-controls.tsx';
+import {ProjectSetupWizard,projectSetupState} from './project-wizard.tsx';
 import type {IntegrationConfig} from './integration-config.ts';
 import {phaseHref} from './phase-a-ui.tsx';
 
@@ -42,17 +42,21 @@ function SettingsProject(item: PhaseBProject) {
   const {project,agentProfile}=item;const {projectSources,activeDocuments,documentsReady,fingerprint}=projectDocumentState(item);
   const agentStatus=documentsReady&&agentProfile?.documentFingerprint!==null&&agentProfile?.documentFingerprint!==fingerprint?'not_configured':agentProfile?.status??'not_configured';
   const proposal=projectSources.find(({kind,sha256})=>kind==='project_architecture_proposal_v1'&&sha256===agentProfile?.proposalSha)??null;
-  return <ProjectBlock project={project}><div className="fcp-settings-connections"><div><span>Репозиторий</span><a href={project.repositoryUrl} target="_blank" rel="noreferrer">{project.repositoryUrl.replace(/^https:\/\/github\.com\//,'')||'Открыть'} ↗</a></div><div><span>GitHub Project</span>{project.tracker.sourceUrl===null?<span>Не подключён</span>:<a href={project.tracker.sourceUrl} target="_blank" rel="noreferrer">Открыть ↗</a>}</div></div><div className="fcp-settings-sections"><section><header><div><h2>Документы</h2><p>Активные материалы проекта.</p></div><FileText aria-hidden="true" size={18}/></header><div className="fcp-phase-b-source-list">{activeDocuments.length===0?<p className="fcp-empty">Документы ещё не загружены.</p>:activeDocuments.map((source)=><article key={source.id}><div><strong>{source.name}</strong><small>{category(source.kind)}</small></div><a href={`/api/projects/${project.id}/documents/${source.id}`}>Скачать</a></article>)}</div><ProjectDocumentUploadControl projectId={project.id}/></section><section><header><div><h2>ИИ-агент</h2><p>Подключение и контекст работы.</p></div><Bot aria-hidden="true" size={18}/></header><ProjectAgentActivationControl projectId={project.id} status={agentStatus} profile={agentProfile?.profile??null} documentsReady={documentsReady}/>{agentStatus==='awaiting_architecture'&&proposal!==null?<ArchitectureProposalDecision projectId={project.id} proposalSha={proposal.sha256}/>:null}</section></div></ProjectBlock>;
+  const contextCurrent=agentProfile?.status==='ready'&&agentProfile.documentFingerprint===fingerprint;const setup=projectSetupState(item,contextCurrent);
+  return <ProjectBlock project={project}><div className="fcp-project-setup-actions"><span className={`fcp-status ${setup.complete?'success':'warning'}`}><CircleDot aria-hidden="true" size={13}/>{setup.complete?'Настройка готова':'Настройка не завершена'}</span>{setup.complete?null:<a className="fcp-secondary" href={`/?view=settings&setup=${encodeURIComponent(project.slug)}`}>Продолжить настройку</a>}<ProjectDeleteControl projectId={project.id} projectName={project.name}/></div><div className="fcp-settings-connections"><div><span>Репозиторий</span><a href={project.repositoryUrl} target="_blank" rel="noreferrer">{project.repositoryUrl.replace(/^https:\/\/github\.com\//,'')||'Открыть'} ↗</a></div><div><span>GitHub Project</span>{project.tracker.sourceUrl===null?<span>Не подключён</span>:<a href={project.tracker.sourceUrl} target="_blank" rel="noreferrer">Открыть ↗</a>}</div></div><div className="fcp-settings-sections"><section><header><div><h2>Документы</h2><p>Активные материалы проекта.</p></div><FileText aria-hidden="true" size={18}/></header><div className="fcp-phase-b-source-list">{activeDocuments.length===0?<p className="fcp-empty">Документы ещё не загружены.</p>:activeDocuments.map((source)=><article key={source.id}><div><strong>{source.name}</strong><small>{category(source.kind)}</small></div><a href={`/api/projects/${project.id}/documents/${source.id}`}>Скачать</a></article>)}</div><ProjectDocumentUploadControl projectId={project.id}/></section><section><header><div><h2>ИИ-агент</h2><p>Подключение и контекст работы.</p></div><Bot aria-hidden="true" size={18}/></header><ProjectAgentActivationControl projectId={project.id} status={agentStatus} profile={agentProfile?.profile??null} documentsReady={documentsReady}/>{agentStatus==='awaiting_architecture'&&proposal!==null?<ArchitectureProposalDecision projectId={project.id} proposalSha={proposal.sha256}/>:null}</section></div></ProjectBlock>;
 }
 function Settings({projects,setup,actorId,workspacePeople}: Readonly<{projects:readonly PhaseBProject[];setup:string|undefined;actorId:string;workspacePeople:readonly WorkspaceHumanActorView[]}>) {
-  const selected=setup===undefined?null:projects.find(({project})=>project.slug===setup)??null;
+  const ordered=[...projects].sort((left,right)=>{const state=(item:PhaseBProject)=>projectSetupState(item,item.agentProfile?.status==='ready'&&item.agentProfile.documentFingerprint===projectDocumentState(item).fingerprint).complete;
+    return Number(state(left))-Number(state(right));});
+  const incomplete=ordered.filter((item)=>!projectSetupState(item,item.agentProfile?.status==='ready'&&item.agentProfile.documentFingerprint===projectDocumentState(item).fingerprint).complete);
+  const selected=setup==='new'?(incomplete[0]??null):setup===undefined||setup==='create'?null:projects.find(({project})=>project.slug===setup)??null;
   const selectedContextCurrent=selected!==null&&selected.agentProfile?.status==='ready'&&
     selected.agentProfile.documentFingerprint===projectDocumentState(selected).fingerprint;
   return <div className={`fcp-phase-b fcp-settings ${setup!==undefined?'fcp-settings-wizard-open':''}`}><Header title="Настройки проектов"
     detail="Репозитории, документы и ИИ-агенты портфеля."
-    action={<a className="fcp-primary fcp-add-project" href="/?view=settings&setup=new">Добавить проект</a>}/>
+    action={<a className="fcp-primary fcp-add-project" href="/?view=settings&setup=create">Добавить проект</a>}/>
     {setup!==undefined?<ProjectSetupWizard item={selected} contextCurrent={selectedContextCurrent} actorId={actorId} workspacePeople={workspacePeople}/>:null}
-    {setup===undefined?(projects.length===0?<section className="fcp-settings-panel"><p className="fcp-empty">Добавьте первый проект.</p></section>:<div className="fcp-portfolio-blocks">{projects.map((item)=><SettingsProject {...item} key={item.project.id}/>)}</div>):null}
+    {setup===undefined?(projects.length===0?<section className="fcp-settings-panel"><p className="fcp-empty">Добавьте первый проект.</p></section>:<div className="fcp-portfolio-blocks">{ordered.map((item)=><SettingsProject {...item} key={item.project.id}/>)}</div>):null}
   </div>;
 }
 

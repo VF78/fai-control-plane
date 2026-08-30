@@ -1,9 +1,11 @@
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {chmod,chown,mkdir,readFile,rename,writeFile} from 'node:fs/promises';
 import {
+  deleteProjectRecords,
   projectHermesRuntimeCoordinates,
   projectHermesSecretPurpose,
   readProjectHermesRuntimeSetup,
+  readProjectDeletionTarget,
   recordProjectMessengerSetup,
   requestProjectRuntimeInstall,
   type Database,
@@ -11,6 +13,7 @@ import {
   type ProjectRuntimeSecretLocators
 } from '@fai-control-plane/db';
 import {actorForSession} from '@fai-control-plane/db';
+import {removeProjectHermesRuntime} from './docker-project-runtime.ts';
 
 const runtimeRoot=()=>{
   const value=process.env.FCP_PROJECT_RUNTIME_HOST_DIR;
@@ -145,17 +148,27 @@ export const installProjectRuntime=async(database:Database,input:Readonly<{works
     });
 };
 
+export const deleteProject=async(database:Database,input:Readonly<{actorId:string;projectId:string}>)=>{
+  const target=await readProjectDeletionTarget(database,input.actorId,input.projectId);
+  const coordinates=projectHermesRuntimeCoordinates(target.slug,target.projectId);
+  const directory=`${runtimeRoot()}/${target.workspaceId}/${target.projectId}`;
+  await removeProjectHermesRuntime({...target,artifact:{runtimeId:coordinates.runtimeId}},directory);
+  await deleteProjectRecords(database,{...target,actorId:input.actorId});return {deleted:true};
+};
+
 const body=async(request:Request)=>{const text=await request.text();if(text.length===0||text.length>8_192)
   throw new Error('body_invalid');const value=JSON.parse(text) as unknown;if(value===null||typeof value!=='object'||Array.isArray(value))
     throw new Error('body_invalid');return value as Record<string,unknown>;};
 const required=(value:unknown,maximum:number)=>{if(typeof value!=='string'||value.length===0||value.length>maximum||value.includes('\0'))
   throw new Error('body_invalid');return value;};
 export const projectRuntimeSetupCommand=async(database:Database,request:Request,projectId:string):Promise<Response>=>{
-  try{if(request.method!=='POST')return new Response(null,{status:405});
+  try{if(!['POST','DELETE'].includes(request.method))return new Response(null,{status:405});
     const cookie=request.headers.get('cookie')??'';const sessionToken=/(?:^|;\s*)fai_session=([^;]+)/.exec(cookie)?.[1];
     if(sessionToken===undefined)throw new Error('authentication_required');
     const session=await actorForSession(database,createHash('sha256').update(decodeURIComponent(sessionToken)).digest('hex'));
-    if(session===null)throw new Error('authentication_required');const value=await body(request);const action=required(value.action,32);
+    if(session===null)throw new Error('authentication_required');
+    if(request.method==='DELETE')return Response.json(await deleteProject(database,{actorId:session.actorId,projectId}));
+    const value=await body(request);const action=required(value.action,32);
     const result=action==='connect_messenger'?await connectProjectMessenger(database,{workspaceId:session.workspaceId,
       actorId:session.actorId,projectId,botToken:required(value.botToken,256),chatId:required(value.chatId,32),
       allowedUserIds:required(value.allowedUserIds,2_400).split(',').map((item)=>item.trim()).filter(Boolean),

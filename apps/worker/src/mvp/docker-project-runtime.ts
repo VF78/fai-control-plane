@@ -1,6 +1,6 @@
 import {request as httpRequest} from 'node:http';
 import {dirname} from 'node:path';
-import {stat,writeFile} from 'node:fs/promises';
+import {rm,stat,writeFile} from 'node:fs/promises';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {prepareProjectHermesAssets} from './hermes-project-template.ts';
 
@@ -18,7 +18,8 @@ const json=<T>(response:DockerResponse):T=>JSON.parse(response.body.toString('ut
 const expect=(response:DockerResponse,statuses:readonly number[])=>{if(!statuses.includes(response.status))
   throw new Error('docker_engine_failed');return response;};
 const namePath=(name:string)=>encodeURIComponent(name);
-export const projectRuntimeOwnership=(request:ProjectRuntimeProvisioningRequest,component:string)=>({
+type ProjectRuntimeOwnershipInput=Readonly<{workspaceId:string;projectId:string;artifact:Readonly<{runtimeId:string}>}>;
+export const projectRuntimeOwnership=(request:ProjectRuntimeOwnershipInput,component:string)=>({
   'fai.control-plane.managed':'true','fai.control-plane.workspace-id':request.workspaceId,
   'fai.control-plane.project-id':request.projectId,'fai.control-plane.runtime-id':request.artifact.runtimeId,
   'fai.control-plane.component':component
@@ -47,6 +48,11 @@ const removeOwned=async(docker:DockerRequest,request:ProjectRuntimeProvisioningR
   assertProjectRuntimeOwnership(current.Config?.Labels,request,component);
   expect(await docker('DELETE',`/containers/${namePath(name)}?v=1`),[204,404]);
 };
+const removeOwnedForProject=async(docker:DockerRequest,request:ProjectRuntimeOwnershipInput,name:string,component:string)=>{
+  const current=await inspectContainer(docker,name);if(current===null)return;
+  if(!exactLabels(current.Config?.Labels,projectRuntimeOwnership(request,component)))throw new Error('docker_ownership_conflict');
+  expect(await docker('DELETE',`/containers/${namePath(name)}?force=1&v=1`),[204,404]);
+};
 const ensureNetwork=async(docker:DockerRequest,request:ProjectRuntimeProvisioningRequest,name:string,shared=false)=>{
   let response=await docker('GET',`/networks/${namePath(name)}`);
   if(response.status===404&&!shared){expect(await docker('POST','/networks/create',{Name:name,Driver:'bridge',Internal:false,
@@ -71,6 +77,21 @@ export const projectRuntimeResourceNames=(request:ProjectRuntimeProvisioningRequ
   gateway:`${request.artifact.runtimeId}-gateway`,management:`${request.artifact.runtimeId}-management`,
   readiness:`${request.artifact.runtimeId}-readiness`
 });
+export const removeProjectHermesRuntime=async(request:ProjectRuntimeOwnershipInput,root:string,
+  docker:DockerRequest=dockerSocketRequest()):Promise<void>=>{
+  if(root==='/'||!root.startsWith('/')||root.includes('..'))throw new Error('project_runtime_secret_conflict');
+  const names={network:`${request.artifact.runtimeId}-network`,auth:`${request.artifact.runtimeId}-codex-auth`,
+    gateway:`${request.artifact.runtimeId}-gateway`,management:`${request.artifact.runtimeId}-management`,
+    readiness:`${request.artifact.runtimeId}-readiness`};
+  for(const [component,name] of [['gateway',names.gateway],['management',names.management],
+    ['codex-auth',names.auth],['readiness',names.readiness]] as const)
+    await removeOwnedForProject(docker,request,name,component);
+  const network=await docker('GET',`/networks/${namePath(names.network)}`);
+  if(network.status!==404){const value=json<Readonly<{Labels?:unknown}>>(expect(network,[200]));
+    if(!exactLabels(value.Labels,projectRuntimeOwnership(request,'network')))throw new Error('docker_ownership_conflict');
+    expect(await docker('DELETE',`/networks/${namePath(names.network)}`),[204,404]);}
+  await rm(root,{recursive:true,force:true});
+};
 const commonHost=(root:string,projectNetwork:string)=>({Binds:[`${root}/data:/opt/data`,
   `${root}/codex-home:/opt/data/codex-home`],Memory:1_073_741_824,NanoCpus:1_000_000_000,PidsLimit:256,
   ShmSize:1_073_741_824,Init:true,RestartPolicy:{Name:'unless-stopped'},NetworkMode:projectNetwork});

@@ -74,8 +74,7 @@ export const registerProject = async (database: Database, input: RegisterProject
     [input.workspaceId, input.slug]);
     const existing = prior.rows[0];
     if (existing !== undefined) {
-      if (existing.name !== input.name || existing.repositoryUrl !== input.repositoryUrl ||
-        existing.projectUrl !== input.projectUrl || existing.repositoryId !== input.repositoryId ||
+      if (existing.name.trim() !== input.name.trim() || existing.repositoryId !== input.repositoryId ||
         existing.externalProjectId !== input.externalProjectId) throw new Error('project_registration_conflict');
       await client.query('commit');
       return {projectId: existing.id, slug: input.slug, created: false};
