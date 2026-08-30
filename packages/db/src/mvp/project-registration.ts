@@ -113,7 +113,7 @@ export const registerProject = async (database: Database, input: RegisterProject
         `repo-file:${source.key}`]);
     }
     await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,
-      correlation_id,details,occurred_at) values($1,$2,$3,'project.register',$2,$4,$5,now())`,
+      correlation_id,details,occurred_at) values($1,$2,$3,'project.register',$2::text,$4,$5,now())`,
     [input.workspaceId, projectId, input.actorId, input.idempotencyKey,
       JSON.stringify({slug: input.slug, provider: 'github'})]);
     await client.query('commit');
