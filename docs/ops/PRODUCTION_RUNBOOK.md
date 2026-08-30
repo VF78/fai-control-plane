@@ -98,7 +98,7 @@ Reviewed non-secret Hermes environment example SHA-256:
 `e1f067f8a2f6cebe8157e72b74144db7623c79312b8e465e7d84dd6a90161e46`.
 
 Reviewed non-secret Control Plane environment example SHA-256:
-`b4af3dd5981eb2b4d4c46d8f05bccb248f4f9219b59556901525b0c1c806f132`.
+`fc86c67b71d144a11d33a500cfb939d98c4653a875e0ddc0cf156a37702b1f0a`.
 
 - Mount one persistent project-scoped GitHub credential into the
   isolated Hermes gateway. Store its canonical value at

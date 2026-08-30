@@ -13,6 +13,10 @@ const post = async (path: string, body: Record<string, unknown>): Promise<Result
   if (!response.ok) throw new Error(value.error ?? 'request_failed');
   return value;
 };
+const remove = async (path:string,body:Record<string,unknown>):Promise<Result>=>{
+  const response=await fetch(path,{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  const value=await response.json().catch(()=>({})) as Result;if(!response.ok)throw new Error(value.error??'request_failed');return value;
+};
 const taskExecutorErrorNotice = (code: string): string => ({
   task_conflict: 'Команда не выполнена: задача уже изменилась в GitHub. Обновите страницу и проверьте исполнителя.',
   candidate_unavailable: 'Команда не выполнена: пользователь больше не доступен. Выберите другого.',
@@ -32,6 +36,15 @@ export function LogoutControl() {
   return <div className="fcp-logout"><AsyncButton type="button" pending={command.pending} pendingLabel="Выходим…" onClick={() => void command.run(async () => {
     const result = await post('/api/auth/logout', {}); window.location.assign('/'); return result;
   }, {success: 'Сеанс завершён.', refresh: false})}>Выйти</AsyncButton><CommandNoticeView notice={command.notice}/></div>;
+}
+
+export function ProjectDeleteControl({projectId,projectName}:Readonly<{projectId:string;projectName:string}>){
+  const [confirming,setConfirming]=useState(false);const command=useAsyncCommand();
+  const execute=()=>void command.run(()=>remove('/api/projects',{projectId,confirmed:true}),{refresh:false,
+    success:()=>{window.location.assign('/?view=settings');return 'Проект удалён из f(AI) Control.';},
+    error:(error)=>error instanceof Error&&error.message==='project_delete_denied'?'Удалить проект может только его владелец.':
+      'Проект не удалён. Проверьте состояние ИИ-агента и повторите.'});
+  return <div className="fcp-project-delete">{confirming?<div role="alert"><strong>Удалить «{projectName}»?</strong><p>Будут удалены данные проекта и созданные для него ресурсы ИИ-агента. Репозиторий, GitHub Project и задачи останутся без изменений.</p><div><AsyncButton type="button" className="fcp-danger-button" pending={command.pending} pendingLabel="Удаляем…" onClick={execute}><Trash2 aria-hidden="true" size={15}/> Удалить проект</AsyncButton><AsyncButton type="button" className="fcp-secondary" pending={command.pending} pendingLabel="" onClick={()=>setConfirming(false)}>Отмена</AsyncButton></div></div>:<AsyncButton type="button" className="fcp-delete-link" pending={false} pendingLabel="" onClick={()=>setConfirming(true)}><Trash2 aria-hidden="true" size={14}/> Удалить проект</AsyncButton>}<CommandNoticeView notice={command.notice}/></div>;
 }
 
 type DocumentDraft=Readonly<{id:string;category:'passport'|'requirements'|'architecture'|'supplemental';file:File|null}>;

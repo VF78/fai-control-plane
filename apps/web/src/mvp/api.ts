@@ -146,6 +146,14 @@ export const projects = async (request: Request): Promise<Response> => {
   try {
     const database = getDatabase();
     const session = await requireSession();
+    if(request.method==='DELETE'){
+      requireCsrf(request);const body=await json(request);if(body.confirmed!==true)throw new Error('body_invalid');
+      const projectId=string(body.projectId);const endpoint=new URL(process.env.FCP_WORKER_INTERNAL_URL??'http://worker:3001');
+      if(endpoint.toString()!=='http://worker:3001/')throw new Error('project_runtime_unavailable');
+      const response=await fetch(new URL(`/project-runtime/${encodeURIComponent(projectId)}`,endpoint),{method:'DELETE',
+        headers:{cookie:request.headers.get('cookie')??''},signal:AbortSignal.timeout(30_000)});
+      return new Response(await response.text(),{status:response.status,headers:{'content-type':'application/json','cache-control':'no-store'}});
+    }
     if (request.method === 'POST') {
       requireCsrf(request); const body=await json(request); const slug=string(body.slug,100);
       if(!/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(slug)) throw new Error('body_invalid');
@@ -154,7 +162,7 @@ export const projects = async (request: Request): Promise<Response> => {
         idempotencyKey:string(body.idempotencyKey,128)});
       return Response.json(result,{status:result.created?201:200});
     }
-    if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET, POST'}});
+    if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET, POST, DELETE'}});
     return Response.json({projects: await listProjects(database, session.actorId)});
   } catch (error) { return jsonError(error); }
 };

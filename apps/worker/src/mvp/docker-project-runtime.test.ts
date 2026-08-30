@@ -1,7 +1,10 @@
 import {describe,expect,it} from 'vitest';
+import {mkdtemp,rm,stat,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {assertProjectRuntimeOwnership,parseCodexDevicePrompt,projectRuntimeOwnership,
-  projectRuntimeResourceNames} from './docker-project-runtime.ts';
+  projectRuntimeResourceNames,removeProjectHermesRuntime} from './docker-project-runtime.ts';
 
 const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequest=>({
   projectId,workspaceId:'00000000-0000-4000-8000-000000000100',ownerActorId:'actor',slug:'project',
@@ -40,5 +43,28 @@ describe('direct project Docker adapter boundary',()=>{
     expect(parseCodexDevicePrompt('Open https://auth.openai.com/codex/device and enter ABCD-EFGH.')).toEqual({
       verificationUrl:'https://auth.openai.com/codex/device',userCode:'ABCD-EFGH'});
     expect(parseCodexDevicePrompt('token auth.json secret')).toBeNull();
+  });
+
+  it('removes only deterministic project resources and its exact root',async()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
+    const root=await mkdtemp(join(tmpdir(),'fai-project-delete-'));await writeFile(join(root,'memory'),'kept until deletion');
+    const calls:string[]=[];const docker=async(method:string,path:string)=>{calls.push(`${method} ${path}`);
+      return {status:404,body:Buffer.from('{}')};};
+    await removeProjectHermesRuntime(one,root,docker);
+    await expect(stat(root)).rejects.toMatchObject({code:'ENOENT'});
+    expect(calls).toEqual([
+      'GET /containers/fai-one-00000000-gateway/json','GET /containers/fai-one-00000000-management/json',
+      'GET /containers/fai-one-00000000-codex-auth/json','GET /containers/fai-one-00000000-readiness/json',
+      'GET /networks/fai-one-00000000-network']);
+  });
+
+  it('refuses deletion when a deterministic name has foreign labels',async()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
+    const root=await mkdtemp(join(tmpdir(),'fai-project-delete-'));await writeFile(join(root,'memory'),'must remain');
+    const docker=async()=>({status:200,body:Buffer.from(JSON.stringify({Config:{Labels:{
+      ...projectRuntimeOwnership(one,'gateway'),'fai.control-plane.project-id':'another-project'}}}))});
+    await expect(removeProjectHermesRuntime(one,root,docker)).rejects.toThrow('docker_ownership_conflict');
+    await expect(stat(root)).resolves.toBeDefined();
+    await rm(root,{recursive:true});
   });
 });

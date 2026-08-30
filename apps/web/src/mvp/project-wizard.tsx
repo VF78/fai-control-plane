@@ -7,7 +7,7 @@ import type {TrackerItemFact} from '@fai-control-plane/domain';
 import type {WorkspaceHumanActorView} from '@fai-control-plane/db';
 import {defaultProjectProcessPolicy} from '@fai-control-plane/domain';
 import type {PhaseBProject} from './phase-b-ui.tsx';
-import {AccessControls,ArchitectureProposalDecision,ProjectDocumentsEditor,TelegramSettingsControl} from './operator-controls.tsx';
+import {AccessControls,ArchitectureProposalDecision,ProjectDeleteControl,ProjectDocumentsEditor,TelegramSettingsControl} from './operator-controls.tsx';
 import {AsyncButton,CommandNoticeView,useAsyncCommand} from './async-command.tsx';
 import {ProcessStages} from './phase-a-ui.tsx';
 
@@ -40,6 +40,12 @@ const documentFacts=(item:PhaseBProject|null)=>{const documents=(item?.sources??
   source.projectId===item?.project.id&&source.kind.startsWith('project_document_v1:'));
   const latest=new Set<string>();for(const source of documents)latest.add(source.kind.split(':')[1]??'');
   return {documents,ready:latest.has('combined')||(latest.has('requirements')&&latest.has('passport'))};};
+export const projectSetupState=(item:PhaseBProject,contextCurrent:boolean)=>{const docsReady=documentFacts(item).ready;
+  const states=[true,docsReady,item.wizardProgress?.processConfirmed===true,
+    (item.evidence?.people.filter((person)=>person.active).length??0)>1||item.wizardProgress?.teamSkipped===true,
+    item.runtimeSetup?.telegramConfigured===true||item.wizardProgress?.communicationsSkipped===true,
+    item.runtimeSetup?.status==='ready',contextCurrent,item.trackerPreparation?.status==='ready'];
+  const pending=states.findIndex((value)=>!value);return {states,complete:pending===-1,nextStep:pending===-1?9:pending};};
 const done=(task:TrackerItemFact,doneOptionId:string)=>task.statusOptionId===doneOptionId;
 const taskUrl=(value:string):string=>{try{const url=new URL(value);url.search='';url.hash='';return url.toString().replace(/\/$/,'');}catch{return value.trim().replace(/\/$/,'');}};
 
@@ -164,14 +170,13 @@ function FirstTask({item}:Readonly<{item:PhaseBProject}>) {const command=useAsyn
 }
 
 export function ProjectSetupWizard({item,contextCurrent,actorId,workspacePeople}:Readonly<{item:PhaseBProject|null;contextCurrent:boolean;actorId:string;workspacePeople:readonly WorkspaceHumanActorView[]}>) {const documents=documentFacts(item);
-  const projectReady=item!==null;const docsReady=documents.ready;const processReady=item?.wizardProgress?.processConfirmed===true;
-  const teamReady=(item?.evidence?.people.filter((person)=>person.active).length??0)>1||item?.wizardProgress?.teamSkipped===true;
-  const communicationsReady=item?.runtimeSetup?.telegramConfigured===true||item?.wizardProgress?.communicationsSkipped===true;
-  const runtimeReady=item?.runtimeSetup?.status==='ready';const contextReady=contextCurrent;const trackerReady=item?.trackerPreparation?.status==='ready';
-  const states=[projectReady,docsReady,processReady,teamReady,communicationsReady,runtimeReady,contextReady,trackerReady];
-  const pending=states.findIndex((value)=>!value);const active=pending===-1?9:pending;
-  return <section className="fcp-project-wizard" aria-label="Добавить проект"><header><span><Sparkles aria-hidden="true" size={15}/> Настройка проекта</span><h2>{item===null?'Добавить проект':item.project.name}</h2><p>Один путь от GitHub до первой явно запущенной задачи.</p></header><div className="fcp-wizard-steps">
-    <Step number={1} title="Репозиторий и задачи" complete={projectReady} active={active===0}>{item===null?<Registration/>:<p className="fcp-wizard-summary">GitHub подтвердил репозиторий и Project.</p>}</Step>
+  const projectReady=item!==null;const setup=item===null?null:projectSetupState(item,contextCurrent);
+  const states=setup?.states??[false,false,false,false,false,false,false,false];const processReady=states[2]===true;
+  const teamReady=states[3]===true;const communicationsReady=states[4]===true;const runtimeReady=states[5]===true;
+  const contextReady=states[6]===true;const trackerReady=states[7]===true;
+  const docsReady=documents.ready;const active=setup?.nextStep??0;
+  return <section className="fcp-project-wizard" aria-label="Добавить проект"><header><span><Sparkles aria-hidden="true" size={15}/> Настройка проекта</span><h2>{item===null?'Добавить проект':item.project.name}</h2><p>Один путь от GitHub до первой явно запущенной задачи.</p>{item===null?null:<ProjectDeleteControl projectId={item.project.id} projectName={item.project.name}/>}</header><div className="fcp-wizard-steps">
+    <Step number={1} title="Репозиторий и задачи" complete={projectReady} active={active===0}>{item===null?<Registration/>:<div className="fcp-wizard-summary"><a href={item.project.repositoryUrl} target="_blank" rel="noreferrer">{item.project.repositoryUrl.replace(/^https:\/\/github\.com\//,'')}</a><a href={item.project.tracker.sourceUrl??'#'} target="_blank" rel="noreferrer">GitHub Project</a></div>}</Step>
     {item!==null?<><Step number={2} title="Документы" complete={docsReady} active={active===1}><ProjectDocumentsEditor projectId={item.project.id}/></Step>
       <Step number={3} title="Процесс" complete={processReady} active={active===2}><ProcessConfirmation item={item}/></Step>
       <Step number={4} title="Команда и роли" complete={teamReady} active={active===3}><Team item={item} actorId={actorId} workspacePeople={workspacePeople}/></Step>

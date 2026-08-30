@@ -25,8 +25,11 @@ describe('portfolio Phase B operator surfaces', () => {
   it('keeps one resumable project wizard and per-project settings', async () => {
     const [view,wizard]=await Promise.all([source('phase-b-ui.tsx'),source('project-wizard.tsx')]);
     expect(view).toContain('<ProjectSetupWizard item={selected} contextCurrent={selectedContextCurrent} actorId={actorId} workspacePeople={workspacePeople}/>');
-    expect(view).toContain('/?view=settings&setup=new');
+    expect(view).toContain('/?view=settings&setup=create');
+    expect(view).toContain('Настройка не завершена');
+    expect(view).toContain('Продолжить настройку');
     expect(wizard).toContain('export function ProjectSetupWizard');
+    expect(wizard).toContain('<ProjectDeleteControl');
     expect(wizard).toContain("action:'confirm_and_start'");
     expect(view).toContain('activeDocuments.map');
     expect(view).toContain('ProjectDocumentUploadControl');
