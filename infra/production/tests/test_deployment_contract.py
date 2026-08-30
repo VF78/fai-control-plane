@@ -9,6 +9,12 @@ ROOT = pathlib.Path(__file__).parents[3]
 
 
 class DeploymentContractTest(unittest.TestCase):
+    def test_document_upload_route_has_an_explicit_bounded_body_contract(self):
+        nginx = (ROOT / "infra/production/nginx/app.f-ai.studio.conf").read_text()
+        route = nginx.split("location ~ ^/api/projects/[^/]+/documents$", 1)[1].split("\n    }", 1)[0]
+        self.assertIn("client_max_body_size 101m;", route)
+        self.assertNotIn("client_body_timeout", route)
+
     def test_web_and_worker_mount_only_root_produced_hermes_readiness_read_only(self):
         compose = (ROOT / "infra/production/compose.yaml").read_text()
         environment_file = ROOT / "infra/production/production.env.example"

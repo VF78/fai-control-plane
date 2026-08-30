@@ -1,7 +1,7 @@
 'use client';
 
-import {useEffect, useRef, useState, type FormEvent, type ReactNode} from 'react';
-import {Pencil, X} from 'lucide-react';
+import {useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode} from 'react';
+import {FileUp, Pencil, Plus, Trash2, X} from 'lucide-react';
 import type {ProjectContextStatusView, ProjectExecutionModeView} from '@fai-control-plane/db';
 import type {AgentExecutorCatalog, AgentRoutingPolicy} from '@fai-control-plane/domain';
 import {AsyncButton, CommandNoticeView, useAsyncCommand} from './async-command.tsx';
@@ -34,30 +34,50 @@ export function LogoutControl() {
   }, {success: 'Сеанс завершён.', refresh: false})}>Выйти</AsyncButton><CommandNoticeView notice={command.notice}/></div>;
 }
 
-export function ProjectDocumentUploadControl({projectId}:Readonly<{projectId:string}>) {
-  const command=useAsyncCommand(); const [open,setOpen]=useState(false);
+type DocumentDraft=Readonly<{id:string;category:'passport'|'requirements'|'architecture'|'supplemental';file:File|null}>;
+const documentCategories=Object.freeze([
+  ['passport','Паспорт проекта'],['requirements','Техническое задание'],['architecture','Архитектура'],['supplemental','Прочее']
+] as const);
+const uploadAccept='.docx,.pdf,.md,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/markdown,text/plain';
+const newDocument=(category:DocumentDraft['category']='passport'):DocumentDraft=>({id:id(),category,file:null});
+const nextDocumentCategory=(rows:readonly DocumentDraft[]):DocumentDraft['category']=>
+  (['passport','requirements','architecture'] as const).find((category)=>!rows.some((row)=>row.category===category))??'supplemental';
+
+export function ProjectDocumentsEditor({projectId,compact=false}:Readonly<{projectId:string;compact?:boolean}>) {
+  const command=useAsyncCommand();const [rows,setRows]=useState<readonly DocumentDraft[]>([newDocument()]);const [batchKey,setBatchKey]=useState(()=>`project-documents:${id()}`);const inputs=useRef<Record<string,HTMLInputElement|null>>({});
+  const [localError,setLocalError]=useState<string|null>(null);
   const error=(value:unknown):string=>({
     project_document_pdf_text_layer_required:'В PDF нет текстового слоя. Загрузите текстовый PDF или DOCX.',
-    project_document_set_too_large:'Лимит набора: до 10 файлов и 100 МиБ.',
+    project_document_set_too_large:'Лимит активного набора: до 10 файлов и 100 МиБ.',
+    project_document_batch_invalid:'В одной отправке можно передать по одному документу каждой основной категории и не более 100 МиБ.',
     project_document_invalid:'Файл не распознан. Поддерживаются DOCX, PDF с текстовым слоем, MD и TXT до 50 МиБ.',
     project_document_denied:'Загружать документы может владелец проекта.'
-  }[value instanceof Error?value.message:'']??'Документ не загружен. Проверьте файл и повторите.');
-  const submit=(event:FormEvent<HTMLFormElement>)=>{event.preventDefault();const form=new FormData(event.currentTarget);
-    form.append('idempotencyKey',`project-document:${id()}`);
-    void command.run(async()=>{const response=await fetch(`/api/projects/${projectId}/documents`,{method:'POST',body:form});
-      const value=await response.json().catch(()=>({})) as Result;if(!response.ok)throw new Error(value.error??'request_failed');
-      return value;},{success:()=>{setOpen(false);return 'Документ загружен.';},error});};
-  return <div className="fcp-inline-control"><AsyncButton type="button" pending={command.pending} pendingLabel="Загружаем…" onClick={()=>setOpen((value)=>!value)}>{open?'Скрыть форму':'Загрузить документ'}</AsyncButton>{open?<form className="fcp-inline-form" onSubmit={submit} aria-busy={command.pending}>
-    <label>Категория<select name="category" required disabled={command.pending} defaultValue="requirements">
-      <option value="requirements">Требования / ТЗ</option><option value="passport">Паспорт проекта</option>
-      <option value="combined">Требования + паспорт</option><option value="architecture">Архитектура</option>
-      <option value="supplemental">Дополнительный</option></select></label>
-    <label>Оригинал DOCX, PDF, MD или TXT<input name="file" type="file" required
-      accept=".docx,.pdf,.md,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/markdown,text/plain"
-      disabled={command.pending}/></label><small>До 50 МиБ на файл и 100 МиБ на активный набор. PDF должен содержать текстовый слой.</small>
-    <AsyncButton pending={command.pending} pendingLabel="Загружаем…">Загрузить версию</AsyncButton>
-  </form>:null}<CommandNoticeView notice={command.notice}/></div>;
+  }[value instanceof Error?value.message:'']??(value instanceof Error&&value.message==='upload_timeout'
+    ?'Отправка не завершилась вовремя. Ничего не было принято; повторите ту же отправку.'
+    :'Документы не загружены: весь набор оставлен без изменений. Проверьте файлы и повторите.'));
+  const update=(rowId:string,change:Partial<DocumentDraft>)=>setRows((current)=>current.map((row)=>row.id===rowId?{...row,...change}:row));
+  const choose=(rowId:string,files:FileList|null)=>{const file=files?.[0]??null;setLocalError(null);update(rowId,{file});};
+  const drop=(event:DragEvent<HTMLButtonElement>,rowId:string)=>{event.preventDefault();choose(rowId,event.dataTransfer.files);};
+  const submit=()=>{const ready=rows.filter((row)=>row.file!==null);if(ready.length===0||ready.length!==rows.length){setLocalError('Выберите файл в каждой строке или удалите пустую строку.');return;}
+    const fixed=ready.filter(({category})=>category!=='supplemental');if(new Set(fixed.map(({category})=>category)).size!==fixed.length){setLocalError('Основную категорию можно добавить только один раз за отправку.');return;}
+    if(ready.some(({file})=>file!.size>50*1024*1024)||ready.reduce((total,{file})=>total+file!.size,0)>100*1024*1024){setLocalError('Ограничение: до 50 МиБ на файл и до 100 МиБ за одну отправку.');return;}
+    setLocalError(null);void command.run(async()=>{const form=new FormData();for(const row of ready){const source=row.file!;const bytes=await source.arrayBuffer();
+      form.append('category',row.category);form.append('file',new File([bytes],source.name,{type:source.type}));}form.append('idempotencyKey',batchKey);
+      const controller=new AbortController();const timer=window.setTimeout(()=>controller.abort(),45_000);try{const response=await fetch(`/api/projects/${projectId}/documents`,{method:'POST',body:form,signal:controller.signal});
+        const value=await response.json().catch(()=>({}));if(response.status===408)throw new Error('upload_timeout');if(!response.ok)throw new Error((value as Result).error??'request_failed');return value as Result;
+      }catch(cause){if(cause instanceof DOMException&&cause.name==='AbortError')throw new Error('upload_timeout');throw cause;}finally{window.clearTimeout(timer);}},
+    {success:(value)=>{const uploaded=Array.isArray((value as {documents?:unknown}).documents)?(value as {documents:unknown[]}).documents.length:ready.length;setRows([newDocument()]);setBatchKey(`project-documents:${id()}`);return `Загружено документов: ${uploaded}. Весь набор подтверждён.`;},error});};
+  return <section className={`fcp-documents-editor ${compact?'compact':''}`} aria-busy={command.pending}><p className="fcp-documents-help">DOCX, PDF с текстовым слоем, MD или TXT. До 50 МиБ на файл; до 100 МиБ за одну отправку.</p>
+    <div className="fcp-document-rows">{rows.map((row,index)=><article key={row.id}><div className="fcp-document-categories" aria-label={`Категория документа ${index+1}`}>{documentCategories.map(([category,label])=><AsyncButton type="button" pending={false} pendingLabel="" key={category} className={row.category===category?'active':''} disabled={command.pending} onClick={()=>update(row.id,{category})}>{label}</AsyncButton>)}</div>
+      <input className="fcp-visually-hidden" ref={(node)=>{inputs.current[row.id]=node;}} type="file" accept={uploadAccept} disabled={command.pending} onChange={(event)=>choose(row.id,event.currentTarget.files)}/>
+      <AsyncButton type="button" pending={false} pendingLabel="" className="fcp-document-drop" disabled={command.pending} onClick={()=>inputs.current[row.id]?.click()} onDragOver={(event)=>event.preventDefault()} onDrop={(event)=>drop(event,row.id)}><FileUp aria-hidden="true" size={16}/><span>{row.file===null?'Выбрать файл или перетащить сюда':row.file.name}</span>{row.file===null?null:<small>{Math.ceil(row.file.size/1024)} КБ</small>}</AsyncButton>
+      <AsyncButton type="button" pending={false} pendingLabel="" className="fcp-icon-button" aria-label="Удалить документ" disabled={command.pending||rows.length===1} onClick={()=>setRows((current)=>current.filter((candidate)=>candidate.id!==row.id))}><Trash2 aria-hidden="true" size={15}/></AsyncButton></article>)}</div>
+    <div className="fcp-document-actions"><AsyncButton type="button" className="fcp-secondary" pending={false} pendingLabel="" disabled={command.pending||rows.length===10} onClick={()=>setRows((current)=>[...current,newDocument(nextDocumentCategory(current))])}><Plus aria-hidden="true" size={15}/> Добавить документ</AsyncButton><AsyncButton type="button" className="fcp-secondary" pending={false} pendingLabel="" disabled={command.pending} onClick={()=>{setRows([newDocument()]);setBatchKey(`project-documents:${id()}`);setLocalError(null);}}>Очистить</AsyncButton><AsyncButton type="button" pending={command.pending} pendingLabel="Загружаем документы…" disabled={command.pending} onClick={submit}>Загрузить документы</AsyncButton></div>
+    {localError===null?null:<p className="fcp-wizard-error">{localError}</p>}<CommandNoticeView notice={command.notice}/>
+  </section>;
 }
+
+export function ProjectDocumentUploadControl({projectId}:Readonly<{projectId:string}>) { return <ProjectDocumentsEditor projectId={projectId} compact/>; }
 
 export function ProjectAgentActivationControl({projectId,status,profile,documentsReady}:Readonly<{projectId:string;
   status:'not_configured'|'configuring'|'awaiting_architecture'|'ready'|'error';profile:string|null;
@@ -66,14 +86,14 @@ export function ProjectAgentActivationControl({projectId,status,profile,document
     {idempotencyKey:`agent-profile:${id()}`,force:status==='ready'||status==='error'}),
     {success:(result)=>result.status==='ready'?'ИИ агент готов к работе.':'Настройка не подтверждена.',
       error:(error)=>error instanceof Error&&error.message==='project_documents_required'
-        ?'Сначала загрузите ТЗ и паспорт проекта или один объединённый документ.'
+        ?'Сначала загрузите техническое задание и паспорт проекта.'
         :error instanceof Error&&error.message==='agent_profile_probe_failed'
           ?'Профиль создан, но Hermes ещё не подтвердил готовность. Повторите активацию после запуска gateway.'
           :'Не удалось активировать ИИ агента. Существующая конфигурация не изменена.'});
   const title=!documentsReady?'Нужны документы':status==='not_configured'?'Готов к настройке':
     status==='configuring'?'Настраивается':status==='awaiting_architecture'?'Ожидает согласования архитектуры':
       status==='ready'?'ИИ агент готов':'Ошибка настройки';
-  const detail=!documentsReady?'Загрузите ТЗ и паспорт проекта или один объединённый документ.':
+  const detail=!documentsReady?'Загрузите техническое задание и паспорт проекта.':
     status==='configuring'?'Hermes собирает компактный контекст в фоне.':
       status==='awaiting_architecture'?'Согласуйте точную версию архитектурного предложения; повторный анализ не требуется.':
         status==='ready'?`Постоянный профиль ${profile??''} активен для этого проекта.`:profile===null
@@ -143,12 +163,22 @@ export function TelegramSettingsControl({projectId}:Readonly<{projectId:string}>
     <label>Telegram ID участников<input name="allowedUserIds" inputMode="numeric" required placeholder="12345, 67890" disabled={command.pending}/></label>
     <AsyncButton pending={command.pending} pendingLabel="Проверяем Telegram…">Подключить Telegram</AsyncButton><CommandNoticeView notice={command.notice}/></form>;}
 
-export function AccessControls({projectId, canManage, members}: Readonly<{projectId: string; canManage: boolean; members: readonly {membershipId: string; displayName: string; role: string}[]}>) {
-  const command = useAsyncCommand();
-  if (!canManage) return <p className="fcp-control-note">Изменение состава доступно только project owner.</p>;
-  const onboard = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); const telegramUserId = empty(form.get('telegramUserId')); const bitrix24UserId = empty(form.get('bitrix24UserId')); void command.run(() => post('/api/access/onboarding', {projectId, displayName: form.get('displayName'), githubUserId: form.get('githubUserId'), role: form.get('role'), ...(telegramUserId === null ? {} : {telegramUserId}), ...(bitrix24UserId === null ? {} : {bitrix24UserId})}), {success: 'Участник добавлен.'}); };
-  const membership = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); const selected = members.find((member) => member.membershipId === form.get('membershipId')); if (selected !== undefined) void command.run(() => post(`/api/access/memberships/${selected.membershipId}`, {role: form.get('role'), active: form.get('active') === 'on'}), {success: 'Доступ сохранён.'}); };
-  return <section className="fcp-controls"><details className="fcp-control"><summary>Добавить участника</summary><form onSubmit={onboard} aria-busy={command.pending}><label>Имя<input name="displayName" required maxLength={200} disabled={command.pending}/></label><label>Роль<select name="role" disabled={command.pending}><option value="operator">Руководитель проекта</option><option value="contributor">Исполнитель</option><option value="client">Представитель клиента</option></select></label><label>GitHub ID <input name="githubUserId" inputMode="numeric" pattern="[1-9][0-9]*" disabled={command.pending}/></label><label>Telegram ID <input name="telegramUserId" inputMode="numeric" disabled={command.pending}/></label><label>Bitrix24 ID <input name="bitrix24UserId" disabled={command.pending}/></label><small>Для команды нужен GitHub ID; представителю клиента достаточно GitHub или Bitrix24.</small><AsyncButton pending={command.pending} pendingLabel="Добавляем…">Добавить</AsyncButton></form></details><details className="fcp-control"><summary>Изменить членство</summary><form onSubmit={membership} aria-busy={command.pending}><label>Участник<select name="membershipId" disabled={command.pending}>{members.map((member) => <option key={member.membershipId} value={member.membershipId}>{member.displayName} · {projectRoleLabel[member.role]??member.role}</option>)}</select></label><label>Новая роль<select name="role" defaultValue="" required disabled={command.pending}><option value="" disabled>Выберите роль</option><option value="project_owner">Владелец проекта</option><option value="operator">Руководитель проекта</option><option value="contributor">Исполнитель</option><option value="client">Представитель клиента</option></select></label><label className="fcp-check"><input name="active" type="checkbox" defaultChecked disabled={command.pending}/> Активен</label><AsyncButton pending={command.pending} pendingLabel="Сохраняем…">Сохранить доступ</AsyncButton></form></details><CommandNoticeView notice={command.notice}/></section>;
+export function AccessControls({projectId, canManage, members, workspacePeople}: Readonly<{projectId: string; canManage: boolean;
+  members: readonly {membershipId: string; actorId:string; displayName: string; role: string}[];
+  workspacePeople:readonly {actorId:string;displayName:string}[]}>) {
+  const candidates=workspacePeople.filter((person)=>!members.some((member)=>member.actorId===person.actorId));
+  const command = useAsyncCommand();const [selected,setSelected]=useState(members[0]?.membershipId??'');
+  const [selectedCandidate,setSelectedCandidate]=useState(candidates[0]?.actorId??'');const [role,setRole]=useState(members[0]?.role??'operator');
+  const [newRole,setNewRole]=useState<'operator'|'contributor'|'client'>('operator');const [addMode,setAddMode]=useState<'directory'|'new'>(candidates.length>0?'directory':'new');
+  if (!canManage) return <p className="fcp-control-note">Изменение состава доступно только владельцу проекта.</p>;
+  const onboard = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); const telegramUserId = empty(form.get('telegramUserId')); const bitrix24UserId = empty(form.get('bitrix24UserId')); void command.run(() => post('/api/access/onboarding', {projectId, displayName: form.get('displayName'), githubUserId: form.get('githubUserId'), role:newRole, ...(telegramUserId === null ? {} : {telegramUserId}), ...(bitrix24UserId === null ? {} : {bitrix24UserId})}), {success: 'Участник добавлен.'}); };
+  const member=members.find(({membershipId})=>membershipId===selected)??members[0];const candidate=candidates.find(({actorId})=>actorId===selectedCandidate)??candidates[0];
+  const membership=()=>{if(member===undefined)return;void command.run(()=>post(`/api/access/memberships/${member.membershipId}`,{role,active:true}),{success:'Роль сохранена.'});};
+  const addExisting=()=>{if(candidate===undefined)return;void command.run(()=>post('/api/access/onboarding',{projectId,existingActorId:candidate.actorId,role:newRole}),{success:'Сотрудник добавлен в проект.'});};
+  const RoleButtons=({value,onChange,owner=false}:Readonly<{value:string;onChange:(value:string)=>void;owner?:boolean}>)=>{const choices:readonly (readonly [string,string])[]=owner?[['project_owner','Владелец проекта'],['operator','Руководитель проекта'],['contributor','Исполнитель'],['client','Представитель клиента']]:[['operator','Руководитель проекта'],['contributor','Исполнитель'],['client','Представитель клиента']];return <div className="fcp-role-buttons">{choices.map(([key,label])=><AsyncButton type="button" pending={false} pendingLabel="" className={value===key?'active':''} disabled={command.pending} key={key} onClick={()=>onChange(key)}>{label}</AsyncButton>)}</div>;};
+  return <section className="fcp-team-editor"><div className="fcp-member-picker"><strong>Участники проекта</strong><div>{members.map((item)=><AsyncButton type="button" pending={false} pendingLabel="" key={item.membershipId} className={member?.membershipId===item.membershipId?'active':''} disabled={command.pending} onClick={()=>{setSelected(item.membershipId);setRole(item.role);}}>{item.displayName}<small>{projectRoleLabel[item.role]??item.role}</small></AsyncButton>)}</div>{member===undefined?<p className="fcp-control-note">В проекте пока нет участников.</p>:<><RoleButtons value={role} onChange={setRole} owner/><AsyncButton type="button" pending={command.pending} pendingLabel="Сохраняем…" onClick={membership}>Сохранить роль</AsyncButton></>}</div>
+    <div className="fcp-wizard-tabs" role="tablist"><AsyncButton type="button" pending={false} pendingLabel="" className={addMode==='directory'?'active':''} disabled={command.pending||candidates.length===0} onClick={()=>setAddMode('directory')}>Выбрать сотрудника</AsyncButton><AsyncButton type="button" pending={false} pendingLabel="" className={addMode==='new'?'active':''} disabled={command.pending} onClick={()=>setAddMode('new')}>Добавить нового</AsyncButton></div>
+    {addMode==='directory'?<div className="fcp-member-picker"><strong>Справочник сотрудников</strong><div>{candidates.map((person)=><AsyncButton type="button" pending={false} pendingLabel="" key={person.actorId} className={candidate?.actorId===person.actorId?'active':''} disabled={command.pending} onClick={()=>setSelectedCandidate(person.actorId)}>{person.displayName}</AsyncButton>)}</div>{candidate===undefined?<p className="fcp-control-note">Все сотрудники уже добавлены в проект.</p>:<><RoleButtons value={newRole} onChange={(value)=>setNewRole(value as 'operator'|'contributor'|'client')}/><AsyncButton type="button" pending={command.pending} pendingLabel="Добавляем…" onClick={addExisting}>Добавить в проект</AsyncButton></>}</div>:<form className="fcp-wizard-form" onSubmit={onboard} aria-busy={command.pending}><label>Имя<input name="displayName" required maxLength={200} disabled={command.pending}/></label><div className="wide"><span className="fcp-field-label">Роль</span><RoleButtons value={newRole} onChange={(value)=>setNewRole(value as 'operator'|'contributor'|'client')}/></div><label>GitHub ID <input name="githubUserId" inputMode="numeric" pattern="[1-9][0-9]*" disabled={command.pending}/></label><label>Telegram ID <input name="telegramUserId" inputMode="numeric" disabled={command.pending}/></label><label>Bitrix24 ID <input name="bitrix24UserId" disabled={command.pending}/></label><p className="fcp-wizard-note">Для руководителя или исполнителя нужен GitHub ID. Для представителя клиента достаточно GitHub или Bitrix24 ID.</p><AsyncButton pending={command.pending} pendingLabel="Добавляем…">Добавить сотрудника</AsyncButton></form>}<CommandNoticeView notice={command.notice}/></section>;
 }
 
 type AssignableUser = Readonly<{id: string; login: string; name: string|null}>;

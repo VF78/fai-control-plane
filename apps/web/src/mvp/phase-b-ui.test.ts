@@ -24,7 +24,7 @@ describe('portfolio Phase B operator surfaces', () => {
 
   it('keeps one resumable project wizard and per-project settings', async () => {
     const [view,wizard]=await Promise.all([source('phase-b-ui.tsx'),source('project-wizard.tsx')]);
-    expect(view).toContain('<ProjectSetupWizard item={selected} contextCurrent={selectedContextCurrent} actorId={actorId}/>');
+    expect(view).toContain('<ProjectSetupWizard item={selected} contextCurrent={selectedContextCurrent} actorId={actorId} workspacePeople={workspacePeople}/>');
     expect(view).toContain('/?view=settings&setup=new');
     expect(wizard).toContain('export function ProjectSetupWizard');
     expect(wizard).toContain("action:'confirm_and_start'");
@@ -71,5 +71,21 @@ describe('portfolio Phase B operator surfaces', () => {
     expect(wizard).toContain("action:'confirm_process'");expect(wizard).toContain("action:'skip_team'");
     expect(wizard).toContain("action:'skip_communications'");expect(wizard).toContain('<AccessControls');
     expect(wizard).toContain('<TelegramSettingsControl');expect(wizard).not.toContain('function Messenger(');
+  });
+
+  it('keeps setup sequential and reuses the bounded document editor',async()=>{
+    const [wizard,control]=await Promise.all([source('project-wizard.tsx'),source('operator-controls.tsx')]);
+    expect(wizard).toContain('<ProjectDocumentsEditor projectId={item.project.id}/>');
+    expect(wizard).toContain('Будет доступен позже');
+    expect(wizard).toContain('Вставить ссылку GitHub');
+    expect(wizard).not.toContain('<select value={task?.itemId');
+    expect(control).toContain('export function ProjectDocumentsEditor');
+    expect(control).toContain('Загрузить документы');
+    expect(control).toContain('upload_timeout');
+    expect(control).not.toContain('Изменить членство');
+    expect(control).toContain('Справочник сотрудников');
+    expect(control).toContain('existingActorId:candidate.actorId');
+    const access=control.split('export function AccessControls',2)[1]!.split('type AssignableUser',1)[0]!;
+    expect(access).not.toContain('<select');
   });
 });
