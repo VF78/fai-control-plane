@@ -2,11 +2,12 @@
 
 import {useEffect,useMemo,useState,type FormEvent,type ReactNode} from 'react';
 import {useRouter} from 'next/navigation';
-import {Check,ChevronRight,ExternalLink,FileText,GitBranch,MessageCircle,Play,ShieldCheck,Sparkles} from 'lucide-react';
+import {Check,ChevronRight,ExternalLink,GitBranch,MessageCircle,Play,ShieldCheck,Sparkles} from 'lucide-react';
 import type {TrackerItemFact} from '@fai-control-plane/domain';
+import type {WorkspaceHumanActorView} from '@fai-control-plane/db';
 import {defaultProjectProcessPolicy} from '@fai-control-plane/domain';
 import type {PhaseBProject} from './phase-b-ui.tsx';
-import {AccessControls,ArchitectureProposalDecision,TelegramSettingsControl} from './operator-controls.tsx';
+import {AccessControls,ArchitectureProposalDecision,ProjectDocumentsEditor,TelegramSettingsControl} from './operator-controls.tsx';
 import {AsyncButton,CommandNoticeView,useAsyncCommand} from './async-command.tsx';
 import {ProcessStages} from './phase-a-ui.tsx';
 
@@ -37,11 +38,12 @@ const documentFacts=(item:PhaseBProject|null)=>{const documents=(item?.sources??
   const latest=new Set<string>();for(const source of documents)latest.add(source.kind.split(':')[1]??'');
   return {documents,ready:latest.has('combined')||(latest.has('requirements')&&latest.has('passport'))};};
 const done=(task:TrackerItemFact,doneOptionId:string)=>task.statusOptionId===doneOptionId;
+const taskUrl=(value:string):string=>{try{const url=new URL(value);url.search='';url.hash='';return url.toString().replace(/\/$/,'');}catch{return value.trim().replace(/\/$/,'');}};
 
-function Step({number,title,complete,active,open=active,children}:Readonly<{number:number;title:string;complete:boolean;active:boolean;open?:boolean;children:ReactNode}>) {
+function Step({number,title,complete,active,children}:Readonly<{number:number;title:string;complete:boolean;active:boolean;children:ReactNode}>) {
   return <section className={`fcp-wizard-step ${complete?'complete':''} ${active?'active':''}`}>
     <div className="fcp-wizard-rail"><span>{complete?<Check aria-hidden="true" size={14}/>:number}</span><i/></div>
-    <div className="fcp-wizard-step-body"><header><h3>{title}</h3>{complete?<small>Готово</small>:active?<small>Текущий шаг</small>:null}</header>{open||!complete?children:null}</div>
+    <div className="fcp-wizard-step-body"><header><h3>{title}</h3>{complete?<small>Готово</small>:active?<small>Текущий шаг</small>:<small>Будет доступен позже</small>}</header>{active?children:complete?<p className="fcp-wizard-summary">Шаг подтверждён.</p>:null}</div>
   </section>;
 }
 
@@ -56,21 +58,9 @@ function Registration() {const command=useAsyncCommand();const router=useRouter(
     <label>Короткое имя<input name="slug" required maxLength={100} pattern="[a-z0-9][a-z0-9-]+[a-z0-9]" placeholder="new-project" disabled={command.pending}/></label>
     <label className="wide">Репозиторий<input name="repositoryUrl" type="url" required placeholder="https://github.com/owner/repository" disabled={command.pending}/></label>
     <label className="wide">GitHub Project<input name="projectUrl" type="url" required placeholder="https://github.com/users/owner/projects/1" disabled={command.pending}/></label>
-    <p className="fcp-wizard-note"><GitBranch aria-hidden="true" size={16}/> GitHub остаётся источником кода и задач. Здесь сохраняется только проверанная привязка.</p>
+    <p className="fcp-wizard-note"><GitBranch aria-hidden="true" size={16}/> GitHub остаётся источником кода и задач. Здесь сохраняется только проверенная привязка.</p>
     <AsyncButton pending={command.pending} pendingLabel="Проверяем GitHub…">Подтвердить проект <ChevronRight aria-hidden="true" size={16}/></AsyncButton>
     <CommandNoticeView notice={command.notice}/>
-  </form>;}
-
-function Documents({projectId,count}:Readonly<{projectId:string;count:number}>) {const command=useAsyncCommand();const submit=(event:FormEvent<HTMLFormElement>)=>{
-  event.preventDefault();const form=new FormData(event.currentTarget);form.set('idempotencyKey',`project-document:${id()}`);
-  void command.run(async()=>{const response=await fetch(`/api/projects/${projectId}/documents`,{method:'POST',body:form});
-    const value=await response.json().catch(()=>({})) as Result;if(!response.ok)throw new Error(value.error??'request_failed');return value;},
-  {success:'Документ проверен и добавлен.',error:errorText});};return <form className="fcp-wizard-form" onSubmit={submit} aria-busy={command.pending}>
-    <p className="fcp-wizard-intro">Загрузите один объединённый документ или отдельно требования и паспорт проекта. Архитектура необязательна.</p>
-    {count>0?<p className="fcp-wizard-fact"><FileText aria-hidden="true" size={16}/> Загружено версий: {count}</p>:null}
-    <label>Тип документа<select name="category" defaultValue="combined" disabled={command.pending}><option value="combined">Требования + паспорт</option><option value="requirements">Требования / ТЗ</option><option value="passport">Паспорт проекта</option><option value="architecture">Архитектура</option><option value="supplemental">Дополнительный</option></select></label>
-    <label>Файл<input name="file" type="file" required accept=".docx,.pdf,.md,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/markdown,text/plain" disabled={command.pending}/></label>
-    <AsyncButton pending={command.pending} pendingLabel="Загружаем…">Загрузить документ</AsyncButton><CommandNoticeView notice={command.notice}/>
   </form>;}
 
 function ProcessConfirmation({item}:Readonly<{item:PhaseBProject}>){const command=useAsyncCommand();const confirmed=item.wizardProgress?.processConfirmed===true;
@@ -80,18 +70,17 @@ function ProcessConfirmation({item}:Readonly<{item:PhaseBProject}>){const comman
     <small>Сейчас процесс можно подтвердить как есть. Редактирование будет добавлено в этот же компонент.</small></div>{confirmed?null:<AsyncButton type="button"
       pending={command.pending} pendingLabel="Сохраняем…" onClick={confirm}>Подтвердить процесс</AsyncButton>}<CommandNoticeView notice={command.notice}/></div>;}
 
-function Team({item,actorId}:Readonly<{item:PhaseBProject;actorId:string}>){const command=useAsyncCommand();const people=item.evidence?.people??[];
+function Team({item,actorId,workspacePeople}:Readonly<{item:PhaseBProject;actorId:string;workspacePeople:readonly WorkspaceHumanActorView[]}>){const command=useAsyncCommand();const people=item.evidence?.people??[];
   const canManage=people.some((person)=>person.actorId===actorId&&person.active&&person.role==='project_owner');const skip=()=>void command.run(()=>
     json(`/api/projects/${item.project.id}/wizard-progress`,{action:'skip_team',idempotencyKey:`project-team-skip:${id()}`}),
   {success:'Команду можно настроить позднее в разделе «Роли и доступы».',error:errorText});return <div><AccessControls projectId={item.project.id}
     canManage={canManage} members={people.filter((person)=>person.active).map((person)=>({membershipId:person.membershipId,
-      displayName:person.displayName,role:person.role}))}/><AsyncButton type="button" className="fcp-secondary" pending={command.pending}
+      actorId:person.actorId,displayName:person.displayName,role:person.role}))} workspacePeople={workspacePeople}/><AsyncButton type="button" className="fcp-secondary" pending={command.pending}
       pendingLabel="Сохраняем…" onClick={skip}>Настроить позже</AsyncButton><CommandNoticeView notice={command.notice}/></div>;}
 
 function Communications({item}:Readonly<{item:PhaseBProject}>){const command=useAsyncCommand();const skip=()=>void command.run(()=>
   json(`/api/projects/${item.project.id}/wizard-progress`,{action:'skip_communications',idempotencyKey:`project-communications-skip:${id()}`}),
-  {success:'Мессенджеры можно подключить позднее в разделе «Чаты».',error:errorText});return <div><TelegramSettingsControl projectId={item.project.id}/>
-    <p className="fcp-wizard-note"><MessageCircle aria-hidden="true" size={16}/> Клиентский канал пока недоступен для безопасной записи и не создаётся фиктивно.</p>
+  {success:'Мессенджеры можно подключить позднее в разделе «Чаты».',error:errorText});return <div><TelegramSettingsControl projectId={item.project.id}/><article className="fcp-client-chat-disabled" aria-disabled="true"><MessageCircle aria-hidden="true" size={17}/><div><strong>Чат с клиентом</strong><p>Настройка будет доступна позже.</p></div><span>Отключён</span></article>
     <AsyncButton type="button" className="fcp-secondary" pending={command.pending} pendingLabel="Сохраняем…" onClick={skip}>Настроить позже</AsyncButton>
     <CommandNoticeView notice={command.notice}/></div>;}
 
@@ -148,12 +137,11 @@ function PrepareProject({item}:Readonly<{item:PhaseBProject}>){const command=use
       pending={command.pending} pendingLabel="Запускаем…" onClick={start}>Поставить задачу Hermes</AsyncButton>}<CommandNoticeView notice={command.notice}/></div>;
 }
 
-function FirstTask({item}:Readonly<{item:PhaseBProject}>) {const command=useAsyncCommand();const router=useRouter();const [mode,setMode]=useState<'existing'|'create'>('existing');const [selected,setSelected]=useState('');
+function FirstTask({item}:Readonly<{item:PhaseBProject}>) {const command=useAsyncCommand();const router=useRouter();const [mode,setMode]=useState<'existing'|'create'>('existing');const [url,setUrl]=useState('');
   const capabilities=item.trackerCapabilities;const tasks=useMemo(()=>capabilities===null?[]:item.project.tasks.filter((task)=>
-    !done(task,capabilities.doneStatusOptionId)&&task.blocked!==true&&task.ownerOptionId===capabilities.agentOwnerOptionId&&
-    typeof task.statement==='string'&&task.statement.trim().length>0),[capabilities,item.project.tasks]);
-  const task=tasks.find((candidate)=>candidate.itemId===selected)??tasks[0]??null;
-  const activeMode=tasks.length===0?'create':mode;
+    !done(task,capabilities.doneStatusOptionId)&&task.blocked!==true),[capabilities,item.project.tasks]);
+  const task=tasks.find((candidate)=>taskUrl(candidate.url)===taskUrl(url))??null;
+  const activeMode=mode;
   const submit=(event:FormEvent<HTMLFormElement>)=>{event.preventDefault();const form=new FormData(event.currentTarget);
     const key=`project-first-task:${id()}`;const body=activeMode==='existing'?{action:'confirm_and_start',projectId:item.project.id,
       projectItemId:task?.itemId,version:task?.version,exactStatement:task?.statement,confirmed:form.get('confirmed')==='on',
@@ -162,16 +150,17 @@ function FirstTask({item}:Readonly<{item:PhaseBProject}>) {const command=useAsyn
     void command.run(()=>json('/api/tasks/executor',body),{refresh:false,success:(result)=>{const itemId=result.itemId??task?.itemId;
       if(itemId!==undefined)router.push(`/?view=tasks&project=${encodeURIComponent(item.project.slug)}&task=${encodeURIComponent(itemId)}`);
       return 'ИИ-агент назначен и старт задачи подтверждён.';},error:errorText});};
-  return <div><div className="fcp-wizard-tabs" role="tablist"><button type="button" className={activeMode==='existing'?'active':''} onClick={()=>setMode('existing')} disabled={tasks.length===0}>Выбрать в GitHub</button><button type="button" className={activeMode==='create'?'active':''} onClick={()=>setMode('create')}>Создать в GitHub</button></div>
+  return <div><div className="fcp-wizard-tabs" role="tablist"><button type="button" className={activeMode==='existing'?'active':''} onClick={()=>setMode('existing')}>Вставить ссылку GitHub</button><button type="button" className={activeMode==='create'?'active':''} onClick={()=>setMode('create')}>Создать новую</button></div>
     <form className="fcp-wizard-form" onSubmit={submit} aria-busy={command.pending}>{activeMode==='existing'?<>
-      <label className="wide">Задача<select value={task?.itemId??''} onChange={(event)=>setSelected(event.target.value)} disabled={command.pending}>{tasks.map((candidate)=><option key={candidate.itemId} value={candidate.itemId}>{candidate.title}</option>)}</select></label>
-      {task===null?<p className="fcp-wizard-intro">Нет готовой задачи с назначенным в GitHub владельцем Hermes и заполненным описанием.</p>:<><a className="fcp-wizard-source" href={task.url} target="_blank" rel="noreferrer">Открыть задачу в GitHub <ExternalLink aria-hidden="true" size={14}/></a><div className="fcp-task-statement"><span>Точный scope и acceptance из GitHub</span><pre>{task.statement}</pre></div><label className="fcp-confirm wide"><input name="confirmed" type="checkbox" required disabled={command.pending}/> Подтверждаю этот scope и критерии приёмки и явно запускаю ИИ-агента.</label></>}
-    </>:<><label className="wide">Название задачи<input name="title" required maxLength={160} disabled={command.pending}/></label><label className="wide">Scope<textarea name="scope" required maxLength={1500} rows={4} disabled={command.pending}/></label><label className="wide">Acceptance criteria<textarea name="acceptance" required maxLength={1500} rows={4} disabled={command.pending}/></label><label className="fcp-confirm wide"><input name="confirmed" type="checkbox" required disabled={command.pending}/> Подтверждаю этот scope и критерии приёмки и явно запускаю ИИ-агента.</label></>}
+      <label className="wide">Ссылка на issue или элемент GitHub Project<input type="url" value={url} onChange={(event)=>setUrl(event.target.value)} placeholder="https://github.com/owner/repository/issues/123" disabled={command.pending}/></label>
+      {url.trim()!==''&&task===null?<p className="fcp-wizard-error">Ссылка не найдена среди подтверждённых снимков привязанного GitHub Project или задача ещё не готова для Hermes. Создание или привязка задачи вне этого Project недоступны.</p>:null}
+      {task===null?<p className="fcp-wizard-intro">Вставьте URL незавершённой незаблокированной задачи из уже привязанного GitHub Project. Hermes назначит себя и уточнит неполное описание перед дальнейшей работой.</p>:<><a className="fcp-wizard-source" href={task.url} target="_blank" rel="noreferrer">Открыть задачу в GitHub <ExternalLink aria-hidden="true" size={14}/></a><div className="fcp-task-statement"><span>Точный scope и acceptance из GitHub</span><pre>{task.statement?.trim()||'Описание пока не заполнено — Hermes запросит уточнение.'}</pre></div><label className="fcp-confirm wide"><input name="confirmed" type="checkbox" required disabled={command.pending}/> Подтверждаю эту задачу и явно запускаю ИИ-агента.</label></>}
+    </>:<><label className="wide">Название задачи<input name="title" required maxLength={160} disabled={command.pending}/></label><label className="wide">Область работ<textarea name="scope" required maxLength={1500} rows={4} disabled={command.pending}/></label><label className="wide">Критерии приёмки<textarea name="acceptance" required maxLength={1500} rows={4} disabled={command.pending}/></label><label className="fcp-confirm wide"><input name="confirmed" type="checkbox" required disabled={command.pending}/> Подтверждаю этот scope и критерии приёмки и явно запускаю ИИ-агента.</label></>}
       <AsyncButton pending={command.pending} pendingLabel="Запускаем…" disabled={activeMode==='existing'&&task===null}><Play aria-hidden="true" size={15}/> Назначить и запустить</AsyncButton><CommandNoticeView notice={command.notice}/>
     </form></div>;
 }
 
-export function ProjectSetupWizard({item,contextCurrent,actorId}:Readonly<{item:PhaseBProject|null;contextCurrent:boolean;actorId:string}>) {const documents=documentFacts(item);
+export function ProjectSetupWizard({item,contextCurrent,actorId,workspacePeople}:Readonly<{item:PhaseBProject|null;contextCurrent:boolean;actorId:string;workspacePeople:readonly WorkspaceHumanActorView[]}>) {const documents=documentFacts(item);
   const projectReady=item!==null;const docsReady=documents.ready;const processReady=item?.wizardProgress?.processConfirmed===true;
   const teamReady=(item?.evidence?.people.filter((person)=>person.active).length??0)>1||item?.wizardProgress?.teamSkipped===true;
   const communicationsReady=item?.runtimeSetup?.telegramConfigured===true||item?.wizardProgress?.communicationsSkipped===true;
@@ -180,14 +169,16 @@ export function ProjectSetupWizard({item,contextCurrent,actorId}:Readonly<{item:
   const pending=states.findIndex((value)=>!value);const active=pending===-1?9:pending;
   return <section className="fcp-project-wizard" aria-label="Добавить проект"><header><span><Sparkles aria-hidden="true" size={15}/> Настройка проекта</span><h2>{item===null?'Добавить проект':item.project.name}</h2><p>Один путь от GitHub до первой явно запущенной задачи.</p></header><div className="fcp-wizard-steps">
     <Step number={1} title="Репозиторий и задачи" complete={projectReady} active={active===0}>{item===null?<Registration/>:<p className="fcp-wizard-summary">GitHub подтвердил репозиторий и Project.</p>}</Step>
-    {item!==null?<><Step number={2} title="Документы" complete={docsReady} active={active===1}><Documents projectId={item.project.id} count={documents.documents.length}/></Step>
+    {item!==null?<><Step number={2} title="Документы" complete={docsReady} active={active===1}><ProjectDocumentsEditor projectId={item.project.id}/></Step>
       <Step number={3} title="Процесс" complete={processReady} active={active===2}><ProcessConfirmation item={item}/></Step>
-      <Step number={4} title="Команда и роли" complete={teamReady} active={active===3}><Team item={item} actorId={actorId}/></Step>
+      <Step number={4} title="Команда и роли" complete={teamReady} active={active===3}><Team item={item} actorId={actorId} workspacePeople={workspacePeople}/></Step>
       <Step number={5} title="Коммуникации" complete={communicationsReady} active={active===4}><Communications item={item}/></Step>
       <Step number={6} title="ИИ-агент" complete={runtimeReady} active={active===5}><Install item={item}/></Step>
       <Step number={7} title="Контекст" complete={contextReady} active={active===6}><Context item={item}/></Step>
       <Step number={8} title="Подготовка Project" complete={trackerReady} active={active===7}><PrepareProject item={item}/></Step>
-      <Step number={9} title="Проверка готовности" complete={states.every(Boolean)} active={active===8}><div className="fcp-readiness"><div><Check aria-hidden="true" size={15}/> Репозиторий, Project и документы подтверждены</div><div><Check aria-hidden="true" size={15}/> Команда и коммуникации настроены или явно пропущены</div><div><Check aria-hidden="true" size={15}/> ИИ-агент, контекст и процесс готовы</div></div></Step>
+      <Step number={9} title="Проверка готовности" complete={states.every(Boolean)} active={active===8}><div className="fcp-readiness">{[
+        ['Репозиторий и GitHub Project',projectReady],['Документы',docsReady],['Процесс',processReady],['Команда',teamReady],['Коммуникации',communicationsReady],['ИИ-агент',runtimeReady],['Контекст',contextReady],['Подготовка Project',trackerReady]
+      ].map(([label,ready])=><div className={ready===true?'ready':'pending'} key={label as string}>{ready===true?<Check aria-hidden="true" size={15}/>:<span aria-hidden="true">•</span>}{label as string}</div>)}</div></Step>
       <Step number={10} title="Первая задача" complete={false} active={active===9}><FirstTask item={item}/></Step></>:null}
   </div></section>;
 }

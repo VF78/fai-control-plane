@@ -5,8 +5,31 @@ import type {Database} from './runtime.ts';
 export type OnboardingIdentity = Readonly<{provider: 'github' | 'telegram' | 'bitrix24'; subjectHash: string}>;
 export type OnboardProjectMemberInput = Readonly<{workspaceId: string; projectId: string; displayName: string;
   role: Exclude<ProjectRole, 'project_owner'>; identities: readonly OnboardingIdentity[]}>;
+export type WorkspaceHumanActorView = Readonly<{actorId: string; displayName: string}>;
 const valid = (value: string, maximum: number): boolean =>
   value.length > 0 && value.length <= maximum && !value.includes('\0');
+
+export const listWorkspaceHumanActors = async (database: Database,
+  workspaceId: string): Promise<readonly WorkspaceHumanActorView[]> => {
+  if (!valid(workspaceId, 256)) throw new Error('onboarding_denied');
+  const result = await database.query<WorkspaceHumanActorView>(`select id as "actorId",display_name as "displayName"
+    from actors where workspace_id=$1 and kind='human' and enabled=true order by display_name,id`, [workspaceId]);
+  return result.rows;
+};
+
+export const addExistingProjectMember = async (database: Database, input: Readonly<{
+  workspaceId: string; projectId: string; actorId: string; role: Exclude<ProjectRole, 'project_owner'>;
+}>): Promise<void> => {
+  if (!valid(input.workspaceId, 256) || !valid(input.projectId, 256) || !valid(input.actorId, 256) ||
+    !['operator', 'contributor', 'client'].includes(input.role)) throw new Error('onboarding_invalid');
+  const result = await database.query(`insert into project_memberships(project_id,actor_id,role,active)
+    select p.id,a.id,$4,true from projects p join actors a on a.workspace_id=p.workspace_id
+    where p.id=$1 and p.workspace_id=$2 and a.id=$3 and a.kind='human' and a.enabled=true
+    on conflict(project_id,actor_id) do update set role=excluded.role,active=true
+      where project_memberships.role<>'project_owner' returning id`,
+  [input.projectId,input.workspaceId,input.actorId,input.role]);
+  if (result.rowCount !== 1) throw new Error('onboarding_denied');
+};
 
 /** Changes Control Plane access only; messenger room membership stays provider-owned. */
 export const onboardProjectMember = async (database: Database, input: OnboardProjectMemberInput): Promise<Readonly<{

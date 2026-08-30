@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {
+  addExistingProjectMember,
   addSourceArtifact,
   appendIncomingEvent,
   canApprove,
@@ -10,6 +11,7 @@ import {
   executeAgentSubmissionTransaction,
   listProjects,
   listProjectDocuments,
+  projectDocumentMaxBatchBytes,
   projectDocumentMaxFileBytes,
   onboardProjectMember,
   resolveAgentSubmissionBinding,
@@ -30,10 +32,10 @@ import {
   refreshProjectContext,
   saveAgentRoutingPolicy,
   saveProjectExecutionMode,
-  uploadProjectDocument,
+  uploadProjectDocuments,
   subjectHash
 } from '@fai-control-plane/db';
-import {projectDocumentCategories, type ProjectDocumentCategory} from '@fai-control-plane/db';
+import {projectDocumentUploadCategories, type ProjectDocumentUploadCategory} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, decideApproval,
   type AgentSubmissionPorts} from '@fai-control-plane/application';
 import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
@@ -231,6 +233,12 @@ export const onboard = async (request: Request): Promise<Response> => {
     if (!await canGovernMembership(database, session.actorId, projectId)) throw new Error('onboarding_denied');
     const role = string(body.role, 32);
     if (!['operator', 'contributor', 'client'].includes(role)) throw new Error('body_invalid');
+    if (body.existingActorId !== undefined) {
+      const actorId=string(body.existingActorId);
+      await addExistingProjectMember(database, {workspaceId: session.workspaceId, projectId, actorId,
+        role: role as 'operator'|'contributor'|'client'});
+      return Response.json({actorId, created: false});
+    }
     const identity = (provider: 'github'|'telegram'|'bitrix24', value: unknown, numeric: boolean) => {
       if (value === undefined || value === null || value === '') return null;
       const subject = string(value, 64);
@@ -305,16 +313,20 @@ export const projectDocuments = async (request: Request, projectId: string): Pro
     requireCsrf(request);
     if (!request.headers.get('content-type')?.startsWith('multipart/form-data')) throw new Error('media_type_invalid');
     const contentLength=Number(request.headers.get('content-length'));
-    if(Number.isFinite(contentLength)&&contentLength>projectDocumentMaxFileBytes+1024*1024)
+    if(Number.isFinite(contentLength)&&contentLength>projectDocumentMaxBatchBytes+1024*1024)
       throw new Error('project_document_invalid');
-    const form = await request.formData(); const file = form.get('file'); const category = form.get('category');
-    if (!(file instanceof File) || typeof category !== 'string' ||
-      !projectDocumentCategories.includes(category as ProjectDocumentCategory)) throw new Error('project_document_invalid');
-    const result = await uploadProjectDocument(database,{workspaceId:session.workspaceId,projectId,actorId:session.actorId,
-      category:category as ProjectDocumentCategory,name:string(file.name,200),mediaType:string(file.type,100),
-      bytes:Buffer.from(await file.arrayBuffer()),provenance:'operator-upload',
-      idempotencyKey:string(form.get('idempotencyKey'),128),occurredAt:new Date().toISOString()});
-    return Response.json(result,{status:201,headers:{'cache-control':'no-store'}});
+    const form = await request.formData(); const entries=form.getAll('file');const categories=form.getAll('category');
+    const files=entries.filter((file):file is File=>file instanceof File);
+    if(files.length===0||files.length!==entries.length||files.length!==categories.length||categories.some((category)=>
+      typeof category!=='string'||!projectDocumentUploadCategories.includes(category as ProjectDocumentUploadCategory))) throw new Error('project_document_invalid');
+    const bytes=await Promise.all(files.map(async(file)=>Buffer.from(await file.arrayBuffer())));
+    if(bytes.some((value)=>value.byteLength>projectDocumentMaxFileBytes)||bytes.reduce((total,value)=>total+value.byteLength,0)>projectDocumentMaxBatchBytes)
+      throw new Error('project_document_invalid');
+    const idempotencyKey=string(form.get('idempotencyKey'),128);const occurredAt=new Date().toISOString();
+    const result=await uploadProjectDocuments(database,files.map((file,index)=>({workspaceId:session.workspaceId,projectId,actorId:session.actorId,
+      category:categories[index] as ProjectDocumentUploadCategory,name:string(file.name,200),mediaType:string(file.type,100),bytes:bytes[index]!,
+      provenance:'operator-upload',idempotencyKey,occurredAt})));
+    return Response.json({documents:result},{status:201,headers:{'cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
 };
 
@@ -422,14 +434,15 @@ export const taskExecutor = async (request: Request): Promise<Response> => {
     const action = body.action === undefined ? 'assign' : string(body.action, 32);
     if(action==='confirm_and_start'){
       if(body.confirmed!==true)throw new Error('body_invalid');const itemId=string(body.projectItemId);
-      const expectedVersion=string(body.version,1_024);const exactStatement=string(body.exactStatement,20_000);
+      const expectedVersion=string(body.version,1_024);const exactStatement=body.exactStatement===null||body.exactStatement===undefined
+        ?null:string(body.exactStatement,20_000);
       const runtime=await agentRuntime(database,session.actorId,projectId);if(runtime===null)throw new Error('agent_provider_unavailable');
       const delivery=createHermesDeliveryAdapter({endpoint:string(runtime.gatewayEndpoint,2_048),
         credentialRef:runtime.agentCredentialRef,secrets:secretResolver,allowPrivateHttp:privateAgentEndpoint(runtime)});
       const assignment=await githubAssignment(database,session.actorId,projectId,delivery);
       const snapshot=await assignment.trackerRead.readSnapshot(assignment.context.bindingId,null);
       await assignment.ports.persistSnapshot(snapshot);const item=snapshot.items.find((candidate)=>candidate.itemId===itemId);
-      if(item===undefined||item.version!==expectedVersion||item.statement!==exactStatement)throw new Error('task_executor_conflict');
+      if(item===undefined||item.version!==expectedVersion||(item.statement??null)!==exactStatement||item.blocked===true)throw new Error('task_executor_conflict');
       const result=await startGitHubProcess(database,{actorId:session.actorId,projectId,task:{kind:'existing',itemId},
         sourceReference:'ui:project-wizard',idempotencyKey:string(body.idempotencyKey,128)});
       return Response.json({...result,itemId:item.itemId,itemUrl:item.url});

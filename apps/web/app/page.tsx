@@ -1,4 +1,4 @@
-import {listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,
+import {listProjectOperatorEvidenceViews, listProjectSourceViews, listProjectTaskViews,listWorkspaceHumanActors,
   listProjectHermesRuntimeBindings, readProjectAgentProfile, readProjectAgentSubmissionView,
   readProjectHermesRuntimeSetup,
   readAgentRoutingPolicy, readProjectContextStatus, readProjectExecutionMode, readProjectMembershipRole, readProjectProcessPolicy,
@@ -66,10 +66,11 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     const needsEvidence = view === 'conversations' || view === 'people' || view === 'settings';
     const evidenceSections = new Set<ProjectOperatorEvidenceSection>(view === 'conversations'
       ? ['people'] : view === 'people' || view === 'settings' ? ['people'] : []);
-    const [operatorEvidence, sources, runtimes] = await Promise.all([
+    const [operatorEvidence, sources, runtimes, workspacePeople] = await Promise.all([
       needsEvidence ? listProjectOperatorEvidenceViews(database, session.actorId, evidenceSections) : Promise.resolve([]),
       view === 'settings' ? listProjectSourceViews(database, session.actorId) : Promise.resolve([]),
-      listProjectHermesRuntimeBindings(database, session.workspaceId)
+      listProjectHermesRuntimeBindings(database, session.workspaceId),
+      view === 'people' || view === 'settings' ? listWorkspaceHumanActors(database,session.workspaceId) : Promise.resolve([])
     ]);
     const runtimeByProject = new Map(runtimes.map((runtime) => [runtime.projectId, runtime]));
     const projectDetails = await Promise.all(projects.map(async (project) => {
@@ -85,7 +86,8 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     }));
     const phaseBProjects = projectDetails.map((item) => ({...item, sources,
       evidence: operatorEvidence.find((evidence) => evidence.projectId === item.project.id) ?? null}));
-    content = <PhaseB view={view} projects={phaseBProjects} actorId={session.actorId} setup={query.setup}/>;
+    content = <PhaseB view={view} projects={phaseBProjects} actorId={session.actorId} setup={query.setup}
+      workspacePeople={workspacePeople}/>;
   }
 
   return <Shell view={view} projects={projects} operatorName={session.displayName}>{content}</Shell>;

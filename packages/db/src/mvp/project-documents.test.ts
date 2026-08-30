@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import type {Database} from './runtime.ts';
-import {readActiveProjectDocumentSet,uploadProjectDocument} from './project-documents.ts';
+import {readActiveProjectDocumentSet,uploadProjectDocument,uploadProjectDocuments} from './project-documents.ts';
 
 describe('authoritative project documents',()=>{
   it('accepts an owner DOCX original and persists binary bytes without base64 text',async()=>{
@@ -40,7 +40,7 @@ describe('authoritative project documents',()=>{
     expect(database.connect).not.toHaveBeenCalled();
   });
 
-  it('accepts requirements plus passport or one combined document and fingerprints exact active versions',async()=>{
+  it('accepts requirements plus passport and keeps a legacy combined document readable for its exact fingerprint',async()=>{
     const rows=(categories:readonly string[])=>categories.map((category,index)=>({id:`id-${index}`,projectId:'project',
       kind:`project_document_v1:${category}`,name:`${category}.txt`,mediaType:'text/plain',sha256:String(index+1).repeat(64),
       sizeBytes:12,provenance:'operator-upload',createdAt:new Date(`2026-08-27T10:0${index}:00Z`)}));
@@ -50,5 +50,12 @@ describe('authoritative project documents',()=>{
     expect(pair.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     (database.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({rows:rows(['combined'])});
     await expect(readActiveProjectDocumentSet(database,'owner','project')).resolves.toMatchObject({configured:true});
+  });
+
+  it('rejects duplicate fixed categories before changing anything',async()=>{
+    const database={connect:vi.fn()} as unknown as Database;const document={workspaceId:'workspace',projectId:'project',actorId:'owner',
+      category:'requirements' as const,name:'requirements.txt',mediaType:'text/plain',bytes:Buffer.from('text'),provenance:'operator-upload',idempotencyKey:'batch',occurredAt:'2026-08-27T10:00:00Z'};
+    await expect(uploadProjectDocuments(database,[document,document])).rejects.toThrow('project_document_batch_invalid');
+    expect(database.connect).not.toHaveBeenCalled();
   });
 });

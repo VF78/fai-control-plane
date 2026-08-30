@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from 'vitest';
 import type {Database} from './runtime.ts';
-import {onboardProjectMember} from './onboarding.ts';
+import {addExistingProjectMember,listWorkspaceHumanActors,onboardProjectMember} from './onboarding.ts';
 
 const hash = (character: string): string => character.repeat(64);
 const database = (existing: readonly Readonly<{
@@ -19,6 +19,21 @@ const database = (existing: readonly Readonly<{
 };
 
 describe('project member onboarding', () => {
+  it('lists only the workspace human directory through one bounded projection', async () => {
+    const query=vi.fn(async(_sql:string,_parameters?:readonly unknown[])=>({rows:[{actorId:'actor',displayName:'Vladimir'}]}));
+    await expect(listWorkspaceHumanActors({query} as unknown as Database,'workspace')).resolves.toEqual([
+      {actorId:'actor',displayName:'Vladimir'}]);
+    expect(String(query.mock.calls[0]?.[0])).toContain("workspace_id=$1 and kind='human' and enabled=true");
+  });
+
+  it('adds one existing workspace employee to a project without copying the actor', async () => {
+    const query=vi.fn(async(_sql:string,_parameters?:readonly unknown[])=>({rowCount:1,rows:[{id:'membership'}]}));
+    await expect(addExistingProjectMember({query} as unknown as Database,{workspaceId:'workspace',projectId:'project',
+      actorId:'actor',role:'contributor'})).resolves.toBeUndefined();
+    expect(String(query.mock.calls[0]?.[0])).toContain('join actors a on a.workspace_id=p.workspace_id');
+    expect(String(query.mock.calls[0]?.[0])).not.toContain('insert into actors');
+  });
+
   it('allows a client with Bitrix identity only and creates CP access without a messenger call', async () => {
     const db = database();
     await expect(onboardProjectMember(db.value, {workspaceId: 'workspace', projectId: 'project', displayName: 'Client',
