@@ -157,19 +157,6 @@ code { color: #4f5a4f; }
 .fcp-member-picker > div > button.active, .fcp-role-buttons button.active { background:#ddf4ff; border-color:#54aeff; color:#0969da; }
 .fcp-member-picker > .fcp-primary { justify-self:start; }
 .fcp-field-label { color:#57606a; display:block; font-size:11px; margin-bottom:5px; }
-.fcp-agent-routing-editor { border-top:1px solid #d8dee4; }
-.fcp-agent-routing-editor > article { padding:14px 16px 16px; }
-.fcp-agent-routing-editor > article + article { border-top:1px solid #d8dee4; }
-.fcp-agent-routing-editor h3 { color:#1f2328; font-size:13px; margin:0 0 10px; }
-.fcp-agent-routing-fields { display:grid; gap:8px; grid-template-columns:repeat(5,minmax(0,1fr)); }
-.fcp-agent-routing-setting { background:#f6f8fa; border:1px solid #d8dee4; border-radius:6px; min-width:0; padding:8px 9px; }
-.fcp-agent-routing-setting > span { color:#57606a; display:block; font-size:10px; font-weight:650; margin-bottom:4px; }
-.fcp-agent-routing-setting > div { align-items:center; display:flex; gap:6px; justify-content:space-between; min-height:32px; }
-.fcp-agent-routing-setting strong { color:#1f2328; font-size:12px; font-weight:600; overflow-wrap:anywhere; }
-.fcp-agent-routing-setting form { display:grid; gap:7px; }
-.fcp-agent-routing-setting select { background:#fff; border:1px solid #8c959f; border-radius:6px; color:#1f2328; font:inherit; font-size:12px; min-height:36px; min-width:0; padding:0 7px; width:100%; }
-.fcp-agent-routing-setting form > div { display:flex; gap:5px; }
-.fcp-agent-routing-setting form .fcp-primary { font-size:11px; min-height:34px; padding:0 9px; }
 .fcp-icon-button { align-items:center; background:transparent; border:0; border-radius:6px; color:#57606a; cursor:pointer; display:inline-flex; flex:0 0 32px; height:32px; justify-content:center; padding:0; }
 .fcp-icon-button:hover { background:#d8dee4; color:#1f2328; }
 .fcp-icon-button:focus-visible { box-shadow:0 0 0 3px rgba(9,105,218,.2); outline:0; }
@@ -199,9 +186,6 @@ code { color: #4f5a4f; }
 .fcp-topbar .fcp-logout .fcp-command-notice { display:none; }
 @media (max-width:700px) {.fcp-control form { grid-template-columns:1fr; }
 .fcp-control form > .fcp-primary { width:100%; }}
-@media (max-width:980px) {.fcp-agent-routing-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }}
-@media (max-width:700px) {.fcp-agent-routing-editor > article { padding:13px; }
-.fcp-agent-routing-fields { grid-template-columns:1fr; }}
 .fcp-context-action p { color:#1f2328; font-size:12px; line-height:1.45; margin:0; }
 .fcp-context-action { align-items:center; display:flex; gap:18px; justify-content:space-between; padding:12px 17px; }
 .fcp-context-action p { color:#424a53; }
