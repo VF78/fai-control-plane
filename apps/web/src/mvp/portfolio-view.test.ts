@@ -29,4 +29,11 @@ describe('portfolio view', () => {
     const view = buildPortfolioProject(input, new Date('2026-08-13T12:00:00.000Z'));
     expect(view).toMatchObject({blocked: null, overdue: 0, health: 'steady'});
   });
+
+  it('keeps provider errors safe for an operator summary', () => {
+    const input={...project([]),tracker:{...project([]).tracker,freshness:'error' as const,errorCode:'github_read_failed'}};
+    const view=buildPortfolioProject(input);
+    expect(view.healthReason).toBe('Источник пока не подтвердил обновление.');
+    expect(view.healthReason).not.toContain('github_read_failed');
+  });
 });

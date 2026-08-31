@@ -12,6 +12,9 @@ export function StatusIndicator({tone='neutral',children}:Readonly<{tone?:Status
 
 export function DividerList({label,children}:Readonly<{label?:string;children:ReactNode}>){return <div className="fcp-c-divider-list" aria-label={label}>{children}</div>;}
 
+/** One project-scoped boundary shared by the Overview and Process operating surfaces. */
+export function ProjectPanel({name,status,action,children}:Readonly<{name:string;status?:ReactNode;action?:ReactNode;children:ReactNode}>){return <article className="fcp-c-project-panel"><header><div><strong>{name}</strong><span>Проект</span></div><div className="fcp-c-project-panel-actions">{status}{action}</div></header><div className="fcp-c-project-panel-body">{children}</div></article>;}
+
 export function ProjectListRow({name,status,setup,facts,href,nextAction}:Readonly<{name:string;status:ReactNode;setup:string;facts:readonly string[];href:string;nextAction:string}>){return <article className="fcp-c-project-row"><div className="fcp-c-project-row-title"><Link href={href}>{name}</Link><span>{setup}</span></div><div className="fcp-c-project-row-status">{status}</div><p>{facts.map((fact,index)=><span key={`${fact}-${index}`}>{fact}</span>)}</p><Link className="fcp-c-project-row-action" href={href} aria-label={`${nextAction}: ${name}`}>{nextAction}<ChevronRight aria-hidden="true" size={16}/></Link></article>;}
 
 export type SetupNode=Readonly<{id:string;label:string;state:'complete'|'active'|'pending'|'error'}>;

@@ -12,6 +12,7 @@ import {PhaseB, type PhaseBView} from '../src/mvp/phase-b-ui.tsx';
 import {integrationConfig} from '../src/mvp/integration-config.ts';
 import {hermesExecutorCatalog} from '../src/mvp/hermes-executor-readiness.ts';
 import {getDatabase, requireSession} from '../src/mvp/runtime.ts';
+import {ErrorState,PageHeader} from '../src/ui/foundation.tsx';
 
 export const dynamic = 'force-dynamic';
 type Area = 'dashboard'|'tasks'|'process'|PhaseBView;
@@ -26,21 +27,26 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
   const query = await searchParams;
   const view = current(query.view);
   const database = getDatabase();
-  const projects = await listProjectTaskViews(database, session.actorId);
+  let projects: Awaited<ReturnType<typeof listProjectTaskViews>>;
+  try { projects = await listProjectTaskViews(database, session.actorId); }
+  catch { return <Shell view={view} projects={[]} operatorName={session.displayName}><PageHeader title={view==='dashboard'?'Обзор':view==='tasks'?'Задачи':view==='process'?'Процесс':view==='settings'?'Проекты':'Рабочее пространство'}/><ErrorState detail="Данные пока не подтверждены. Сохранённые настройки не изменены; обновите страницу и повторите." action={<a className="fcp-secondary" href={`/?view=${view}`}>Повторить</a>}/></Shell>; }
+  const invalidProject = view === 'tasks' && query.project !== undefined && !projects.some((project) => project.slug === query.project);
   const selected = view === 'tasks'
-    ? projects.find((project) => project.slug === query.project) ?? projects[0] ?? null
+    ? invalidProject ? null : projects.find((project) => project.slug === query.project) ?? projects[0] ?? null
     : null;
   let content: ReactNode;
   if (view === 'dashboard') {
     content = <Dashboard projects={projects}/>;
   } else if (view === 'tasks') {
-    const [trackerCapabilities, run] = selected === null ? [null, null] as const : await Promise.all([
+    const [trackerCapabilities, run, role] = selected === null ? [null, null, null] as const : await Promise.all([
       readProjectTrackerCapabilities(database, session.actorId, selected.id),
       query.task === undefined ? Promise.resolve(null)
-        : readProjectAgentSubmissionView(database, session.actorId, selected.id, query.task)
+        : readProjectAgentSubmissionView(database, session.actorId, selected.id, query.task),
+      readProjectMembershipRole(database, session.actorId, selected.id)
     ]);
     content = <Tasks projects={projects} project={selected} task={query.task} filter={query.filter}
       hermesOwnerOptionId={trackerCapabilities?.agentOwnerOptionId}
+      invalidProject={invalidProject} canManage={role==='project_owner'||role==='operator'}
       executorControl={(task) => selected === null ? null : <TaskExecutorControl
         key={`${run?.deliveryReference ?? task.itemId}:${run?.status ?? 'none'}`}
         projectId={selected.id}
