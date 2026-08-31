@@ -21,6 +21,33 @@ const attestation = {execution: {taskClass: 'ordinary_implementation' as const,
 outcome: 'success' as const, transition: {itemId: 'item', fromVersion: 'v1', targetStage: 'QA'}};
 
 describe('MVP Hermes adapter', () => {
+  it('submits one compact autonomous PM reconciliation to the same bound Hermes',async()=>{
+    const fetch=vi.fn(async(_input:string|URL|Request,_init?:RequestInit)=>
+      new Response(JSON.stringify({run_id:'run_pm',status:'started'}),{status:202}));
+    const adapter=createHermesDeliveryAdapter({endpoint:'https://hermes.example/v1/runs',
+      credentialRef:{id:'secret',purpose:'agent_delivery',locator:'/run/agent'},
+      secrets:{resolve:async()=>({value:'bearer'})},fetch});
+    const pm={contract:'fai.autonomous-pm-request.v1' as const,project:{id:'project',repositoryUrl:'https://github.com/VF78/control',
+      trackerUrl:'https://github.com/users/VF78/projects/1'},versions:{process:'a'.repeat(64),routing:'b'.repeat(64)},
+      correlationId:'browser:'+ 'c'.repeat(64),idempotencyKey:'autonomous-pm'};
+    await expect(adapter.submitReconciliation(pm)).resolves.toMatchObject({deliveryReference:'run_pm'});
+    const body=JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));expect(JSON.parse(body.input)).toEqual(pm);
+    expect(body.instructions).toContain('at most one');expect(body.input).not.toContain('documents');
+  });
+
+  it('parses one bounded PM selection and rejects a malformed selection',async()=>{
+    const output=JSON.stringify({contract:'fai.autonomous-pm-result.v1',outcome:'selected',reason:'ready',
+      selection:{itemId:'item',issueUrl:'https://github.com/VF78/control/issues/42',observedVersion:'v2'}});
+    const fetch=vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({run_id:'run_pm',status:'completed',output})))
+      .mockResolvedValueOnce(new Response(JSON.stringify({run_id:'run_bad',status:'completed',output:JSON.stringify({
+        contract:'fai.autonomous-pm-result.v1',outcome:'selected',reason:'bad',selection:{itemId:'item'}})})));
+    const adapter=createHermesDeliveryAdapter({endpoint:'https://hermes.example/v1/runs',
+      credentialRef:{id:'secret',purpose:'agent_delivery',locator:'/run/agent'},
+      secrets:{resolve:async()=>({value:'bearer'})},fetch});
+    await expect(adapter.observeReconciliation('run_pm')).resolves.toMatchObject({status:'completed',result:{outcome:'selected'}});
+    await expect(adapter.observeReconciliation('run_bad')).resolves.toEqual({status:'failed'});
+  });
+
   it('delivers the neutral role contract and returns opaque evidence', async () => {
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({run_id: 'run_ref', status: 'started'}), {status: 202}));
     const adapter = createHermesDeliveryAdapter({endpoint: 'https://agent.example.test/v1/runs',
@@ -31,7 +58,16 @@ describe('MVP Hermes adapter', () => {
       session_id: string;
       provider: string; model: string; model_options: {reasoning_effort: string}};
     expect(JSON.parse(body.input)).toMatchObject({contract: 'fai.agent-role-request.v1'});
+    expect(JSON.parse(body.input)).toEqual({contract: 'fai.agent-role-request.v1',
+      task: {role: 'developer', stage: {id: 'in-dev', title: 'In Dev'},
+        issueUrl: 'https://example.test/issues/1'},
+      versions: {process: 'b'.repeat(64), routing: request.routing.policyVersion},
+      receipt: {correlationId: request.correlationId, idempotencyKey: 'delivery',
+        contract: 'fai.agent-executor-result.v1'}});
     expect(body.input).not.toContain('approval');
+    expect(body.input).not.toContain('constraints');
+    expect(body.input).not.toContain('acceptanceCriteria');
+    expect(body.input).not.toContain('defaultBranchSha');
     expect(body.instructions).toContain('native git/gh directly');
     expect(body.instructions).toContain('Never ask Control Plane to proxy');
     expect(body.session_id).toBe(request.correlationId);
@@ -47,6 +83,16 @@ describe('MVP Hermes adapter', () => {
       secrets: {resolve: async () => ({value: 'bearer'})}, fetch});
     await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'failed', failureCode: 'provider_failed'});
     expect(String(fetch.mock.calls[0]?.[0])).toBe('https://hermes.example/v1/runs/run_ref');
+  });
+
+  it('preserves bounded progress while a run remains active', async () => {
+    const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
+      credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},
+      secrets: {resolve: async () => ({value: 'bearer'})}, fetch: vi.fn(async () =>
+        new Response(JSON.stringify({run_id: 'run_ref', status: 'running',
+          progress: {reference: 'tool:17', observed_at: '2026-08-31T10:00:00.000Z'}}))) });
+    await expect(adapter.observe('run_ref')).resolves.toEqual({status: 'started',
+      progress: {reference: 'tool:17', observedAt: '2026-08-31T10:00:00.000Z'}});
   });
 
   it('accepts only the bounded executor-result contract and preserves stable deliverable links', async () => {

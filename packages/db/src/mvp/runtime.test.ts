@@ -7,7 +7,8 @@ import {activateProjectContextSnapshot, addSourceArtifact, readActiveProjectCont
   createAgentAttemptStore,
   readProjectAgentSubmissionView, readProjectContextStatus,
   readProjectExecutionMode, readProjectProcessPolicy, refreshProjectContext, trackerSnapshotFreshness,
-  executeAgentSubmissionTransaction, readProjectMembershipRole, type Database} from './runtime.ts';
+  claimAutonomousPmRecovery,executeAgentSubmissionTransaction,executeAutonomousPmTransaction,
+  readProjectMembershipRole,retryAutonomousPmTransaction,type AutonomousPmAttempt, type Database} from './runtime.ts';
 
 describe('focused page projections', () => {
   it('reads one active membership role', async () => {
@@ -278,5 +279,71 @@ describe('agent attempt retry guard', () => {
       {...input, retryOf: 'run_expired', confirmUnobservableFailure: true}, async () => ({deliveryReference: 'run_new'})))
       .resolves.toMatchObject({deliveryReference: 'run_new'});
     expect(confirmed.query.mock.calls.some(([sql]) => String(sql).includes("'agent.attempt.failed'"))).toBe(true);
+  });
+});
+
+describe('autonomous PM single-flight receipt',()=>{
+  const input={workspaceId:'workspace',projectId:'project',actorId:'actor',idempotencyKey:'autonomous-key',
+    correlationId:'browser:'+'c'.repeat(64),processVersion:'a'.repeat(64),routingVersion:'b'.repeat(64),
+    snapshotVersion:'mode:2026-08-31',modeChangedAt:'2026-08-31T10:00:00.000Z'};
+  it('submits once across duplicate worker ticks using existing receipt/audit rows',async()=>{
+    let prior:string|null=null;const query=vi.fn(async(sql:string,params?:unknown[])=>{
+      if(sql.includes("a.action='project.execution.mode'"))return {rows:[{}],rowCount:1};
+      if(sql.includes("command_type='autonomous.pm'"))return {rows:prior===null?[]:[{deliveryReference:prior}],rowCount:prior===null?0:1};
+      if(sql.includes('select 1 from audit_events a where'))return {rows:[],rowCount:0};
+      if(sql.includes('insert into command_receipts')&&sql.includes("'autonomous.pm'")){
+        prior=String(params?.[3]);return {rows:[],rowCount:1};}
+      return {rows:[],rowCount:1};});
+    const database={connect:async()=>({query,release:vi.fn()})} as unknown as Database;
+    const submit=vi.fn(async()=>({deliveryReference:'run_pm'}));
+    await expect(executeAutonomousPmTransaction(database,input,submit)).resolves.toEqual({status:'started',
+      deliveryReference:'run_pm'});
+    await expect(executeAutonomousPmTransaction(database,input,submit)).resolves.toEqual({status:'duplicate',
+      deliveryReference:'run_pm'});
+    expect(submit).toHaveBeenCalledOnce();
+  });
+  it('does not submit while a task or PM attempt is active',async()=>{
+    const query=vi.fn(async(sql:string)=>sql.includes("a.action='project.execution.mode'")?{rows:[{}],rowCount:1}:
+      sql.includes("command_type='autonomous.pm'")?{rows:[],rowCount:0}:
+      sql.includes('select 1 from audit_events a where')?{rows:[{}],rowCount:1}:{rows:[],rowCount:1});
+    const database={connect:async()=>({query,release:vi.fn()})} as unknown as Database;
+    const submit=vi.fn();await expect(executeAutonomousPmTransaction(database,input,submit)).resolves.toEqual({status:'busy',
+      deliveryReference:null});expect(submit).not.toHaveBeenCalled();
+  });
+  it('does not submit when mode changed after the worker read it',async()=>{
+    const query=vi.fn(async(sql:string)=>sql.includes("a.action='project.execution.mode'")?{rows:[],rowCount:0}:
+      {rows:[],rowCount:1});const database={connect:async()=>({query,release:vi.fn()})} as unknown as Database;
+    const submit=vi.fn();await expect(executeAutonomousPmTransaction(database,input,submit)).resolves.toEqual({
+      status:'disabled',deliveryReference:null});expect(submit).not.toHaveBeenCalled();
+  });
+  it('persists one recovery claim across worker process restarts and exhausts retry attempts',async()=>{
+    let claimed=false;const query=vi.fn(async(sql:string)=>{if(sql.includes("action='autonomous.pm.recovery'"))
+      return {rows:claimed?[{}]:[],rowCount:claimed?1:0};if(sql.includes("'autonomous.pm.recovery'"))claimed=true;
+      return {rows:[],rowCount:1};});const database={connect:async()=>({query,release:vi.fn()})} as unknown as Database;
+    const attempt={workspaceId:'workspace',projectId:'project',actorId:'actor',modeChangedAt:input.modeChangedAt,
+      deliveryReference:'run_pm',correlationId:input.correlationId,idempotencyKey:input.idempotencyKey,
+      processVersion:input.processVersion,routingVersion:input.routingVersion,snapshotVersion:input.snapshotVersion,
+      retryOf:null} satisfies AutonomousPmAttempt;
+    await expect(claimAutonomousPmRecovery(database,attempt)).resolves.toBe('claimed');
+    await expect(claimAutonomousPmRecovery(database,attempt)).resolves.toBe('already-claimed');
+    await expect(claimAutonomousPmRecovery(database,{...attempt,deliveryReference:'run_retry',retryOf:'run_pm'}))
+      .resolves.toBe('exhausted');
+  });
+  it('atomically closes the orphan and links exactly one deterministic retry receipt',async()=>{
+    const details:string[]=[];const query=vi.fn(async(sql:string,params?:unknown[])=>{
+      if(sql.includes("a.action='project.execution.mode'"))return{rows:[{}],rowCount:1};
+      if(sql.includes("a.action='agent.submit'"))return{rows:[],rowCount:0};
+      if(sql.includes("command_type='autonomous.pm'"))return{rows:[],rowCount:0};
+      if(sql.includes("a.action='autonomous.pm' and not exists"))return{rows:[{}],rowCount:1};
+      for(const value of params??[])if(typeof value==='string'&&value.startsWith('{'))details.push(value);
+      return{rows:[],rowCount:1};});const database={connect:async()=>({query,release:vi.fn()})} as unknown as Database;
+    const attempt={workspaceId:'workspace',projectId:'project',actorId:'actor',modeChangedAt:input.modeChangedAt,
+      deliveryReference:'run_pm',correlationId:input.correlationId,idempotencyKey:input.idempotencyKey,
+      processVersion:input.processVersion,routingVersion:input.routingVersion,snapshotVersion:input.snapshotVersion,
+      retryOf:null} satisfies AutonomousPmAttempt;const submit=vi.fn(async()=>({deliveryReference:'run_retry'}));
+    await expect(retryAutonomousPmTransaction(database,attempt,{idempotencyKey:'autonomous-key:retry',
+      correlationId:'browser:'+'d'.repeat(64)},submit)).resolves.toEqual({status:'started',deliveryReference:'run_retry'});
+    expect(submit).toHaveBeenCalledOnce();expect(details.some((value)=>value.includes('"retryOf":"run_pm"'))).toBe(true);
+    expect(details.some((value)=>value.includes('"failureCode":"recovered_unobservable"'))).toBe(true);
   });
 });

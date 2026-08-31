@@ -1,10 +1,12 @@
 import type {
   AgentDeliveryPort,
   AgentExecutorResult,
+  AutonomousPmDeliveryPort,
   OpaqueSecretRef,
   SecretResolverPort
 } from '@fai-control-plane/domain';
-import {renderAgentRoleRequest, validateAgentRoleRequest} from '@fai-control-plane/domain';
+import {parseAutonomousPmResult,renderAgentRoleRequest,renderAutonomousPmRequest,
+  validateAgentRoleRequest,validateAutonomousPmRequest} from '@fai-control-plane/domain';
 import {agentTaskClasses} from '@fai-control-plane/domain';
 
 type Fetch = typeof globalThis.fetch;
@@ -13,8 +15,16 @@ const roleRunInstructions = `Execute the exact project-role request from the inp
 Act as the persistent project Hermes: read the issue, comments, Project fields, linked PR and current repository facts with native git/gh directly. Never ask Control Plane to proxy a provider command.
 If the issue is incomplete, act as PM: analyze it, add the missing scope and acceptance criteria to the same issue, request confirmation in Telegram, and wait before execution. Otherwise follow the requested role and configured CLI/model/reasoning route. Change the same GitHub Project item as work progresses and verify every change with gh. Approval material is never delivered in this request.
 Return only one compact valid fai.agent-executor-result.v1 JSON object requested by the input. Do not add prose.`;
+const autonomousPmInstructions = `Act only as the persistent project Hermes PM. Read the configured GitHub Project, issues and dependency facts directly. Return no-eligible, blocker, or at most one unblocked Hermes-owned item at the configured automated entry stage (Ready only when Ready itself is configured for automation). If the current autonomous chain is at a human gate, return blocker and select nothing else. Do not execute or mutate the item. Return only fai.autonomous-pm-result.v1 JSON with the exact provider item id, issue URL and observed version for a selected item. Never ask Control Plane to select or rank backlog.`;
 const bounded = (value: unknown, maximum: number): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
+const progressFact = (value: unknown): Readonly<{reference: string; observedAt: string}> | undefined => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (!bounded(record.reference, 256) || !bounded(record.observed_at, 64) ||
+    !Number.isFinite(Date.parse(record.observed_at))) return undefined;
+  return {reference: record.reference, observedAt: record.observed_at};
+};
 
 const executorResult = (output: unknown): AgentExecutorResult | null => {
   if (!bounded(output, 65_536)) return null;
@@ -67,7 +77,7 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
   secrets: SecretResolverPort;
   fetch?: Fetch;
   allowPrivateHttp?: boolean;
-}>): AgentDeliveryPort => {
+}>): AgentDeliveryPort & AutonomousPmDeliveryPort => {
   const endpoint = new URL(input.endpoint);
   const privateHttp = input.allowPrivateHttp === true && endpoint.protocol === 'http:' &&
     !endpoint.hostname.includes('.');
@@ -146,8 +156,37 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     if (value.status === 'failed') return {status: 'failed', failureCode: 'provider_failed'};
     if (value.status === 'cancelled') return {status: 'failed', failureCode: 'provider_cancelled'};
     if (['started','queued','running','stopping','waiting_for_approval'].includes(value.status)) {
-      return {status: 'started'};
+      const progress = progressFact(value.progress);
+      return {status: 'started', ...(progress === undefined ? {} : {progress})};
     }
+    throw new Error('agent_status_invalid');
+  },async submitReconciliation(pmRequest){
+    if(!validateAutonomousPmRequest(pmRequest))throw new Error('agent_request_invalid');
+    const response=await request(endpoint,{method:'POST',headers:{accept:'application/json',
+      authorization:await authorization(),'content-type':'application/json'},body:JSON.stringify({
+        input:renderAutonomousPmRequest(pmRequest),instructions:autonomousPmInstructions,
+        session_id:pmRequest.correlationId,provider:'openai-codex',model:'gpt-5.6-terra',
+        model_options:{reasoning_effort:'medium'},orchestration:{kind:'hermes-project-manager',attempts:1}}),
+      signal:AbortSignal.timeout(15_000)});
+    if(response.status!==202)throw new Error('agent_delivery_failed');
+    const value=await response.json() as Record<string,unknown>;
+    if(typeof value.run_id!=='string'||value.run_id.length===0||value.run_id.length>256||value.status!=='started')
+      throw new Error('agent_response_invalid');
+    return {deliveryReference:value.run_id,sessionReference:pmRequest.correlationId};
+  },async observeReconciliation(deliveryReference){
+    if(!/^run_[A-Za-z0-9_-]{1,250}$/.test(deliveryReference))throw new Error('agent_attempt_reference_invalid');
+    const statusEndpoint=new URL(`${endpoint.pathname}/${encodeURIComponent(deliveryReference)}`,endpoint);
+    const response=await request(statusEndpoint,{method:'GET',headers:{accept:'application/json',
+      authorization:await authorization()},signal:AbortSignal.timeout(15_000)});
+    if(response.status===404)return {status:'unknown'};
+    if(!response.ok)throw new Error('agent_status_failed');
+    const value=await response.json() as Record<string,unknown>;
+    if(value.run_id!==deliveryReference||typeof value.status!=='string')throw new Error('agent_status_invalid');
+    if(value.status==='completed'){const result=parseAutonomousPmResult(value.output);
+      return result===null?{status:'failed'}:{status:'completed',result};}
+    if(['failed','cancelled'].includes(value.status))return {status:'failed'};
+    if(['started','queued','running','stopping','waiting_for_approval'].includes(value.status)){
+      const progress=progressFact(value.progress);return {status:'started',...(progress===undefined?{}:{progress})};}
     throw new Error('agent_status_invalid');
   }};
 };

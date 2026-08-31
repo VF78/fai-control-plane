@@ -33,7 +33,8 @@ describe('MVP tracker reconciliation', () => {
       ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: {readLatest: async () => null, replace, recordFailure}, compose,
         outbox: {enqueue, claim: async () => [], complete: async () => undefined, retry: async () => undefined},
         audit: {append}}
-    })).resolves.toEqual({observedItems: 2, queuedActions: 0, cursor: 'cursor-2'});
+    })).resolves.toEqual({observedItems: 2, queuedActions: 0, cursor: 'cursor-2',
+      externalVersion:'github:updated-at:2026-08-13T00:00:00Z'});
     expect(replace).toHaveBeenCalledWith(snapshot);
     expect(enqueue).not.toHaveBeenCalled();
     expect(append).toHaveBeenCalledWith(expect.objectContaining({workspaceId: 'workspace'}));

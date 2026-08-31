@@ -56,14 +56,24 @@ describe('MVP agent role request', () => {
   });
 
   it('renders the compact task contract without resending project sources or chat history', () => {
-    expect(JSON.parse(renderAgentRoleRequest(request()))).toMatchObject({
-      contract: 'fai.agent-role-request.v1', task: {role: 'developer'}, routing: {
-        classification: 'runtime-classification-required', policy: {contract: 'fai.agent-routing.v1'}},
-      receipt: {contract: 'fai.agent-executor-result.v1'}
-    });
+    const value=request();
+    expect(JSON.parse(renderAgentRoleRequest(value))).toEqual({
+      contract:'fai.agent-role-request.v1',
+      task:{role:'developer',stage:{id:'in-dev',title:'In Dev'},issueUrl:'https://example.test/issues/1'},
+      versions:{process:'b'.repeat(64),routing:value.routing.policyVersion},
+      receipt:{correlationId:'correlation-1',idempotencyKey:'delivery-1',
+        contract:'fai.agent-executor-result.v1'}});
     const rendered = renderAgentRoleRequest(request());
-    expect(rendered).toContain('codex-cli');
+    expect(rendered).not.toContain('codex-cli');
+    expect(rendered).not.toContain('repository');
+    expect(rendered).not.toContain('defaultBranch');
+    expect(rendered).not.toContain('routing.policy');
     expect(rendered).not.toContain('sources');
+    expect(rendered).not.toContain('constraints');
+    expect(rendered).not.toContain('acceptanceCriteria');
+    expect(rendered).not.toContain('profile');
+    expect(rendered).not.toContain('documents');
+    expect(rendered).not.toContain('chat');
     expect(rendered).not.toContain('chatHistory');
     expect(rendered).not.toContain('approval');
     expect(rendered).not.toContain('project-1');

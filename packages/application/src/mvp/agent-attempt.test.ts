@@ -17,11 +17,11 @@ const notification = async (_attempt: AgentAttemptRecord, _observed: unknown, id
 const store = (finish: AgentAttemptStore['finish']): AgentAttemptStore => ({
   resolve: async () => attempt, listActive: async () => [attempt], finish
 });
-const snapshot = (statusOptionName = 'QA', ownerOptionId: string|null = 'hermes'): TrackerSnapshot => ({
+const snapshot = (statusOptionName = 'QA', ownerOptionId: string|null = 'hermes', blocked = false): TrackerSnapshot => ({
   bindingId: 'binding', externalVersion: 'v2', cursor: null, observedAt: '2026-08-26T00:00:00.000Z',
   sourceUrl: 'https://github.com/users/acme/projects/1', items: [{itemId: 'item', projectId: 'project', issueId: 'issue',
     title: 'Task', url: 'https://example.test/issues/1', version: 'v2', statusOptionId: 'qa', statusOptionName,
-    ownerOptionId, blocked: false, targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [],
+    ownerOptionId, blocked, targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [],
     assigneeIds: [], assignees: [], observedAt: '2026-08-26T00:00:00.000Z'}]
 });
 const readTracker = async () => snapshot();
@@ -37,12 +37,15 @@ describe('agent attempt reconciliation', () => {
     expect(message.text).toContain('Task — https://example.test/issues/1');
     expect(message.text).not.toContain('Задача: item');
   });
-  it('does not turn an expired provider status into a failure', async () => {
+  it('does not turn an old run with visible progress into a timeout', async () => {
     const finish = vi.fn<AgentAttemptStore['finish']>();
+    const oldAttempt = {...attempt, occurredAt: '2020-01-01T00:00:00.000Z'};
     const result = await reconcileAgentAttempt({actorId: 'actor', projectId: 'project', itemId: 'item',
-      deliveryReference: 'run_ref'}, {delivery: {submit: vi.fn(), observe: async () => ({status: 'unknown'})},
-      attempts: store(finish), readTracker, composeTerminalNotification: notification});
-    expect(result.status).toBe('unknown'); expect(finish).not.toHaveBeenCalled();
+      deliveryReference: 'run_ref'}, {delivery: {submit: vi.fn(), observe: async () => ({status: 'started',
+        progress: {reference: 'tool:17', observedAt: '2026-08-31T10:00:00.000Z'}})},
+      attempts: {...store(finish), resolve: async () => oldAttempt}, readTracker,
+      composeTerminalNotification: notification});
+    expect(result.status).toBe('started'); expect(finish).not.toHaveBeenCalled();
   });
 
   it('appends one terminal lifecycle fact for a provider-confirmed failure', async () => {
@@ -88,6 +91,21 @@ describe('agent attempt reconciliation', () => {
     expect(finish).toHaveBeenCalledWith(expect.objectContaining({failureCode:'provider_unavailable'}));
   });
 
+  it('stops the chain when provider readback confirms a blocker', async () => {
+    const finish = vi.fn<AgentAttemptStore['finish']>(async () => 'recorded');
+    const continuation = vi.fn(async () => undefined);
+    const exactAttempt = {...attempt,observedVersion:'v1',successTargetTitle:'QA',reworkTargetTitle:null,
+      expectedOwnerOptionId:'hermes',routingPolicy:{contract:'fai.agent-routing.v1' as const,routes:[
+        {...accepted.execution,runtimeAcceptance:'required' as const,humanGate:'none' as const}
+      ]},executorCatalog:{}};
+    await expect(reconcileAgentAttempt({actorId:'actor',projectId:'project',itemId:'item',deliveryReference:'run_ref'},
+      {delivery:{submit:vi.fn(),observe:async()=>({status:'completed',result:accepted})},
+        attempts:{...store(finish),resolve:async()=>exactAttempt},readTracker:async()=>snapshot('QA','hermes',true),
+        continueAgentChain:continuation,composeTerminalNotification:notification})).resolves.toMatchObject({status:'failed'});
+    expect(finish).toHaveBeenCalledWith(expect.objectContaining({failureCode:'provider_blocked'}));
+    expect(continuation).not.toHaveBeenCalled();
+  });
+
   it('fails closed when Hermes attests a route not pinned by the receipt', async () => {
     const finish = vi.fn<AgentAttemptStore['finish']>(async () => 'recorded');
     const exactAttempt = {...attempt, observedVersion:'v1',successTargetTitle:'QA',reworkTargetTitle:null,
@@ -99,14 +117,14 @@ describe('agent attempt reconciliation', () => {
     expect(finish).toHaveBeenCalledWith(expect.objectContaining({failureCode:'agent_result_invalid'}));
   });
 
-  it('isolates a transient observation failure so the worker can continue', async () => {
+  it('keeps a transient observation failure open so the worker can continue', async () => {
     const finish = vi.fn<AgentAttemptStore['finish']>();
     await expect(reconcileActiveAgentAttempts(20, {delivery: {submit: vi.fn(), observe: async () => {
       throw new Error('agent_status_failed');
     }}, attempts: store(finish), readTracker, composeTerminalNotification: notification})).resolves.toEqual([
-      {status: 'failed', deliveryReference: 'run_ref'}
+      {status: 'started', deliveryReference: 'run_ref'}
     ]);
-    expect(finish).toHaveBeenCalledWith(expect.objectContaining({failureCode:'provider_unavailable'}));
+    expect(finish).not.toHaveBeenCalled();
   });
 
   it('lets the worker recover an unavailable provider without closing the attempt', async () => {
@@ -118,6 +136,34 @@ describe('agent attempt reconciliation', () => {
     composeTerminalNotification: notification})).resolves.toEqual([{status: 'started', deliveryReference: 'run_ref'}]);
     expect(recoverUnavailable).toHaveBeenCalledWith(attempt);
     expect(finish).not.toHaveBeenCalled();
+  });
+
+  it('routes every unobservable run_not_found through recovery while leaving the attempt open', async () => {
+    const finish = vi.fn<AgentAttemptStore['finish']>();
+    const recoverUnavailable = vi.fn(async () => ({status: 'started' as const}));
+    const observationSucceeded = vi.fn();
+    const value = {delivery: {submit: vi.fn(), observe: async () => ({status: 'unknown' as const})},
+      attempts: store(finish), readTracker, recoverUnavailable, observationSucceeded,
+      composeTerminalNotification: notification};
+    await expect(reconcileActiveAgentAttempts(20,value)).resolves.toEqual([
+      {status:'started',deliveryReference:'run_ref'}]);
+    await expect(reconcileActiveAgentAttempts(20,value)).resolves.toEqual([
+      {status:'started',deliveryReference:'run_ref'}]);
+    expect(recoverUnavailable).toHaveBeenCalledTimes(2);
+    expect(observationSucceeded).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it('treats visible progress as healthy observation and resets recovery streak', async () => {
+    const finish = vi.fn<AgentAttemptStore['finish']>();
+    const recoverUnavailable = vi.fn(async () => ({status:'started' as const}));
+    const observationSucceeded = vi.fn();
+    await expect(reconcileActiveAgentAttempts(20,{delivery:{submit:vi.fn(),observe:async()=>({status:'started' as const,
+      progress:{reference:'tool:18',observedAt:'2026-08-31T10:01:00.000Z'}})},attempts:store(finish),readTracker,
+      recoverUnavailable,observationSucceeded,composeTerminalNotification:notification})).resolves.toEqual([
+        {status:'started',deliveryReference:'run_ref'}]);
+    expect(observationSucceeded).toHaveBeenCalledOnce();
+    expect(recoverUnavailable).not.toHaveBeenCalled();
   });
 
   it('isolates one broken terminal readback and still reconciles the next item', async () => {

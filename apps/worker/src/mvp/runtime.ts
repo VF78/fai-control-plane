@@ -9,9 +9,13 @@ import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, c
   recordProjectTrackerPreparationStart,recordVerifiedProjectTrackerCapabilities,
   promoteApprovedProjectArchitectures,
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
-  readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
+  executeAutonomousPmTransaction,finishAutonomousPmAttempt,listActiveAutonomousPmAttempts,
+  claimAutonomousPmRecovery,hasActiveAgentAttempt,retryAutonomousPmTransaction,
+  readActiveProjectExecutionMode,readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, composeAgentTerminalNotification, continueExplicitAgentChain,
-  deliverPending, reconcileActiveAgentAttempts, reconcileTracker, submitExplicitAgent,
+  autonomousPmEnabled,autonomousPmKey,deliverPending, reconcileActiveAgentAttempts, reconcileTracker,
+  sameAutonomousActivation,submitExplicitAgent,
+  verifyAutonomousPmSelection,
   type AgentAttemptRecord, type AgentSubmissionPorts
 } from '@fai-control-plane/application';
 import {
@@ -23,6 +27,7 @@ import {
 import type {
   AgentExecutorCatalog,
   AgentDeliveryPort,
+  AutonomousPmDeliveryPort,
   MessengerDeliveryPort,
   MessengerDeliveryInput,
   SecretResolverPort,
@@ -106,6 +111,27 @@ export const restartHermesGateway = async (
   if (!restarted.ok) throw new Error('hermes_restart_failed');
 };
 
+/** Process-local endpoint health only; canonical attempt state remains in the
+ * existing receipts/audit tables. */
+export const createEndpointRecoveryGate = (threshold = 2) => {
+  if (!Number.isInteger(threshold) || threshold < 2) throw new Error('agent_recovery_threshold_invalid');
+  const failures = new Map<string, number>();
+  const recovered = new Set<string>();
+  return {
+    failed(reference: string): 'wait'|'recover'|'exhausted' {
+      const count = (failures.get(reference) ?? 0) + 1;
+      failures.set(reference, count);
+      if (count < threshold) return 'wait';
+      if (recovered.has(reference)) return 'exhausted';
+      recovered.add(reference); return 'recover';
+    },
+    succeeded(reference: string, terminal = false): void {
+      failures.delete(reference);
+      if (terminal) recovered.delete(reference);
+    }
+  };
+};
+
 export const createWorker = (database: Database = createDatabase()) => {
   const workspaceId = env('FCP_WORKSPACE_ID');
   const stores = createStores(database, workspaceId);
@@ -121,7 +147,9 @@ export const createWorker = (database: Database = createDatabase()) => {
   }};
   const executorCatalog: AgentExecutorCatalog = {'codex-cli': {available: true,
     models: ['gpt-5.6-terra','gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}};
-  const agentDeliveries = new Map<string, Readonly<{signature: string; delivery: AgentDeliveryPort}>>();
+  const agentDeliveries = new Map<string, Readonly<{signature: string;
+    delivery: AgentDeliveryPort&AutonomousPmDeliveryPort}>>();
+  const recoveryGate = createEndpointRecoveryGate();
 
   const projectRuntime = (project: WorkerProjectBinding) => {
     const coordinates = githubBindingCoordinates(project);
@@ -202,7 +230,82 @@ export const createWorker = (database: Database = createDatabase()) => {
       availableAt: new Date().toISOString(), payload: {message: {projectId, contour: 'trusted-main',
         channelReference: 'telegram:internal', text, idempotencyKey}}});
   };
+  const autonomousNotification=(projectId:string,key:string,text:string):MessengerDeliveryInput=>({projectId,
+    contour:'trusted-main',channelReference:'telegram:internal',text,idempotencyKey:key});
+  const failAutonomousPm=async(attempt:Awaited<ReturnType<typeof listActiveAutonomousPmAttempts>>[number],
+    suffix:string,text:string)=>finishAutonomousPmAttempt(database,attempt,{status:'failed',result:null,
+      notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:${suffix}`,text)});
+  const recoverAutonomousPm=async(runtime:ReturnType<typeof projectRuntime>,attempt:Awaited<ReturnType<
+    typeof listActiveAutonomousPmAttempts>>[number])=>{if(attempt.retryOf!==null){await failAutonomousPm(attempt,'exhausted',
+      'Автономный режим остановлен: Hermes недоступен после одной попытки восстановления.');return null;}
+    const claim=await claimAutonomousPmRecovery(database,attempt);if(claim==='exhausted'){await failAutonomousPm(attempt,
+      'exhausted','Автономный режим остановлен: Hermes недоступен после одной попытки восстановления.');return null;}
+    if(claim==='claimed'){await notifyRecovery(attempt.projectId,attempt.deliveryReference,'autonomous-pm',
+      'Hermes недоступен во время автономной сверки. Перезапускаю только ИИ агента этого проекта.');
+      try{await restartHermesGateway(runtime.project.runtime);}catch{await failAutonomousPm(attempt,'restart-failed',
+        'Автономный режим остановлен: Hermes не удалось восстановить.');return null;}}
+    try{await stores.snapshots.replace(await runtime.tracker.readSnapshot(runtime.project.bindingId,null));}
+    catch{await failAutonomousPm(attempt,'recovery-facts-failed',
+      'Автономный режим остановлен: после восстановления не удалось подтвердить факты GitHub Project.');return null;}
+    let observed:Awaited<ReturnType<AutonomousPmDeliveryPort['observeReconciliation']>>={status:'unknown'};
+    try{observed=await runtime.agentDelivery.observeReconciliation(attempt.deliveryReference);}catch{/* retry below */}
+    if(observed.status!=='unknown'){recoveryGate.succeeded(attempt.deliveryReference,
+      observed.status==='completed'||observed.status==='failed');return observed;}
+    const idempotencyKey=`${attempt.idempotencyKey}:retry`;const correlationId=`browser:${createHash('sha256').update(
+      idempotencyKey).digest('hex')}`;
+    try{const retried=await retryAutonomousPmTransaction(database,attempt,{idempotencyKey,correlationId},async()=>
+      runtime.agentDelivery.submitReconciliation({contract:'fai.autonomous-pm-request.v1',project:{id:attempt.projectId,
+        repositoryUrl:runtime.project.repositoryUrl,trackerUrl:runtime.project.projectUrl},versions:{
+        process:attempt.processVersion,routing:attempt.routingVersion},correlationId,idempotencyKey}));
+      if(retried.status==='disabled')await finishAutonomousPmAttempt(database,attempt,{status:'completed',result:null,
+        notification:null});else if(retried.status==='busy')await failAutonomousPm(attempt,'retry-overlap',
+        'Автономный режим остановлен: в проекте уже выполняется другая задача.');return null;
+    }catch{await failAutonomousPm(attempt,'recovery-failed',
+      'Автономный режим остановлен: восстановление Hermes не завершилось.');return null;}}
+  const observeAutonomousPm=async()=>{const projects=new Map((await activeProjects()).map((project)=>[project.projectId,project]));
+    for(const attempt of await listActiveAutonomousPmAttempts(database,workspaceId,20)){const project=projects.get(attempt.projectId);
+      if(project===undefined)continue;const runtime=projectRuntime(project);let observed:Awaited<ReturnType<
+        AutonomousPmDeliveryPort['observeReconciliation']>>;try{observed=await runtime.agentDelivery.observeReconciliation(
+        attempt.deliveryReference);}catch{observed={status:'unknown'};}
+      if(observed.status==='unknown'&&observed.progress===undefined){const recovery=recoveryGate.failed(attempt.deliveryReference);
+        if(recovery==='wait')continue;if(recovery==='exhausted'){await failAutonomousPm(attempt,'exhausted',
+          'Автономный режим остановлен: Hermes недоступен после одной попытки восстановления.');continue;}
+        const recovered=await recoverAutonomousPm(runtime,attempt);if(recovered===null)continue;observed=recovered;
+      }else recoveryGate.succeeded(attempt.deliveryReference,observed.status==='completed'||observed.status==='failed');
+      if(observed.status==='started'||observed.status==='unknown')continue;
+      if(observed.status==='failed'||observed.result===undefined){await finishAutonomousPmAttempt(database,attempt,{status:'failed',
+        result:null,notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:failed`,
+          'Автономный режим остановлен: Hermes не завершил сверку Project.')});continue;}
+      const result=observed.result;if(result.outcome!=='selected'){await finishAutonomousPmAttempt(database,attempt,{status:'completed',
+        result,notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:${result.outcome}`,
+          result.outcome==='no-eligible'?'Автономный режим: готовых задач нет.':
+            'Автономный режим остановлен: Hermes подтвердил блокер в GitHub Project.')});continue;}
+      const mode=await readActiveProjectExecutionMode(database,attempt.projectId);
+      if(!sameAutonomousActivation(mode,attempt)){await finishAutonomousPmAttempt(database,attempt,{status:'completed',
+        result,notification:null});continue;}
+      if(await hasActiveAgentAttempt(database,attempt.projectId))continue;
+      const [processPolicy,snapshot]=await Promise.all([readActiveProjectProcessPolicy(database,attempt.projectId),
+        runtime.tracker.readSnapshot(project.bindingId,null)]);const selected=processPolicy===null?null:verifyAutonomousPmSelection({
+          result,snapshot,projectId:project.projectId,bindingId:project.bindingId,ownerOptionId:project.agentOwnerOptionId,
+          doneStatusOptionId:project.doneStatusOptionId,process:processPolicy.policy});
+      if(selected===null){await finishAutonomousPmAttempt(database,attempt,{status:'failed',result,
+        notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:invalid-selection`,
+          'Автономный режим остановлен: выбор Hermes не подтверждён актуальными фактами GitHub Project.')});continue;}
+      const instructions=defaultAgentStageInstructions(selected.role);const oneSnapshotPorts:AgentSubmissionPorts={
+        ...runtime.submissionPorts,readFreshSnapshot:async()=>snapshot};
+      try{await submitExplicitAgent({actorId:attempt.actorId,projectId:attempt.projectId,projectItemId:selected.itemId,
+        role:selected.role,constraints:instructions.constraints,acceptanceCriteria:instructions.acceptanceCriteria,
+        root:{chainReference:attempt.correlationId,sourceReference:`autonomous:${attempt.deliveryReference}`,
+          commandIdempotencyKey:attempt.idempotencyKey}},oneSnapshotPorts);
+        await finishAutonomousPmAttempt(database,attempt,{status:'completed',result,notification:null});
+      }catch{await finishAutonomousPmAttempt(database,attempt,{status:'failed',result,
+        notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:start-blocked`,
+          'Автономный режим остановлен: выбранная задача больше не доступна для безопасного запуска.')});}}
+  };
   const recoverAttempt = async (runtime: ReturnType<typeof projectRuntime>, attempt: AgentAttemptRecord) => {
+    const recovery = recoveryGate.failed(attempt.deliveryReference);
+    if (recovery === 'wait') return {status: 'started' as const};
+    if (recovery === 'exhausted') throw new Error('agent_recovery_exhausted');
     if (attempt.retryOf !== null && attempt.retryOf !== undefined) throw new Error('agent_recovery_exhausted');
     await notifyRecovery(attempt.projectId, attempt.deliveryReference, 'restart',
       `Hermes недоступен. Перезапускаю ИИ агента и сохраняю текущую задачу: ${attempt.itemTitle ?? attempt.itemId}${attempt.itemUrl === null ? '' : ` — ${attempt.itemUrl}`}`);
@@ -213,8 +316,8 @@ export const createWorker = (database: Database = createDatabase()) => {
       try {
         observed = await runtime.agentDelivery.observe(attempt.deliveryReference);
         if (observed.status !== 'unknown') {
-          await notifyRecovery(attempt.projectId, attempt.deliveryReference, 'resumed',
-            `Hermes восстановлен. Продолжаю контроль задачи: ${attempt.itemTitle ?? attempt.itemId}`);
+          recoveryGate.succeeded(attempt.deliveryReference,
+            observed.status === 'completed' || observed.status === 'failed');
           return observed;
         }
         break;
@@ -234,8 +337,6 @@ export const createWorker = (database: Database = createDatabase()) => {
       if (resumed.status === 'unknown') throw error;
       return resumed;
     }
-    await notifyRecovery(attempt.projectId, attempt.deliveryReference, 'resubmitted',
-      `Hermes восстановлен. Та же стадия задачи поставлена повторно: ${attempt.itemTitle ?? attempt.itemId}`);
     return {status: 'started' as const};
   };
   const observeContextBootstraps=async()=>{
@@ -326,11 +427,16 @@ export const createWorker = (database: Database = createDatabase()) => {
       await promoteApprovedProjectArchitectures(database,workspaceId);
       await observeContextBootstraps();
       await observeTrackerPreparations();
+      await observeAutonomousPm();
       const results = await runProjectBindingsIsolated(await activeProjects(), async (project) => {
         const runtime = projectRuntime(project);
         const projectAttempts = createAgentAttemptStore(database, project.projectId);
         await reconcileActiveAgentAttempts(20, {delivery: runtime.agentDelivery, attempts: projectAttempts,
           readTracker: () => runtime.tracker.readSnapshot(project.bindingId, null),
+          observationSucceeded: (attempt, observed) => {
+            recoveryGate.succeeded(attempt.deliveryReference,
+              observed.status === 'completed' || observed.status === 'failed');
+          },
           recoverUnavailable: (attempt) => recoverAttempt(runtime, attempt),
           continueAgentChain: async (attempt, targetStage) => {
             const processPolicy = await readActiveProjectProcessPolicy(database, project.projectId);
@@ -365,7 +471,7 @@ export const createWorker = (database: Database = createDatabase()) => {
             contour: 'trusted-main', channelReference: 'telegram:internal',
             text: 'Автоматическое продолжение ИИ агента остановлено: активные настройки процесса недоступны или некорректны.',
             idempotencyKey: `agent-chain:${project.projectId}:process-policy-blocker`}}});
-        await reconcileTracker({bindingId: project.bindingId, workspaceId, projectId: project.projectId,
+        const reconciled=await reconcileTracker({bindingId: project.bindingId, workspaceId, projectId: project.projectId,
           cursor: project.cursor, ports: {tracker: runtime.tracker, snapshots: stores.snapshots,
             outbox: stores.outbox, audit: stores.audit, compose: {statusChanged: runtime.statusChanged},
             continueAgentChain: (item) => continueExplicitAgentChain({projectId: project.projectId, item,
@@ -373,6 +479,22 @@ export const createWorker = (database: Database = createDatabase()) => {
                 ?.automation ?? null,
               stores: continuations, ports: runtime.submissionPorts,
               instructions: defaultAgentStageInstructions})}});
+        const mode=await readActiveProjectExecutionMode(database,project.projectId);
+        if(autonomousPmEnabled(mode)&&processPolicy!==null){
+          const configured=await readAgentRoutingPolicy(database,mode.actorId,project.projectId);
+          const routingPolicy=configured?.policy??defaultAgentRoutingPolicy;const routingVersion=configured?.version??
+            createHash('sha256').update(JSON.stringify(routingPolicy)).digest('hex');
+          const idempotencyKey=autonomousPmKey({projectId:project.projectId,modeChangedAt:mode.changedAt,
+            processVersion:processPolicy.version,routingVersion,snapshotVersion:reconciled.externalVersion});
+          const correlationId=`browser:${idempotencyKey.slice('autonomous.pm:'.length)}`;
+          await executeAutonomousPmTransaction(database,{workspaceId,projectId:project.projectId,actorId:mode.actorId,
+            idempotencyKey,correlationId,processVersion:processPolicy.version,routingVersion,
+            snapshotVersion:reconciled.externalVersion,modeChangedAt:mode.changedAt},async()=>
+            runtime.agentDelivery.submitReconciliation({
+              contract:'fai.autonomous-pm-request.v1',project:{id:project.projectId,repositoryUrl:project.repositoryUrl,
+                trackerUrl:project.projectUrl},versions:{process:processPolicy!.version,routing:routingVersion},
+              correlationId,idempotencyKey}));
+        }
       });
       await reportFailures('reconcile', results);
     },
