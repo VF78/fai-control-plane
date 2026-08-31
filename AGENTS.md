@@ -80,9 +80,12 @@ semantics or schema.
 - No standing architect/reviewer/QA chain. Add one Sol-medium reviewer only
   for a concrete unresolved risk of data loss, migration, deny-by-default,
   secrets/customer data, dangerous external write or production boundary.
-- UI work uses one Terra-high executor, production-like desktop/mobile
-  screenshots, managing diff review and Vladimir's exact product/visual
-  acceptance before merge. A deploy is always a separate approval.
+- UI work uses one Terra-high executor by default (or the explicitly requested
+  model), production-like screenshots, managing diff review and Vladimir's
+  exact product/visual acceptance before merge. A deploy is always a separate
+  approval.
+- For every UI, UX or frontend screen change, load and follow
+  `.agents/skills/fai-ui-guardian/SKILL.md` before editing.
 - Before edits run `git status`; preserve unrelated work. Use targeted tests,
   then one touched-surface typecheck/lint/build. Do not add tests for quantity
   or repeat unchanged green checks.
@@ -98,6 +101,32 @@ semantics or schema.
   diffs or executor transcripts into the managing chat.
 - Pause only for a real decision, approval or blocker. Before pausing, ensure
   no executor or background process remains active.
+
+## UI governance
+
+- Before production UI changes read `docs/design/UI_SYSTEM_MASTER.md`,
+  `docs/design/REFERENCE_MAP.md`, `docs/design/VISUAL_ACCEPTANCE.md`, the
+  relevant `docs/design/screens/*` specification and approved local reference
+  screenshots. `docs/UI_CONTRACT.md` and `apps/web/src/ui` remain the
+  measurable/executable contract.
+- Vladimir-approved GitHub Dashboard, Project and repository Settings screens
+  remain the primary visual grammar. Approved Linear, Vercel and LangSmith
+  screenshots may extend it only for portfolio health, setup/operations and
+  agent-run traces; they never replace the accepted GitHub task-board grammar.
+- For app-shell, navigation, design-system or multi-screen work, produce a
+  code-linked audit and screenshot-backed plan first. Do not implement before
+  the stated product approval gate.
+- Use one action accent; reserve green/yellow/red for semantic state. Prefer
+  rows, dividers, spacing and typography over cards. No card mosaics, nested
+  cards, pill soup, decorative gradients, ornamental icons, raw visual values
+  in feature components, duplicate primitives or parallel design systems.
+- Preserve routes, APIs, data fetching, permissions, integrations and visible
+  behavior unless the issue explicitly changes them. Map default, loading,
+  empty, partial, configured, warning/error, degraded and read-only states.
+- Render and inspect 1440x900, 1280x800 and 390x844. Record before, after and
+  diff artifacts. Never update approved golden snapshots until Vladimir sends
+  an explicit message beginning with `UI-APPROVED:`. Merge and deploy remain
+  separate approvals.
 
 ## Production
 

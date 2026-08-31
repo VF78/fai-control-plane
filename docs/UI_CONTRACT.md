@@ -1,73 +1,92 @@
 # Operator UI contract
 
-The operator workspace follows the GitHub dashboard and repository UI grammar:
-calm white surfaces, compact density, restrained borders, familiar navigation
-and progressive disclosure. This document is a hierarchy contract, not a
-second design system.
+The operator workspace follows the approved GitHub Dashboard, Project and
+repository Settings grammar: calm white surfaces, compact density, restrained
+borders, familiar navigation and progressive disclosure. Linear, Vercel and
+LangSmith may extend this grammar only in the roles fixed by
+`docs/design/REFERENCE_MAP.md`.
 
-1. Product authority and operator safety in `docs/AI_CONTEXT.md` and ADR 0006.
-2. GitHub dashboard sections-first shell and repository interaction grammar.
-3. GitHub Project task-board and task-detail grammar.
-4. Shared primitives in `apps/web/src/mvp/async-command.tsx` and workspace
-   tokens in `apps/web/app/styles.css`.
+1. Product authority and operator safety remain in `docs/AI_CONTEXT.md` and
+   ADR 0006.
+2. `apps/web/src/ui` owns canonical visual primitives.
+3. `apps/web/src/mvp/async-command.tsx` remains the single asynchronous
+   mutation contract.
+4. Feature code composes these owners and never recreates their visual or
+   interaction grammar.
 
-## Navigation and scope
+## Measurable foundation
 
-The sidebar always contains one complete ordered list: **Обзор**, **Задачи**,
-**Процесс**, **Чаты**, **Агенты и системы**, **Настройки проектов**, **Роли и
-доступы**. A project is not a navigation level, global mode, shell mode or
-sidebar filter. Do not place a selected project, project list or **Все
-проекты** above or around the section navigation.
+| Concern | Contract |
+| --- | --- |
+| Shell | 240px desktop sidebar, 56px top bar and one content scroller; content width 1120px, wide task board 1600px |
+| Typography | system sans; body 14px/1.5, supporting text 12px/1.45, H1 24px/1.25, H2 20px/1.3, H3 16px/1.35; weights 400/500/600 |
+| Spacing | canonical 4px grid: 4, 8, 12, 16, 20, 24, 32, 40 and 48px |
+| Colour | canvas #f6f8fa, surface #ffffff, text #1f2328, muted #59636e, border #d0d7de, action/focus #0969da, success #1a7f37, warning #9a6700, danger #cf222e |
+| Borders | 1px neutral dividers; controls 6px radius; bounded surfaces 8px; pills only for semantic status |
+| Controls | 32px compact controls and 44px isolated/touch targets; visible hover, focus, disabled and pending states |
+| Motion | state-only 120–180ms transitions, disabled for reduced motion |
+| Responsive | identical information order at 1440×900, 1280×800 and 390×844 |
 
-**Обзор** is portfolio-wide by default. **Процесс**, **Чаты**, **Агенты и
-системы**, **Настройки проектов** and **Роли и доступы** are also
-portfolio-wide: each page presents one clearly separated, compact block per
-available project. Desktop and mobile preserve this same sections-first
-hierarchy and project-block order.
+Blue is the single generic action/navigation accent. Green communicates only
+confirmed healthy or successful state; yellow attention; red critical or
+destructive state; gray neutral or unknown state. A page or bounded workflow
+has one primary action.
 
-Only **Задачи** has a project selector. It is a compact, keyboard-accessible
-GitHub-style disclosure next to the page heading, never a native select and
-never a list above sidebar navigation. Its choice changes the Tasks project
-URL. When the Tasks URL has no valid `project` parameter, the first available
-project is selected deterministically. Project parameters do not change the
-scope of any other section.
+Prefer rows, lists, dividers, whitespace and typography. Cards are used only
+when the whole surface is one interactive object. No nested cards, card grids,
+decorative gradients, ornamental animation, native-looking controls, raw
+feature-level visual values or parallel component systems are allowed.
 
-## Page composition
+## Navigation and project scope
 
-**Обзор** keeps the approved graphical task-count metric and visibly separates
-projects. **Процесс** shows the configured process for every project and keeps
-project-scoped execution mode, AI-agent routing and context actions reachable
-through compact progressive sections.
-**Чаты** shows only useful channel readiness, access state and available
-actions. **Агенты и системы** and **Роли и доступы** use the same compact
-per-project composition and expose only operator decisions or actions.
+The ordered top-level list is: **Обзор**, **Задачи**, **Процесс**, **Чаты**,
+**Агенты и системы**, **Проекты**, **Роли и доступы**. A project is not a
+sidebar level or global shell mode.
 
-**Настройки проектов** starts with a portfolio heading and a direct green
-**Добавить проект** button. Each project then has one compact block containing
-repository and GitHub Project links, active documents only, and AI-agent setup.
-Create and edit forms are progressively disclosed inline.
+Overview, Process, Chats, Agents and systems, Projects, and Roles and access
+remain portfolio-wide. Only Tasks has the compact GitHub-style project
+selector. Existing `view=settings` URLs remain compatible even though the
+visible section name is **Проекты**.
 
-Do not show logs, receipts, audit or event lists, evidence feeds, provider or
-internal IDs, hashes, credential references, freshness diagnostics, error
-codes, payloads, stack traces or runtime consoles in the operator UI. Backend,
-schema and adapter capabilities may retain these facts; they are not page
-content. Do not add a tracker lifecycle, provider configuration surface or
-runtime control without a canonical operator command.
+## Projects and project setup
 
-## Commands, visual system and responsive behaviour
+The default Projects page shows one compact divider list of project rows. Each
+row exposes name, semantic health/setup status, setup fraction, repository,
+tracker, agent readiness, last confirmed synchronization and one navigation
+affordance. Two current projects fit fully at 1440×900. No inline document
+editor, agent form or delete action appears in a portfolio row.
 
-Every operator mutation uses `useAsyncCommand` and `AsyncButton`. A command
-immediately enters pending state, prevents a duplicate request, disables its
-control, exposes `aria-busy`, shows a spinner and readable pending label, and
-then presents an explicit safe success or error notice. Forms mirror pending
-state with `aria-busy` and disable editable fields.
+Project detail uses one header with health, setup progress, one primary next
+action and an overflow menu; five tabs: **Обзор**, **Интеграции**,
+**Контекст**, **Агент**, **Доступ**; and the visible setup summary:
 
-Use only the workspace tokens (`--fcp-*`), existing compact card/list/detail
-grammar, and shared primary/secondary actions. Primary controls are at least
-44px. Transitions are limited to the existing subtle 120–180ms treatment and
-must be disabled by `prefers-reduced-motion`.
+`Репозиторий → Трекер → Документы → Агент → Проверка`.
 
-Validate at 1440×900 and 390×844. There must be no horizontal page overflow,
-no second competing page scroller, no action hidden behind avoidable scroll,
-and no mobile-only change to information hierarchy. Mobile stacks the same
-portfolio project blocks and keeps the Tasks selector in the heading flow.
+The existing process, team, communications, context, tracker preparation,
+approval and readiness commands remain reachable inside those groups without
+API, permission or idempotency changes. Starting the first task is the next
+explicit safe action after readiness, not a hidden setup-completion condition.
+
+Documents use one obvious upload workflow. Delete exists only in the final
+Danger Zone, requires the exact project name in an accessible dialog and
+remains server-authorized.
+
+## States and commands
+
+Every data surface owns default, loading, empty, partial, configured,
+warning/error, degraded and read-only states. The shell owns offline and route
+error. Confirmed facts remain visible when other facts are unavailable; unknown
+facts use safe operator wording. Never expose raw provider IDs, hashes, error
+codes, receipts, logs, payloads, credential references or runtime consoles.
+
+Every mutation uses `useAsyncCommand` and `AsyncButton`: pending state starts
+immediately, duplicate requests are disabled, `aria-busy` and a readable
+pending label are exposed, and an explicit success or safe error notice
+follows.
+
+## Visual acceptance
+
+Each UI slice must render and be inspected at 1440×900, 1280×800 and 390×844
+with before, after and diff evidence plus focused keyboard, accessible-name and
+reduced-motion checks. Golden snapshots may change only after an exact
+`UI-APPROVED:` message. Visual approval, merge and deploy are separate gates.

@@ -1,6 +1,6 @@
 import {describe,expect,it} from 'vitest';
 import {readFile} from 'node:fs/promises';
-import {projectSetupState} from './project-setup-state.ts';
+import {projectActiveDocuments,projectSetupGroups,projectSetupState} from './project-setup-state.ts';
 
 const item={evidence:{people:[{active:true}]},runtimeSetup:null,trackerPreparation:null,
   wizardProgress:{processConfirmed:false,teamSkipped:false,communicationsSkipped:false}};
@@ -15,6 +15,21 @@ describe('project setup state',()=>{
       runtimeSetup:{telegramConfigured:true,status:'ready'},trackerPreparation:{status:'ready'},
       wizardProgress:{processConfirmed:true,teamSkipped:false,communicationsSkipped:false}},true,true))
       .toMatchObject({complete:true,nextStep:9});
+  });
+
+  it('projects one authoritative fixed version and every supplemental document',()=>{
+    const documents=projectActiveDocuments([
+      {kind:'project_document_v1:requirements',name:'active'},
+      {kind:'project_document_v1:requirements',name:'historical'},
+      {kind:'project_document_v1:passport',name:'passport'},
+      {kind:'project_document_v1:supplemental',name:'extra-a'},
+      {kind:'project_document_v1:supplemental',name:'extra-b'}]);
+    expect(documents.activeDocuments.map(({name})=>name)).toEqual(['active','passport','extra-a','extra-b']);
+    expect(documents.documentsReady).toBe(true);
+  });
+
+  it('owns the five presentation groups used by portfolio and detail',()=>{
+    expect(projectSetupGroups(item,false,false,true)).toMatchObject({groups:[true,true,false,false,false],complete:2});
   });
 
   it('keeps the shared calculation outside the client component boundary',async()=>{

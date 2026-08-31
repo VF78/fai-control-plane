@@ -1,0 +1,29 @@
+.fcp-workspace {
+  --fcp-bg:#ffffff;
+  --fcp-canvas:#f6f8fa;
+  --fcp-surface:#ffffff;
+  --fcp-ink:#1f2328;
+  --fcp-muted:#59636e;
+  --fcp-rule:#d0d7de;
+  --fcp-rule-strong:#8c959f;
+  --fcp-soft:#f6f8fa;
+  --fcp-selected:#ddf4ff;
+  --fcp-blue:#0969da;
+  --fcp-action-primary:#0969da;
+  --fcp-action-primary-hover:#0759b3;
+  --fcp-action-border:rgba(27,31,36,.15);
+  --fcp-on-action:#ffffff;
+  --fcp-green:#1a7f37;
+  --fcp-amber:#9a6700;
+  --fcp-red:#cf222e;
+  --fcp-danger-border:#ff8182;
+  --fcp-danger-bg:#ffebe9;
+  --fcp-focus-ring:rgba(9,105,218,.3);
+  --fcp-dialog-backdrop:rgba(31,35,40,.45);
+  --fcp-dialog-shadow:0 16px 48px rgba(31,35,40,.24);
+  --fcp-radius:6px;
+  --fcp-surface-radius:8px;
+  --fcp-dialog-radius:12px;
+  --fcp-space:12px;
+  --fcp-target:44px;
+}
