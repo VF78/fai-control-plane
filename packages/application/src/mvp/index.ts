@@ -8,3 +8,4 @@ export * from './task-executor-assignment.ts';
 export * from './agent-attempt.ts';
 export * from './agent-continuation.ts';
 export * from './agent-instructions.ts';
+export * from './autonomous-pm.ts';

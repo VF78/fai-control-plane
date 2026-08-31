@@ -40,20 +40,17 @@ export const validateAgentRoleRequest = (value: AgentRoleRequest): boolean => {
   return value.approval === null;
 };
 
-/** Compact hand-off to the persistent project Hermes. Canonical context is
- * loaded by its project profile; do not resend source documents, chat history
- * or approval material. */
+/** Compact hand-off to the persistent project Hermes. Repository, documents,
+ * profile configuration, issue text and chat history remain in its persistent
+ * project context and provider tools. */
 export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSON.stringify({
   contract: 'fai.agent-role-request.v1',
-  task: {role: request.role,
-    repository: {url: request.repository.url, defaultBranch: request.repository.defaultBranch,
-      defaultBranchSha: request.repository.defaultBranchSha},
-    projectItem: {id: request.projectItem.id, title: request.projectItem.title, url: request.projectItem.url},
-    observedVersion: request.observedVersion},
-  process: request.process,
-  routing: request.routing,
-  constraints: request.constraints,
-  acceptanceCriteria: request.acceptanceCriteria,
+  task: {role: request.role, stage: {id: request.process.stageId, title: request.process.stageTitle},
+    issueUrl: request.projectItem.url},
+  versions: {process: request.process.policyVersion, routing: request.routing.policyVersion},
+  ...(request.approval === null ? {} : {approval: {kind: request.approval.kind,
+    decision: request.approval.decision, targetReference: request.approval.target.id,
+    targetVersion: request.approval.target.version}}),
   receipt: {correlationId: request.correlationId, idempotencyKey: request.idempotencyKey,
     contract: 'fai.agent-executor-result.v1'}
 });

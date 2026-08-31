@@ -99,7 +99,7 @@ export type AgentExecutorResult = Readonly<{
   execution: Readonly<{taskClass: AgentTaskClass; executor: AgentRoute['executor']; model: string;
     effort: 'medium' | 'high'}>;
   outcome: 'success' | 'rework';
-  /** Requested provider-native transition; Control Plane applies and verifies it after accepting the result. */
+  /** Provider-native transition performed and read back by Hermes; Control Plane verifies it independently. */
   transition: Readonly<{itemId: string; fromVersion: string; targetStage: string}>;
   reason: string;
   evidence: readonly Readonly<{kind: string; result: string}>[];
@@ -114,9 +114,36 @@ export type AgentDeliveryPort = Readonly<{
   /** Provider-neutral, bounded observation of one previously accepted attempt. */
   observe(deliveryReference: string): Promise<Readonly<{
     status: 'started' | 'completed' | 'failed' | 'unknown';
+    /** Optional provider progress fact. A changing reference keeps observation open; it is never a task status. */
+    progress?: Readonly<{reference: string; observedAt: string}>;
     failureCode?: 'provider_failed' | 'provider_cancelled' | 'provider_unavailable' | 'provider_timeout' |
-      'agent_result_rejected' | 'agent_result_invalid';
+      'provider_blocked' | 'agent_result_rejected' | 'agent_result_invalid';
     result?: AgentExecutorResult;
+  }>>;
+}>;
+
+export type AutonomousPmRequest = Readonly<{
+  contract: 'fai.autonomous-pm-request.v1';
+  project: Readonly<{id: string; repositoryUrl: string; trackerUrl: string}>;
+  versions: Readonly<{process: string; routing: string}>;
+  correlationId: string;
+  idempotencyKey: string;
+}>;
+
+export type AutonomousPmResult = Readonly<{
+  contract: 'fai.autonomous-pm-result.v1';
+  outcome: 'no-eligible'|'blocker'|'selected';
+  reason: string;
+  selection?: Readonly<{itemId: string; issueUrl: string; observedVersion: string}>;
+}>;
+
+export type AutonomousPmDeliveryPort = Readonly<{
+  submitReconciliation(request: AutonomousPmRequest): Promise<Readonly<{
+    deliveryReference: string; sessionReference: string;
+  }>>;
+  observeReconciliation(deliveryReference: string): Promise<Readonly<{
+    status: 'started'|'completed'|'failed'|'unknown'; result?: AutonomousPmResult;
+    progress?: Readonly<{reference: string; observedAt: string}>;
   }>>;
 }>;
 

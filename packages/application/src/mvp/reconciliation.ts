@@ -23,6 +23,7 @@ export type ReconciliationResult = Readonly<{
   observedItems: number;
   queuedActions: number;
   cursor: string | null;
+  externalVersion: string;
 }>;
 
 const statusChangeKey = (bindingId: string, prior: TrackerItemFact, current: TrackerItemFact): string =>
@@ -107,5 +108,6 @@ export const reconcileTracker = async (input: Readonly<{
     details: {itemCount: snapshot.items.length, statusChangeCount: statusChanges.length,
       baselineEstablished: establishesBaseline, queuedActions, sourceUrl: snapshot.sourceUrl}
   });
-  return {observedItems: snapshot.items.length, queuedActions, cursor: snapshot.cursor};
+  return {observedItems: snapshot.items.length, queuedActions, cursor: snapshot.cursor,
+    externalVersion: snapshot.externalVersion};
 };

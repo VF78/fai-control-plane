@@ -21,6 +21,8 @@ export type AgentAttemptStore = Readonly<{
 
 export type AgentAttemptReconciliationPorts = Readonly<{delivery: AgentDeliveryPort; attempts: AgentAttemptStore;
   readTracker(): Promise<TrackerSnapshot>;
+  observationSucceeded?(attempt: AgentAttemptRecord,
+    observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>): void;
   recoverUnavailable?(attempt: AgentAttemptRecord): Promise<Awaited<ReturnType<AgentDeliveryPort['observe']>>>;
   continueAgentChain?(attempt: AgentAttemptRecord, targetStage: string): Promise<void>;
   composeTerminalNotification(attempt: AgentAttemptRecord, observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>,
@@ -50,6 +52,7 @@ export const composeAgentTerminalNotification = (
     provider_cancelled: 'Выполнение Hermes отменено.',
     provider_unavailable: 'Hermes или GitHub недоступен после двух автоматических попыток.',
     provider_timeout: 'Hermes не завершил этап в установленный срок.',
+    provider_blocked: 'Hermes подтвердил блокер на текущем этапе.',
     agent_result_rejected: result?.reason ?? 'Hermes отклонил результат этапа.',
     agent_result_invalid: 'Результат Hermes не соответствует настройкам процесса.'
   } as const)[observed.failureCode ?? 'provider_failed'] : undefined;
@@ -67,19 +70,12 @@ export const composeAgentTerminalNotification = (
 const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptReconciliationPorts,
   supplied?: Awaited<ReturnType<AgentDeliveryPort['observe']>>) => {
   if (attempt.status !== 'started') return {status: attempt.status, deliveryReference: attempt.deliveryReference};
-  let observed = supplied ?? await ports.delivery.observe(attempt.deliveryReference);
-  const expired = attempt.occurredAt !== undefined && Number.isFinite(Date.parse(attempt.occurredAt)) &&
-    Date.now() - Date.parse(attempt.occurredAt) >= 30 * 60_000;
-  if (observed.status === 'unknown' && expired) {
-    observed = ports.recoverUnavailable === undefined
-      ? {status: 'failed', failureCode: 'provider_timeout'}
-      : await ports.recoverUnavailable(attempt);
-  }
+  const observed = supplied ?? await ports.delivery.observe(attempt.deliveryReference);
   if (observed.status === 'started' || observed.status === 'unknown') {
     return {status: observed.status, deliveryReference: attempt.deliveryReference};
   }
   let verified: Readonly<{status: 'completed'|'failed'; failureCode?: 'provider_failed'|'provider_cancelled'|
-    'provider_unavailable'|'provider_timeout'|
+    'provider_unavailable'|'provider_timeout'|'provider_blocked'|
     'agent_result_rejected'|'agent_result_invalid'; result?: AgentExecutorResult}> = observed as typeof verified;
   if (observed.status === 'completed') {
     const result = observed.result;
@@ -93,7 +89,7 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
       typeof expectedVersion === 'string' && result.transition.itemId === attempt.itemId &&
       result.transition.fromVersion === expectedVersion &&
       target !== null && target !== undefined && result.transition.targetStage === target &&
-      result.decision === 'accepted' && validDeliverables(result) && target !== 'Done' && attempt.issueId.length > 0;
+      result.decision === 'accepted' && validDeliverables(result) && attempt.issueId.length > 0;
     if (verified.status === 'completed' && !exact) verified = {status: 'failed', failureCode: 'agent_result_invalid',
       ...(result === undefined ? {} : {result})};
     if (verified.status === 'completed' && result !== undefined && target !== null && target !== undefined) {
@@ -101,8 +97,9 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
         const snapshot = await ports.readTracker();
         const item = snapshot.items.find((candidate) => candidate.itemId === attempt.itemId &&
           candidate.issueId === attempt.issueId && candidate.projectId === attempt.projectId);
-        if (item === undefined || item.statusOptionName !== target || item.blocked !== false ||
+        if (item === undefined || item.statusOptionName !== target ||
           item.ownerOptionId !== attempt.expectedOwnerOptionId) throw new Error('github_readback_failed');
+        if (item.blocked !== false) verified = {status: 'failed', failureCode: 'provider_blocked', result};
       } catch { verified = {status: 'failed', failureCode: 'provider_unavailable', result}; }
     }
   }
@@ -134,15 +131,26 @@ export const reconcileActiveAgentAttempts = async (limit: number, ports: AgentAt
   const results = [];
   for (const attempt of attempts) {
     let observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>;
+    let observationFailed = false;
     try { observed = await ports.delivery.observe(attempt.deliveryReference); }
     catch {
+      observationFailed = true;
       try {
-        observed = ports.recoverUnavailable === undefined
-          ? {status: 'failed', failureCode: 'provider_unavailable'}
+        // A single endpoint error is not evidence that the run failed. The
+        // composition-owned recovery policy may count repeated failures and
+        // still return started without restarting Hermes.
+        observed = ports.recoverUnavailable === undefined ? {status: 'started'}
           : await ports.recoverUnavailable(attempt);
       } catch {
         observed = {status: 'failed', failureCode: 'provider_unavailable'};
       }
+    }
+    if (!observationFailed && observed.status === 'unknown' && observed.progress === undefined &&
+      ports.recoverUnavailable !== undefined) {
+      try { observed = await ports.recoverUnavailable(attempt); }
+      catch { observed = {status: 'failed', failureCode: 'provider_unavailable'}; }
+    } else if (!observationFailed && (observed.status !== 'unknown' || observed.progress !== undefined)) {
+      ports.observationSucceeded?.(attempt, observed);
     }
     try { results.push(await reconcileRecord(attempt, ports, observed)); }
     catch { results.push({status: 'reconciliation-failed' as const, deliveryReference: attempt.deliveryReference}); }

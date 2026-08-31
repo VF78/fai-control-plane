@@ -3,7 +3,7 @@ import {projectHermesSecretPurpose, type Database, type ProjectHermesSecretKind}
 import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProjectBindings,
   runProjectBindingsIsolated,
   type WorkerProjectBinding} from './project-runtime.ts';
-import {inspectConfirmedGitHubProject,restartHermesGateway,trackerPreparationDeltaShrank} from './runtime.ts';
+import {createEndpointRecoveryGate,inspectConfirmedGitHubProject,restartHermesGateway,trackerPreparationDeltaShrank} from './runtime.ts';
 
 const ids={one:'00000000-0000-4000-8000-000000000001',two:'00000000-0000-4000-8000-000000000002'} as const;
 const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','management-username','management-password','telegram-bot','inbound-actions'];
@@ -26,6 +26,18 @@ const row = (project: 'one'|'two', repository: string) => ({
 });
 
 describe('multi-project worker composition', () => {
+  it('waits on first unknown, recovers on second, resets on progress, and never recovers twice',()=>{
+    const gate=createEndpointRecoveryGate();
+    expect(gate.failed('run-one')).toBe('wait');
+    gate.succeeded('run-one');
+    expect(gate.failed('run-one')).toBe('wait');
+    expect(gate.failed('run-one')).toBe('recover');
+    gate.succeeded('run-one');
+    expect(gate.failed('run-one')).toBe('wait');
+    expect(gate.failed('run-one')).toBe('exhausted');
+    gate.succeeded('run-one',true);
+    expect(gate.failed('run-one')).toBe('wait');
+  });
   it('retries preparation only for an exact strict subset of the prior delta',()=>{
     expect(trackerPreparationDeltaShrank(['Status','Owner','Blocked'],['Owner','Blocked'])).toBe(true);
     expect(trackerPreparationDeltaShrank(['Status','Owner'],['Blocked'])).toBe(false);
