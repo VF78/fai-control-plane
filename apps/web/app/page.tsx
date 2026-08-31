@@ -80,12 +80,12 @@ export default async function Home({searchParams}: Readonly<{searchParams: Promi
     ]);
     const runtimeByProject = new Map(runtimes.map((runtime) => [runtime.projectId, runtime]));
     const projectDetails = await Promise.all(projects.map(async (project) => {
-      const [agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress]=view==='settings'?await Promise.all([
+      const [agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress]=view==='settings'||view==='systems'?await Promise.all([
         readProjectAgentProfile(database,session.actorId,project.id),
         readProjectHermesRuntimeSetup(database,session.actorId,project.id),
-        readProjectTrackerCapabilities(database,session.actorId,project.id),
-        readProjectTrackerPreparation(database,session.actorId,project.id),
-        readProjectWizardProgress(database,session.actorId,project.id)
+        view==='settings'?readProjectTrackerCapabilities(database,session.actorId,project.id):Promise.resolve(null),
+        view==='settings'?readProjectTrackerPreparation(database,session.actorId,project.id):Promise.resolve(null),
+        view==='settings'?readProjectWizardProgress(database,session.actorId,project.id):Promise.resolve(null)
       ]):[null,null,null,null,null];
       return {project,agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress,
         config: integrationConfig(process.env, runtimeByProject.get(project.id) ?? null)};

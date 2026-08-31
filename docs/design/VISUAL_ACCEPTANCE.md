@@ -63,6 +63,21 @@ candidate in a temporary directory and set `FCP_CAPTURE_COMPARE_DIR` to this
 baseline for deterministic comparison; never overwrite it without a new exact
 `UI-APPROVED:` message.
 
+## Approved Chats + Agents and systems + Roles and access baseline
+
+The Product Owner approved the exact PR 3 rendered package on 2026-08-31 with:
+
+`UI-APPROVED:`
+
+Its 33 deterministic snapshots are stored under
+`apps/web/tests/visual/golden/chats-systems-roles/`. They cover 1440x900,
+1280x800 and 390x844 for configured and unconfigured chats; configured,
+unconfigured, installing, authorization-required, offline and degraded Hermes;
+read-only roles; empty projects; and browser-offline recovery. Use
+`apps/web/tests/visual/capture-pr3.mjs` to generate a candidate in a temporary
+directory and set `FCP_CAPTURE_COMPARE_DIR` to this baseline for deterministic
+comparison; never overwrite it without a new exact `UI-APPROVED:` message.
+
 ## Browser fallback order
 
 1. interactive Playwright skill, when available;
