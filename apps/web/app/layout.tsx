@@ -1,6 +1,5 @@
 import type {Metadata} from 'next';
 import type {ReactNode} from 'react';
-import './styles.css';
 import './ui.css';
 
 export const metadata: Metadata = {title: 'f(AI) Control Plane', description: 'GitHub Project + Hermes supervision'};

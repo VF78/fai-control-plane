@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect,useId,useRef,type KeyboardEvent,type ReactNode} from 'react';
+import {useEffect,useId,useRef,useState,type KeyboardEvent,type ReactNode} from 'react';
 import Link from 'next/link';
 import {AlertCircle,Check,ChevronRight} from 'lucide-react';
 
@@ -11,6 +11,9 @@ export function PageHeader({title,detail,action}:Readonly<{title:string;detail?:
 export function StatusIndicator({tone='neutral',children}:Readonly<{tone?:StatusTone;children:ReactNode}>){return <span className={`fcp-c-status is-${tone}`}><span aria-hidden="true"/>{children}</span>;}
 
 export function DividerList({label,children}:Readonly<{label?:string;children:ReactNode}>){return <div className="fcp-c-divider-list" aria-label={label}>{children}</div>;}
+
+/** A portfolio-wide project boundary: a heading and divider-led operational rows, never a card. */
+export function ProjectSection({name,status,children}:Readonly<{name:string;status?:ReactNode;children:ReactNode}>){return <section className="fcp-c-project-section"><header><strong>{name}</strong>{status}</header><div>{children}</div></section>;}
 
 /** One project-scoped boundary shared by the Overview and Process operating surfaces. */
 export function ProjectPanel({name,status,action,children}:Readonly<{name:string;status?:ReactNode;action?:ReactNode;children:ReactNode}>){return <article className="fcp-c-project-panel"><header><div><strong>{name}</strong><span>Проект</span></div><div className="fcp-c-project-panel-actions">{status}{action}</div></header><div className="fcp-c-project-panel-body">{children}</div></article>;}
@@ -32,6 +35,9 @@ export function ErrorState({title='Не удалось загрузить дан
 export function Skeleton({rows=2,label='Загружаем проекты'}:Readonly<{rows?:number;label?:string}>){return <div className="fcp-c-skeleton" role="status" aria-label={label}>{Array.from({length:rows},(_,index)=><span key={index}/>)}</div>;}
 
 export function ReadOnlyNotice(){return <p className="fcp-c-readonly" role="note">Доступ только для просмотра. Изменения доступны владельцу проекта.</p>;}
+
+/** Keeps confirmed server-rendered facts visible while the browser is offline. */
+export function OfflineNotice(){const [offline,setOffline]=useState(false);useEffect(()=>{const sync=()=>setOffline(!navigator.onLine);sync();window.addEventListener('online',sync);window.addEventListener('offline',sync);return()=>{window.removeEventListener('online',sync);window.removeEventListener('offline',sync);};},[]);return offline?<p className="fcp-c-offline" role="status">Нет подключения к сети. Показаны последние подтверждённые данные.</p>:null;}
 
 export function DangerZone({title='Удаление проекта',detail,children}:Readonly<{title?:string;detail:string;children:ReactNode}>){return <section className="fcp-c-danger-zone"><div><h2>{title}</h2><p>{detail}</p></div>{children}</section>;}
 
