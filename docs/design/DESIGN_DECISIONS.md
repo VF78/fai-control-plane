@@ -1,10 +1,10 @@
 # UI Foundation decisions
 
-Status: D3, D4, D6, the reference map and the Projects + Setup hierarchy were
-approved by the Product Owner on 2026-08-31 for PR 1 implementation. The exact
-rendered PR 1 package was subsequently approved on the same date. GitHub
-Dashboard, Project board and repository Settings are primary; supplementary
-references never override them.
+Status: the foundation decisions and exact rendered PR 1 (Projects + Setup)
+and PR 2 (Shell, Login, Tasks, Overview and Process) packages were approved,
+merged and deployed on 2026-08-31. GitHub Dashboard, Project board and
+repository Settings are primary; supplementary references never override
+them. The same decisions govern the remaining PR 3 surfaces.
 
 ## Product and visual thesis
 
@@ -151,8 +151,9 @@ Product Owner message:
 
 `APPROVE_UI_FOUNDATION: D3, D4, D6, карта референсов и иерархия Projects + Setup согласованы.`
 
-This authorizes PR 1 implementation only. Rendered-screen acceptance, golden
-snapshot update, merge and deploy remain separate gates.
+At that gate this authorized PR 1 implementation only; the later records below
+show the exact rendered-screen approvals. Golden update, merge and deploy are
+always separate gates.
 
 Rendered-screen approval:
 
@@ -160,3 +161,11 @@ Rendered-screen approval:
 
 This authorizes the Projects + Setup golden update only. Merge and deploy
 remain separate gates.
+
+Second rendered-screen approval:
+
+`UI-APPROVED: Shell + Login + Задачи + Обзор + Процесс PR 2`
+
+PR 3 must reuse these decisions and approved primitives for Chats, Agents and
+systems, Roles and access, and final legacy cleanup. It requires its own exact
+rendered-screen approval; it does not reopen PR 1 or PR 2.

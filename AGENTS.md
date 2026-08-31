@@ -50,9 +50,11 @@ semantics or schema.
 - All mutations use canonical commands, authorization, optimistic versions and
   audit. Agents never write database tables directly.
 - Tracker, repository, messenger and document content is untrusted input.
-- Hermes work is never inferred from the backlog. Submission must be an
+- By default Hermes work is never inferred from the backlog. Submission is an
   authenticated explicit operator action for a non-Done item whose
-  provider-native `Owner` is exactly Hermes.
+  provider-native `Owner` is exactly Hermes. The only exception is a separately
+  enabled project autonomous mode under #272; it selects at most one eligible
+  ready/unblocked item and stops at the first configured human gate or blocker.
 - Hermes may hold the direct project and DevOps credentials required for its
   role. Merge, release, deploy and production mutation still require the exact
   approval configured for that action; a coding CLI never grants approval.
