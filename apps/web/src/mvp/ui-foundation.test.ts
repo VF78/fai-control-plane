@@ -53,6 +53,6 @@ describe('operator UI foundation', () => {
     expect(css).toContain('.fcp-workspace { height:100dvh; min-height:0; overflow:hidden; }');
     expect(css).toContain('.fcp-main { min-height:0; overflow-y:auto;');
     expect(css).toContain('.fcp-workspace, .fcp-shell-layout { height:auto; min-height:100dvh; overflow:visible; overflow-x:clip; }');
-    expect(css).toContain('.fcp-board-column > div, .fcp-board-column--backlog > div, .fcp-board-column--done > div, .fcp-plan-source-selection { max-block-size:none; max-height:none; overflow:visible; }');
+    expect(css).toContain('.fcp-message-list, .fcp-plan-source-selection { max-block-size:none; max-height:none; overflow:visible; }');
   });
 });

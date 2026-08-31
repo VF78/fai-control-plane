@@ -73,16 +73,16 @@ export const buildPortfolioProject = (input: PortfolioProjectInput, now = new Da
   const focus = [
     ...overdueTasks.map((task) => focusFor(task, 'overdue', `Просрочено · срок ${task.targetDate}`)),
     ...blockedTasks.filter((task) => !overdueTasks.includes(task)).map((task) =>
-      focusFor(task, 'blocked', task.blocked === true ? 'Поле Blocked = Yes в GitHub Project' : 'Статус «Заблокировано» в GitHub Project')),
+      focusFor(task, 'blocked', 'Подтверждённая блокировка требует внимания')),
     ...controlTasks.filter((task) => !overdueTasks.includes(task) && !blockedTasks.includes(task)).map((task) =>
       focusFor(task, 'control', `Контроль ${task.targetDate}`))
   ].slice(0, 2);
   const unavailable = input.tracker.freshness === 'unavailable' || input.tracker.freshness === 'error';
   const health = unavailable || input.tracker.freshness === 'stale' || overdueTasks.length > 0 || blockedTasks.length > 0
     ? unavailable ? 'unavailable' : 'attention' : 'steady';
-  const healthReason = input.tracker.errorCode !== null ? `Ошибка источника: ${input.tracker.errorCode}.`
-    : input.tracker.freshness === 'unavailable' ? 'Подтверждённый снимок GitHub ещё не получен.'
-      : input.tracker.freshness === 'stale' ? 'Снимок GitHub устарел; требуется обновление источника.'
+  const healthReason = input.tracker.errorCode !== null ? 'Источник пока не подтвердил обновление.'
+    : input.tracker.freshness === 'unavailable' ? 'Подтверждённый снимок задач ещё не получен.'
+      : input.tracker.freshness === 'stale' ? 'Снимок задач устарел; требуется обновление источника.'
         : blockedTasks.length > 0 && overdueTasks.length > 0 ? `Вывод по фактам: заблокировано ${blockedTasks.length} · просрочено ${overdueTasks.length}.`
           : blockedTasks.length > 0 ? `Вывод по фактам: заблокировано ${blockedTasks.length}.`
           : overdueTasks.length > 0 ? `Вывод по фактам: ${overdueTasks.length} открытых задач просрочено.`

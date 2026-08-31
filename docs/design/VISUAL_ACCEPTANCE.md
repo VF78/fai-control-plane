@@ -49,6 +49,20 @@ read-only and delete-dialog states. Use
 temporary directory; never overwrite this baseline without a new exact
 `UI-APPROVED:` message.
 
+## Approved Shell + Login + Tasks + Overview + Process baseline
+
+The Product Owner approved the exact PR 2 rendered package on 2026-08-31 with:
+
+`UI-APPROVED: Shell + Login + Задачи + Обзор + Процесс PR 2`
+
+Its 18 deterministic snapshots are stored under
+`apps/web/tests/visual/golden/shell-login-tasks-overview-process/`. They cover
+1440x900, 1280x800 and 390x844 for Login, Overview, Tasks, stale Tasks, empty
+Tasks, and Process. Use `apps/web/tests/visual/capture-pr2.mjs` to generate a
+candidate in a temporary directory and set `FCP_CAPTURE_COMPARE_DIR` to this
+baseline for deterministic comparison; never overwrite it without a new exact
+`UI-APPROVED:` message.
+
 ## Browser fallback order
 
 1. interactive Playwright skill, when available;
