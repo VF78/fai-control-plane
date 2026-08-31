@@ -9,7 +9,9 @@ describe('operator UI foundation', () => {
     expect(control).toContain("from './async-command.tsx'");
     expect(control).toContain('useAsyncCommand');
     expect(control).toContain('AsyncButton');
-    expect(control).not.toContain('<button');
+    expect(control.match(/<button/g)).toHaveLength(1);
+    expect(control).toContain('function DocumentCategoryChoice');
+    expect(control).toContain('aria-pressed={value===category}');
     expect(primitive).toContain('inFlight.current');
     expect(primitive).toContain('aria-busy={pending || undefined}');
     expect(primitive).toContain('fcp-button-spinner');
@@ -26,10 +28,24 @@ describe('operator UI foundation', () => {
   });
 
   it('keeps overflow containment and mobile layouts in the shared workspace CSS', async () => {
-    const css = await read('../../app/styles.css');
+    const [css,tokens,foundation,projects] = await Promise.all([read('../../app/styles.css'),read('../../app/styles/tokens.css'),read('../../app/styles/foundation.css'),read('../../app/styles/projects.css')]);
     expect(css).toContain('overflow-x: clip');
     expect(css).toContain('@media (max-width:700px)');
-    expect(css).toContain('--fcp-target: 44px');
+    expect(tokens).toContain('--fcp-target:44px');
+    expect(tokens).toContain('--fcp-action-primary:#0969da');
+    expect(foundation).toContain('.fcp-c-tab-list');
+    expect(projects).toContain('.fcp-c-project-row');
+    expect(css).not.toContain('.fcp-project-wizard');
+  });
+
+  it('keeps status columns aligned and control typography on the shared type scale', async () => {
+    const [css,projects,foundation] = await Promise.all([read('../../app/styles.css'),read('../../app/styles/projects.css'),read('../ui/foundation.tsx')]);
+    expect(projects).toContain('grid-template-columns:minmax(0,1fr) 150px 170px');
+    expect(foundation).toContain('className="fcp-c-project-row-status"');
+    expect(css).toContain('.fcp-document-drop {');
+    expect(css).toContain('font-family:inherit; font-size:12px; font-weight:400;');
+    expect(projects).not.toMatch(/font:[^;]*px[^;]*inherit/);
+    expect(css).not.toMatch(/\.fcp-document-drop \{[^}]*font:[^;}]*inherit/);
   });
 
   it('uses one desktop content scroller while mobile keeps a natural document flow', async () => {

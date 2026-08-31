@@ -6,7 +6,7 @@ import {dashboardProjection, phaseAStages, readableAssignees} from './phase-a-vi
 import {AgentRoutingControl, HermesContextControl, LogoutControl, ProjectExecutionModeControl} from './operator-controls.tsx';
 
 export type PhaseArea = 'dashboard'|'tasks'|'process'|'conversations'|'people'|'systems'|'settings';
-const labels: Record<PhaseArea,string> = {dashboard:'Обзор',tasks:'Задачи',process:'Процесс',conversations:'Чаты',systems:'Агенты и системы',settings:'Настройки проектов',people:'Роли и доступы'};
+const labels: Record<PhaseArea,string> = {dashboard:'Обзор',tasks:'Задачи',process:'Процесс',conversations:'Чаты',systems:'Агенты и системы',settings:'Проекты',people:'Роли и доступы'};
 const icons: Record<PhaseArea,typeof LayoutDashboard> = {dashboard:LayoutDashboard,tasks:ListChecks,process:Workflow,conversations:MessageSquareText,systems:Bot,settings:Settings2,people:UsersRound};
 const navigation: readonly PhaseArea[] = ['dashboard','tasks','process','conversations','systems','settings','people'];
 export const phaseHref = (view: PhaseArea, project?: string, task?: string, filter?: string) => { const query = new URLSearchParams({view}); if (project) query.set('project', project); if (task) query.set('task', task); if (filter) query.set('filter', filter); return `/?${query}`; };

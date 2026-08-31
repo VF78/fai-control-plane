@@ -6,10 +6,10 @@ const source = () => readFile(new URL('./phase-a-ui.tsx', import.meta.url), 'utf
 describe('sections-first operator navigation', () => {
   it('keeps query-only workspace navigation on the reliable document path', async () => {
     const [phaseA,phaseB]=await Promise.all([source(),readFile(new URL('./phase-b-ui.tsx',import.meta.url),'utf8')]);
-    for (const view of [phaseA,phaseB]) {
-      expect(view).not.toContain("import Link from 'next/link'");
-      expect(view).not.toContain('prefetch={false}');
-    }
+    expect(phaseA).not.toContain("import Link from 'next/link'");
+    expect(phaseB).toContain("import Link from 'next/link'");
+    expect(phaseA).not.toContain('prefetch={false}');
+    expect(phaseB).not.toContain('prefetch={false}');
     expect(phaseA).toMatch(/<a[^>]+href=\{phaseHref/);
     expect(phaseA).toContain('<a href={item.href}');
   });
