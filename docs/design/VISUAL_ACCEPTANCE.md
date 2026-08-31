@@ -55,13 +55,15 @@ The Product Owner approved the exact PR 2 rendered package on 2026-08-31 with:
 
 `UI-APPROVED: Shell + Login + Задачи + Обзор + Процесс PR 2`
 
-Its 18 deterministic snapshots are stored under
+The Process refresh was approved on 2026-08-31 with exact `UI-APPROVED:`.
+Its 33 deterministic snapshots are stored under
 `apps/web/tests/visual/golden/shell-login-tasks-overview-process/`. They cover
 1440x900, 1280x800 and 390x844 for Login, Overview, Tasks, stale Tasks, empty
-Tasks, and Process. Use `apps/web/tests/visual/capture-pr2.mjs` to generate a
-candidate in a temporary directory and set `FCP_CAPTURE_COMPARE_DIR` to this
-baseline for deterministic comparison; never overwrite it without a new exact
-`UI-APPROVED:` message.
+Tasks, configured/unconfigured/read-only Process, the agent-routing dialog and
+its pending/success/error states. Use `apps/web/tests/visual/capture-pr2.mjs`
+to generate a candidate in a temporary directory and set
+`FCP_CAPTURE_COMPARE_DIR` to this baseline for deterministic comparison; never
+overwrite it without a new exact `UI-APPROVED:` message.
 
 ## Approved Chats + Agents and systems + Roles and access baseline
 
@@ -69,14 +71,17 @@ The Product Owner approved the exact PR 3 rendered package on 2026-08-31 with:
 
 `UI-APPROVED:`
 
-Its 33 deterministic snapshots are stored under
+The Roles and Chats refreshes were approved on 2026-08-31 with exact
+`UI-APPROVED:` messages. Its 64 deterministic snapshots are stored under
 `apps/web/tests/visual/golden/chats-systems-roles/`. They cover 1440x900,
-1280x800 and 390x844 for configured and unconfigured chats; configured,
-unconfigured, installing, authorization-required, offline and degraded Hermes;
-read-only roles; empty projects; and browser-offline recovery. Use
-`apps/web/tests/visual/capture-pr3.mjs` to generate a candidate in a temporary
-directory and set `FCP_CAPTURE_COMPARE_DIR` to this baseline for deterministic
-comparison; never overwrite it without a new exact `UI-APPROVED:` message.
+1280x800 and 390x844 for configured, unconfigured and read-only Chats;
+Telegram dialog and command states; configured, unconfigured, installing,
+authorization-required, offline and degraded Hermes; owner/read-only/empty
+Roles and membership dialog/command states; empty projects; and browser-offline
+recovery. Use `apps/web/tests/visual/capture-pr3.mjs` to generate a candidate in
+a temporary directory and set `FCP_CAPTURE_COMPARE_DIR` to this baseline for
+deterministic comparison; never overwrite it without a new exact
+`UI-APPROVED:` message.
 
 ## Browser fallback order
 

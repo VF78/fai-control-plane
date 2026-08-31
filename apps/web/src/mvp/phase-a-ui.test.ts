@@ -53,18 +53,22 @@ describe('portfolio Phase A pages', () => {
     expect(view).toContain("['danger','Источник пока не подтвердил обновление.']");
   });
 
-  it('renders one process block per project with progressive agent actions', async () => {
+  it('renders scan-first project sections with one project-qualified agent action', async () => {
     const [view,page]=await Promise.all([source(),readFile(new URL('../../app/page.tsx',import.meta.url),'utf8')]);
     expect(view).toContain('export function ProcessRail');
     expect(view).toContain('export function Process({projects}');
-    expect(view).toContain('projects.map(({project,processPolicy,executionMode,routing,context,canManageRouting,canManageContext})');
+    expect(view).toContain('projects.map((item)=><ProcessProjectSection item={item}');
     expect(view).toContain('ProjectExecutionModeControl');
     expect(view).toContain('AgentRoutingControl');
     expect(view).toContain('HermesContextControl');
-    expect(view).toContain('className="fcp-c-project-panel-grid is-stack" aria-label="Процессы проектов"');
-    expect(view).toContain('<ProjectPanel name={project.name}');
-    expect(view).toContain('<summary>Настройка ИИ-агента</summary>');
-    expect(view).toContain('<summary>Контекст ИИ-агента</summary>');
+    expect(view).toContain('className="fcp-c-project-sections" aria-label="Процессы проектов"');
+    expect(view).toContain('<ProjectSection name={project.name}');
+    expect(view).toContain('projectName={project.name}');
+    expect(view).toContain('fcp-c-process-facts');
+    expect(view).toContain('Сначала завершите настройку проекта.');
+    expect(view).toContain('configured?<><ProcessRail');
+    expect(view).not.toContain('Настройка ИИ-агента</summary>');
+    expect(view).not.toContain('Контекст ИИ-агента</summary>');
     expect(page).toContain('const processProjects = await Promise.all(projects.map');
   });
 });
