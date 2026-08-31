@@ -25,10 +25,12 @@ Authority is fixed:
 | Planning, project orchestration, development, QA and DevOps execution | One project-scoped Hermes using direct project credentials |
 | Projects/sources, bindings, exact approvals, bounded snapshots, receipts/audit | Control Plane/PostgreSQL |
 
-The active ASCON composition uses GitHub, a project-isolated Hermes and
-Telegram for the internal contour. Bitrix client actions remain fail-closed
-until stable browser identity is separately proven. MSA later reuses the same
-contracts with its own bindings, including Matrix/Element; it is not a fork.
+The current MVP target is self-hosted dogfood: onboard `VF78/fai-control-plane`
+through the production GUI, configure its own isolated Hermes and carry one
+low-risk issue through the configured process. ASCON is retained only as an
+existing read-only/rollback neighbour during this acceptance and is not the
+MVP debugging project. MSA follows only after MVP acceptance and reuses the
+same contracts with its own bindings; it is not a fork.
 
 ## Invariants
 
@@ -43,8 +45,11 @@ contracts with its own bindings, including Matrix/Element; it is not a fork.
   persistent `git`/`gh` credentials. The worker only submits/observes, verifies
   provider readback, notifies, restarts Hermes and launches the next configured
   stage. No Control Plane GitHub/CLI broker is permitted.
-- No automatic backlog execution. Only an authenticated operator may submit a
-  non-Done item whose provider-native `Owner` is exactly Hermes.
+- Default mode never executes the backlog automatically. Only an authenticated
+  operator may submit a non-Done item whose provider-native `Owner` is exactly
+  Hermes. A separately enabled autonomous project mode may select at most one
+  eligible ready/unblocked item and must stop at the first configured human
+  gate or blocker.
 - UI shows confirmed facts, provenance, freshness and error state. Missing data
   is `Unknown`/`Not configured`; controls exist only for canonical commands.
 - UX is premium-minimal and manager-first: compact visualization, progressive
@@ -63,6 +68,9 @@ Using local `git`/`gh`:
 4. read issue `#158`, then the current leaf `In progress` issue and its direct
    dependencies/latest compact evidence;
 5. read the next dependency-ready issue only when current WIP is accepted.
+
+The dependency order is recorded in #158. Do not infer it from issue numbers,
+old comments or retained ASCON history.
 
 If local state and GitHub differ, reconcile Project truth before work. A
 closed issue, merged PR or deployed screen is not Vladimir's product/visual

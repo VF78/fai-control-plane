@@ -129,3 +129,27 @@ not broker repository/Project/CLI/SSH/deployment commands, apply Hermes' status
 transition, transport bundles, wrap a CLI or attest an executor invocation
 cryptographically. Autonomous mode is a Hermes project-manager run, not worker
 selection of backlog items.
+
+## 2026-08-31 amendment: self-hosted acceptance and compact task handoff
+
+The active MVP acceptance contour is now `VF78/fai-control-plane` itself.
+ASCON remains an existing read-only/rollback neighbour until the self-hosted
+golden path is accepted and its obsolete Hermes receives a separate exact
+deletion approval. MSA remains the next commercial project after MVP and uses
+the same contracts.
+
+Project setup stores authoritative project documents in Control Plane and
+configures one persistent project Hermes context. Unchanged documents,
+Telegram history and profile configuration are not resent for every task.
+A normal task/stage submission contains only the required role/stage, exact
+provider-native issue URL, process/routing versions and idempotency identity,
+plus an already recorded exact approval when that action requires one. Hermes
+uses its persistent context and reads the current issue, Project and PR facts
+directly through provider tools. Missing scope or acceptance criteria is PM
+work: Hermes proposes the clarification on the same issue and requests Product
+Owner confirmation; it is not a technical failure.
+
+Default operation remains explicit-start only. A separately enabled autonomous
+mode may let the same persistent Hermes plan/reconcile the provider Project and
+run at most one eligible ready/unblocked task through the same controller loop.
+It stops at the first human gate, confirmed blocker or empty ready queue.

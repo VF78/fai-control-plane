@@ -1,11 +1,10 @@
 # Sequential UI migration plan
 
-Status: PR 1 implementation and its exact rendered Projects + Setup package
-were approved by the Product Owner on 2026-08-31. The approved 55-image
-baseline is stored under
-`apps/web/tests/visual/golden/projects-setup/`. Merge and deploy remain separate
-gates. The prior dirty branch remains audit evidence and must not land as one
-unreviewed migration.
+Status: PR 1 (Projects + Setup) and PR 2 (Shell, Login, Tasks, Overview and
+Process) were visually approved, merged and deployed on 2026-08-31. Their
+approved baselines are stored under `apps/web/tests/visual/golden/`. PR 3 is
+the only remaining migration slice: Chats, Agents and systems, Roles and
+access, plus final legacy UI cleanup. Issue #300 owns live status and evidence.
 
 ## Global constraints
 
@@ -91,6 +90,9 @@ Approval record:
 
 ## PR 2 — Tasks, Overview and Process
 
+Status: complete. Exact approval:
+`UI-APPROVED: Shell + Login + Задачи + Обзор + Процесс PR 2`.
+
 Scope:
 
 - preserve the accepted GitHub Project board/detail grammar and Tasks-only
@@ -114,6 +116,10 @@ Acceptance:
 - no duplicate tab, portfolio model, task command path or dead selector remains.
 
 ## PR 3 — Chats, Agents and systems, Roles and access, shell cleanup
+
+Status: next implementation slice under #300. Do not reopen PR 1/PR 2 design
+or change their approved baselines unless a concrete regression requires a
+new exact visual decision.
 
 Scope:
 
