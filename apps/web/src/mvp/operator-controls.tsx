@@ -202,15 +202,25 @@ export function MembershipAddControl({projectId,projectName,members,workspacePeo
 
 function RoleButtons({value,onChange,owner=false,pending}:Readonly<{value:string;onChange:(value:string)=>void;owner?:boolean;pending:boolean}>){const choices:readonly (readonly [string,string])[]=owner?[['project_owner','Владелец проекта'],['operator','Руководитель проекта'],['contributor','Исполнитель'],['client','Представитель клиента']]:[['operator','Руководитель проекта'],['contributor','Исполнитель'],['client','Представитель клиента']];return <div className="fcp-role-buttons">{choices.map(([key,label])=><AsyncButton type="button" pending={false} pendingLabel="" className={value===key?'active':''} disabled={pending} key={key} onClick={()=>onChange(key)}>{label}</AsyncButton>)}</div>;}
 
-export function TelegramSettingsControl({projectId}:Readonly<{projectId:string}>){const command=useAsyncCommand();const submit=(event:FormEvent<HTMLFormElement>)=>{
+type TelegramSettingsFormProps=Readonly<{projectId:string;composition:'inline'|'dialog';command:ReturnType<typeof useAsyncCommand>;onClose?:()=>void}>;
+
+/** One runtime command and field set, composed inline by the setup wizard or in Chats dialog. */
+function TelegramSettingsForm({projectId,composition,command,onClose}:TelegramSettingsFormProps){const submit=(event:FormEvent<HTMLFormElement>)=>{
   event.preventDefault();const form=new FormData(event.currentTarget);void command.run(()=>post(`/api/projects/${projectId}/runtime`,{
     action:'connect_messenger',botToken:form.get('botToken'),chatId:form.get('chatId'),allowedUserIds:form.get('allowedUserIds'),
-    idempotencyKey:`project-messenger:${id()}`}),{success:'Telegram подтвердил отдельного бота и чат проекта.'});};return <form className="fcp-wizard-form"
-    onSubmit={submit} aria-busy={command.pending}><p>Внутренний Telegram необязателен: проект полноценно работает через интерфейс.</p>
-    <label className="wide">Токен бота<input name="botToken" type="password" required autoComplete="off" disabled={command.pending}/></label>
+    idempotencyKey:`project-messenger:${id()}`}),{success:'Telegram подтвердил отдельного бота и чат проекта.'});};
+  const inline=composition==='inline';return <form className={inline?'fcp-wizard-form':'fcp-c-telegram-dialog-form'} onSubmit={submit} aria-busy={command.pending}>
+    <p>Внутренний Telegram необязателен: проект полноценно работает через интерфейс.</p>
+    <label className={inline?'wide':undefined}>Токен бота<input name="botToken" type="password" required autoComplete="off" disabled={command.pending}/></label>
     <label>ID чата<input name="chatId" inputMode="numeric" required placeholder="-100…" disabled={command.pending}/></label>
     <label>Telegram ID участников<input name="allowedUserIds" inputMode="numeric" required placeholder="12345, 67890" disabled={command.pending}/></label>
-    <AsyncButton pending={command.pending} pendingLabel="Проверяем Telegram…">Подключить Telegram</AsyncButton><CommandNoticeView notice={command.notice}/></form>;}
+    {inline?<><AsyncButton pending={command.pending} pendingLabel="Проверяем Telegram…">Подключить Telegram</AsyncButton><CommandNoticeView notice={command.notice}/></>:<><div className="fcp-c-telegram-dialog-actions"><AsyncButton pending={command.pending} pendingLabel="Проверяем Telegram…">Подключить Telegram</AsyncButton>{onClose===undefined?null:<AsyncButton type="button" className="fcp-secondary" pending={false} pendingLabel="" disabled={command.pending} onClick={onClose}>Отмена</AsyncButton>}</div><CommandNoticeView notice={command.notice}/></>}</form>;}
+
+/** The approved project wizard keeps its inline Telegram composition unchanged. */
+export function TelegramSettingsControl({projectId}:Readonly<{projectId:string}>){const command=useAsyncCommand();return <TelegramSettingsForm projectId={projectId} composition="inline" command={command}/>;}
+
+/** Chats keeps its project scan path closed until an owner explicitly opens this scoped setup dialog. */
+export function TelegramSettingsDialogControl({projectId,projectName}:Readonly<{projectId:string;projectName:string}>){const [open,setOpen]=useState(false);const command=useAsyncCommand();const close=()=>{if(!command.pending)setOpen(false);};const actionLabel=`Настроить Telegram: ${projectName}`;return <><AsyncButton type="button" className="fcp-secondary fcp-c-telegram-settings" pending={false} pendingLabel="" aria-label={actionLabel} disabled={command.pending} onClick={()=>setOpen(true)}>Настроить Telegram</AsyncButton><Dialog open={open} title={actionLabel} description="Подключите отдельного бота и внутренний чат этого проекта." onClose={close}><TelegramSettingsForm projectId={projectId} composition="dialog" command={command} onClose={close}/></Dialog></>;}
 
 export function AccessControls({projectId, canManage, members, workspacePeople}: Readonly<{projectId: string; canManage: boolean;
   members: readonly {membershipId: string; actorId:string; displayName: string; role: string}[];
