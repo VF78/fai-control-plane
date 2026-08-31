@@ -2,9 +2,10 @@
 
 Status: PR 1 (Projects + Setup) and PR 2 (Shell, Login, Tasks, Overview and
 Process) were visually approved, merged and deployed on 2026-08-31. Their
-approved baselines are stored under `apps/web/tests/visual/golden/`. PR 3 is
-the only remaining migration slice: Chats, Agents and systems, Roles and
-access, plus final legacy UI cleanup. Issue #300 owns live status and evidence.
+approved baselines are stored under `apps/web/tests/visual/golden/`. PR 3
+(Chats, Agents and systems, Roles and access, plus final legacy UI cleanup) was
+visually approved on 2026-08-31 and awaits its separate merge gate. Issue #300
+owns live status and evidence.
 
 ## Global constraints
 

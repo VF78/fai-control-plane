@@ -1,6 +1,7 @@
 import {build} from 'esbuild';
 import {createServer} from 'node:http';
-import {mkdir,readFile} from 'node:fs/promises';
+import {mkdir,readdir,readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {dirname,join} from 'node:path';
 
@@ -15,6 +16,21 @@ const html='<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta nam
 const server=createServer(async(request,response)=>{if(request.url==='/fixture.js'){response.setHeader('content-type','text/javascript');response.end(await readFile(join(temporary,'fixture.js')));}else if(request.url==='/fixture.css'){response.setHeader('content-type','text/css');response.end(css);}else{response.setHeader('content-type','text/html');response.end(html);}});
 await new Promise((resolve)=>server.listen(3100,'127.0.0.1',resolve));
 const output=process.env.FCP_CAPTURE_DIR??'artifacts/ui-review/after/pr3';
+const compareDirectory=process.env.FCP_CAPTURE_COMPARE_DIR;
+if(compareDirectory!==undefined&&compareDirectory===output)throw new Error('FCP_CAPTURE_DIR must differ from FCP_CAPTURE_COMPARE_DIR');
 const states=['chats-configured','chats-unconfigured','systems-configured','systems-unconfigured','systems-installing','systems-auth-required','systems-offline','systems-degraded','roles-read-only','empty'];
 const viewports=[['1440x900',1440,900],['1280x800',1280,800],['390x844',390,844]];
-await mkdir(output,{recursive:true});const browser=await chromium.launch({channel:'chrome',headless:true});try{for(const [name,width,height] of viewports){const page=await browser.newPage({viewport:{width,height},reducedMotion:'reduce'});for(const state of states){await page.goto(`http://127.0.0.1:3100/?state=${state}`,{waitUntil:'networkidle'});await page.locator('#root > *').waitFor({state:'attached'});if(!(await page.locator('#root').innerText()).trim())throw new Error(`empty fixture: ${state}`);if(name==='390x844'){const trigger=page.locator('.fcp-mobile-menu > summary');await trigger.click();await page.locator('.fcp-mobile-menu-body').getByRole('button',{name:'Выйти'}).waitFor({state:'visible'});await trigger.click();}await page.screenshot({path:`${output}/${state}-${name}.png`,fullPage:false});}await page.context().setOffline(true);await page.waitForTimeout(20);await page.screenshot({path:`${output}/offline-${name}.png`,fullPage:false});await page.context().setOffline(false);await page.close();}}finally{await browser.close();await new Promise((resolve,reject)=>server.close((error)=>error?reject(error):resolve()));}
+await mkdir(output,{recursive:true});const browser=await chromium.launch({channel:'chrome',headless:true});try{for(const [name,width,height] of viewports){const page=await browser.newPage({viewport:{width,height},reducedMotion:'reduce'});for(const state of states){await page.goto(`http://127.0.0.1:3100/?state=${state}`,{waitUntil:'networkidle'});await page.locator('#root > *').waitFor({state:'attached'});if(!(await page.locator('#root').innerText()).trim())throw new Error(`empty fixture: ${state}`);if(name==='390x844'){const trigger=page.locator('.fcp-mobile-menu > summary');await trigger.click();await page.locator('.fcp-mobile-menu-body').getByRole('button',{name:'Выйти'}).waitFor({state:'visible'});await trigger.click();await page.mouse.move(0,height-1);await page.evaluate(()=>document.activeElement instanceof HTMLElement&&document.activeElement.blur());}await page.screenshot({path:`${output}/${state}-${name}.png`,fullPage:false});}await page.context().setOffline(true);await page.waitForTimeout(20);await page.screenshot({path:`${output}/offline-${name}.png`,fullPage:false});await page.context().setOffline(false);await page.close();}}finally{await browser.close();await new Promise((resolve,reject)=>server.close((error)=>error?reject(error):resolve()));}
+
+if(compareDirectory!==undefined){
+  const pngNames=async(directory)=>(await readdir(directory)).filter((name)=>name.endsWith('.png')).sort();
+  const actual=await pngNames(output);
+  const expected=await pngNames(compareDirectory);
+  if(JSON.stringify(actual)!==JSON.stringify(expected))throw new Error(`visual baseline file set differs: actual=${actual.join(',')} expected=${expected.join(',')}`);
+  for(const name of actual){
+    const [candidate,golden]=await Promise.all([readFile(join(output,name)),readFile(join(compareDirectory,name))]);
+    const digest=(value)=>createHash('sha256').update(value).digest('hex');
+    if(digest(candidate)!==digest(golden))throw new Error(`visual baseline mismatch: ${name}`);
+  }
+  console.log(`visual baseline compare passed: ${actual.length} PNGs`);
+}
