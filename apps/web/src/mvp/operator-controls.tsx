@@ -43,7 +43,7 @@ export function LogoutControl() {
 export function ProjectDeleteControl({projectId,projectName}:Readonly<{projectId:string;projectName:string}>){
   const router=useRouter();const [confirming,setConfirming]=useState(false);const [confirmation,setConfirmation]=useState('');const command=useAsyncCommand();
   const execute=()=>void command.run(()=>remove('/api/projects',{projectId,confirmed:true}),{refresh:false,
-    success:()=>{router.replace('/?view=settings');return 'Проект удалён из f(AI) Control.';},
+    success:()=>{router.replace('/projects');return 'Проект удалён из f(AI) Control.';},
     error:(error)=>error instanceof Error&&error.message==='project_delete_denied'?'Удалить проект может только его владелец.':
       'Проект не удалён. Проверьте состояние ИИ-агента и повторите.'});
   const close=()=>{if(command.pending)return;setConfirming(false);setConfirmation('');};
