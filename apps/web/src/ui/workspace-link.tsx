@@ -1,7 +1,7 @@
 import Link, {type LinkProps} from 'next/link';
 import type {AnchorHTMLAttributes,ReactNode} from 'react';
 
-type WorkspaceLinkProps=Readonly<Omit<LinkProps,'prefetch'> & Omit<AnchorHTMLAttributes<HTMLAnchorElement>,'href'> & {children:ReactNode}>;
+type WorkspaceLinkProps=Readonly<LinkProps & Omit<AnchorHTMLAttributes<HTMLAnchorElement>,'href'> & {children:ReactNode}>;
 
-/** Internal operator navigation: client transitions without speculative RSC work. */
-export function WorkspaceLink({children,...props}:WorkspaceLinkProps){return <Link {...props} prefetch={false}>{children}</Link>;}
+/** Internal operator navigation; speculative work stays off unless a stable route opts in. */
+export function WorkspaceLink({children,prefetch=false,...props}:WorkspaceLinkProps){return <Link {...props} prefetch={prefetch}>{children}</Link>;}
