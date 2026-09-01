@@ -18,7 +18,7 @@ await new Promise((resolve)=>server.listen(3099,'127.0.0.1',resolve));
 const base='http://127.0.0.1:3099/';
 const output=process.env.FCP_CAPTURE_DIR??'/private/tmp/fai-ui-pr1/after';
 const viewports=[['1440x900',1440,900],['1280x800',1280,800],['390x844',390,844]];
-const cases=[['two'],['zero'],['one'],['loading'],['error'],['partial'],['complete'],['integration-error','Интеграции'],['documents-empty'],['documents-loaded','Контекст'],['documents-history','Контекст'],['documents-missing-requirements','Контекст'],['agent-connected','Агент'],['agent-offline','Агент'],['agent-degraded','Агент'],['read-only','Контекст'],['command-pending'],['command-success'],['command-error']];
+const cases=[['two'],['zero'],['one'],['loading'],['error'],['partial'],['complete'],['integration-error','Интеграции'],['documents-empty'],['documents-loaded','Контекст'],['documents-history','Контекст'],['documents-missing-requirements','Контекст'],['documents-read-only','Контекст'],['agent-connected','Агент'],['agent-offline','Агент'],['agent-degraded','Агент'],['read-only','Доступ'],['command-pending'],['command-success'],['command-error']];
 const smoke=process.env.FCP_CAPTURE_SMOKE==='1';
 const captureViewports=smoke?viewports.filter(([name])=>name!=='1280x800'):viewports;
 const captureCases=smoke?[['two'],['partial'],['documents-empty']]:cases;
