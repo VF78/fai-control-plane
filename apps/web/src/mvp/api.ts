@@ -8,6 +8,7 @@ import {
   createApprovalPersistence,
   createStores,
   databaseMvpReady,
+  deleteProjectDocument,
   executeAgentSubmissionTransaction,
   listProjects,
   listProjectDocuments,
@@ -349,6 +350,13 @@ export const projectDocumentDownload = async (projectId:string,documentId:string
       'content-length':String(document.bytes.byteLength),
       'content-disposition':`attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`,
       'cache-control':'private, no-store','x-content-type-options':'nosniff'}});
+  }catch(error){return jsonError(error);}
+};
+
+export const projectDocumentDelete = async (request:Request,projectId:string,documentId:string):Promise<Response>=>{
+  try {const database=getDatabase();const session=await requireSession();if(request.method!=='DELETE')return new Response(null,{status:405,headers:{allow:'DELETE'}});
+    requireCsrf(request);const body=await json(request);const deleted=await deleteProjectDocument(database,{workspaceId:session.workspaceId,projectId,actorId:session.actorId,
+      documentId,idempotencyKey:string(body.idempotencyKey,128),occurredAt:new Date().toISOString()});return Response.json({deleted},{headers:{'cache-control':'no-store'}});
   }catch(error){return jsonError(error);}
 };
 

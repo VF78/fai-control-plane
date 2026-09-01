@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import type {Database} from './runtime.ts';
-import {readActiveProjectDocumentSet,uploadProjectDocument,uploadProjectDocuments} from './project-documents.ts';
+import {deleteProjectDocument,readActiveProjectDocumentSet,uploadProjectDocument,uploadProjectDocuments} from './project-documents.ts';
 
 describe('authoritative project documents',()=>{
   it('accepts an owner DOCX original and persists binary bytes without base64 text',async()=>{
@@ -57,5 +57,21 @@ describe('authoritative project documents',()=>{
       category:'requirements' as const,name:'requirements.txt',mediaType:'text/plain',bytes:Buffer.from('text'),provenance:'operator-upload',idempotencyKey:'batch',occurredAt:'2026-08-27T10:00:00Z'};
     await expect(uploadProjectDocuments(database,[document,document])).rejects.toThrow('project_document_batch_invalid');
     expect(database.connect).not.toHaveBeenCalled();
+  });
+
+  it('deletes only an owner-scoped project document and audits the deletion',async()=>{
+    const query=vi.fn(async(sql:string)=>{if(sql.includes("m.role='project_owner'"))return {rowCount:1,rows:[{}]};if(sql.includes('delete from project_source_artifacts'))return {rowCount:1,rows:[{id:'document',name:'requirements.txt',kind:'project_document_v1:requirements'}]};return {rowCount:1,rows:[]};});
+    const database={connect:vi.fn(async()=>({query,release:vi.fn()}))} as unknown as Database;
+    await expect(deleteProjectDocument(database,{workspaceId:'workspace',projectId:'project',actorId:'owner',documentId:'document',idempotencyKey:'delete:1',occurredAt:'2026-09-01T10:00:00Z'})).resolves.toBe(true);
+    expect(String(query.mock.calls.find(([sql])=>String(sql).includes('delete from project_source_artifacts'))?.[0])).toContain("kind like 'project_document_v1:%'");
+    expect(String(query.mock.calls.find(([sql])=>String(sql).includes("'project.document.delete'"))?.[0])).toContain('audit_events');
+  });
+
+  it('denies non-owners and treats an already absent document as a successful repeat',async()=>{
+    const denied={connect:vi.fn(async()=>({query:vi.fn(async(sql:string)=>sql.includes("m.role='project_owner'")?{rowCount:0,rows:[]}:{rowCount:1,rows:[]}),release:vi.fn()}))} as unknown as Database;
+    await expect(deleteProjectDocument(denied,{workspaceId:'workspace',projectId:'project',actorId:'member',documentId:'document',idempotencyKey:'delete:2',occurredAt:'2026-09-01T10:00:00Z'})).rejects.toThrow('project_document_denied');
+    const query=vi.fn(async(sql:string)=>sql.includes("m.role='project_owner'")?{rowCount:1,rows:[{}]}:sql.includes('delete from project_source_artifacts')?{rowCount:0,rows:[]}:{rowCount:1,rows:[]});const absent={connect:vi.fn(async()=>({query,release:vi.fn()}))} as unknown as Database;
+    await expect(deleteProjectDocument(absent,{workspaceId:'workspace',projectId:'project',actorId:'owner',documentId:'missing',idempotencyKey:'delete:3',occurredAt:'2026-09-01T10:00:00Z'})).resolves.toBe(false);
+    expect(query.mock.calls.some(([sql])=>String(sql).includes('audit_events'))).toBe(false);
   });
 });

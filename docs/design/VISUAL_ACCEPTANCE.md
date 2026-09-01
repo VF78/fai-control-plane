@@ -41,7 +41,11 @@ The Product Owner approved the exact PR 1 rendered package on 2026-08-31 with:
 
 `UI-APPROVED: Projects + Setup PR 1`
 
-Its 55 deterministic snapshots are stored under
+The document setup extension was approved on 2026-09-01 with the exact:
+
+`UI-APPROVED:`
+
+Its 71 deterministic snapshots are stored under
 `apps/web/tests/visual/golden/projects-setup/`. They cover 1440x900, 1280x800
 and 390x844, including the approved portfolio, setup, command, degraded,
 read-only and delete-dialog states. Use

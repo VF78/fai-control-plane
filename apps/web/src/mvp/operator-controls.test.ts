@@ -32,3 +32,27 @@ describe('task executor control', () => {
     expect(source).not.toContain('Квитанция {activeRun.deliveryReference}');
   });
 });
+
+describe('project document upload', () => {
+  it('sends the original File objects in one multipart request without a client deadline', async () => {
+    const source = await readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("form.append('file',source)");
+    expect(source).not.toContain('source.arrayBuffer()');
+    expect(source).not.toContain('new AbortController()');
+    expect(source).not.toContain('45_000');
+    expect(source).toContain("fetch(`/api/projects/${projectId}/documents`,{method:'POST',body:form})");
+    expect(source).toContain("form.append('idempotencyKey',batchKey)");
+  });
+});
+
+describe('project document deletion', () => {
+  it('uses the scoped DELETE endpoint behind an accessible exact-name confirmation', async () => {
+    const source = await readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('export function ProjectDocumentDeleteControl');
+    expect(source).toContain('`/api/projects/${projectId}/documents/${documentId}`');
+    expect(source).toContain('idempotencyKey:`project-document-delete:${id()}`');
+    expect(source).toContain('title={`Удалить «${documentName}»?`}');
+    expect(source).toContain('confirmation!==documentName');
+    expect(source).toContain('router.refresh()');
+  });
+});
