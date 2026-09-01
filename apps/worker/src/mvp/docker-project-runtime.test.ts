@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {assertProjectRuntimeOwnership,ensureCodexConfig,parseCodexDevicePrompt,projectRuntimeOwnership,
   projectRuntimeResourceNames,removeProjectHermesRuntime} from './docker-project-runtime.ts';
+import {ensureProjectWorkspace} from './hermes-project-template.ts';
 
 const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequest=>({
   projectId,workspaceId:'00000000-0000-4000-8000-000000000100',ownerActorId:'actor',slug:'project',
@@ -53,6 +54,15 @@ describe('direct project Docker adapter boundary',()=>{
     const uid=process.getuid?.()??0;const gid=process.getgid?.()??0;await ensureCodexConfig(root,{uid,gid});
     const details=await stat(path);expect(await readFile(path,'utf8')).toBe('existing = true\n');
     expect(details.mode&0o777).toBe(0o600);expect(details.uid).toBe(uid);expect(details.gid).toBe(gid);
+    await rm(root,{recursive:true});
+  });
+
+  it('makes both the shared work parent and project workspace traversable only by the runtime owner',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'fai-project-workspace-'));await mkdir(join(root,'data'));
+    const uid=process.getuid?.()??0;const gid=process.getgid?.()??0;
+    const workspace=await ensureProjectWorkspace(root,'fai-project-00000000',{uid,gid});
+    for(const path of [join(root,'data','work'),workspace]){const details=await stat(path);
+      expect(details.mode&0o777).toBe(0o700);expect(details.uid).toBe(uid);expect(details.gid).toBe(gid);}
     await rm(root,{recursive:true});
   });
 

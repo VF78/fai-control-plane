@@ -1,4 +1,4 @@
-import {chown,cp,mkdir,readFile,writeFile} from 'node:fs/promises';
+import {chmod,chown,cp,mkdir,readFile,writeFile} from 'node:fs/promises';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 
 const yamlString=(value:string)=>JSON.stringify(value);
@@ -41,13 +41,19 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 `;
 
+export const ensureProjectWorkspace=async(root:string,runtimeId:string,
+  owner:Readonly<{uid:number;gid:number}>={uid:10000,gid:10000})=>{
+  const work=`${root}/data/work`;const workspace=`${work}/${runtimeId}`;
+  await mkdir(work,{recursive:true,mode:0o700});await mkdir(workspace,{recursive:true,mode:0o700});
+  for(const path of [work,workspace]){await chmod(path,0o700);await chown(path,owner.uid,owner.gid);}
+  return workspace;
+};
+
 export const prepareProjectHermesAssets=async(request:ProjectRuntimeProvisioningRequest,root:string)=>{
   const generated=`${root}/generated`;const profile=`${generated}/profile`;
   const expectedWorkspace=`/opt/data/work/${request.artifact.runtimeId}`;
   if(request.artifact.workspacePath!==expectedWorkspace)throw new Error('project_runtime_workspace_invalid');
-  const hostWorkspace=`${root}/data/work/${request.artifact.runtimeId}`;
-  await mkdir(hostWorkspace,{recursive:true,mode:0o700});
-  try{await chown(hostWorkspace,10000,10000);}catch(error){if(process.env.NODE_ENV!=='test')throw error;}
+  const hostWorkspace=await ensureProjectWorkspace(root,request.artifact.runtimeId);
   await mkdir(profile,{recursive:true,mode:0o755});
   await writeFile(`${generated}/config.yaml`,renderProjectHermesConfig(request),{mode:0o644});
   const sharedRoot=`${process.cwd()}/infra/hermes-project`;
