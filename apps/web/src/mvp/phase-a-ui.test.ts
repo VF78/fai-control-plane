@@ -15,23 +15,23 @@ describe('sections-first operator navigation', () => {
   });
 
   it('keeps one complete section list without project navigation modes', async () => {
-    const view=await source();
-    expect(view).toContain("const navigation: readonly PhaseArea[] = ['dashboard','tasks','process','conversations','systems','settings','people']");
-    expect(view).toContain('aria-label="Разделы"');
+    const [view,shell,navigation]=await Promise.all([source(),readFile(new URL('./workspace-shell.tsx',import.meta.url),'utf8'),readFile(new URL('./navigation.ts',import.meta.url),'utf8')]);
+    expect(navigation).toContain("export const navigation: readonly PhaseArea[] = ['dashboard','tasks','process','conversations','systems','settings','people']");
+    expect(shell).toContain('aria-label="Разделы"');
     expect(view).not.toContain('Все проекты');
     expect(view).not.toContain('fcp-selected-project');
     expect(view).not.toContain('fcp-project-list-nav');
   });
 
   it('uses a Tasks-only project selector and deterministic default project', async () => {
-    const [view,page]=await Promise.all([source(),readFile(new URL('../../app/page.tsx',import.meta.url),'utf8')]);
+    const [view,page]=await Promise.all([source(),readFile(new URL('./workspace-pages.tsx',import.meta.url),'utf8')]);
     expect(view).toContain('function ProjectSelector');
     expect(view).toContain('className="fcp-c-task-project-selector"');
     expect(view).toContain('<nav aria-label="Выберите проект">');
     expect(view).toContain("aria-current={item.id === project.id ? 'page' : undefined}");
     expect(view).toContain("<WorkspaceLink aria-current={item.id === project.id ? 'page' : undefined} href={phaseHref('tasks',item.slug)}");
-    expect(page).toContain("const selected = view === 'tasks'");
-    expect(page).toContain('?? projects[0] ?? null');
+    expect(page).toContain('const selected=invalidProject?null:projects.find');
+    expect(page).toContain('??projects[0]??null');
     expect(page).toContain('<Tasks projects={projects} project={selected}');
   });
 });
@@ -54,7 +54,7 @@ describe('portfolio Phase A pages', () => {
   });
 
   it('renders scan-first project sections with one project-qualified agent action', async () => {
-    const [view,page]=await Promise.all([source(),readFile(new URL('../../app/page.tsx',import.meta.url),'utf8')]);
+    const [view,page]=await Promise.all([source(),readFile(new URL('./workspace-pages.tsx',import.meta.url),'utf8')]);
     expect(view).toContain('export function ProcessRail');
     expect(view).toContain('export function Process({projects}');
     expect(view).toContain('projects.map((item)=><ProcessProjectSection item={item}');
@@ -69,7 +69,7 @@ describe('portfolio Phase A pages', () => {
     expect(view).toContain('configured?<><ProcessRail');
     expect(view).not.toContain('Настройка ИИ-агента</summary>');
     expect(view).not.toContain('Контекст ИИ-агента</summary>');
-    expect(page).toContain('const processProjects = await Promise.all(projects.map');
+    expect(page).toContain('const processProjects=await Promise.all(projects.map');
   });
 });
 

@@ -57,7 +57,7 @@ describe('operator UI foundation', () => {
   });
 
   it('migrates the remaining portfolio-wide pages to canonical rows and shell recovery', async () => {
-    const [phaseA,phaseB,foundation,css] = await Promise.all([read('phase-a-ui.tsx'),read('phase-b-ui.tsx'),read('../ui/foundation.tsx'),read('../../app/styles/controls.css')]);
+    const [phaseA,phaseB,shell,foundation,css] = await Promise.all([read('phase-a-ui.tsx'),read('phase-b-ui.tsx'),read('workspace-shell.tsx'),read('../ui/foundation.tsx'),read('../../app/styles/controls.css')]);
     expect(phaseB).toContain('<ProjectSection');
     expect(phaseB).toContain('<DividerList');
     expect(phaseB).toContain('<ReadOnlyNotice/>');
@@ -66,8 +66,8 @@ describe('operator UI foundation', () => {
     expect(phaseB).not.toContain('fcp-channel-grid');
     expect(foundation).toContain('export function OfflineNotice');
     expect(foundation).toContain('export function ProjectSection');
-    expect(phaseA).toContain('href="#fcp-main"');
-    expect(phaseA).toContain('id="fcp-main"');
+    expect(shell).toContain('href="#fcp-main"');
+    expect(shell).toContain('id="fcp-main"');
     expect(css).not.toContain('.fcp-project-block');
     expect(css).not.toContain('.fcp-channel-grid');
   });
