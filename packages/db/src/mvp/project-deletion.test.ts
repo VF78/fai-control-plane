@@ -5,7 +5,7 @@ import {deleteProjectRecords,readProjectDeletionTarget} from './project-deletion
 describe('project deletion',()=>{
   it('requires the active project owner and deletes only project-scoped records',async()=>{
     const target={workspaceId:'workspace',projectId:'project',slug:'control'};const statements:string[]=[];
-    const query=vi.fn(async(sql:string)=>{statements.push(sql.replace(/\s+/g,' ').trim());
+    const query=vi.fn(async(sql:string,_parameters?:unknown[])=>{statements.push(sql.replace(/\s+/g,' ').trim());
       return sql.includes('for update')?{rowCount:1,rows:[{}]}:{rowCount:1,rows:[]};});
     const client={query,release:vi.fn()};const database={query:vi.fn(async()=>({rows:[target]})),
       connect:vi.fn(async()=>client)} as unknown as Database;
