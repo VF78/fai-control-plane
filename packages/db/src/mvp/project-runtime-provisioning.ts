@@ -17,13 +17,13 @@ const runtimeId=(slug:string,projectId:string)=>`fai-${slug.slice(0,32).replace(
 const workspacePath=(id:string)=>`/opt/data/work/${id}`;
 
 type Coordinates=Readonly<{
-  runtimeId:string;gatewayEndpoint:string;managementEndpoint:string;workspacePath:string;
+  runtimeId:string;gatewayEndpoint:string;dashboardEndpoint:string;workspacePath:string;
 }>;
 export const projectHermesRuntimeCoordinates=(slug:string,projectId:string):Coordinates=>{
   if(!validSlug(slug)||!isUuid(projectId))throw new Error('project_runtime_invalid');
   const id=runtimeId(slug,projectId);
   return {runtimeId:id,gatewayEndpoint:`http://${id}-gateway:8642/v1/runs`,
-    managementEndpoint:`http://${id}-management:9119/`,workspacePath:workspacePath(id)};
+    dashboardEndpoint:`http://${id}-gateway:9119/`,workspacePath:workspacePath(id)};
 };
 
 type SecretLocator=Readonly<{id:string;locator:string}>;
@@ -35,8 +35,8 @@ const artifactValue=(input:Readonly<{
 }>)=>({contract:projectHermesRuntimeContract,status:input.status,imageVersion:projectHermesRuntimeImageVersion,
   ...input.coordinates,...(input.telegramChatId===null?{}:{telegram:{chatId:input.telegramChatId,allowedUserIds:input.telegramAllowedUserIds}}),
   secretRefs:{agentDelivery:input.secrets['agent-delivery'].id,
-    managementUsername:input.secrets['management-username'].id,
-    managementPassword:input.secrets['management-password'].id,
+    dashboardUsername:input.secrets['dashboard-username'].id,
+    dashboardPassword:input.secrets['dashboard-password'].id,
     telegramBot:input.secrets['telegram-bot'].id,inboundActions:input.secrets['inbound-actions'].id},
   generation:input.generation,...(input.auth===undefined?{}:{auth:input.auth}),
   ...(input.failure===undefined?{}:{failure:input.failure})});
@@ -127,7 +127,7 @@ export const requestProjectRuntimeInstall=async(database:Database,input:Readonly
     const artifact=current===undefined?null:parseProjectHermesRuntimeArtifact(current);
     if(artifact===null||!['messenger_ready','error'].includes(artifact.status))throw new Error('project_runtime_unavailable');
     const coordinates={runtimeId:artifact.runtimeId,gatewayEndpoint:artifact.gatewayEndpoint,
-      managementEndpoint:artifact.managementEndpoint,workspacePath:artifact.workspacePath};
+      dashboardEndpoint:artifact.dashboardEndpoint,workspacePath:artifact.workspacePath};
     const secrets=Object.fromEntries((Object.entries(artifact.secretIds) as [ProjectHermesSecretKind,string][]).map(([kind,id])=>
       [kind,{id,locator:'/'}])) as ProjectRuntimeSecretLocators;
     await insertArtifact(client,{projectId:input.projectId,actorId:input.actorId,value:artifactValue({coordinates,
@@ -145,7 +145,7 @@ export const recordProjectRuntimeProvisioningState=async(database:Database,input
   auth?:Readonly<{verificationUrl:string;userCode:string}>;failure?:ParsedProjectHermesRuntimeArtifact['failure'];
 }>):Promise<void>=>{
   const coordinates={runtimeId:input.request.artifact.runtimeId,gatewayEndpoint:input.request.artifact.gatewayEndpoint,
-    managementEndpoint:input.request.artifact.managementEndpoint,workspacePath:input.request.artifact.workspacePath};
+    dashboardEndpoint:input.request.artifact.dashboardEndpoint,workspacePath:input.request.artifact.workspacePath};
   const value=artifactValue({coordinates,telegramChatId:input.request.artifact.telegramChatId,
     telegramAllowedUserIds:input.request.artifact.telegramAllowedUserIds,secrets:input.request.secrets,
     status:input.status,generation:input.request.generation,...(input.auth===undefined?{}:{auth:input.auth}),

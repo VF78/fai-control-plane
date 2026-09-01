@@ -71,14 +71,15 @@ export const resolveAndRegisterProject = async (database: Database, input: Reado
 };
 
 type CookieClient = Readonly<{request: (path: string, init?: RequestInit) => Promise<Response>}>;
-const managementClient = async (runtime: NonNullable<Awaited<ReturnType<typeof readProjectHermesRuntimeBinding>>>): Promise<CookieClient> => {
-  const endpoint = new URL(runtime.managementEndpoint); const gateway = new URL(runtime.gatewayEndpoint);
-  if (endpoint.toString() !== `http://${runtime.runtimeId}-management:9119/` ||
+const dashboardClient = async (runtime: NonNullable<Awaited<ReturnType<typeof readProjectHermesRuntimeBinding>>>): Promise<CookieClient> => {
+  const endpoint = new URL(runtime.dashboardEndpoint); const gateway = new URL(runtime.gatewayEndpoint);
+  const expectedDashboard=runtime.legacyV1?`http://${runtime.runtimeId}-management:9119/`:`http://${runtime.runtimeId}-gateway:9119/`;
+  if (endpoint.toString() !== expectedDashboard ||
     gateway.toString() !== `http://${runtime.runtimeId}-gateway:8642/v1/runs`) {
     throw new Error('agent_profile_unavailable');
   }
-  const username = (await secretResolver.resolve(runtime.managementUsernameRef, 'hermes_management_username')).value;
-  const password = (await secretResolver.resolve(runtime.managementPasswordRef, 'hermes_management_password')).value;
+  const username = (await secretResolver.resolve(runtime.dashboardUsernameRef, 'hermes_dashboard_username')).value;
+  const password = (await secretResolver.resolve(runtime.dashboardPasswordRef, 'hermes_dashboard_password')).value;
   const login = await fetch(new URL('/auth/password-login', endpoint), {method: 'POST',
     headers: {'content-type': 'application/json'}, body: JSON.stringify({provider: 'basic', username, password}),
     signal: AbortSignal.timeout(10_000)});
@@ -191,18 +192,13 @@ export const activateProjectAgentProfile = async (database: Database, input: Rea
   if (slug === undefined) throw new Error('agent_profile_denied');
   const profile = runtime.runtimeId;
   const workDirectory = runtime.workspacePath;
-  const client = await managementClient(runtime);
+  const client = await dashboardClient(runtime);
   const changed=stored.documentFingerprint!==documentSet.fingerprint;
   const compact=changed?null:await readLatestCompactProjectContext(database,input.actorId,input.projectId,
     documentSet.fingerprint);
   const needsBootstrap=changed||compact===null;
   const endpointPath = '/v1/runs';
-  if (!await runtimeCapabilitiesAvailable(runtime.gatewayEndpoint, token)) {
-    const restarted = await client.request('/api/gateway/restart', {method: 'POST'});
-    if (!restarted.ok || !await runtimeCapabilitiesAvailable(runtime.gatewayEndpoint, token, 12)) {
-      throw new Error('agent_profile_probe_failed');
-    }
-  }
+  if (!await runtimeCapabilitiesAvailable(runtime.gatewayEndpoint, token)) throw new Error('agent_profile_probe_failed');
   if(!needsBootstrap){
     if(input.force===true||stored.status!=='ready')await restoreCompactContext(client,database,{actorId:input.actorId,
       projectId:input.projectId,workDirectory,documentFingerprint:documentSet.fingerprint});

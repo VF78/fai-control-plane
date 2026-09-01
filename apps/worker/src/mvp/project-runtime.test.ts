@@ -6,13 +6,14 @@ import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProje
 import {createEndpointRecoveryGate,inspectConfirmedGitHubProject,restartHermesGateway,trackerPreparationDeltaShrank} from './runtime.ts';
 
 const ids={one:'00000000-0000-4000-8000-000000000001',two:'00000000-0000-4000-8000-000000000002'} as const;
-const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','management-username','management-password','telegram-bot','inbound-actions'];
+const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','dashboard-username','dashboard-password','telegram-bot','inbound-actions'];
 const secretId=(project:'one'|'two',index:number)=>`00000000-0000-4000-8${project==='one'?'1':'2'}00-${String(index).padStart(12,'0')}`;
-const runtimeArtifact=(project:'one'|'two')=>JSON.stringify({contract:'fai.project-hermes-runtime.v1',status:'ready',
+const runtimeArtifact=(project:'one'|'two')=>JSON.stringify({contract:'fai.project-hermes-runtime.v2',status:'ready',
+  imageVersion:'v2026.9.2-codex-0.144.1',
   runtimeId:`runtime-${project}`,gatewayEndpoint:`http://runtime-${project}-gateway:8642/v1/runs`,
-  managementEndpoint:`http://runtime-${project}-management:9119/`,workspacePath:`/opt/hermes/${project}`,
+  dashboardEndpoint:`http://runtime-${project}-gateway:9119/`,workspacePath:`/opt/hermes/${project}`,
   telegram:{chatId:project==='one'?'-1001':'-1002',allowedUserIds:['42']},secretRefs:{agentDelivery:secretId(project,1),
-    managementUsername:secretId(project,2),managementPassword:secretId(project,3),telegramBot:secretId(project,4),
+    dashboardUsername:secretId(project,2),dashboardPassword:secretId(project,3),telegramBot:secretId(project,4),
     inboundActions:secretId(project,5)}});
 const row = (project: 'one'|'two', repository: string) => ({
   projectId:ids[project],
@@ -90,10 +91,10 @@ describe('multi-project worker composition', () => {
         defaultBranch: JSON.parse(value.trackerCapabilitiesArtifact).defaultBranch,
         trackerCredentialRef: {id: 'tracker', purpose: 'tracker_read', locator: '/run/tracker'},
         runtime:{workspaceId:'workspace',projectId:value.projectId,slug:value.slug,artifactVersion:'a'.repeat(64),
-          ...JSON.parse(runtimeArtifact(value.slug as 'one'|'two')),telegramChatId:value.slug==='one'?'-1001':'-1002',
+          ...JSON.parse(runtimeArtifact(value.slug as 'one'|'two')),legacyV1:false,telegramChatId:value.slug==='one'?'-1001':'-1002',
           telegramAllowedUserIds:['42'],agentCredentialRef:{id:'1',purpose:'agent_delivery',locator:'/run/agent'},
-          managementUsernameRef:{id:'2',purpose:'hermes_management_username',locator:'/run/user'},
-          managementPasswordRef:{id:'3',purpose:'hermes_management_password',locator:'/run/pass'},
+          dashboardUsernameRef:{id:'2',purpose:'hermes_dashboard_username',locator:'/run/user'},
+          dashboardPasswordRef:{id:'3',purpose:'hermes_dashboard_password',locator:'/run/pass'},
           telegramCredentialRef:{id:'4',purpose:'messenger_delivery',locator:'/run/tg'},
           inboundActionCredentialRef:{id:'5',purpose:'hermes_inbound_actions',locator:'/run/inbound'}}})) as WorkerProjectBinding[];
     const visited: string[] = [];
@@ -124,21 +125,21 @@ describe('multi-project worker composition', () => {
       text: 'Автоматическая обработка проекта остановлена на этапе observe. Требуется проверка интеграции.'});
   });
 
-  it('restarts only the bound project management endpoint',async()=>{
-    const runtime={workspaceId:'workspace',projectId:ids.two,slug:'two',artifactVersion:'a'.repeat(64),
+  it('restarts only the exact bound project gateway container',async()=>{
+    const runtime={workspaceId:'workspace',projectId:ids.two,slug:'two',artifactVersion:'a'.repeat(64),legacyV1:false,
       runtimeId:'runtime-two',gatewayEndpoint:'http://runtime-two-gateway:8642/v1/runs',
-      managementEndpoint:'http://runtime-two-management:9119/',workspacePath:'/opt/hermes/two',telegramChatId:'-1002',
+      dashboardEndpoint:'http://runtime-two-gateway:9119/',workspacePath:'/opt/hermes/two',telegramChatId:'-1002',
       telegramAllowedUserIds:['42'],agentCredentialRef:{id:'1',purpose:'agent_delivery',locator:'/run/agent'},
-      managementUsernameRef:{id:'2',purpose:'hermes_management_username',locator:'/run/user'},
-      managementPasswordRef:{id:'3',purpose:'hermes_management_password',locator:'/run/pass'},
+      dashboardUsernameRef:{id:'2',purpose:'hermes_dashboard_username',locator:'/run/user'},
+      dashboardPasswordRef:{id:'3',purpose:'hermes_dashboard_password',locator:'/run/pass'},
       telegramCredentialRef:{id:'4',purpose:'messenger_delivery',locator:'/run/tg'},
       inboundActionCredentialRef:{id:'5',purpose:'hermes_inbound_actions',locator:'/run/inbound'}} as const;
-    const request=vi.fn(async(input:URL|RequestInfo,_init?:RequestInit)=>String(input).endsWith('/auth/password-login')
-      ?new Response('{}',{status:200,headers:{'set-cookie':'session=two; Path=/'}}):new Response('{}',{status:200}));
-    const resolver={resolve:vi.fn(async(reference:{id:string})=>({value:reference.id==='2'?'two-user':'two-pass'}))};
-    await expect(restartHermesGateway(runtime,request as typeof fetch,resolver)).resolves.toBeUndefined();
-    expect(request.mock.calls.map(([input])=>String(input))).toEqual([
-      'http://runtime-two-management:9119/auth/password-login','http://runtime-two-management:9119/api/gateway/restart']);
-    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({username:'two-user',password:'two-pass'});
+    const calls:string[]=[];const docker=async(method:string,path:string)=>{calls.push(`${method} ${path}`);return method==='GET'
+      ?{status:200,body:Buffer.from(JSON.stringify({Name:'/runtime-two-gateway',Config:{Labels:{
+        'fai.control-plane.managed':'true','fai.control-plane.workspace-id':'workspace',
+        'fai.control-plane.project-id':ids.two,'fai.control-plane.runtime-id':'runtime-two',
+        'fai.control-plane.component':'gateway'}}}))}:{status:204,body:Buffer.alloc(0)};};
+    await expect(restartHermesGateway(runtime,docker)).resolves.toBeUndefined();
+    expect(calls).toEqual(['GET /containers/runtime-two-gateway/json','POST /containers/runtime-two-gateway/restart?t=30']);
   });
 });

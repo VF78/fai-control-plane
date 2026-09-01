@@ -1,7 +1,7 @@
 import {request as httpRequest} from 'node:http';
 import {dirname} from 'node:path';
 import {chmod,chown,rm,stat,writeFile} from 'node:fs/promises';
-import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
+import type {ProjectHermesRuntimeBinding,ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {prepareProjectHermesAssets} from './hermes-project-template.ts';
 
 type DockerResponse=Readonly<{status:number;body:Buffer}>;
@@ -28,7 +28,7 @@ const exactLabels=(actual:unknown,expected:Record<string,string>)=>{
   if(actual===null||typeof actual!=='object')return false;const values=actual as Record<string,unknown>;
   return Object.entries(expected).every(([key,value])=>values[key]===value);
 };
-export const assertProjectRuntimeOwnership=(actual:unknown,request:ProjectRuntimeProvisioningRequest,component:string)=>{
+export const assertProjectRuntimeOwnership=(actual:unknown,request:ProjectRuntimeOwnershipInput,component:string)=>{
   if(!exactLabels(actual,projectRuntimeOwnership(request,component)))throw new Error('docker_ownership_conflict');
 };
 type ContainerInspect=Readonly<{Name?:unknown;Image?:unknown;Config?:Readonly<{Labels?:unknown}>;
@@ -82,17 +82,14 @@ export const parseCodexDevicePrompt=(output:string):Readonly<{verificationUrl:st
 };
 export const projectRuntimeResourceNames=(request:ProjectRuntimeProvisioningRequest)=>({
   network:`${request.artifact.runtimeId}-network`,auth:`${request.artifact.runtimeId}-codex-auth`,
-  gateway:`${request.artifact.runtimeId}-gateway`,management:`${request.artifact.runtimeId}-management`,
-  readiness:`${request.artifact.runtimeId}-readiness`
+  gateway:`${request.artifact.runtimeId}-gateway`
 });
 export const removeProjectHermesRuntime=async(request:ProjectRuntimeOwnershipInput,root:string,
   docker:DockerRequest=dockerSocketRequest()):Promise<void>=>{
   if(root==='/'||!root.startsWith('/')||root.includes('..'))throw new Error('project_runtime_secret_conflict');
   const names={network:`${request.artifact.runtimeId}-network`,auth:`${request.artifact.runtimeId}-codex-auth`,
-    gateway:`${request.artifact.runtimeId}-gateway`,management:`${request.artifact.runtimeId}-management`,
-    readiness:`${request.artifact.runtimeId}-readiness`};
-  for(const [component,name] of [['gateway',names.gateway],['management',names.management],
-    ['codex-auth',names.auth],['readiness',names.readiness]] as const)
+    gateway:`${request.artifact.runtimeId}-gateway`};
+  for(const [component,name] of [['gateway',names.gateway],['codex-auth',names.auth]] as const)
     await removeOwnedForProject(docker,request,name,component);
   const network=await docker('GET',`/networks/${namePath(names.network)}`);
   if(network.status!==404){const value=json<Readonly<{Labels?:unknown}>>(expect(network,[200]));
@@ -100,11 +97,47 @@ export const removeProjectHermesRuntime=async(request:ProjectRuntimeOwnershipInp
     expect(await docker('DELETE',`/networks/${namePath(names.network)}`),[204,404]);}
   await rm(root,{recursive:true,force:true});
 };
+export const restartProjectHermesGateway=async(runtime:Pick<ProjectHermesRuntimeBinding,
+  'workspaceId'|'projectId'|'runtimeId'>,docker:DockerRequest=dockerSocketRequest()):Promise<void>=>{
+  const request={workspaceId:runtime.workspaceId,projectId:runtime.projectId,artifact:{runtimeId:runtime.runtimeId}};
+  const name=`${runtime.runtimeId}-gateway`;const current=await inspectContainer(docker,name);
+  if(current===null||current.Name!==`/${name}`)throw new Error('docker_ownership_conflict');
+  assertProjectRuntimeOwnership(current.Config?.Labels,request,'gateway');
+  expect(await docker('POST',`/containers/${namePath(name)}/restart?t=30`),[204]);
+};
 const commonHost=(root:string,projectNetwork:string)=>({Binds:[`${root}/data:/opt/data`,
   `${root}/codex-home:/opt/data/codex-home`],Memory:1_073_741_824,NanoCpus:1_000_000_000,PidsLimit:256,
-  ShmSize:1_073_741_824,Init:true,RestartPolicy:{Name:'unless-stopped'},NetworkMode:projectNetwork});
+  ShmSize:1_073_741_824,RestartPolicy:{Name:'unless-stopped'},NetworkMode:projectNetwork});
 const endpoints=(projectNetwork:string,managementNetwork?:string,aliases:readonly string[]=[])=>({EndpointsConfig:{
   [projectNetwork]:{Aliases:[...aliases]},...(managementNetwork===undefined?{}:{[managementNetwork]:{Aliases:[...aliases]}})}});
+export const projectGatewayContainerSpec=(request:ProjectRuntimeProvisioningRequest,image:string,root:string,
+  assets:Readonly<{generated:string;profile:string}>,projectNetwork:string,managementNetwork:string)=>{
+  const env=['HOME=/opt/data','CODEX_HOME=/opt/data/codex-home','API_SERVER_ENABLED=true','API_SERVER_HOST=0.0.0.0',
+    'API_SERVER_PORT=8642','HERMES_DASHBOARD=1','HERMES_PROVIDER=openai-codex',
+    'HERMES_MODEL=gpt-5.6-terra','TERMINAL_MAX_FOREGROUND_TIMEOUT=1800','HERMES_GITHUB_REPOSITORY_TOKEN_FILE=/run/secrets/github-token',
+    'HERMES_API_SERVER_KEY_FILE=/run/secrets/agent-delivery',
+    'HERMES_DASHBOARD_USERNAME_FILE=/run/secrets/dashboard-username','HERMES_DASHBOARD_PASSWORD_FILE=/run/secrets/dashboard-password',
+    'HERMES_DASHBOARD_SIGNING_SECRET_FILE=/run/secrets/dashboard-signing',
+    ...(request.artifact.telegramChatId===null?[]:['HERMES_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram-bot',
+    `TELEGRAM_ALLOWED_USERS=${request.artifact.telegramAllowedUserIds.join(',')}`,
+    `TELEGRAM_ALLOWED_CHATS=${request.artifact.telegramChatId}`,
+    `TELEGRAM_GROUP_ALLOWED_USERS=${request.artifact.telegramAllowedUserIds.join(',')}`,
+    `TELEGRAM_GROUP_ALLOWED_CHATS=${request.artifact.telegramChatId}`])];
+  const baseBinds=[`${root}/data:/opt/data`,`${root}/codex-home:/opt/data/codex-home`];
+  const binds=[...baseBinds,`${root}/secrets/github-token:/run/secrets/github-token:ro`,
+    `${request.secrets['agent-delivery'].locator}:/run/secrets/agent-delivery:ro`,
+    `${request.secrets['dashboard-username'].locator}:/run/secrets/dashboard-username:ro`,
+    `${request.secrets['dashboard-password'].locator}:/run/secrets/dashboard-password:ro`,
+    `${root}/secrets/dashboard-signing:/run/secrets/dashboard-signing:ro`,
+    ...(request.artifact.telegramChatId===null?[]:[`${request.secrets['telegram-bot'].locator}:/run/secrets/telegram-bot:ro`]),
+    `${assets.generated}/config.yaml:/opt/data/config.yaml:ro`,`${assets.profile}/config.yaml:/opt/data/profiles/internal/config.yaml:ro`,
+    `${assets.profile}/SOUL.md:/opt/data/profiles/internal/SOUL.md:ro`];
+  return {Image:image,WorkingDir:request.artifact.workspacePath,Env:env,Labels:projectRuntimeOwnership(request,'gateway'),
+    Healthcheck:{Test:['CMD','python','-c',"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5); urllib.request.urlopen('http://127.0.0.1:9119/api/status', timeout=5)"],
+      Interval:10_000_000_000,Timeout:5_000_000_000,Retries:12,StartPeriod:20_000_000_000},
+    HostConfig:{...commonHost(root,projectNetwork),Binds:binds},
+    NetworkingConfig:endpoints(projectNetwork,managementNetwork,[`${request.artifact.runtimeId}-gateway`])};
+};
 
 export type ProjectRuntimeProvisioningOutcome=Readonly<{status:'installing'}|{status:'auth_required';auth:Readonly<{
   verificationUrl:string;userCode:string}>}|{status:'ready'}|{status:'error';failure:'runtime_unavailable'|'authentication_expired'|'readiness_failed'}>;
@@ -135,49 +168,9 @@ export const provisionProjectHermesRuntime=async(request:ProjectRuntimeProvision
       if(auth.State?.ExitCode!==0)return {status:'error',failure:'authentication_expired'};
       if(!await authCached(root))return {status:'error',failure:'authentication_expired'};await removeOwned(docker,request,authName,'codex-auth');
     }
-    const env=['HOME=/opt/data','CODEX_HOME=/opt/data/codex-home','API_SERVER_ENABLED=true','API_SERVER_HOST=0.0.0.0',
-      'API_SERVER_PORT=8642','HERMES_DASHBOARD=0','HERMES_GATEWAY_NO_SUPERVISE=1','HERMES_PROVIDER=openai-codex',
-      'HERMES_MODEL=gpt-5.6-terra','TERMINAL_MAX_FOREGROUND_TIMEOUT=1800','HERMES_GITHUB_REPOSITORY_TOKEN_FILE=/run/secrets/github-token',
-      'HERMES_API_SERVER_KEY_FILE=/run/secrets/agent-delivery',
-      ...(request.artifact.telegramChatId===null?[]:['HERMES_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram-bot',
-      `TELEGRAM_ALLOWED_USERS=${request.artifact.telegramAllowedUserIds.join(',')}`,
-      `TELEGRAM_ALLOWED_CHATS=${request.artifact.telegramChatId}`,
-      `TELEGRAM_GROUP_ALLOWED_USERS=${request.artifact.telegramAllowedUserIds.join(',')}`,
-      `TELEGRAM_GROUP_ALLOWED_CHATS=${request.artifact.telegramChatId}`])];
-    const gatewayName=names.gateway;const gatewayBinds=[...baseBinds,
-      `${root}/secrets/github-token:/run/secrets/github-token:ro`,`${request.secrets['agent-delivery'].locator}:/run/secrets/agent-delivery:ro`,
-      ...(request.artifact.telegramChatId===null?[]:[`${request.secrets['telegram-bot'].locator}:/run/secrets/telegram-bot:ro`]),
-      `${assets.generated}/config.yaml:/opt/data/config.yaml:ro`,`${assets.profile}/config.yaml:/opt/data/profiles/internal/config.yaml:ro`,
-      `${assets.profile}/SOUL.md:/opt/data/profiles/internal/SOUL.md:ro`];
-    const gateway=await ensureContainer(docker,request,gatewayName,'gateway',expectedImageId,{Image:image,User:'10000:10000',
-      WorkingDir:request.artifact.workspacePath,Entrypoint:['/opt/fai/native-entrypoint.sh'],Cmd:['gateway','run'],Env:env,
-      Labels:projectRuntimeOwnership(request,'gateway'),Healthcheck:{Test:['CMD','python','-c',"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5)"],
-        Interval:10_000_000_000,Timeout:5_000_000_000,Retries:12,StartPeriod:20_000_000_000},
-      HostConfig:{...commonHost(root,projectNetwork),Binds:gatewayBinds},
-      NetworkingConfig:endpoints(projectNetwork,managementNetwork,[gatewayName])});
-    const managementName=names.management;const management=await ensureContainer(docker,request,managementName,'management',expectedImageId,{Image:image,User:'10000:10000',
-      WorkingDir:'/opt/data',Entrypoint:['/opt/fai/management-entrypoint.sh'],Env:['HOME=/opt/data',
-        'HERMES_DASHBOARD_USERNAME_FILE=/run/secrets/management-username','HERMES_DASHBOARD_PASSWORD_FILE=/run/secrets/management-password',
-        'HERMES_DASHBOARD_SIGNING_SECRET_FILE=/run/secrets/management-signing'],Labels:projectRuntimeOwnership(request,'management'),
-      Healthcheck:{Test:['CMD','python','-c',"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9119/api/status', timeout=5)"],
-        Interval:10_000_000_000,Timeout:5_000_000_000,Retries:12,StartPeriod:20_000_000_000},
-      HostConfig:{...commonHost(root,projectNetwork),Memory:402_653_184,NanoCpus:250_000_000,PidsLimit:128,
-        Binds:[...baseBinds,`${assets.generated}/config.yaml:/opt/data/config.yaml:ro`,
-          `${request.secrets['management-username'].locator}:/run/secrets/management-username:ro`,
-          `${request.secrets['management-password'].locator}:/run/secrets/management-password:ro`,
-          `${root}/secrets/management-signing:/run/secrets/management-signing:ro`]},
-      NetworkingConfig:endpoints(projectNetwork,managementNetwork,[managementName])});
-    if(gateway.State?.Health?.Status==='unhealthy'||management.State?.Health?.Status==='unhealthy')
-      return {status:'error',failure:'readiness_failed'};
-    if(gateway.State?.Health?.Status!=='healthy'||management.State?.Health?.Status!=='healthy')return {status:'installing'};
-    const probeName=names.readiness;const probe=await ensureContainer(docker,request,probeName,'readiness',expectedImageId,{Image:image,User:'10000:10000',
-      WorkingDir:request.artifact.workspacePath,Entrypoint:['/opt/fai/native-entrypoint.sh'],Cmd:['--exec','sh','-lc',
-        'git --version >/dev/null && gh auth status >/dev/null 2>&1 && codex login status >/dev/null 2>&1 && test -w "$PWD"'],
-      Env:['HOME=/opt/data','CODEX_HOME=/opt/data/codex-home','HERMES_GITHUB_REPOSITORY_TOKEN_FILE=/run/secrets/github-token'],
-      Labels:projectRuntimeOwnership(request,'readiness'),HostConfig:{Binds:[...baseBinds,`${root}/secrets/github-token:/run/secrets/github-token:ro`],
-        Memory:536_870_912,NanoCpus:500_000_000,PidsLimit:128,Init:true,RestartPolicy:{Name:'no'},NetworkMode:projectNetwork},
-      NetworkingConfig:endpoints(projectNetwork)});
-    if(probe.State?.Running===true)return {status:'installing'};const success=probe.State?.ExitCode===0;
-    await removeOwned(docker,request,probeName,'readiness');return success?{status:'ready'}:{status:'error',failure:'readiness_failed'};
+    const gatewayName=names.gateway;const gateway=await ensureContainer(docker,request,gatewayName,'gateway',expectedImageId,
+      projectGatewayContainerSpec(request,image,root,assets,projectNetwork,managementNetwork));
+    if(gateway.State?.Health?.Status==='unhealthy')return {status:'error',failure:'readiness_failed'};
+    return gateway.State?.Health?.Status==='healthy'?{status:'ready'}:{status:'installing'};
   }catch{return {status:'error',failure:'runtime_unavailable'};}
 };

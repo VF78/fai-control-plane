@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {assertProjectRuntimeOwnership,ensureCodexConfig,parseCodexDevicePrompt,projectRuntimeOwnership,
-  projectRuntimeResourceNames,removeProjectHermesRuntime} from './docker-project-runtime.ts';
+  projectGatewayContainerSpec,projectRuntimeResourceNames,removeProjectHermesRuntime,restartProjectHermesGateway} from './docker-project-runtime.ts';
 import {ensureProjectWorkspace} from './hermes-project-template.ts';
 
 const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequest=>({
@@ -12,14 +12,14 @@ const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequ
   repositoryUrl:'https://github.com/example/project',projectUrl:'https://github.com/users/example/projects/1',
   content:'{}',generation:'generation',
   artifact:{status:'installing',runtimeId,gatewayEndpoint:`http://${runtimeId}-gateway:8642/v1/runs`,
-    managementEndpoint:`http://${runtimeId}-management:9119/`,workspacePath:`/opt/data/work/${runtimeId}`,
+    dashboardEndpoint:`http://${runtimeId}-gateway:9119/`,workspacePath:`/opt/data/work/${runtimeId}`,
     telegramChatId:'-1001',telegramAllowedUserIds:['101'],imageVersion:'version',secretIds:{
-      'agent-delivery':'00000000-0000-4000-8100-000000000001','management-username':'00000000-0000-4000-8100-000000000002',
-      'management-password':'00000000-0000-4000-8100-000000000003','telegram-bot':'00000000-0000-4000-8100-000000000004',
-      'inbound-actions':'00000000-0000-4000-8100-000000000005'}},secrets:{
+      'agent-delivery':'00000000-0000-4000-8100-000000000001','dashboard-username':'00000000-0000-4000-8100-000000000002',
+      'dashboard-password':'00000000-0000-4000-8100-000000000003','telegram-bot':'00000000-0000-4000-8100-000000000004',
+      'inbound-actions':'00000000-0000-4000-8100-000000000005'},legacyV1:false},secrets:{
     'agent-delivery':{id:'00000000-0000-4000-8100-000000000001',locator:'/runtime/one/secrets/agent'},
-    'management-username':{id:'00000000-0000-4000-8100-000000000002',locator:'/runtime/one/secrets/user'},
-    'management-password':{id:'00000000-0000-4000-8100-000000000003',locator:'/runtime/one/secrets/password'},
+    'dashboard-username':{id:'00000000-0000-4000-8100-000000000002',locator:'/runtime/one/secrets/user'},
+    'dashboard-password':{id:'00000000-0000-4000-8100-000000000003',locator:'/runtime/one/secrets/password'},
     'telegram-bot':{id:'00000000-0000-4000-8100-000000000004',locator:'/runtime/one/secrets/telegram'},
     'inbound-actions':{id:'00000000-0000-4000-8100-000000000005',locator:'/runtime/one/secrets/inbound'}}
 });
@@ -28,10 +28,21 @@ describe('direct project Docker adapter boundary',()=>{
   it('derives disjoint names and exact ownership for two projects',()=>{
     const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
     const two=request('00000000-0000-4000-8000-000000000002','fai-two-00000000');
-    expect(new Set([...Object.values(projectRuntimeResourceNames(one)),...Object.values(projectRuntimeResourceNames(two))]).size).toBe(10);
+    expect(new Set([...Object.values(projectRuntimeResourceNames(one)),...Object.values(projectRuntimeResourceNames(two))]).size).toBe(6);
     expect(projectRuntimeOwnership(one,'gateway')).toEqual({'fai.control-plane.managed':'true',
       'fai.control-plane.workspace-id':one.workspaceId,'fai.control-plane.project-id':one.projectId,
       'fai.control-plane.runtime-id':one.artifact.runtimeId,'fai.control-plane.component':'gateway'});
+  });
+
+  it('uses upstream supervision for the only long-lived project container',()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
+    const spec=projectGatewayContainerSpec(one,'fai-hermes:version','/runtime/one',
+      {generated:'/runtime/one/generated',profile:'/runtime/one/generated/profile'},'project-network','internal-network');
+    expect(spec).not.toHaveProperty('Entrypoint');expect(spec).not.toHaveProperty('User');
+    expect(spec.Env).toContain('HERMES_DASHBOARD=1');
+    expect(spec.Env.some((value)=>value.startsWith('HERMES_GATEWAY_NO_SUPERVISE='))).toBe(false);
+    expect(Object.keys(projectRuntimeResourceNames(one))).toEqual(['network','auth','gateway']);
+    expect(JSON.stringify(spec)).not.toContain('management');expect(JSON.stringify(spec)).not.toContain('readiness');
   });
 
   it('fails closed for a foreign project label',()=>{
@@ -74,9 +85,19 @@ describe('direct project Docker adapter boundary',()=>{
     await removeProjectHermesRuntime(one,root,docker);
     await expect(stat(root)).rejects.toMatchObject({code:'ENOENT'});
     expect(calls).toEqual([
-      'GET /containers/fai-one-00000000-gateway/json','GET /containers/fai-one-00000000-management/json',
-      'GET /containers/fai-one-00000000-codex-auth/json','GET /containers/fai-one-00000000-readiness/json',
+      'GET /containers/fai-one-00000000-gateway/json','GET /containers/fai-one-00000000-codex-auth/json',
       'GET /networks/fai-one-00000000-network']);
+  });
+
+  it('restarts only the exact owned project gateway without listing containers',async()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');const calls:string[]=[];
+    const docker=async(method:string,path:string)=>{calls.push(`${method} ${path}`);return method==='GET'
+      ?{status:200,body:Buffer.from(JSON.stringify({Name:'/fai-one-00000000-gateway',Config:{Labels:
+        projectRuntimeOwnership(one,'gateway')}}))}:{status:204,body:Buffer.alloc(0)};};
+    await restartProjectHermesGateway({workspaceId:one.workspaceId,projectId:one.projectId,
+      runtimeId:one.artifact.runtimeId},docker);
+    expect(calls).toEqual(['GET /containers/fai-one-00000000-gateway/json',
+      'POST /containers/fai-one-00000000-gateway/restart?t=30']);
   });
 
   it('refuses deletion when a deterministic name has foreign labels',async()=>{

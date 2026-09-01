@@ -4,11 +4,11 @@ import {createHermesConversationActionHandler, resolveInboundHermesRuntime,
 
 const internalToken = 'i'.repeat(48);
 const runtime = {workspaceId:'workspace',projectId:'fd22736d-1879-47fe-9b8a-c51653a4b635',slug:'control',
-  artifactVersion:'a'.repeat(64),runtimeId:'runtime-control',gatewayEndpoint:'http://runtime-control-gateway:8642/v1/runs',
-  managementEndpoint:'http://runtime-control-management:9119/',workspacePath:'/opt/hermes/control',telegramChatId:'-5540760630',
+  artifactVersion:'a'.repeat(64),legacyV1:false,runtimeId:'runtime-control',gatewayEndpoint:'http://runtime-control-gateway:8642/v1/runs',
+  dashboardEndpoint:'http://runtime-control-gateway:9119/',workspacePath:'/opt/hermes/control',telegramChatId:'-5540760630',
   telegramAllowedUserIds:['96211907','355724486'],agentCredentialRef:{id:'1',purpose:'agent_delivery',locator:'/run/agent'},
-  managementUsernameRef:{id:'2',purpose:'hermes_management_username',locator:'/run/user'},
-  managementPasswordRef:{id:'3',purpose:'hermes_management_password',locator:'/run/password'},
+  dashboardUsernameRef:{id:'2',purpose:'hermes_dashboard_username',locator:'/run/user'},
+  dashboardPasswordRef:{id:'3',purpose:'hermes_dashboard_password',locator:'/run/password'},
   telegramCredentialRef:{id:'4',purpose:'messenger_delivery',locator:'/run/telegram'},
   inboundActionCredentialRef:{id:'5',purpose:'hermes_inbound_actions',locator:'/run/inbound'}} as const;
 const dependencies = (): HermesActionDependencies => ({resolveRuntime: async (bearer) => bearer===internalToken?runtime:null,
@@ -60,7 +60,7 @@ describe('Hermes conversation action HTTP boundary', () => {
   });
   it('fails closed when two runtime credentials resolve to the same bearer',async()=>{
     const second={...runtime,projectId:'00000000-0000-4000-8000-000000000002',runtimeId:'runtime-two',
-      gatewayEndpoint:'http://runtime-two-gateway:8642/v1/runs',managementEndpoint:'http://runtime-two-management:9119/',
+      gatewayEndpoint:'http://runtime-two-gateway:8642/v1/runs',dashboardEndpoint:'http://runtime-two-gateway:9119/',
       workspacePath:'/opt/hermes/two',telegramChatId:'-2',
       inboundActionCredentialRef:{id:'6',purpose:'hermes_inbound_actions',locator:'/run/inbound-two'}} as const;
     const secrets={resolve:vi.fn(async()=>({value:internalToken}))};

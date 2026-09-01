@@ -4,6 +4,7 @@ import {
   deleteProjectRecords,
   projectHermesRuntimeCoordinates,
   projectHermesSecretPurpose,
+  readProjectHermesRuntimeArtifact,
   readProjectHermesRuntimeSetup,
   readProjectDeletionTarget,
   recordProjectMessengerSetup,
@@ -55,8 +56,8 @@ const project=async(database:Database,actorId:string,projectId:string)=>{
   const value=result.rows[0];if(value===undefined)throw new Error('project_runtime_denied');return value;
 };
 const secretFiles:Record<ProjectHermesSecretKind,string>={
-  'agent-delivery':'agent-delivery','management-username':'management-username',
-  'management-password':'management-password','telegram-bot':'telegram-bot','inbound-actions':'inbound-actions'
+  'agent-delivery':'agent-delivery','dashboard-username':'dashboard-username',
+  'dashboard-password':'dashboard-password','telegram-bot':'telegram-bot','inbound-actions':'inbound-actions'
 };
 const refs=async(database:Database,workspaceId:string,projectId:string,directory:string):Promise<ProjectRuntimeSecretLocators>=>{
   const purposes=(Object.keys(secretFiles) as ProjectHermesSecretKind[]).map((kind)=>projectHermesSecretPurpose(projectId,kind));
@@ -100,10 +101,10 @@ export const connectProjectMessenger=async(database:Database,input:Readonly<{wor
       const coordinates=projectHermesRuntimeCoordinates(bound.slug,input.projectId);
       await safeWrite(secretRefs['telegram-bot'].locator,input.botToken);
       await existingOrCreate(secretRefs['agent-delivery'].locator,token);
-      await existingOrCreate(secretRefs['management-username'].locator,()=>`operator-${coordinates.runtimeId}`);
-      await existingOrCreate(secretRefs['management-password'].locator,token);
+      await existingOrCreate(secretRefs['dashboard-username'].locator,()=>`operator-${coordinates.runtimeId}`);
+      await existingOrCreate(secretRefs['dashboard-password'].locator,token);
       await existingOrCreate(secretRefs['inbound-actions'].locator,token);
-      await existingOrCreate(`${directory}/secrets/management-signing`,token);
+      await existingOrCreate(`${directory}/secrets/dashboard-signing`,token);
       await recordProjectMessengerSetup(database,{...input,telegramChatId:input.chatId,
         telegramAllowedUserIds:[...new Set(input.allowedUserIds)],secrets:secretRefs,occurredAt:new Date().toISOString()});
       return readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);
@@ -134,20 +135,23 @@ export const installProjectRuntime=async(database:Database,input:Readonly<{works
   return idempotentCommand(database,{...input,commandType:'project.runtime.install'},
     ()=>readProjectHermesRuntimeSetup(database,input.actorId,input.projectId),async()=>{
       const setup=await readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);
+      const existingRuntime=await readProjectHermesRuntimeArtifact(database,input.actorId,input.projectId);
       if(!['not_configured','messenger_ready','error'].includes(setup.status))throw new Error('project_runtime_unavailable');
       const githubCredential=await projectGithubCredential();
       await verifyProjectCredential(githubCredential,bound.repositoryUrl,bound.projectUrl);
       const directory=await projectDirectory(input.workspaceId,input.projectId);await safeWrite(`${directory}/secrets/github-token`,githubCredential);
-      if(setup.status==='not_configured'){
+      if(setup.status==='not_configured'||existingRuntime?.legacyV1===true){
         const secretRefs=await refs(database,input.workspaceId,input.projectId,directory);
         const coordinates=projectHermesRuntimeCoordinates(bound.slug,input.projectId);
         await existingOrCreate(secretRefs['agent-delivery'].locator,token);
-        await existingOrCreate(secretRefs['management-username'].locator,()=>`operator-${coordinates.runtimeId}`);
-        await existingOrCreate(secretRefs['management-password'].locator,token);
+        await existingOrCreate(secretRefs['dashboard-username'].locator,()=>`operator-${coordinates.runtimeId}`);
+        await existingOrCreate(secretRefs['dashboard-password'].locator,token);
         await existingOrCreate(secretRefs['inbound-actions'].locator,token);
-        await existingOrCreate(`${directory}/secrets/management-signing`,token);
+        await existingOrCreate(`${directory}/secrets/dashboard-signing`,token);
         await recordProjectMessengerSetup(database,{workspaceId:input.workspaceId,actorId:input.actorId,projectId:input.projectId,
-          telegramChatId:null,telegramAllowedUserIds:[],secrets:secretRefs,idempotencyKey:`${input.idempotencyKey}:runtime-base`,occurredAt:new Date().toISOString()});
+          telegramChatId:existingRuntime?.telegramChatId??null,
+          telegramAllowedUserIds:existingRuntime?.telegramAllowedUserIds??[],secrets:secretRefs,
+          idempotencyKey:`${input.idempotencyKey}:runtime-v2-base`,occurredAt:new Date().toISOString()});
       }
       await requestProjectRuntimeInstall(database,{workspaceId:input.workspaceId,projectId:input.projectId,actorId:input.actorId,
         idempotencyKey:input.idempotencyKey,occurredAt:new Date().toISOString()});
