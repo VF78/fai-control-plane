@@ -4,12 +4,12 @@ import {describe, expect, it} from 'vitest';
 const source = () => readFile(new URL('./phase-a-ui.tsx', import.meta.url), 'utf8');
 
 describe('sections-first operator navigation', () => {
-  it('keeps background prefetch off except for stable section routes', async () => {
+  it('keeps background prefetch off for every workspace route', async () => {
     const [phaseA,phaseB,link,shell]=await Promise.all([source(),readFile(new URL('./phase-b-ui.tsx',import.meta.url),'utf8'),readFile(new URL('../ui/workspace-link.tsx',import.meta.url),'utf8'),readFile(new URL('./workspace-shell.tsx',import.meta.url),'utf8')]);
     expect(link).toContain("import Link, {type LinkProps} from 'next/link'");
     expect(link).toContain('prefetch=false');
-    expect(shell).toContain('{nav(null)}');
-    expect(shell).toContain('{nav(false)}');
+    expect(shell.match(/\{nav\(\)\}/g)).toHaveLength(2);
+    expect(shell).not.toContain('prefetch={null}');
     expect(phaseA).toContain("import {WorkspaceLink} from '../ui/workspace-link.tsx'");
     expect(phaseB).toContain("import {WorkspaceLink} from '../ui/workspace-link.tsx'");
     expect(phaseA).not.toMatch(/<a[^>]+href=\{phaseHref/);
