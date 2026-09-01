@@ -21,6 +21,13 @@ const runtimeRoot=()=>{
     throw new Error('project_runtime_unavailable');
   return value.replace(/\/+$/,'');
 };
+export const projectGithubCredential=async()=>{
+  const path=process.env.GITHUB_PROJECTS_TOKEN_FILE;
+  if(path===undefined||!path.startsWith('/')||path.includes('\0'))throw new Error('project_runtime_unavailable');
+  const value=(await readFile(path,'utf8')).trim();
+  if(value.length<20||value.length>512||/\s|\0/.test(value))throw new Error('project_repository_credential_invalid');
+  return value;
+};
 const token=()=>randomBytes(32).toString('base64url');
 const safeWrite=async(path:string,value:string)=>{
   const temporary=`${path}.${randomUUID()}.tmp`;await writeFile(temporary,`${value}\n`,{mode:0o600,flag:'wx'});
@@ -121,16 +128,16 @@ const verifyProjectCredential=async(credential:string,repositoryUrl:string,proje
 };
 
 export const installProjectRuntime=async(database:Database,input:Readonly<{workspaceId:string;actorId:string;
-  projectId:string;githubToken:string;idempotencyKey:string;}>)=>{
-  if(input.githubToken.length<20||input.githubToken.length>512||/\s|\0/.test(input.githubToken))throw new Error('project_repository_credential_invalid');
+  projectId:string;idempotencyKey:string;}>)=>{
   const bound=await project(database,input.actorId,input.projectId);if(bound.workspaceId!==input.workspaceId)
     throw new Error('project_runtime_denied');
   return idempotentCommand(database,{...input,commandType:'project.runtime.install'},
     ()=>readProjectHermesRuntimeSetup(database,input.actorId,input.projectId),async()=>{
       const setup=await readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);
       if(!['not_configured','messenger_ready','error'].includes(setup.status))throw new Error('project_runtime_unavailable');
-      await verifyProjectCredential(input.githubToken,bound.repositoryUrl,bound.projectUrl);
-      const directory=await projectDirectory(input.workspaceId,input.projectId);await safeWrite(`${directory}/secrets/github-token`,input.githubToken);
+      const githubCredential=await projectGithubCredential();
+      await verifyProjectCredential(githubCredential,bound.repositoryUrl,bound.projectUrl);
+      const directory=await projectDirectory(input.workspaceId,input.projectId);await safeWrite(`${directory}/secrets/github-token`,githubCredential);
       if(setup.status==='not_configured'){
         const secretRefs=await refs(database,input.workspaceId,input.projectId,directory);
         const coordinates=projectHermesRuntimeCoordinates(bound.slug,input.projectId);
@@ -173,7 +180,7 @@ export const projectRuntimeSetupCommand=async(database:Database,request:Request,
       actorId:session.actorId,projectId,botToken:required(value.botToken,256),chatId:required(value.chatId,32),
       allowedUserIds:required(value.allowedUserIds,2_400).split(',').map((item)=>item.trim()).filter(Boolean),
       idempotencyKey:required(value.idempotencyKey,128)}):action==='install'?await installProjectRuntime(database,{workspaceId:session.workspaceId,
-        actorId:session.actorId,projectId,githubToken:required(value.githubToken,512),idempotencyKey:required(value.idempotencyKey,128)}):
+        actorId:session.actorId,projectId,idempotencyKey:required(value.idempotencyKey,128)}):
       (()=>{throw new Error('body_invalid');})();return Response.json(result);
   }catch(error){const code=error instanceof Error?error.message:'request_failed';return Response.json({error:code},{status:
     code==='authentication_required'?401:code.endsWith('_denied')?403:code.includes('verification_failed')?502:400});}
