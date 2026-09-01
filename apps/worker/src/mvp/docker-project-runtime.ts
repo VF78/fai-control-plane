@@ -1,6 +1,6 @@
 import {request as httpRequest} from 'node:http';
 import {dirname} from 'node:path';
-import {rm,stat,writeFile} from 'node:fs/promises';
+import {chmod,chown,rm,stat,writeFile} from 'node:fs/promises';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {prepareProjectHermesAssets} from './hermes-project-template.ts';
 
@@ -66,11 +66,19 @@ const rootFor=(request:ProjectRuntimeProvisioningRequest)=>{const roots=new Set(
   if(roots.size!==1)throw new Error('project_runtime_secret_conflict');const root=[...roots][0]!;
   if(root==='/'||root.includes('..')||!root.startsWith('/'))throw new Error('project_runtime_secret_conflict');return root;};
 const authCached=async(root:string)=>{try{const value=await stat(`${root}/codex-home/auth.json`);return value.isFile()&&value.size>100&&value.size<1_048_576;}catch{return false;}};
+export const ensureCodexConfig=async(root:string,owner:Readonly<{uid:number;gid:number}>={uid:10000,gid:10000})=>{
+  const path=`${root}/codex-home/config.toml`;
+  try{await writeFile(path,'cli_auth_credentials_store = "file"\n',{mode:0o600,flag:'wx'});}catch(error){
+    if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;
+  }
+  await chmod(path,0o600);await chown(path,owner.uid,owner.gid);
+};
 const decodeLogs=(body:Buffer)=>{const chunks:Buffer[]=[];let offset=0;while(offset+8<=body.length){const size=body.readUInt32BE(offset+4);
   if(offset+8+size>body.length)break;chunks.push(body.subarray(offset+8,offset+8+size));offset+=8+size;}return (chunks.length===0?body:Buffer.concat(chunks)).toString('utf8');};
 export const parseCodexDevicePrompt=(output:string):Readonly<{verificationUrl:string;userCode:string}>|null=>{
-  const url=/https:\/\/(?:auth\.openai\.com|chatgpt\.com)\/[^\s]+/i.exec(output)?.[0]?.replace(/[),.;]+$/,'');
-  const code=/\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b/.exec(output)?.[0];return url===undefined||code===undefined?null:{verificationUrl:url,userCode:code};
+  const plain=output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g,'');
+  const url=/https:\/\/(?:auth\.openai\.com|chatgpt\.com)\/[^\s]+/i.exec(plain)?.[0]?.replace(/[),.;]+$/,'');
+  const code=/\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b/.exec(plain)?.[0];return url===undefined||code===undefined?null:{verificationUrl:url,userCode:code};
 };
 export const projectRuntimeResourceNames=(request:ProjectRuntimeProvisioningRequest)=>({
   network:`${request.artifact.runtimeId}-network`,auth:`${request.artifact.runtimeId}-codex-auth`,
@@ -110,7 +118,7 @@ export const provisionProjectHermesRuntime=async(request:ProjectRuntimeProvision
     const inspectedImage=json<{Id?:unknown}>(expect(await docker('GET',`/images/${namePath(image)}/json`),[200]));
     if(inspectedImage.Id!==expectedImageId)throw new Error('project_runtime_image_invalid');
     const root=rootFor(request);const assets=await prepareProjectHermesAssets(request,root);
-    try{await writeFile(`${root}/codex-home/config.toml`,'cli_auth_credentials_store = "file"\n',{mode:0o600,flag:'wx'});}catch{/* preserve */}
+    await ensureCodexConfig(root);
     const names=projectRuntimeResourceNames(request);const projectNetwork=names.network;const managementNetwork=process.env.FCP_HERMES_MANAGEMENT_NETWORK??'fai-hermes-management';
     await ensureNetwork(docker,request,managementNetwork,true);await ensureNetwork(docker,request,projectNetwork);
     const baseBinds=[`${root}/data:/opt/data`,`${root}/codex-home:/opt/data/codex-home`];

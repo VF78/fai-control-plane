@@ -1,9 +1,9 @@
 import {describe,expect,it} from 'vitest';
-import {mkdtemp,rm,stat,writeFile} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,rm,stat,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
-import {assertProjectRuntimeOwnership,parseCodexDevicePrompt,projectRuntimeOwnership,
+import {assertProjectRuntimeOwnership,ensureCodexConfig,parseCodexDevicePrompt,projectRuntimeOwnership,
   projectRuntimeResourceNames,removeProjectHermesRuntime} from './docker-project-runtime.ts';
 
 const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequest=>({
@@ -42,7 +42,18 @@ describe('direct project Docker adapter boundary',()=>{
   it('extracts only the official HTTPS device prompt and one-time code',()=>{
     expect(parseCodexDevicePrompt('Open https://auth.openai.com/codex/device and enter ABCD-EFGH.')).toEqual({
       verificationUrl:'https://auth.openai.com/codex/device',userCode:'ABCD-EFGH'});
+    expect(parseCodexDevicePrompt('Open \u001b[94mhttps://auth.openai.com/codex/device\u001b[0m and enter \u001b[94mABCD-EFGH\u001b[0m.')).toEqual({
+      verificationUrl:'https://auth.openai.com/codex/device',userCode:'ABCD-EFGH'});
     expect(parseCodexDevicePrompt('token auth.json secret')).toBeNull();
+  });
+
+  it('keeps an existing Codex config but repairs its private ownership and mode',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'fai-project-auth-'));const directory=join(root,'codex-home');
+    await mkdir(directory);const path=join(directory,'config.toml');await writeFile(path,'existing = true\n',{mode:0o644});
+    const uid=process.getuid?.()??0;const gid=process.getgid?.()??0;await ensureCodexConfig(root,{uid,gid});
+    const details=await stat(path);expect(await readFile(path,'utf8')).toBe('existing = true\n');
+    expect(details.mode&0o777).toBe(0o600);expect(details.uid).toBe(uid);expect(details.gid).toBe(gid);
+    await rm(root,{recursive:true});
   });
 
   it('removes only deterministic project resources and its exact root',async()=>{
