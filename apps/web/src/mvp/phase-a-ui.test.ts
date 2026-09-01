@@ -27,11 +27,13 @@ describe('sections-first operator navigation', () => {
 
   it('uses a Tasks-only project selector and deterministic default project', async () => {
     const [view,page]=await Promise.all([source(),readFile(new URL('./workspace-pages.tsx',import.meta.url),'utf8')]);
-    expect(view).toContain('function ProjectSelector');
-    expect(view).toContain('className="fcp-c-task-project-selector"');
-    expect(view).toContain('<nav aria-label="Выберите проект">');
-    expect(view).toContain("aria-current={item.id === project.id ? 'page' : undefined}");
-    expect(view).toContain("<WorkspaceLink aria-current={item.id === project.id ? 'page' : undefined} href={phaseHref('tasks',item.slug)}");
+    const selector=await readFile(new URL('./task-project-selector.tsx',import.meta.url),'utf8');
+    expect(view).toContain('TaskProjectSelector');
+    expect(selector).toContain('className="fcp-c-task-project-selector"');
+    expect(selector).toContain('<nav aria-label="Выберите проект">');
+    expect(selector).toContain("aria-current={item.id===project.id?'page':undefined}");
+    expect(selector).toContain("href={phaseHref('tasks',item.slug)}");
+    expect(selector).toContain('onClick={close}');
     expect(page).toContain('const selected=invalidProject?null:projects.find');
     expect(page).toContain('??projects[0]??null');
     expect(page).toContain('<Tasks projects={projects} project={selected}');

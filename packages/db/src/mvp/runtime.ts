@@ -283,7 +283,8 @@ export const listProjectTaskViews = async (
   }>;
   const result = await database.query<Row>(
     `select p.id,p.workspace_id as "workspaceId",p.slug,p.name,p.repository_url as "repositoryUrl",
-       b.id as "bindingId",b.provider,ok.external_version as "externalVersion",ok.cursor,ok.source_url as "sourceUrl",
+       b.id as "bindingId",b.provider,ok.external_version as "externalVersion",ok.cursor,
+       coalesce(ok.source_url,b.project_url) as "sourceUrl",
        ok.facts,ok.observed_at as "observedAt",attempt.observed_at as "attemptAt",
        attempt.error_code as "attemptErrorCode"
      from projects p join project_memberships m on m.project_id=p.id and m.actor_id=$1 and m.active=true
