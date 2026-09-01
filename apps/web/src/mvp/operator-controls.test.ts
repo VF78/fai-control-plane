@@ -44,3 +44,15 @@ describe('project document upload', () => {
     expect(source).toContain("form.append('idempotencyKey',batchKey)");
   });
 });
+
+describe('project document deletion', () => {
+  it('uses the scoped DELETE endpoint behind an accessible exact-name confirmation', async () => {
+    const source = await readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('export function ProjectDocumentDeleteControl');
+    expect(source).toContain('`/api/projects/${projectId}/documents/${documentId}`');
+    expect(source).toContain('idempotencyKey:`project-document-delete:${id()}`');
+    expect(source).toContain('title={`Удалить «${documentName}»?`}');
+    expect(source).toContain('confirmation!==documentName');
+    expect(source).toContain('router.refresh()');
+  });
+});

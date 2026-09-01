@@ -116,6 +116,25 @@ export const uploadProjectDocuments = async (database: Database, inputs: readonl
 export const uploadProjectDocument = async (database: Database, input: ProjectDocumentUpload): Promise<ProjectDocumentView> =>
   (await uploadProjectDocuments(database,[input]))[0]!;
 
+export const deleteProjectDocument = async (database: Database, input: Readonly<{workspaceId:string;projectId:string;actorId:string;documentId:string;idempotencyKey:string;occurredAt:string}>): Promise<boolean> => {
+  const client=await database.connect();
+  try {
+    await client.query('begin');
+    const allowed=await client.query(`select 1 from projects p join project_memberships m on m.project_id=p.id
+      where p.id=$1 and p.workspace_id=$2 and m.actor_id=$3 and m.role='project_owner' and m.active=true for update of p`,
+    [input.projectId,input.workspaceId,input.actorId]);
+    if(allowed.rowCount!==1)throw new Error('project_document_denied');
+    const deleted=await client.query<{id:string;name:string;kind:string}>(`delete from project_source_artifacts where id=$1 and project_id=$2
+      and kind like 'project_document_v1:%' returning id,name,kind`,[input.documentId,input.projectId]);
+    const row=deleted.rows[0];
+    if(row!==undefined)await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
+      values($1,$2,$3,'project.document.delete',$4,$5,$6,$7)`,[input.workspaceId,input.projectId,input.actorId,row.id,input.idempotencyKey,
+      JSON.stringify({name:row.name,kind:row.kind}),input.occurredAt]);
+    await client.query('commit');
+    return row!==undefined;
+  } catch(error){await client.query('rollback');throw error;} finally {client.release();}
+};
+
 export const listProjectDocuments = async (database: Database, actorId: string,
   projectId: string): Promise<readonly ProjectDocumentView[]> => {
   const result = await database.query<{id:string;projectId:string;kind:string;name:string;mediaType:string;sha256:string;

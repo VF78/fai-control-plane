@@ -1,6 +1,7 @@
 'use client';
 
 import {useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode} from 'react';
+import {useRouter} from 'next/navigation';
 import {FileUp, Pencil, Plus, Trash2} from 'lucide-react';
 import type {ProjectContextStatusView, ProjectExecutionModeView} from '@fai-control-plane/db';
 import type {AgentExecutorCatalog, AgentRoutingPolicy} from '@fai-control-plane/domain';
@@ -91,6 +92,14 @@ export function ProjectDocumentsEditor({projectId,compact=false}:Readonly<{proje
     <div className="fcp-document-actions"><AsyncButton type="button" className="fcp-secondary" pending={false} pendingLabel="" disabled={command.pending||rows.length===10} onClick={()=>setRows((current)=>[...current,newDocument(nextDocumentCategory(current))])}><Plus aria-hidden="true" size={15}/> Добавить ещё файл</AsyncButton><AsyncButton type="button" pending={command.pending} pendingLabel="Загружаем документы…" disabled={command.pending} onClick={submit}>Загрузить документы</AsyncButton></div>
     {localError===null?null:<p className="fcp-wizard-error">{localError}</p>}<CommandNoticeView notice={command.notice}/>
   </section>;
+}
+
+export function ProjectDocumentDeleteControl({projectId,documentId,documentName}:Readonly<{projectId:string;documentId:string;documentName:string}>){
+  const router=useRouter();const command=useAsyncCommand();const [open,setOpen]=useState(false);const [confirmation,setConfirmation]=useState('');
+  const close=()=>{if(!command.pending){setOpen(false);setConfirmation('');}};
+  const execute=()=>void command.run(()=>remove(`/api/projects/${projectId}/documents/${documentId}`,{idempotencyKey:`project-document-delete:${id()}`}),{refresh:false,
+    success:()=>{close();router.refresh();return 'Документ удалён.';},error:(value)=>value instanceof Error&&value.message==='project_document_denied'?'Удалять документы может только владелец проекта.':'Документ не удалён. Проверьте состояние и повторите.'});
+  return <><AsyncButton type="button" className="fcp-danger-button fcp-document-delete-trigger" pending={false} pendingLabel="" aria-label={`Удалить документ: ${documentName}`} onClick={()=>setOpen(true)}>Удалить</AsyncButton><Dialog open={open} title={`Удалить «${documentName}»?`} description="Документ будет удалён из контекста проекта. Это действие нельзя отменить." onClose={close}><form className="fcp-delete-dialog" onSubmit={(event)=>{event.preventDefault();execute();}} aria-busy={command.pending}><label>Введите точное имя документа <strong>{documentName}</strong><input value={confirmation} onChange={(event)=>setConfirmation(event.target.value)} autoComplete="off" disabled={command.pending}/></label><div><AsyncButton className="fcp-danger-button" pending={command.pending} pendingLabel="Удаляем…" disabled={confirmation!==documentName}>Удалить</AsyncButton><AsyncButton type="button" className="fcp-secondary" pending={command.pending} pendingLabel="" onClick={close}>Отмена</AsyncButton></div><CommandNoticeView notice={command.notice}/></form></Dialog></>;
 }
 
 export function ProjectAgentActivationControl({projectId,status,profile,documentsReady}:Readonly<{projectId:string;
