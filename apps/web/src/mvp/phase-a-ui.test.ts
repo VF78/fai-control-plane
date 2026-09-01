@@ -4,13 +4,13 @@ import {describe, expect, it} from 'vitest';
 const source = () => readFile(new URL('./phase-a-ui.tsx', import.meta.url), 'utf8');
 
 describe('sections-first operator navigation', () => {
-  it('keeps query-only workspace navigation on the reliable document path', async () => {
-    const [phaseA,phaseB]=await Promise.all([source(),readFile(new URL('./phase-b-ui.tsx',import.meta.url),'utf8')]);
-    expect(phaseA).not.toContain("import Link from 'next/link'");
-    expect(phaseB).toContain("import Link from 'next/link'");
-    expect(phaseA).not.toContain('prefetch={false}');
-    expect(phaseB).not.toContain('prefetch={false}');
-    expect(phaseA).toMatch(/<a[^>]+href=\{phaseHref/);
+  it('uses client workspace links without background prefetch or full reload anchors', async () => {
+    const [phaseA,phaseB,link]=await Promise.all([source(),readFile(new URL('./phase-b-ui.tsx',import.meta.url),'utf8'),readFile(new URL('../ui/workspace-link.tsx',import.meta.url),'utf8')]);
+    expect(link).toContain("import Link, {type LinkProps} from 'next/link'");
+    expect(link).toContain('prefetch={false}');
+    expect(phaseA).toContain("import {WorkspaceLink} from '../ui/workspace-link.tsx'");
+    expect(phaseB).toContain("import {WorkspaceLink} from '../ui/workspace-link.tsx'");
+    expect(phaseA).not.toMatch(/<a[^>]+href=\{phaseHref/);
     expect(phaseA).toContain('<a href={item.url}');
   });
 
@@ -29,7 +29,7 @@ describe('sections-first operator navigation', () => {
     expect(view).toContain('className="fcp-c-task-project-selector"');
     expect(view).toContain('<nav aria-label="Выберите проект">');
     expect(view).toContain("aria-current={item.id === project.id ? 'page' : undefined}");
-    expect(view).toContain("href={phaseHref('tasks',item.slug)}");
+    expect(view).toContain("<WorkspaceLink aria-current={item.id === project.id ? 'page' : undefined} href={phaseHref('tasks',item.slug)}");
     expect(page).toContain("const selected = view === 'tasks'");
     expect(page).toContain('?? projects[0] ?? null');
     expect(page).toContain('<Tasks projects={projects} project={selected}');
