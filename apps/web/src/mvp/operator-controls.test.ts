@@ -32,3 +32,15 @@ describe('task executor control', () => {
     expect(source).not.toContain('Квитанция {activeRun.deliveryReference}');
   });
 });
+
+describe('project document upload', () => {
+  it('sends the original File objects in one multipart request without a client deadline', async () => {
+    const source = await readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("form.append('file',source)");
+    expect(source).not.toContain('source.arrayBuffer()');
+    expect(source).not.toContain('new AbortController()');
+    expect(source).not.toContain('45_000');
+    expect(source).toContain("fetch(`/api/projects/${projectId}/documents`,{method:'POST',body:form})");
+    expect(source).toContain("form.append('idempotencyKey',batchKey)");
+  });
+});

@@ -77,11 +77,11 @@ export function ProjectDocumentsEditor({projectId,compact=false}:Readonly<{proje
   const submit=()=>{const ready=rows.filter((row)=>row.file!==null);if(ready.length===0||ready.length!==rows.length){setLocalError('Выберите файл в каждой строке или удалите пустую строку.');return;}
     const fixed=ready.filter(({category})=>category!=='supplemental');if(new Set(fixed.map(({category})=>category)).size!==fixed.length){setLocalError('Основную категорию можно добавить только один раз за отправку.');return;}
     if(ready.some(({file})=>file!.size>50*1024*1024)||ready.reduce((total,{file})=>total+file!.size,0)>100*1024*1024){setLocalError('Ограничение: до 50 МиБ на файл и до 100 МиБ за одну отправку.');return;}
-    setLocalError(null);void command.run(async()=>{const form=new FormData();for(const row of ready){const source=row.file!;const bytes=await source.arrayBuffer();
-      form.append('category',row.category);form.append('file',new File([bytes],source.name,{type:source.type}));}form.append('idempotencyKey',batchKey);
-      const controller=new AbortController();const timer=window.setTimeout(()=>controller.abort(),45_000);try{const response=await fetch(`/api/projects/${projectId}/documents`,{method:'POST',body:form,signal:controller.signal});
-        const value=await response.json().catch(()=>({}));if(response.status===408)throw new Error('upload_timeout');if(!response.ok)throw new Error((value as Result).error??'request_failed');return value as Result;
-      }catch(cause){if(cause instanceof DOMException&&cause.name==='AbortError')throw new Error('upload_timeout');throw cause;}finally{window.clearTimeout(timer);}},
+    setLocalError(null);void command.run(async()=>{const form=new FormData();for(const row of ready){const source=row.file!;
+      form.append('category',row.category);form.append('file',source);}form.append('idempotencyKey',batchKey);
+      const response=await fetch(`/api/projects/${projectId}/documents`,{method:'POST',body:form});
+      const value=await response.json().catch(()=>({}));if(response.status===408)throw new Error('upload_timeout');if(!response.ok)throw new Error((value as Result).error??'request_failed');return value as Result;
+    },
     {success:(value)=>{const uploaded=Array.isArray((value as {documents?:unknown}).documents)?(value as {documents:unknown[]}).documents.length:ready.length;setRows([newDocument()]);setBatchKey(`project-documents:${id()}`);return `Загружено документов: ${uploaded}. Весь набор подтверждён.`;},error});};
   return <section className={`fcp-documents-editor ${compact?'compact':''}`} aria-busy={command.pending}><p className="fcp-documents-help">DOCX, PDF с текстовым слоем, MD или TXT. До 50 МиБ на файл; до 100 МиБ за одну отправку.</p>
     <div className="fcp-document-rows">{rows.map((row,index)=><article key={row.id}><DocumentCategoryChoice label={`Тип документа ${index+1}`} value={row.category} pending={command.pending} onChange={(category)=>update(row.id,{category})}/>
