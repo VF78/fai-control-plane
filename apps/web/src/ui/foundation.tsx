@@ -36,6 +36,8 @@ export function Skeleton({rows=2,label='Загружаем проекты'}:Read
 
 export function ReadOnlyNotice(){return <p className="fcp-c-readonly" role="note">Доступ только для просмотра. Изменения доступны владельцу проекта.</p>;}
 
+export function InlineAlert({tone='warning',children}:Readonly<{tone?:'warning'|'danger';children:ReactNode}>){return <p className={`fcp-c-inline-alert is-${tone}`} role="alert">{children}</p>;}
+
 /** Keeps confirmed server-rendered facts visible while the browser is offline. */
 export function OfflineNotice(){const [offline,setOffline]=useState(false);useEffect(()=>{const sync=()=>setOffline(!navigator.onLine);sync();window.addEventListener('online',sync);window.addEventListener('offline',sync);return()=>{window.removeEventListener('online',sync);window.removeEventListener('offline',sync);};},[]);return offline?<p className="fcp-c-offline" role="status">Нет подключения к сети. Показаны последние подтверждённые данные.</p>:null;}
 
