@@ -8,7 +8,8 @@ describe('sections-first operator navigation', () => {
     const [phaseA,phaseB,link,shell]=await Promise.all([source(),readFile(new URL('./phase-b-ui.tsx',import.meta.url),'utf8'),readFile(new URL('../ui/workspace-link.tsx',import.meta.url),'utf8'),readFile(new URL('./workspace-shell.tsx',import.meta.url),'utf8')]);
     expect(link).toContain("import Link, {type LinkProps} from 'next/link'");
     expect(link).toContain('prefetch=false');
-    expect(shell).toContain('prefetch={null}');
+    expect(shell).toContain('{nav(null)}');
+    expect(shell).toContain('{nav(false)}');
     expect(phaseA).toContain("import {WorkspaceLink} from '../ui/workspace-link.tsx'");
     expect(phaseB).toContain("import {WorkspaceLink} from '../ui/workspace-link.tsx'");
     expect(phaseA).not.toMatch(/<a[^>]+href=\{phaseHref/);
