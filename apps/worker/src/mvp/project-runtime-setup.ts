@@ -1,5 +1,5 @@
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {chmod,chown,mkdir,readFile,rename,writeFile} from 'node:fs/promises';
+import {chmod,chown,lstat,mkdir,readFile,rename,writeFile} from 'node:fs/promises';
 import {
   deleteProjectRecords,
   projectHermesRuntimeCoordinates,
@@ -40,13 +40,22 @@ const existingOrCreate=async(path:string,create:()=>string)=>{
   try{const value=(await readFile(path,'utf8')).trim();if(value.length>0&&!value.includes('\0'))return value;}catch{/* create */}
   const value=create();await safeWrite(path,value);return value;
 };
-const projectDirectory=async(workspaceId:string,projectId:string)=>{
+const ensureOwnedDirectory=async(path:string,owner:Readonly<{uid:number;gid:number}>)=>{
+  try{await mkdir(path,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+  const value=await lstat(path);
+  if(!value.isDirectory()||value.isSymbolicLink())throw new Error('project_runtime_host_layout_failed');
+  await chmod(path,0o700);await chown(path,owner.uid,owner.gid);
+};
+export const ensureProjectRuntimeDirectory=async(workspaceId:string,projectId:string,
+  owner:Readonly<{uid:number;gid:number}>={uid:10000,gid:10000})=>{
   if(!/^[0-9a-f-]{36}$/i.test(workspaceId)||!/^[0-9a-f-]{36}$/i.test(projectId))throw new Error('project_runtime_invalid');
-  const directory=`${runtimeRoot()}/${workspaceId}/${projectId}`;await mkdir(`${directory}/secrets`,{recursive:true,mode:0o700});
-  await mkdir(`${directory}/data`,{recursive:true,mode:0o700});await mkdir(`${directory}/codex-home`,{recursive:true,mode:0o700});
-  for(const path of [directory,`${directory}/secrets`,`${directory}/data`,`${directory}/codex-home`]){
-    await chmod(path,0o700);try{await chown(path,10000,10000);}catch(error){if(process.env.NODE_ENV!=='test')throw error;}
-  }return directory;
+  const root=runtimeRoot();const workspace=`${root}/${workspaceId}`;const directory=`${workspace}/${projectId}`;
+  try{
+    await ensureOwnedDirectory(workspace,owner);await ensureOwnedDirectory(directory,owner);
+    for(const name of ['secrets','data','codex-home'])await ensureOwnedDirectory(`${directory}/${name}`,owner);
+    return directory;
+  }catch(error){if(error instanceof Error&&error.message==='project_runtime_host_layout_failed')throw error;
+    throw new Error('project_runtime_host_layout_failed',{cause:error});}
 };
 const project=async(database:Database,actorId:string,projectId:string)=>{
   const result=await database.query<{workspaceId:string;slug:string;repositoryUrl:string;projectUrl:string}>(`select
@@ -97,7 +106,7 @@ export const connectProjectMessenger=async(database:Database,input:Readonly<{wor
       await telegramRequest(input.botToken,'getMe',{});await telegramRequest(input.botToken,'getChat',{chat_id:input.chatId});
       await telegramRequest(input.botToken,'sendMessage',{chat_id:input.chatId,
         text:'f(AI) Control подтвердил отдельный рабочий канал проекта. Настройка ИИ-агента продолжится в интерфейсе.'});
-      const directory=await projectDirectory(input.workspaceId,input.projectId);const secretRefs=await refs(database,input.workspaceId,input.projectId,directory);
+      const directory=await ensureProjectRuntimeDirectory(input.workspaceId,input.projectId);const secretRefs=await refs(database,input.workspaceId,input.projectId,directory);
       const coordinates=projectHermesRuntimeCoordinates(bound.slug,input.projectId);
       await safeWrite(secretRefs['telegram-bot'].locator,input.botToken);
       await existingOrCreate(secretRefs['agent-delivery'].locator,token);
@@ -139,8 +148,8 @@ export const installProjectRuntime=async(database:Database,input:Readonly<{works
       if(!['not_configured','messenger_ready','error'].includes(setup.status))throw new Error('project_runtime_unavailable');
       const githubCredential=await projectGithubCredential();
       await verifyProjectCredential(githubCredential,bound.repositoryUrl,bound.projectUrl);
-      const directory=await projectDirectory(input.workspaceId,input.projectId);await safeWrite(`${directory}/secrets/github-token`,githubCredential);
-      if(setup.status==='not_configured'||existingRuntime?.legacyV1===true){
+      const directory=await ensureProjectRuntimeDirectory(input.workspaceId,input.projectId);await safeWrite(`${directory}/secrets/github-token`,githubCredential);
+      if(setup.status==='not_configured'){
         const secretRefs=await refs(database,input.workspaceId,input.projectId,directory);
         const coordinates=projectHermesRuntimeCoordinates(bound.slug,input.projectId);
         await existingOrCreate(secretRefs['agent-delivery'].locator,token);

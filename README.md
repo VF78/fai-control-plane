@@ -1,6 +1,7 @@
 # f(AI) Control Plane
 
-Internal MVP supervising one project through GitHub Project and Hermes.
+Internal MVP supervising multiple projects through GitHub Project and one
+project-scoped Hermes per project.
 
 Authority stays external:
 
@@ -30,30 +31,15 @@ docker compose --profile bootstrap run --rm bootstrap
 docker compose up --build web worker
 ```
 
-The bootstrap command is explicit and idempotent: it creates the first
-workspace, owner, project, GitHub identity/binding and optional Telegram
-identity without reading any secret value. OAuth is usable after bootstrap.
-Free-form chat messages remain visibly pending; only `/facts`,
-`/issue title | details`, `/clarify issue version | details`, and
-`/source name | text`, and `/approve kind approval target decision` are executed. No transcript or
-chat history is stored in this MVP.
-
-## HTTP command surface
-
-- `POST /api/hermes/conversation-actions` accepts the separately authenticated internal/client Hermes bridge envelopes.
-- `POST /api/agents/submit` is the browser-only explicit `agent.submit` seam. It requires an active operator session,
-  an exact same-origin request, and active `project_owner` or `operator` membership. The server refreshes the configured
-  tracker snapshot, resolves the selected item/version, repository and safe source references, then uses the existing
-  `AgentDeliveryPort`. Deterministic duplicates return the existing receipt. It never changes tracker status, publishes,
-  deploys, or exposes a production/devops command.
+The bootstrap command is explicit and idempotent: it creates only the first
+workspace, owner, identities and tracker credential reference without reading
+the secret value. Projects, documents and project-scoped Hermes runtimes are
+then created through the product UI.
 
 ## Checks
 
 ```bash
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm db:check
+pnpm verify:mvp
 ```
 
 Current product authority and acceptance are defined by GitHub issue #158,

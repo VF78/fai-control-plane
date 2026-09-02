@@ -145,7 +145,7 @@ export const recordProjectTrackerPreparationResult=async(database:Database,attem
         remainingDelta:result.remainingDelta}),occurredAt]);
     if(approval!==undefined)await client.query(`insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
       select $1,'messenger-notification',$2,$3,$4 where exists(select 1 from project_source_artifacts where project_id=$1
-        and kind='project_hermes_runtime_v1' and content_text::jsonb ? 'telegram') on conflict(idempotency_key) do nothing`,
+        and kind='project_hermes_runtime_v2' and content_text::jsonb ? 'telegram') on conflict(idempotency_key) do nothing`,
     [attempt.projectId,`${key}:notify`,JSON.stringify({message:{projectId:attempt.projectId,contour:'trusted-main',
       channelReference:'telegram:internal',text:approval.text,idempotencyKey:`${key}:notify`}}),occurredAt]);await client.query('commit');
     return {status,version,runId:null,remainingDelta:result.remainingDelta,approval:approval??null,
@@ -179,7 +179,7 @@ export const recordProjectTrackerPreparationBlocker=async(database:Database,inpu
       values($1,$2,$3,'project.tracker-prepare.blocked',$4,$5,$6,$7)`,[input.workspaceId,input.projectId,input.actorId,
       input.processVersion,key,JSON.stringify({remainingDelta:input.remainingDelta,blocker:input.blocker}),input.occurredAt]);
     await client.query(`insert into outbox_events(project_id,topic,idempotency_key,payload,available_at) select $1,'messenger-notification',$2,$3,$4
-      where exists(select 1 from project_source_artifacts where project_id=$1 and kind='project_hermes_runtime_v1' and content_text::jsonb ? 'telegram')
+      where exists(select 1 from project_source_artifacts where project_id=$1 and kind='project_hermes_runtime_v2' and content_text::jsonb ? 'telegram')
       on conflict(idempotency_key) do nothing`,[input.projectId,`${key}:notify`,JSON.stringify({message:{projectId:input.projectId,
         contour:'trusted-main',channelReference:'telegram:internal',text:input.blocker,idempotencyKey:`${key}:notify`}}),input.occurredAt]);
     await client.query('commit');return version;}catch(error){await client.query('rollback');throw error;}finally{client.release();}};

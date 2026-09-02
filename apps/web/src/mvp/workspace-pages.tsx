@@ -1,9 +1,8 @@
-import {listProjectHermesRuntimeBindings,listProjectOperatorEvidenceViews,listProjectSourceViews,listWorkspaceHumanActors,readAgentRoutingPolicy,readProjectAgentProfile,readProjectAgentSubmissionView,readProjectContextStatus,readProjectExecutionMode,readProjectHermesRuntimeSetup,readProjectMembershipRole,readProjectProcessPolicy,readProjectTrackerCapabilities,readProjectTrackerPreparation,readProjectWizardProgress,type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
+import {listProjectHermesRuntimeBindings,listProjectOperatorEvidenceViews,listProjectSourceViews,listWorkspaceHumanActors,projectHermesExecutorCatalog,readAgentRoutingPolicy,readProjectAgentProfile,readProjectAgentSubmissionView,readProjectContextStatus,readProjectExecutionMode,readProjectHermesRuntimeSetup,readProjectMembershipRole,readProjectProcessPolicy,readProjectTrackerCapabilities,readProjectTrackerPreparation,readProjectWizardProgress,type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import {Dashboard,Process,Tasks} from './phase-a-ui.tsx';
 import {executorFact} from './phase-a-view.ts';
 import {integrationConfig} from './integration-config.ts';
-import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
 import {TaskExecutorControl} from './operator-controls.tsx';
 import {PhaseB,type PhaseBView} from './phase-b-ui.tsx';
 import {getDatabase} from './runtime.ts';
@@ -26,10 +25,12 @@ export async function TasksPage({project:projectSlug,task,filter}:Readonly<{proj
 
 export async function ProcessPage(){
   const workspace=await readWorkspace();if(workspace.session===null||workspace.projects===null)return null;
-  const {projects,session}=workspace;const database=getDatabase();const executorCatalog=hermesExecutorCatalog();
+  const {projects,session}=workspace;const database=getDatabase();const runtimes=await listProjectHermesRuntimeBindings(database,session.workspaceId);
+  const runtimeByProject=new Map(runtimes.map((runtime)=>[runtime.projectId,runtime]));
   const processProjects=await Promise.all(projects.map(async(project)=>{const [role,processPolicy,executionMode,agentRouting,context]=await Promise.all([
     readProjectMembershipRole(database,session.actorId,project.id),readProjectProcessPolicy(database,session.actorId,project.id),readProjectExecutionMode(database,session.actorId,project.id),readAgentRoutingPolicy(database,session.actorId,project.id),readProjectContextStatus(database,session.actorId,project.id)
-  ]);return {project,processPolicy,executionMode,context,routing:{policy:agentRouting?.policy??defaultAgentRoutingPolicy,executorCatalog},canManageRouting:role==='project_owner',canManageContext:role==='project_owner'||role==='operator'};}));
+  ]);return {project,processPolicy,executionMode,context,routing:{policy:agentRouting?.policy??defaultAgentRoutingPolicy,
+    executorCatalog:projectHermesExecutorCatalog(runtimeByProject.get(project.id))},canManageRouting:role==='project_owner',canManageContext:role==='project_owner'||role==='operator'};}));
   return <Process projects={processProjects}/>;
 }
 

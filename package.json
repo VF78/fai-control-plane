@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run",
+    "verify:mvp": "bash scripts/verify-mvp.sh",
     "db:generate": "pnpm --filter @fai-control-plane/db db:generate",
     "db:migrate": "pnpm --filter @fai-control-plane/db db:migrate",
     "mvp:bootstrap": "pnpm --filter @fai-control-plane/db db:bootstrap",

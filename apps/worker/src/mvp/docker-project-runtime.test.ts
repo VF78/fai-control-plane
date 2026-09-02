@@ -16,7 +16,7 @@ const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequ
     telegramChatId:'-1001',telegramAllowedUserIds:['101'],imageVersion:'version',secretIds:{
       'agent-delivery':'00000000-0000-4000-8100-000000000001','dashboard-username':'00000000-0000-4000-8100-000000000002',
       'dashboard-password':'00000000-0000-4000-8100-000000000003','telegram-bot':'00000000-0000-4000-8100-000000000004',
-      'inbound-actions':'00000000-0000-4000-8100-000000000005'},legacyV1:false},secrets:{
+      'inbound-actions':'00000000-0000-4000-8100-000000000005'}},secrets:{
     'agent-delivery':{id:'00000000-0000-4000-8100-000000000001',locator:'/runtime/one/secrets/agent'},
     'dashboard-username':{id:'00000000-0000-4000-8100-000000000002',locator:'/runtime/one/secrets/user'},
     'dashboard-password':{id:'00000000-0000-4000-8100-000000000003',locator:'/runtime/one/secrets/password'},

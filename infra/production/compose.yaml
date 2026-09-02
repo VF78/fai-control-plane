@@ -91,22 +91,12 @@ services:
         target: source-github-projects-token
       - source: github-webhook-secret
         target: source-github-webhook-secret
-      - source: hermes-internal-action-token
-        target: source-hermes-internal-action-token
-      - source: hermes-token
-        target: source-hermes-token
-      - source: hermes-management-username
-        target: hermes-management-username
-      - source: hermes-management-password
-        target: hermes-management-password
     networks:
       - database
       - egress
       - hermes-management
     ports:
       - "127.0.0.1:13010:3000"
-    volumes:
-      - ${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -135,20 +125,11 @@ services:
         target: source-postgres-password
       - source: github-projects-token
         target: source-github-projects-token
-      - source: telegram-bot-token
-        target: source-telegram-bot-token
-      - source: hermes-token
-        target: source-hermes-token
-      - source: hermes-management-username
-        target: hermes-management-username
-      - source: hermes-management-password
-        target: hermes-management-password
     networks:
       - database
       - egress
       - hermes-management
     volumes:
-      - ${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro
       - /var/lib/fai-project-runtimes:/var/lib/fai-project-runtimes
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -185,13 +166,3 @@ secrets:
     file: ${GITHUB_PROJECTS_TOKEN_HOST_FILE:?required}
   github-webhook-secret:
     file: ${GITHUB_WEBHOOK_SECRET_HOST_FILE:?required}
-  hermes-token:
-    file: ${HERMES_TOKEN_HOST_FILE:?required}
-  telegram-bot-token:
-    file: ${TELEGRAM_BOT_TOKEN_HOST_FILE:?required}
-  hermes-internal-action-token:
-    file: ${HERMES_INTERNAL_ACTION_TOKEN_HOST_FILE:?required}
-  hermes-management-username:
-    file: ${HERMES_DASHBOARD_USERNAME_HOST_FILE:?required}
-  hermes-management-password:
-    file: ${HERMES_DASHBOARD_PASSWORD_HOST_FILE:?required}

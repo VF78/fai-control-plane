@@ -20,14 +20,16 @@ const database = (existing: readonly Readonly<{
 
 describe('project member onboarding', () => {
   it('lists only the workspace human directory through one bounded projection', async () => {
-    const query=vi.fn(async(_sql:string,_parameters?:readonly unknown[])=>({rows:[{actorId:'actor',displayName:'Vladimir'}]}));
+    const query=vi.fn<(sql:string,parameters?:readonly unknown[])=>Promise<{rows:{actorId:string;displayName:string}[]}>>(async()=>
+      ({rows:[{actorId:'actor',displayName:'Vladimir'}]}));
     await expect(listWorkspaceHumanActors({query} as unknown as Database,'workspace')).resolves.toEqual([
       {actorId:'actor',displayName:'Vladimir'}]);
     expect(String(query.mock.calls[0]?.[0])).toContain("workspace_id=$1 and kind='human' and enabled=true");
   });
 
   it('adds one existing workspace employee to a project without copying the actor', async () => {
-    const query=vi.fn(async(_sql:string,_parameters?:readonly unknown[])=>({rowCount:1,rows:[{id:'membership'}]}));
+    const query=vi.fn<(sql:string,parameters?:readonly unknown[])=>Promise<{rowCount:number;rows:{id:string}[]}>>(async()=>
+      ({rowCount:1,rows:[{id:'membership'}]}));
     await expect(addExistingProjectMember({query} as unknown as Database,{workspaceId:'workspace',projectId:'project',
       actorId:'actor',role:'contributor'})).resolves.toBeUndefined();
     expect(String(query.mock.calls[0]?.[0])).toContain('join actors a on a.workspace_id=p.workspace_id');

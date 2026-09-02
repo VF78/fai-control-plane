@@ -24,7 +24,7 @@ describe('MVP GitHub adapter', () => {
   });
 
   it('maps provider-native Project facts into a neutral snapshot', async () => {
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({data: {user: {projectV2: {
+    const fetch = vi.fn<(input:string|URL|Request,init?:RequestInit)=>Promise<Response>>(async () => new Response(JSON.stringify({data: {user: {projectV2: {
       id: 'PVT_1', url: 'https://github.com/users/acme/projects/1', updatedAt: '2026-08-13T00:00:00Z',
       items: {nodes: [{id: 'PVTI_1', updatedAt: '2026-08-13T00:00:00Z',
         statusValue: {optionId: 'status', name: 'Ready'}, blockedValue: {optionId: 'not-blocked', name: 'No'},

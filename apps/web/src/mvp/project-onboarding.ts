@@ -73,7 +73,7 @@ export const resolveAndRegisterProject = async (database: Database, input: Reado
 type CookieClient = Readonly<{request: (path: string, init?: RequestInit) => Promise<Response>}>;
 const dashboardClient = async (runtime: NonNullable<Awaited<ReturnType<typeof readProjectHermesRuntimeBinding>>>): Promise<CookieClient> => {
   const endpoint = new URL(runtime.dashboardEndpoint); const gateway = new URL(runtime.gatewayEndpoint);
-  const expectedDashboard=runtime.legacyV1?`http://${runtime.runtimeId}-management:9119/`:`http://${runtime.runtimeId}-gateway:9119/`;
+  const expectedDashboard=`http://${runtime.runtimeId}-gateway:9119/`;
   if (endpoint.toString() !== expectedDashboard ||
     gateway.toString() !== `http://${runtime.runtimeId}-gateway:8642/v1/runs`) {
     throw new Error('agent_profile_unavailable');

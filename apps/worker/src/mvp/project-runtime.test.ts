@@ -45,7 +45,7 @@ describe('multi-project worker composition', () => {
     expect(trackerPreparationDeltaShrank(['Status'],['Status'])).toBe(false);
   });
   it('verifies only the bound Project fields with one read-only GraphQL request',async()=>{
-    const request=vi.fn(async(_input:URL|RequestInfo,init?:RequestInit)=>new Response(JSON.stringify({data:{user:{projectV2:{fields:{nodes:[
+    const request=vi.fn<(input:URL|RequestInfo,init?:RequestInit)=>Promise<Response>>(async()=>new Response(JSON.stringify({data:{user:{projectV2:{fields:{nodes:[
       {id:'status',name:'Status',options:['Backlog','Ready','In Dev','QA','Acceptance','Done'].map((name,index)=>({id:`s${index}`,name}))},
       {id:'owner',name:'Owner',options:[{id:'hermes',name:'Hermes'}]},
       {id:'blocked',name:'Blocked',options:[{id:'no',name:'No'},{id:'yes',name:'Yes'}]}],pageInfo:{hasNextPage:false}}}},
@@ -91,7 +91,7 @@ describe('multi-project worker composition', () => {
         defaultBranch: JSON.parse(value.trackerCapabilitiesArtifact).defaultBranch,
         trackerCredentialRef: {id: 'tracker', purpose: 'tracker_read', locator: '/run/tracker'},
         runtime:{workspaceId:'workspace',projectId:value.projectId,slug:value.slug,artifactVersion:'a'.repeat(64),
-          ...JSON.parse(runtimeArtifact(value.slug as 'one'|'two')),legacyV1:false,telegramChatId:value.slug==='one'?'-1001':'-1002',
+          ...JSON.parse(runtimeArtifact(value.slug as 'one'|'two')),telegramChatId:value.slug==='one'?'-1001':'-1002',
           telegramAllowedUserIds:['42'],agentCredentialRef:{id:'1',purpose:'agent_delivery',locator:'/run/agent'},
           dashboardUsernameRef:{id:'2',purpose:'hermes_dashboard_username',locator:'/run/user'},
           dashboardPasswordRef:{id:'3',purpose:'hermes_dashboard_password',locator:'/run/pass'},
@@ -126,7 +126,7 @@ describe('multi-project worker composition', () => {
   });
 
   it('restarts only the exact bound project gateway container',async()=>{
-    const runtime={workspaceId:'workspace',projectId:ids.two,slug:'two',artifactVersion:'a'.repeat(64),legacyV1:false,
+    const runtime={workspaceId:'workspace',projectId:ids.two,slug:'two',artifactVersion:'a'.repeat(64),
       runtimeId:'runtime-two',gatewayEndpoint:'http://runtime-two-gateway:8642/v1/runs',
       dashboardEndpoint:'http://runtime-two-gateway:9119/',workspacePath:'/opt/hermes/two',telegramChatId:'-1002',
       telegramAllowedUserIds:['42'],agentCredentialRef:{id:'1',purpose:'agent_delivery',locator:'/run/agent'},

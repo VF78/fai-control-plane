@@ -29,7 +29,7 @@ services:
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
     ports: ["${WEB_PORT:-3000}:3000"]
-    secrets: [postgres-password, github-login-client-secret, github-projects-token, github-webhook-secret, hermes-internal-action-token, hermes-client-action-token]
+    secrets: [postgres-password, github-login-client-secret, github-projects-token, github-webhook-secret]
     depends_on: {migrate: {condition: service_completed_successfully}}
   worker:
     build: {context: ., dockerfile: infra/compose/Dockerfile, target: runtime}
@@ -39,7 +39,7 @@ services:
       <<: *database-environment
       PORT: "3001"
     ports: ["${WORKER_PORT:-3001}:3001"]
-    secrets: [postgres-password, github-projects-token, hermes-token, telegram-bot-token]
+    secrets: [postgres-password, github-projects-token]
     depends_on: {migrate: {condition: service_completed_successfully}}
   bootstrap:
     profiles: [bootstrap]
@@ -56,7 +56,3 @@ secrets:
   github-login-client-secret: {file: "${GITHUB_LOGIN_CLIENT_SECRET_HOST_FILE:?required}"}
   github-projects-token: {file: "${GITHUB_PROJECTS_TOKEN_HOST_FILE:?required}"}
   github-webhook-secret: {file: "${GITHUB_WEBHOOK_SECRET_HOST_FILE:?required}"}
-  hermes-token: {file: "${HERMES_TOKEN_HOST_FILE:?required}"}
-  telegram-bot-token: {file: "${TELEGRAM_BOT_TOKEN_HOST_FILE:?required}"}
-  hermes-internal-action-token: {file: "${HERMES_INTERNAL_ACTION_TOKEN_HOST_FILE:?required}"}
-  hermes-client-action-token: {file: "${HERMES_CLIENT_ACTION_TOKEN_HOST_FILE:?required}"}

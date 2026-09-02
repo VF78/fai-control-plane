@@ -11,14 +11,13 @@ the exact action.
 ## Topology
 
 ```text
-app.f-ai.studio ─┐
-hermes-ascon.*  ─┴─ TCP 80/443 ─> Sprintbox 185.251.88.44
-                                      │ opaque Nginx stream passthrough
-                                      v
-                              Hetzner 46.225.163.123:80/443
-                                      ├─ app Nginx -> 127.0.0.1:13010
-                                      ├─ ASCON Hermes on Hetzner
-                                      └─ protected shared services
+app.f-ai.studio ─ TCP 80/443 ─> Sprintbox 185.251.88.44
+                                   │ opaque Nginx stream passthrough
+                                   v
+                           Hetzner 46.225.163.123:80/443
+                                   ├─ app Nginx -> 127.0.0.1:13010
+                                   ├─ project-scoped Hermes containers
+                                   └─ protected shared services
 
 iOS AmneziaWG ─ UDP/443 ─> Sprintbox nftables
                               └─> Hetzner UDP/46019 (amnezia-awg2)
@@ -29,10 +28,7 @@ f-ai.studio / www ─> Timeweb CDN ─> origin.f-ai.studio (Hetzner)
 Stable facts:
 
 - Control Plane public URL: `https://app.f-ai.studio/`.
-- ASCON Hermes remains on Hetzner. Sprintbox is inbound transport only; Hermes
-  reaches ChatGPT, GitHub and Telegram outbound from Hetzner.
-- `app.f-ai.studio` and `hermes-ascon.f-ai.studio` resolve to Sprintbox
-  `185.251.88.44`.
+- `app.f-ai.studio` resolves to Sprintbox `185.251.88.44`.
 - `f-ai.studio` and `www.f-ai.studio` remain on Timeweb CDN;
   `origin.f-ai.studio` resolves to Hetzner `46.225.163.123`.
 - The former Timeweb load balancer `137583` and IP `201.34.133.184` were
@@ -53,14 +49,11 @@ Stable facts:
 - Host-owned secrets: `/etc/fai-control-plane-mvp/secrets/`, root-only.
 - App loopback: `127.0.0.1:13010`; Nginx vhost:
   `/etc/nginx/sites-available/app.f-ai.studio.conf`.
-- Separate ASCON Hermes uses its own checkout/config/state and public hostname;
-  it is not deployed or restarted by the Control Plane release script.
 
 Protected neighbours include:
 
 - the f(AI) Studio marketing site and content platform;
 - the MSA test contour and MSA-specific Hermes/runtime;
-- ASCON Hermes except during its separately approved operation;
 - `amnezia-awg2`, its peers and host UDP/46019;
 - unrelated databases, volumes, credentials, Nginx sites and systemd services.
 
@@ -94,16 +87,14 @@ network change.
 
 ### Hermes GitHub credential boundary
 
-Reviewed non-secret Hermes environment example SHA-256:
-`e1f067f8a2f6cebe8157e72b74144db7623c79312b8e465e7d84dd6a90161e46`.
-
 Reviewed non-secret Control Plane environment example SHA-256:
-`fc86c67b71d144a11d33a500cfb939d98c4653a875e0ddc0cf156a37702b1f0a`.
+`9a8530ab0060e65e8f5ddb8195f452df8c3ce6836b2be71ade52d27bba4c6ff7`.
 
-- Mount one persistent project-scoped GitHub credential into the
-  isolated Hermes gateway. Store its canonical value at
-  `/etc/fai-hermes-ascon/secrets/github-repository-token`, root-only mode `0600`;
-  the deployment script makes the UID-10000 runtime copy without logging it.
+- The canonical GitHub credential is the root-owned mode `0600` file
+  `/etc/fai-control-plane-mvp/secrets/github-projects-token`. On explicit agent
+  installation, worker writes a project-scoped mode `0600` runtime copy under
+  `/var/lib/fai-project-runtimes/<workspace>/<project>/secrets/` without logging
+  the value.
 - The credential must let the project Hermes directly use `git` and `gh` for
   the bound repository and GitHub Project, including issue/Project mutations,
   review branches and PRs. Verify `gh project view` and repository push/admin
@@ -124,13 +115,8 @@ Reviewed non-secret Control Plane environment example SHA-256:
   one container. The authenticated dashboard is used only for internal
   file/context operations, has no host-published port, and is not a second
   management runtime.
-- Hermes deployment creates or verifies this internal bridge; Control Plane
-  preflight only verifies it and never creates infrastructure.
-- Canonical dashboard, SSH and Yandex Cloud credential files remain root-owned
-  mode `0600` under `/etc/fai-hermes-ascon/secrets`. The Hermes deploy script
-  creates bounded UID-10000 runtime copies under
-  `/var/lib/fai-hermes-ascon/runtime-secrets`, compares them byte-for-byte and
-  removes them on cleanup without logging values.
+- Control Plane preflight verifies the existing internal bridge and never
+  creates unrelated host infrastructure.
 - The project gateway image pins Yandex Cloud CLI `1.22.0` and OpenSSH. The
   gateway itself, and therefore its bounded Codex tasks, can use the configured
   project SSH identity, strict `known_hosts` and read-only Yandex CLI profile.
@@ -140,30 +126,12 @@ Reviewed non-secret Control Plane environment example SHA-256:
 ### Isolated Hermes Codex CLI credential
 
 The Hermes-derived image is built from the exact upstream digest recorded in
-`infra/hermes-project/Dockerfile` and pins `@openai/codex` `0.144.1`. The gateway
-runs as UID/GID `10000:10000`. The isolated credential lives at
-`/var/lib/fai-codex-ascon/home` and is mounted into the ASCON gateway and the
-one-shot `codex-cli` auth service. Never mount root's Codex home or another
-project's credential.
-
-After separate approval for the interactive device flow, create only the
-project-isolated Codex credential. This action builds and probes the derived
-image but does not start or restart the gateway:
-
-```bash
-cd /opt/fai-hermes-ascon
-sudo env \
-  HERMES_APPROVED_IMAGE=nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6 \
-  HERMES_APPROVED_CONFIG_SHA256=<approved-64-hex-hermes-environment> \
-  scripts/deploy-hermes-ascon.sh codex-auth
-```
-
-The approved image value is always that immutable upstream digest. The
-separately validated local derived tag is `fai-hermes-ascon:codex-0.144.1`.
-Codex device auth, version, filesystem and login-status probes run only in the
-minimal `codex-cli` Compose service. It mounts only the isolated Codex home and
-project work directory, with no gateway API/Telegram environment, bridge-token
-mounts, other Hermes data or listening ports.
+`infra/hermes-project/Dockerfile` and pins `@openai/codex` `0.144.1`. Each
+gateway runs as UID/GID `10000:10000`. Its Codex credential and persistent
+memory live only under that project's runtime root. The setup UI starts a
+one-shot project-owned device-auth container when authentication is absent;
+after successful auth worker removes it and starts the single gateway. Never
+mount root's Codex home or another project's credential.
 
 Hermes is the persistent project PM/Dev/QA/DevOps orchestrator. It reads the
 referenced issue, comments, Project fields, linked PR and repository facts
@@ -188,20 +156,10 @@ provider readback. Control Plane observes the run and authoritative GitHub
 facts, sends notifications, recovers an unavailable Hermes and submits the next
 configured stage; it never proxies a GitHub, repository, CLI or DevOps command.
 
-`stage` deletes stale readiness first, starts both the gateway and its private
-authenticated dashboard, and recreates
-`/var/lib/fai-hermes-ascon/readiness/codex-cli.json` only after the separate
-Hermes provider credential, Codex CLI credential, exact CLI version, derived
-image, gateway/dashboard health, direct DevOps offline probes and public
-capabilities all pass. Root-written readiness is mounted read-only into Control
-Plane web/worker.
-The same stage atomically installs the reviewed Hermes Nginx config, validates
-it with `nginx -t`, reloads Nginx and probes the authenticated bounded run-status
-route. Any later stage failure restores and reloads the previous config before
-the isolated Hermes services are cleaned up.
-Failed staging and `rollback` remove it, so missing or drifted evidence keeps
-Codex execution unavailable. Staging or rollback remains a separate exact
-production authorization.
+Control Plane derives executor availability only from the ready runtime artifact
+of the selected project. Web and worker do not mount a global ASCON readiness
+file or global Hermes credentials. A project becomes ready only after the pinned
+image, device credential and gateway/dashboard health pass for that runtime.
 
 ## Supported release
 
@@ -221,7 +179,7 @@ Runtime images, containers and volumes are not pruned. Each configured project
 has one long-lived gateway container labeled with its exact workspace, project,
 runtime and component ownership. Worker recovery inspects and restarts only
 that deterministic container; it never lists, restarts or prunes unrelated
-host containers, including ASCON and MSA.
+host containers, including MSA.
 
 After local acceptance, merge approval and a separate production approval:
 
@@ -266,7 +224,6 @@ protected-neighbour checks. Record only the compact result, then verify:
 curl -fsS --max-time 15 https://app.f-ai.studio/api/health
 curl -fsS --max-time 15 https://app.f-ai.studio/api/ready
 curl -fsS --max-time 15 https://app.f-ai.studio/ >/dev/null
-curl -fsS --max-time 15 https://hermes-ascon.f-ai.studio/health
 curl -fsS --max-time 15 https://f-ai.studio/ >/dev/null
 ```
 
