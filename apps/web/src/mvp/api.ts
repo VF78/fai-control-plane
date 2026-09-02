@@ -25,6 +25,7 @@ import {
   readProjectAgentProfile,
   readProjectHermesRuntimeBinding,
   readProjectHermesRuntimeSetup,
+  projectHermesExecutorCatalog,
   readProjectExecutionMode,
   readProjectTrackerCapabilities,
   readProjectDocumentPayload,
@@ -45,7 +46,6 @@ import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeM
   type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
-import {hermesExecutorCatalog} from './hermes-executor-readiness.ts';
 import {ensureProjectAgentProfile, prepareProjectTracker, resolveAndRegisterProject} from './project-onboarding.ts';
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
@@ -106,6 +106,7 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
     repositoryId: context.repositoryId, credentialRef: context.trackerCredentialRef, secrets: secretResolver});
   const stores = createStores(database, context.workspaceId);
   const routing = effectiveAgentRouting(await readAgentRoutingPolicy(database, actorId, projectId));
+  const runtime = await readProjectHermesRuntimeBinding(database, actorId, projectId);
   const processPolicy = await readProjectProcessPolicy(database, actorId, projectId);
   const trackerCapabilities = await readProjectTrackerCapabilities(database, actorId, projectId);
   if (processPolicy === null || trackerCapabilities === null) {
@@ -117,7 +118,7 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
       doneStatusOptionId: trackerCapabilities.doneStatusOptionId,
       routingPolicyVersion: routing.version, routingPolicy: routing.policy,
       processPolicyVersion: processPolicy.version, processPolicy: processPolicy.policy,
-      executorCatalog: hermesExecutorCatalog()}),
+      executorCatalog: projectHermesExecutorCatalog(runtime)}),
     readFreshSnapshot: () => read.readSnapshot(context.bindingId, context.cursor), persistSnapshot: stores.snapshots.replace,
     resolveActiveContext: ({actorId, projectId}: Readonly<{actorId: string; projectId: string}>) =>
       readActiveProjectContext(database, actorId, projectId),
@@ -370,7 +371,8 @@ export const agentRouting = async (request: Request, projectId: string): Promise
     if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'GET, POST'}});
     requireCsrf(request); const body = await json(request); const policy = parseAgentRoutingPolicy(body.policy);
     if (policy === null) throw new Error('body_invalid');
-    assertAgentRoutingPolicyAvailable(policy, hermesExecutorCatalog());
+    const runtime=await readProjectHermesRuntimeBinding(database,session.actorId,projectId);
+    assertAgentRoutingPolicyAvailable(policy,projectHermesExecutorCatalog(runtime));
     const result = await saveAgentRoutingPolicy(database, {workspaceId: session.workspaceId, projectId,
       actorId: session.actorId, policy, idempotencyKey: string(body.idempotencyKey),
       occurredAt: new Date().toISOString()});

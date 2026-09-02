@@ -53,7 +53,7 @@ export const prepareProjectHermesAssets=async(request:ProjectRuntimeProvisioning
   const generated=`${root}/generated`;const profile=`${generated}/profile`;
   const expectedWorkspace=`/opt/data/work/${request.artifact.runtimeId}`;
   if(request.artifact.workspacePath!==expectedWorkspace)throw new Error('project_runtime_workspace_invalid');
-  const hostWorkspace=await ensureProjectWorkspace(root,request.artifact.runtimeId);
+  await ensureProjectWorkspace(root,request.artifact.runtimeId);
   await mkdir(profile,{recursive:true,mode:0o755});
   await writeFile(`${generated}/config.yaml`,renderProjectHermesConfig(request),{mode:0o644});
   const sharedRoot=`${process.cwd()}/infra/hermes-project`;

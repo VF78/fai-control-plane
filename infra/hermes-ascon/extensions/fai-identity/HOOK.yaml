@@ -1,4 +1,0 @@
-name: fai-identity
-description: Promote staged Telegram identity only after Hermes authorization
-events:
-  - agent:start

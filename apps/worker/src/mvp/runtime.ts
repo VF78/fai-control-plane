@@ -4,7 +4,7 @@ import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, c
   completeProjectContextBootstrap, failProjectContextBootstrap, listProjectContextBootstrapAttempts,
   listApprovedProjectTrackerPreparations,listProjectHermesRuntimeBindings,listProjectTrackerPreparationAttempts,
   listRejectedProjectTrackerPreparations,
-  listProjectRuntimeProvisioningRequests,recordProjectRuntimeProvisioningState,
+  listProjectRuntimeProvisioningRequests,projectHermesExecutorCatalog,recordProjectRuntimeProvisioningState,
   projectTrackerPreparationAssignment,recordProjectTrackerPreparationBlocker,recordProjectTrackerPreparationResult,
   recordProjectTrackerPreparationStart,recordVerifiedProjectTrackerCapabilities,
   promoteApprovedProjectArchitectures,
@@ -25,7 +25,6 @@ import {
   createTelegramDeliveryAdapter
 } from '@fai-control-plane/integrations';
 import type {
-  AgentExecutorCatalog,
   AgentDeliveryPort,
   AutonomousPmDeliveryPort,
   MessengerDeliveryPort,
@@ -128,13 +127,12 @@ export const createWorker = (database: Database = createDatabase()) => {
     return createTelegramDeliveryAdapter({config: {projectId: project.projectId,
       chatId: project.runtime.telegramChatId, tokenRef: project.runtime.telegramCredentialRef}, secrets}).send(message);
   }};
-  const executorCatalog: AgentExecutorCatalog = {'codex-cli': {available: true,
-    models: ['gpt-5.6-terra','gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}};
   const agentDeliveries = new Map<string, Readonly<{signature: string;
     delivery: AgentDeliveryPort&AutonomousPmDeliveryPort}>>();
   const recoveryGate = createEndpointRecoveryGate();
 
   const projectRuntime = (project: WorkerProjectBinding) => {
+    const executorCatalog=projectHermesExecutorCatalog(project.runtime);
     const coordinates = githubBindingCoordinates(project);
     if (coordinates === null) throw new Error('tracker_provider_unsupported');
     const trackerBinding = {id: project.bindingId, ...coordinates, projectId: project.projectId,

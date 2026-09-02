@@ -9,31 +9,37 @@ ROOT = pathlib.Path(__file__).parents[3]
 
 
 class DeploymentContractTest(unittest.TestCase):
+    def test_retired_global_hermes_contour_cannot_return(self):
+        root_compose = (ROOT / "compose.yaml").read_text()
+        local_environment = (ROOT / ".env.example").read_text()
+        self.assertFalse((ROOT / "infra/hermes-ascon").exists())
+        self.assertFalse((ROOT / "scripts/deploy-hermes-ascon.sh").exists())
+        self.assertFalse((ROOT / ".github/workflows/ci.yml").exists())
+        for value in (
+            "hermes-token", "telegram-bot-token", "hermes-internal-action-token",
+            "hermes-client-action-token", "HERMES_ROLE_REQUEST_URL",
+        ):
+            self.assertNotIn(value, root_compose)
+            self.assertNotIn(value, local_environment)
+
     def test_document_upload_route_has_an_explicit_bounded_body_contract(self):
         nginx = (ROOT / "infra/production/nginx/app.f-ai.studio.conf").read_text()
         route = nginx.split("location ~ ^/api/projects/[^/]+/documents$", 1)[1].split("\n    }", 1)[0]
         self.assertIn("client_max_body_size 101m;", route)
         self.assertNotIn("client_body_timeout", route)
 
-    def test_web_and_worker_mount_only_root_produced_hermes_readiness_read_only(self):
+    def test_web_and_worker_have_no_global_ascon_runtime_or_readiness_dependency(self):
         compose = (ROOT / "infra/production/compose.yaml").read_text()
         environment_file = ROOT / "infra/production/production.env.example"
         environment = environment_file.read_text()
         web = compose.split("  web:\n", 1)[1].split("  worker:\n", 1)[0]
         worker = compose.split("  worker:\n", 1)[1].split("\nnetworks:", 1)[0]
 
-        self.assertIn(
-            "${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro",
-            web,
-        )
-        self.assertIn(
-            "${FCP_HERMES_READINESS_HOST_DIR:?required}:/run/fai-readiness:ro",
-            worker,
-        )
-        self.assertIn(
-            "FCP_HERMES_READINESS_HOST_DIR=/var/lib/fai-hermes-ascon/readiness\n",
-            environment,
-        )
+        self.assertNotIn("/run/fai-readiness", web)
+        self.assertNotIn("/run/fai-readiness", worker)
+        self.assertNotIn("fai-hermes-ascon", compose)
+        self.assertNotIn("HERMES_MANAGEMENT_", environment)
+        self.assertNotIn("HERMES_TOKEN_", environment)
         self.assertNotIn("BOOTSTRAP_HERMES_PROFILE", environment)
         digest = hashlib.sha256(environment_file.read_bytes()).hexdigest()
         runbook = (ROOT / "docs/ops/PRODUCTION_RUNBOOK.md").read_text()

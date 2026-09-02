@@ -57,7 +57,7 @@ describe('operator UI foundation', () => {
   });
 
   it('migrates the remaining portfolio-wide pages to canonical rows and shell recovery', async () => {
-    const [phaseA,phaseB,shell,foundation,css] = await Promise.all([read('phase-a-ui.tsx'),read('phase-b-ui.tsx'),read('workspace-shell.tsx'),read('../ui/foundation.tsx'),read('../../app/styles/controls.css')]);
+    const [phaseB,shell,foundation,css] = await Promise.all([read('phase-b-ui.tsx'),read('workspace-shell.tsx'),read('../ui/foundation.tsx'),read('../../app/styles/controls.css')]);
     expect(phaseB).toContain('<ProjectSection');
     expect(phaseB).toContain('<DividerList');
     expect(phaseB).toContain('<ReadOnlyNotice/>');

@@ -28,8 +28,8 @@ describe('project process policy', () => {
     ]})).toBeNull();
   });
 
-  it('keeps the deployed ASCON policy in canonical bootstrap form', async () => {
-    const content = (await readFile(new URL('../../../../infra/hermes-ascon/project-process-policy.json',
+  it('keeps the project runtime policy in canonical bootstrap form', async () => {
+    const content = (await readFile(new URL('../../../../infra/hermes-project/project-process-policy.json',
       import.meta.url), 'utf8')).trim();
     const policy = parseProjectProcessPolicy(JSON.parse(content));
     expect(policy).not.toBeNull();

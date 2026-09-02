@@ -1,10 +1,9 @@
-import type {OpaqueSecretRef} from '@fai-control-plane/domain';
+import type {AgentExecutorCatalog,OpaqueSecretRef} from '@fai-control-plane/domain';
 import type {Database} from './runtime.ts';
 
-export const projectHermesRuntimeArtifactKind = 'project_hermes_runtime_v1';
+export const projectHermesRuntimeArtifactKind = 'project_hermes_runtime_v2';
 export const projectHermesRuntimeContract = 'fai.project-hermes-runtime.v2';
 export const projectHermesRuntimeImageVersion = 'v2026.9.2-codex-0.144.1';
-const legacyV1ImageVersions = new Set(['v2026.8.29-codex-0.144.1']);
 
 export type ProjectHermesRuntimeStatus =
   | 'not_configured'
@@ -29,7 +28,6 @@ export type ProjectHermesRuntimeBinding = Readonly<{
   projectId: string;
   slug: string;
   artifactVersion: string;
-  legacyV1: boolean;
   runtimeId: string;
   gatewayEndpoint: string;
   dashboardEndpoint: string;
@@ -62,8 +60,7 @@ export type ParsedProjectHermesRuntimeArtifact = Readonly<{
   secretIds: Readonly<Record<ProjectHermesSecretKind, string>>;
   imageVersion: string;
   auth?: Readonly<{verificationUrl: string; userCode: string}>;
-  failure?: 'runtime_unavailable' | 'authentication_expired' | 'readiness_failed';
-  legacyV1: boolean;
+  failure?: 'host_layout_failed' | 'image_unavailable' | 'authentication_expired' | 'gateway_failed' | 'readiness_failed';
 }>;
 
 const object = (value: unknown): Record<string, unknown> | null =>
@@ -88,21 +85,17 @@ export const parseProjectHermesRuntimeArtifact = (content: string): ParsedProjec
       /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(value.runtimeId) ? value.runtimeId : null;
     const gatewayEndpoint = runtimeId === null ? null : exactEndpoint(value?.gatewayEndpoint,
       `http://${runtimeId}-gateway:8642/v1/runs`);
-    // Read-only compatibility for already persisted split-dashboard v1 artifacts;
-    // every writer below emits the dashboard-native v2 contract.
-    const legacyV1=value?.contract==='fai.project-hermes-runtime.v1';
-    const dashboardEndpoint = runtimeId === null ? null : exactEndpoint(legacyV1?value?.managementEndpoint:value?.dashboardEndpoint,
-      legacyV1?`http://${runtimeId}-management:9119/`:`http://${runtimeId}-gateway:9119/`);
+    const dashboardEndpoint = runtimeId === null ? null : exactEndpoint(value?.dashboardEndpoint,
+      `http://${runtimeId}-gateway:9119/`);
     const allowed = telegram?.allowedUserIds;
     const secretIds = {
       'agent-delivery': refs?.agentDelivery,
-      'dashboard-username': legacyV1?refs?.managementUsername:refs?.dashboardUsername,
-      'dashboard-password': legacyV1?refs?.managementPassword:refs?.dashboardPassword,
+      'dashboard-username': refs?.dashboardUsername,
+      'dashboard-password': refs?.dashboardPassword,
       'telegram-bot': refs?.telegramBot,
       'inbound-actions': refs?.inboundActions
     };
-    const legacyReady=legacyV1&&(value?.status===undefined||value?.status==='ready')&&value?.imageVersion===undefined;
-    const status = value?.status===undefined&&legacyReady?'ready':typeof value?.status === 'string' &&
+    const status = typeof value?.status === 'string' &&
       ['messenger_ready','installing','auth_required','ready','error'].includes(value.status)
       ? value.status as ParsedProjectHermesRuntimeArtifact['status'] : null;
     const auth = object(value?.auth);
@@ -111,21 +104,20 @@ export const parseProjectHermesRuntimeArtifact = (content: string): ParsedProjec
       typeof auth.userCode === 'string' && /^[A-Z0-9-]{4,32}$/.test(auth.userCode)
       ? {verificationUrl: auth.verificationUrl, userCode: auth.userCode} : undefined;
     const failure = status === 'error' &&
-      ['runtime_unavailable','authentication_expired','readiness_failed'].includes(String(value?.failure))
+      ['host_layout_failed','image_unavailable','authentication_expired','gateway_failed','readiness_failed'].includes(String(value?.failure))
       ? value?.failure as ParsedProjectHermesRuntimeArtifact['failure'] : undefined;
-    if ((!legacyV1&&value?.contract!==projectHermesRuntimeContract) || status === null ||
+    if (value?.contract!==projectHermesRuntimeContract || status === null ||
       runtimeId === null || gatewayEndpoint === null || dashboardEndpoint === null || !workspacePath(value.workspacePath) ||
       (telegram !== null && (typeof telegram?.chatId !== 'string' || !/^-?[1-9][0-9]{0,19}$/.test(telegram.chatId))) ||
       (telegram !== null && (!Array.isArray(allowed) || allowed.length === 0 || allowed.length > 100 ||
       allowed.some((id) => typeof id !== 'string' || !/^[1-9][0-9]{0,19}$/.test(id)) ||
       new Set(allowed).size !== allowed.length)) || Object.values(secretIds).some((id) => !uuid(id)) ||
-      (legacyV1?!legacyReady&&!legacyV1ImageVersions.has(String(value.imageVersion)):
-        value.imageVersion!==projectHermesRuntimeImageVersion) ||
+      value.imageVersion!==projectHermesRuntimeImageVersion ||
       (status === 'auth_required' && parsedAuth === undefined) || (status === 'error' && failure === undefined)) return null;
     return {status,runtimeId, gatewayEndpoint, dashboardEndpoint,
       workspacePath: value.workspacePath, telegramChatId: typeof telegram?.chatId === 'string' ? telegram.chatId : null,
       telegramAllowedUserIds: telegram?.allowedUserIds as string[] ?? [], secretIds: secretIds as Record<ProjectHermesSecretKind, string>,
-      imageVersion:legacyReady?'legacy':value.imageVersion as string,legacyV1,...(parsedAuth===undefined?{}:{auth:parsedAuth}),
+      imageVersion:value.imageVersion as string,...(parsedAuth===undefined?{}:{auth:parsedAuth}),
       ...(failure===undefined?{}:{failure})};
   } catch { return null; }
 };
@@ -173,9 +165,7 @@ export const listProjectHermesRuntimeBindings = async (
   const bindings = parsed.flatMap(({row, artifact}) => {
     const reference = (kind: ProjectHermesSecretKind): OpaqueSecretRef | null => {
       const secret = byId.get(artifact.secretIds[kind]);
-      const storedKind=artifact.legacyV1&&kind==='dashboard-username'?'management-username':
-        artifact.legacyV1&&kind==='dashboard-password'?'management-password':kind;
-      return secret !== undefined && secret.purpose === `project-hermes:${row.projectId}:${storedKind}` &&
+      return secret !== undefined && secret.purpose === `project-hermes:${row.projectId}:${kind}` &&
         secret.locator.startsWith('/')
         ? {id: secret.id, purpose: logicalPurpose[kind], locator: secret.locator} : null;
     };
@@ -193,6 +183,13 @@ export const listProjectHermesRuntimeBindings = async (
   if (duplicateCoordinates(bindings)) throw new Error('project_hermes_runtime_conflict');
   return bindings;
 };
+
+const unavailableExecutorCatalog:AgentExecutorCatalog={
+  'codex-cli':{available:false,models:[]},'claude-code-cli':{available:false,models:[]}
+};
+export const projectHermesExecutorCatalog=(runtime:ProjectHermesRuntimeBinding|null|undefined):AgentExecutorCatalog=>runtime===null||runtime===undefined
+  ?unavailableExecutorCatalog:{'codex-cli':{available:true,models:['gpt-5.6-terra','gpt-5.6-sol']},
+    'claude-code-cli':{available:false,models:[]}};
 
 export type ProjectHermesRuntimeSetupView = Readonly<{
   status: ProjectHermesRuntimeStatus;

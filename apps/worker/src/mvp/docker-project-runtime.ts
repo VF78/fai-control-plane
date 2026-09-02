@@ -139,8 +139,16 @@ export const projectGatewayContainerSpec=(request:ProjectRuntimeProvisioningRequ
     NetworkingConfig:endpoints(projectNetwork,managementNetwork,[`${request.artifact.runtimeId}-gateway`])};
 };
 
+export type ProjectRuntimeProvisioningFailure='host_layout_failed'|'image_unavailable'|'authentication_expired'|'gateway_failed'|'readiness_failed';
 export type ProjectRuntimeProvisioningOutcome=Readonly<{status:'installing'}|{status:'auth_required';auth:Readonly<{
-  verificationUrl:string;userCode:string}>}|{status:'ready'}|{status:'error';failure:'runtime_unavailable'|'authentication_expired'|'readiness_failed'}>;
+  verificationUrl:string;userCode:string}>}|{status:'ready'}|{status:'error';failure:ProjectRuntimeProvisioningFailure}>;
+
+const provisioningFailure=(error:unknown):ProjectRuntimeProvisioningFailure=>{
+  const code=error instanceof Error?error.message:'';
+  if(code==='project_runtime_image_invalid')return 'image_unavailable';
+  if(code==='project_runtime_host_layout_failed'||code==='project_runtime_secret_conflict')return 'host_layout_failed';
+  return 'gateway_failed';
+};
 
 export const provisionProjectHermesRuntime=async(request:ProjectRuntimeProvisioningRequest,
   docker:DockerRequest=dockerSocketRequest()):Promise<ProjectRuntimeProvisioningOutcome>=>{
@@ -172,5 +180,5 @@ export const provisionProjectHermesRuntime=async(request:ProjectRuntimeProvision
       projectGatewayContainerSpec(request,image,root,assets,projectNetwork,managementNetwork));
     if(gateway.State?.Health?.Status==='unhealthy')return {status:'error',failure:'readiness_failed'};
     return gateway.State?.Health?.Status==='healthy'?{status:'ready'}:{status:'installing'};
-  }catch{return {status:'error',failure:'runtime_unavailable'};}
+  }catch(error){return {status:'error',failure:provisioningFailure(error)};}
 };

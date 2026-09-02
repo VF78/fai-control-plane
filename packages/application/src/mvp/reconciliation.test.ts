@@ -26,7 +26,7 @@ describe('MVP tracker reconciliation', () => {
   it('stores tracker facts without turning backlog or development state into execution', async () => {
     const replace = vi.fn(async () => undefined);
     const recordFailure = vi.fn(async () => undefined);
-    const enqueue = vi.fn(async (_record: unknown) => 'enqueued' as const);
+    const enqueue = vi.fn(async () => 'enqueued' as const);
     const append = vi.fn(async () => undefined);
     await expect(reconcileTracker({
       bindingId: 'binding', workspaceId: 'workspace', projectId: 'project', cursor: null,

@@ -4,7 +4,7 @@ import {createHermesConversationActionHandler, resolveInboundHermesRuntime,
 
 const internalToken = 'i'.repeat(48);
 const runtime = {workspaceId:'workspace',projectId:'fd22736d-1879-47fe-9b8a-c51653a4b635',slug:'control',
-  artifactVersion:'a'.repeat(64),legacyV1:false,runtimeId:'runtime-control',gatewayEndpoint:'http://runtime-control-gateway:8642/v1/runs',
+  artifactVersion:'a'.repeat(64),runtimeId:'runtime-control',gatewayEndpoint:'http://runtime-control-gateway:8642/v1/runs',
   dashboardEndpoint:'http://runtime-control-gateway:9119/',workspacePath:'/opt/hermes/control',telegramChatId:'-5540760630',
   telegramAllowedUserIds:['96211907','355724486'],agentCredentialRef:{id:'1',purpose:'agent_delivery',locator:'/run/agent'},
   dashboardUsernameRef:{id:'2',purpose:'hermes_dashboard_username',locator:'/run/user'},

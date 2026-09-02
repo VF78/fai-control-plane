@@ -22,7 +22,7 @@ outcome: 'success' as const, transition: {itemId: 'item', fromVersion: 'v1', tar
 
 describe('MVP Hermes adapter', () => {
   it('submits one compact autonomous PM reconciliation to the same bound Hermes',async()=>{
-    const fetch=vi.fn(async(_input:string|URL|Request,_init?:RequestInit)=>
+    const fetch=vi.fn<(input:string|URL|Request,init?:RequestInit)=>Promise<Response>>(async()=>
       new Response(JSON.stringify({run_id:'run_pm',status:'started'}),{status:202}));
     const adapter=createHermesDeliveryAdapter({endpoint:'https://hermes.example/v1/runs',
       credentialRef:{id:'secret',purpose:'agent_delivery',locator:'/run/agent'},
@@ -49,7 +49,7 @@ describe('MVP Hermes adapter', () => {
   });
 
   it('delivers the neutral role contract and returns opaque evidence', async () => {
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({run_id: 'run_ref', status: 'started'}), {status: 202}));
+    const fetch = vi.fn<(input:string|URL|Request,init?:RequestInit)=>Promise<Response>>(async () => new Response(JSON.stringify({run_id: 'run_ref', status: 'started'}), {status: 202}));
     const adapter = createHermesDeliveryAdapter({endpoint: 'https://agent.example.test/v1/runs',
       credentialRef: {id: 'secret', purpose: 'agent', locator: '/run/secrets/agent'},
       secrets: {resolve: async () => ({value: 'bearer'})}, fetch});
@@ -76,7 +76,7 @@ describe('MVP Hermes adapter', () => {
   });
 
   it('maps retained Hermes terminal status without exposing provider output', async () => {
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+    const fetch = vi.fn<(input:string|URL|Request,init?:RequestInit)=>Promise<Response>>(async () =>
       new Response(JSON.stringify({run_id: 'run_ref', status: 'failed', error: 'secret detail'})));
     const adapter = createHermesDeliveryAdapter({endpoint: 'https://hermes.example/v1/runs',
       credentialRef: {id: 'secret', purpose: 'agent_delivery', locator: '/run/secrets/agent'},

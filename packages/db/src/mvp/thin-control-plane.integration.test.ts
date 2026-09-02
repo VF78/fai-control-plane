@@ -39,13 +39,13 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
     await expect(appendIncomingEvent(database!, incoming)).resolves.toBe('recorded');
     await expect(appendIncomingEvent(database!, incoming)).resolves.toBe('duplicate');
 
-    const item: TrackerItemFact = {itemId, projectId, issueId: '901', title: 'E2E task',
+    const initialItem: TrackerItemFact = {itemId, projectId, issueId: '901', title: 'E2E task',
       url: 'https://github.com/VF78/ascon/issues/901', version: `github:updated-at:${observedAt}`,
-      statusOptionId: 'acceptance-option', statusOptionName: 'Acceptance', ownerOptionId: null,
+      statusOptionId: 'ready-option', statusOptionName: 'Ready', ownerOptionId: null,
       blocked: false, targetDate: '2026-08-31',
       parentIssueId: null, subIssueIds: [], dependencyIssueIds: ['900'], assigneeIds: [], assignees: [], observedAt};
     let snapshot = {bindingId, externalVersion: `github:updated-at:${observedAt}`, cursor: null,
-      observedAt, sourceUrl: 'https://github.com/users/VF78/projects/1', items: [item]} as const;
+      observedAt, sourceUrl: 'https://github.com/users/VF78/projects/1', items: [initialItem]} as const;
     const stores = createStores(database!, workspaceId);
     const statusChanged = async (
       prior: TrackerItemFact, fact: TrackerItemFact, idempotencyKey: string
@@ -56,10 +56,15 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
     const input = {bindingId, workspaceId, projectId, cursor: null,
       ports: {tracker: {readSnapshot: async () => snapshot}, snapshots: stores.snapshots,
         outbox: stores.outbox, audit: stores.audit, compose: {statusChanged}}};
+    await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 0});
+    const changedAt=new Date(Date.parse(observedAt)+1_000).toISOString();
+    const item:TrackerItemFact={...initialItem,version:`github:updated-at:${changedAt}`,
+      statusOptionId:'acceptance-option',statusOptionName:'Acceptance',observedAt:changedAt};
+    snapshot={...snapshot,externalVersion:`github:updated-at:${changedAt}`,observedAt:changedAt,items:[item]} as const;
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 1});
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 0});
 
-    const refreshedAt = new Date(Date.parse(observedAt) + 5 * 60_000).toISOString();
+    const refreshedAt = new Date(Date.parse(changedAt) + 5 * 60_000).toISOString();
     snapshot = {...snapshot, observedAt: refreshedAt,
       items: [{...item, observedAt: refreshedAt}]} as const;
     await expect(reconcileTracker(input)).resolves.toMatchObject({queuedActions: 0});
@@ -78,7 +83,7 @@ describe.skipIf(!enabled)('thin Control Plane fresh-DB E2E', () => {
     await expect(deliverPending({limit: 20, ports: {outbox: stores.outbox,
       internalMessenger: {send: async () => { throw new Error('fake_messenger_unavailable'); }},
       clientMessenger: {send: async () => ({deliveryReference: 'unused'})},
-      now: () => new Date(observedAt)}})).resolves.toEqual({
+      now: () => new Date(changedAt)}})).resolves.toEqual({
         delivered: 0, retried: 1
       });
     const outbox = await database!.query<{count: string; attempts: number; errorCode: string}>(
