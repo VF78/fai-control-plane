@@ -44,7 +44,11 @@ const ensureOwnedDirectory=async(path:string,owner:Readonly<{uid:number;gid:numb
   try{await mkdir(path,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
   const value=await lstat(path);
   if(!value.isDirectory()||value.isSymbolicLink())throw new Error('project_runtime_host_layout_failed');
-  await chmod(path,0o700);await chown(path,owner.uid,owner.gid);
+  if(value.uid!==owner.uid||value.gid!==owner.gid)await chown(path,owner.uid,owner.gid);
+  if((value.mode&0o777)!==0o700)await chmod(path,0o700);
+  const verified=await lstat(path);
+  if(!verified.isDirectory()||verified.isSymbolicLink()||verified.uid!==owner.uid||verified.gid!==owner.gid||
+    (verified.mode&0o777)!==0o700)throw new Error('project_runtime_host_layout_failed');
 };
 export const ensureProjectRuntimeDirectory=async(workspaceId:string,projectId:string,
   owner:Readonly<{uid:number;gid:number}>={uid:10000,gid:10000})=>{
@@ -54,7 +58,9 @@ export const ensureProjectRuntimeDirectory=async(workspaceId:string,projectId:st
     await ensureOwnedDirectory(workspace,owner);await ensureOwnedDirectory(directory,owner);
     for(const name of ['secrets','data','codex-home'])await ensureOwnedDirectory(`${directory}/${name}`,owner);
     return directory;
-  }catch(error){if(error instanceof Error&&error.message==='project_runtime_host_layout_failed')throw error;
+  }catch(error){const cause=error as NodeJS.ErrnoException;process.stderr.write(`${JSON.stringify({
+    event:'project_runtime_host_layout_failed',workspaceId,projectId,code:cause.code??'invalid_layout'})}\n`);
+    if(error instanceof Error&&error.message==='project_runtime_host_layout_failed')throw error;
     throw new Error('project_runtime_host_layout_failed',{cause:error});}
 };
 const project=async(database:Database,actorId:string,projectId:string)=>{
