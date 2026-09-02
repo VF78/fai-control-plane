@@ -36,8 +36,10 @@ describe('project runtime host layout',()=>{
     try{
       const directory=await ensureProjectRuntimeDirectory(workspaceId,projectId,owner);
       const stats=await Promise.all(['','secrets','data','codex-home'].map((name)=>stat(join(directory,name))));
-      expect(stats.every((value)=>value.isDirectory()&&(value.mode&0o777)===0o700)).toBe(true);
-      expect((await stat(workspace)).mode&0o777).toBe(0o700);
+      expect(stats.every((value)=>value.isDirectory()&&(value.mode&0o777)===0o700&&
+        value.uid===owner.uid&&value.gid===owner.gid)).toBe(true);
+      const workspaceStat=await stat(workspace);expect(workspaceStat.mode&0o777).toBe(0o700);
+      expect({uid:workspaceStat.uid,gid:workspaceStat.gid}).toEqual(owner);
     }finally{await chmod(workspace,0o700);await rm(root,{recursive:true});}
   });
 
