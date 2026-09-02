@@ -63,17 +63,22 @@ class DeploymentContractTest(unittest.TestCase):
         self.assertIn("      - postgres-password", postgres)
         self.assertNotIn("source-postgres-password", postgres)
 
-        service_boundaries = {
+        unprivileged_service_boundaries = {
             "migrate": "  bootstrap:",
             "bootstrap": "  web:",
             "web": "  worker:",
-            "worker": "networks:",
         }
-        for service, next_section in service_boundaries.items():
+        for service, next_section in unprivileged_service_boundaries.items():
             section = compose.split(f"  {service}:\n", 1)[1].split(
                 f"\n{next_section}", 1
             )[0]
             self.assertIn("target: source-postgres-password", section)
+        worker = compose.split("  worker:\n", 1)[1].split("\nnetworks:", 1)[0]
+        self.assertIn("    entrypoint: []", worker)
+        self.assertIn("target: postgres-password", worker)
+        self.assertIn("target: github-projects-token", worker)
+        self.assertNotIn("target: source-postgres-password", worker)
+        self.assertNotIn("target: source-github-projects-token", worker)
         self.assertIn('install -o node -g node -m 0400', entrypoint)
         self.assertIn("--reuid=node --regid=node --init-groups", entrypoint)
         self.assertIn("--no-new-privs --bounding-set=-all", entrypoint)
