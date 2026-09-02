@@ -111,6 +111,7 @@ services:
 
   worker:
     <<: *app
+    entrypoint: []
     command: ["sh", "infra/compose/run-with-postgres-secret.sh", "node", "apps/worker/dist/index.js"]
     environment:
       <<: *database-environment
@@ -122,9 +123,9 @@ services:
       FCP_HERMES_MANAGEMENT_NETWORK: fai-hermes-management
     secrets:
       - source: postgres-password
-        target: source-postgres-password
+        target: postgres-password
       - source: github-projects-token
-        target: source-github-projects-token
+        target: github-projects-token
     networks:
       - database
       - egress

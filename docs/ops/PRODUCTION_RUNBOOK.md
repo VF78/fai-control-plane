@@ -115,6 +115,11 @@ Reviewed non-secret Control Plane environment example SHA-256:
   one container. The authenticated dashboard is used only for internal
   file/context operations, has no host-published port, and is not a second
   management runtime.
+- Web, migrations and bootstrap drop to the image `node` user. Only worker keeps
+  its explicit Compose `0:0` identity because it owns the bounded host runtime
+  tree, changes project files to Hermes UID/GID `10000:10000` and controls the
+  Docker socket. Its resource operations remain limited by exact project labels
+  and deterministic names; it is not a general host-management process.
 - Control Plane preflight verifies the existing internal bridge and never
   creates unrelated host infrastructure.
 - The project gateway image pins Yandex Cloud CLI `1.22.0` and OpenSSH. The
