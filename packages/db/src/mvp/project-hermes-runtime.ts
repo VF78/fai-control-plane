@@ -2,8 +2,9 @@ import type {OpaqueSecretRef} from '@fai-control-plane/domain';
 import type {Database} from './runtime.ts';
 
 export const projectHermesRuntimeArtifactKind = 'project_hermes_runtime_v1';
-export const projectHermesRuntimeContract = 'fai.project-hermes-runtime.v1';
-export const projectHermesRuntimeImageVersion = 'v2026.8.29-codex-0.144.1';
+export const projectHermesRuntimeContract = 'fai.project-hermes-runtime.v2';
+export const projectHermesRuntimeImageVersion = 'v2026.9.2-codex-0.144.1';
+const legacyV1ImageVersions = new Set(['v2026.8.29-codex-0.144.1']);
 
 export type ProjectHermesRuntimeStatus =
   | 'not_configured'
@@ -15,8 +16,8 @@ export type ProjectHermesRuntimeStatus =
 
 export type ProjectHermesSecretKind =
   | 'agent-delivery'
-  | 'management-username'
-  | 'management-password'
+  | 'dashboard-username'
+  | 'dashboard-password'
   | 'telegram-bot'
   | 'inbound-actions';
 
@@ -28,15 +29,16 @@ export type ProjectHermesRuntimeBinding = Readonly<{
   projectId: string;
   slug: string;
   artifactVersion: string;
+  legacyV1: boolean;
   runtimeId: string;
   gatewayEndpoint: string;
-  managementEndpoint: string;
+  dashboardEndpoint: string;
   workspacePath: string;
   telegramChatId: string | null;
   telegramAllowedUserIds: readonly string[];
   agentCredentialRef: OpaqueSecretRef;
-  managementUsernameRef: OpaqueSecretRef;
-  managementPasswordRef: OpaqueSecretRef;
+  dashboardUsernameRef: OpaqueSecretRef;
+  dashboardPasswordRef: OpaqueSecretRef;
   telegramCredentialRef: OpaqueSecretRef;
   inboundActionCredentialRef: OpaqueSecretRef;
 }>;
@@ -53,7 +55,7 @@ export type ParsedProjectHermesRuntimeArtifact = Readonly<{
   status: Exclude<ProjectHermesRuntimeStatus, 'not_configured'>;
   runtimeId: string;
   gatewayEndpoint: string;
-  managementEndpoint: string;
+  dashboardEndpoint: string;
   workspacePath: string;
   telegramChatId: string | null;
   telegramAllowedUserIds: readonly string[];
@@ -61,6 +63,7 @@ export type ParsedProjectHermesRuntimeArtifact = Readonly<{
   imageVersion: string;
   auth?: Readonly<{verificationUrl: string; userCode: string}>;
   failure?: 'runtime_unavailable' | 'authentication_expired' | 'readiness_failed';
+  legacyV1: boolean;
 }>;
 
 const object = (value: unknown): Record<string, unknown> | null =>
@@ -85,17 +88,20 @@ export const parseProjectHermesRuntimeArtifact = (content: string): ParsedProjec
       /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(value.runtimeId) ? value.runtimeId : null;
     const gatewayEndpoint = runtimeId === null ? null : exactEndpoint(value?.gatewayEndpoint,
       `http://${runtimeId}-gateway:8642/v1/runs`);
-    const managementEndpoint = runtimeId === null ? null : exactEndpoint(value?.managementEndpoint,
-      `http://${runtimeId}-management:9119/`);
+    // Read-only compatibility for already persisted split-dashboard v1 artifacts;
+    // every writer below emits the dashboard-native v2 contract.
+    const legacyV1=value?.contract==='fai.project-hermes-runtime.v1';
+    const dashboardEndpoint = runtimeId === null ? null : exactEndpoint(legacyV1?value?.managementEndpoint:value?.dashboardEndpoint,
+      legacyV1?`http://${runtimeId}-management:9119/`:`http://${runtimeId}-gateway:9119/`);
     const allowed = telegram?.allowedUserIds;
     const secretIds = {
       'agent-delivery': refs?.agentDelivery,
-      'management-username': refs?.managementUsername,
-      'management-password': refs?.managementPassword,
+      'dashboard-username': legacyV1?refs?.managementUsername:refs?.dashboardUsername,
+      'dashboard-password': legacyV1?refs?.managementPassword:refs?.dashboardPassword,
       'telegram-bot': refs?.telegramBot,
       'inbound-actions': refs?.inboundActions
     };
-    const legacyReady=(value?.status===undefined||value?.status==='ready')&&value?.imageVersion===undefined;
+    const legacyReady=legacyV1&&(value?.status===undefined||value?.status==='ready')&&value?.imageVersion===undefined;
     const status = value?.status===undefined&&legacyReady?'ready':typeof value?.status === 'string' &&
       ['messenger_ready','installing','auth_required','ready','error'].includes(value.status)
       ? value.status as ParsedProjectHermesRuntimeArtifact['status'] : null;
@@ -107,18 +113,19 @@ export const parseProjectHermesRuntimeArtifact = (content: string): ParsedProjec
     const failure = status === 'error' &&
       ['runtime_unavailable','authentication_expired','readiness_failed'].includes(String(value?.failure))
       ? value?.failure as ParsedProjectHermesRuntimeArtifact['failure'] : undefined;
-    if (value?.contract !== projectHermesRuntimeContract || status === null ||
-      runtimeId === null || gatewayEndpoint === null || managementEndpoint === null || !workspacePath(value.workspacePath) ||
+    if ((!legacyV1&&value?.contract!==projectHermesRuntimeContract) || status === null ||
+      runtimeId === null || gatewayEndpoint === null || dashboardEndpoint === null || !workspacePath(value.workspacePath) ||
       (telegram !== null && (typeof telegram?.chatId !== 'string' || !/^-?[1-9][0-9]{0,19}$/.test(telegram.chatId))) ||
       (telegram !== null && (!Array.isArray(allowed) || allowed.length === 0 || allowed.length > 100 ||
       allowed.some((id) => typeof id !== 'string' || !/^[1-9][0-9]{0,19}$/.test(id)) ||
       new Set(allowed).size !== allowed.length)) || Object.values(secretIds).some((id) => !uuid(id)) ||
-      (!legacyReady&&value.imageVersion !== projectHermesRuntimeImageVersion) ||
+      (legacyV1?!legacyReady&&!legacyV1ImageVersions.has(String(value.imageVersion)):
+        value.imageVersion!==projectHermesRuntimeImageVersion) ||
       (status === 'auth_required' && parsedAuth === undefined) || (status === 'error' && failure === undefined)) return null;
-    return {status,runtimeId, gatewayEndpoint, managementEndpoint,
+    return {status,runtimeId, gatewayEndpoint, dashboardEndpoint,
       workspacePath: value.workspacePath, telegramChatId: typeof telegram?.chatId === 'string' ? telegram.chatId : null,
       telegramAllowedUserIds: telegram?.allowedUserIds as string[] ?? [], secretIds: secretIds as Record<ProjectHermesSecretKind, string>,
-      imageVersion:legacyReady?'legacy':value.imageVersion as string,...(parsedAuth===undefined?{}:{auth:parsedAuth}),
+      imageVersion:legacyReady?'legacy':value.imageVersion as string,legacyV1,...(parsedAuth===undefined?{}:{auth:parsedAuth}),
       ...(failure===undefined?{}:{failure})};
   } catch { return null; }
 };
@@ -127,10 +134,10 @@ const duplicateCoordinates = (bindings: readonly ProjectHermesRuntimeBinding[]):
   const coordinates = bindings.flatMap((binding) => [
     `runtime:${binding.runtimeId}`,
     `gateway:${binding.gatewayEndpoint}`,
-    `management:${binding.managementEndpoint}`,
+    `dashboard:${binding.dashboardEndpoint}`,
     `workspace:${binding.workspacePath}`,
     ...(binding.telegramChatId===null?[]:[`telegram:${binding.telegramChatId}`]),
-    ...[binding.agentCredentialRef, binding.managementUsernameRef, binding.managementPasswordRef,
+    ...[binding.agentCredentialRef, binding.dashboardUsernameRef, binding.dashboardPasswordRef,
       binding.telegramCredentialRef, binding.inboundActionCredentialRef].flatMap((reference) =>
         [`secret:${reference.id}`, `secret-locator:${reference.locator}`])
   ]);
@@ -158,28 +165,30 @@ export const listProjectHermesRuntimeBindings = async (
   const byId = new Map(secrets.rows.map((secret) => [secret.id, secret]));
   const logicalPurpose: Record<ProjectHermesSecretKind, string> = {
     'agent-delivery': 'agent_delivery',
-    'management-username': 'hermes_management_username',
-    'management-password': 'hermes_management_password',
+    'dashboard-username': 'hermes_dashboard_username',
+    'dashboard-password': 'hermes_dashboard_password',
     'telegram-bot': 'messenger_delivery',
     'inbound-actions': 'hermes_inbound_actions'
   };
   const bindings = parsed.flatMap(({row, artifact}) => {
     const reference = (kind: ProjectHermesSecretKind): OpaqueSecretRef | null => {
       const secret = byId.get(artifact.secretIds[kind]);
-      return secret !== undefined && secret.purpose === projectHermesSecretPurpose(row.projectId, kind) &&
+      const storedKind=artifact.legacyV1&&kind==='dashboard-username'?'management-username':
+        artifact.legacyV1&&kind==='dashboard-password'?'management-password':kind;
+      return secret !== undefined && secret.purpose === `project-hermes:${row.projectId}:${storedKind}` &&
         secret.locator.startsWith('/')
         ? {id: secret.id, purpose: logicalPurpose[kind], locator: secret.locator} : null;
     };
     const agentCredentialRef = reference('agent-delivery');
-    const managementUsernameRef = reference('management-username');
-    const managementPasswordRef = reference('management-password');
+    const dashboardUsernameRef = reference('dashboard-username');
+    const dashboardPasswordRef = reference('dashboard-password');
     const telegramCredentialRef = reference('telegram-bot');
     const inboundActionCredentialRef = reference('inbound-actions');
-    if (agentCredentialRef === null || managementUsernameRef === null || managementPasswordRef === null ||
+    if (agentCredentialRef === null || dashboardUsernameRef === null || dashboardPasswordRef === null ||
       telegramCredentialRef === null || inboundActionCredentialRef === null) return [];
     return [{workspaceId: row.workspaceId, projectId: row.projectId, slug: row.slug,
-      artifactVersion: row.artifactVersion, ...artifact, agentCredentialRef, managementUsernameRef,
-      managementPasswordRef, telegramCredentialRef, inboundActionCredentialRef}];
+      artifactVersion: row.artifactVersion, ...artifact, agentCredentialRef, dashboardUsernameRef,
+      dashboardPasswordRef, telegramCredentialRef, inboundActionCredentialRef}];
   });
   if (duplicateCoordinates(bindings)) throw new Error('project_hermes_runtime_conflict');
   return bindings;
@@ -192,16 +201,24 @@ export type ProjectHermesRuntimeSetupView = Readonly<{
   failure: ParsedProjectHermesRuntimeArtifact['failure'] | null;
 }>;
 
+export const readProjectHermesRuntimeArtifact = async (
+  database: Database,
+  actorId: string,
+  projectId: string
+): Promise<ParsedProjectHermesRuntimeArtifact | null> => {
+  const result=await database.query<{content:string}>(`select s.content_text as content
+    from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
+    where s.project_id=$1 and m.actor_id=$2 and m.role='project_owner' and m.active=true and s.kind=$3
+    order by s.created_at desc,s.id desc limit 1`,[projectId,actorId,projectHermesRuntimeArtifactKind]);
+  return result.rows[0]===undefined?null:parseProjectHermesRuntimeArtifact(result.rows[0].content);
+};
+
 export const readProjectHermesRuntimeSetup = async (
   database: Database,
   actorId: string,
   projectId: string
 ): Promise<ProjectHermesRuntimeSetupView> => {
-  const result=await database.query<{content:string}>(`select s.content_text as content
-    from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
-    where s.project_id=$1 and m.actor_id=$2 and m.role='project_owner' and m.active=true and s.kind=$3
-    order by s.created_at desc,s.id desc limit 1`,[projectId,actorId,projectHermesRuntimeArtifactKind]);
-  const artifact=result.rows[0]===undefined?null:parseProjectHermesRuntimeArtifact(result.rows[0].content);
+  const artifact=await readProjectHermesRuntimeArtifact(database,actorId,projectId);
   return artifact===null?{status:'not_configured',telegramConfigured:false,auth:null,failure:null}:
     {status:artifact.status,telegramConfigured:artifact.telegramChatId!==null,auth:artifact.auth??null,
       failure:artifact.failure??null};

@@ -33,16 +33,17 @@ const secretFiles = async () => {
 const projectId='project';const runtimeId='control';
 const runtimeSecretIds={
   'agent-delivery':'00000000-0000-4000-8100-000000000001',
-  'management-username':'00000000-0000-4000-8100-000000000002',
-  'management-password':'00000000-0000-4000-8100-000000000003',
+  'dashboard-username':'00000000-0000-4000-8100-000000000002',
+  'dashboard-password':'00000000-0000-4000-8100-000000000003',
   'telegram-bot':'00000000-0000-4000-8100-000000000004',
   'inbound-actions':'00000000-0000-4000-8100-000000000005'} as const;
 const runtimeKinds=Object.keys(runtimeSecretIds) as ProjectHermesSecretKind[];
-const runtimeArtifact=JSON.stringify({contract:'fai.project-hermes-runtime.v1',status:'ready',runtimeId,
-  gatewayEndpoint:'http://control-gateway:8642/v1/runs',managementEndpoint:'http://control-management:9119/',
+const runtimeArtifact=JSON.stringify({contract:'fai.project-hermes-runtime.v2',status:'ready',
+  imageVersion:'v2026.9.2-codex-0.144.1',runtimeId,
+  gatewayEndpoint:'http://control-gateway:8642/v1/runs',dashboardEndpoint:'http://control-gateway:9119/',
   workspacePath:'/opt/hermes/control',telegram:{chatId:'-1001',allowedUserIds:['42']},secretRefs:{
-    agentDelivery:runtimeSecretIds['agent-delivery'],managementUsername:runtimeSecretIds['management-username'],
-    managementPassword:runtimeSecretIds['management-password'],telegramBot:runtimeSecretIds['telegram-bot'],
+    agentDelivery:runtimeSecretIds['agent-delivery'],dashboardUsername:runtimeSecretIds['dashboard-username'],
+    dashboardPassword:runtimeSecretIds['dashboard-password'],telegramBot:runtimeSecretIds['telegram-bot'],
     inboundActions:runtimeSecretIds['inbound-actions']}});
 const runtimeQuery=(sql:string,files:Awaited<ReturnType<typeof secretFiles>>) => {
   if(sql.includes('runtime.sha256'))return {rowCount:1,rows:[{workspaceId:'workspace',projectId,slug:'control',
@@ -50,7 +51,7 @@ const runtimeQuery=(sql:string,files:Awaited<ReturnType<typeof secretFiles>>) =>
   if(sql.includes('select p.workspace_id as "workspaceId"')&&!sql.includes('tracker_secret.id as'))
     return {rowCount:1,rows:[{workspaceId:'workspace'}]};
   if(sql.includes('from secret_refs')&&sql.includes('id=any')){const locators:Record<ProjectHermesSecretKind,string>={
-    'agent-delivery':files.agent,'management-username':files.username,'management-password':files.password,
+    'agent-delivery':files.agent,'dashboard-username':files.username,'dashboard-password':files.password,
     'telegram-bot':files.telegram,'inbound-actions':files.inbound};
     return {rowCount:5,rows:runtimeKinds.map((kind)=>({id:runtimeSecretIds[kind],
       purpose:projectHermesSecretPurpose(projectId,kind),locator:locators[kind]}))};}
@@ -132,7 +133,7 @@ describe('project onboarding composition', () => {
     await expect(rejection).resolves.toMatchObject({message:'agent_profile_probe_failed'});
     expect(database.connect).not.toHaveBeenCalled();
     expect(calls.some((call)=>call.includes('/api/profiles')||call.includes('?profile='))).toBe(false);
-    expect(calls.filter((call) => call.endsWith('/v1/capabilities'))).toHaveLength(13);
+    expect(calls.filter((call) => call.endsWith('/v1/capabilities'))).toHaveLength(1);
     await rm(files.root, {recursive: true});
   });
 
@@ -236,7 +237,7 @@ describe('project onboarding composition', () => {
     await rm(files.root, {recursive: true});
   });
 
-  it('keeps an existing ready runtime read-only and restarts only when unavailable', async () => {
+  it('keeps an existing ready runtime read-only and fails closed when unavailable', async () => {
     const files = await secretFiles();
     const calls: {request: string; body: string}[] = [];
     let probes = 0;
@@ -245,8 +246,7 @@ describe('project onboarding composition', () => {
       calls.push({request: `${init?.method ?? 'GET'} ${url.pathname}${url.search}`, body: String(init?.body ?? '')});
       if (url.pathname.endsWith('/v1/capabilities')) {
         probes += 1;
-        return probes === 1 ? new Response('{}', {status: 401})
-          : new Response(JSON.stringify({object: 'hermes.api_server.capabilities'}));
+        return new Response('{}', {status: 401});
       }
       if (url.pathname === '/auth/password-login') return new Response('{}', {headers: {'set-cookie': 'session=ok; Path=/'}});
       return new Response('{}');
@@ -273,13 +273,12 @@ describe('project onboarding composition', () => {
       ? {rowCount: 1, rows: [{}]} : {rowCount: 1, rows: []});
     const database = {query, connect: vi.fn(async () => ({query: clientQuery, release: vi.fn()}))} as unknown as Database;
     await expect(ensureProjectAgentProfile(database, {workspaceId: 'workspace', actorId: 'actor',
-      projectId: 'project', idempotencyKey: 'ensure:1'})).resolves.toMatchObject({status: 'ready', profile: 'control'});
+      projectId: 'project', idempotencyKey: 'ensure:1'})).rejects.toThrow('agent_profile_probe_failed');
     const requests = calls.map(({request}) => request);
-    expect(requests).toContain('POST /api/gateway/restart');
+    expect(requests).toEqual(expect.arrayContaining(['POST /auth/password-login','GET /v1/capabilities']));
     expect(requests).not.toContain('POST /api/files/mkdir');
     expect(requests.some((request)=>request.includes('/api/profiles')||request.includes('?profile='))).toBe(false);
-    expect(requests).toContain('POST /api/gateway/restart');
-    expect(probes).toBe(2);
+    expect(probes).toBe(1);
     await rm(files.root, {recursive: true});
   });
 });

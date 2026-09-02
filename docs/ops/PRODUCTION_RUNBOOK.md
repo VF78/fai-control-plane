@@ -116,12 +116,14 @@ Reviewed non-secret Control Plane environment example SHA-256:
   a request bound to an exact recorded human approval; credential presence is
   never standing authorization.
 
-### Project Hermes management and DevOps boundary
+### Project Hermes dashboard and DevOps boundary
 
 - The private internal Docker network `fai-hermes-management` connects only the
-  Control Plane web service, the Hermes dashboard and the Hermes gateway. The
-  dashboard has no host-published port and requires its isolated basic-auth
-  credential. Control Plane receives only username/password secret-file mounts.
+  Control Plane web/worker services and each project-owned Hermes gateway. The
+  upstream s6 supervisor runs that gateway's API, messenger and dashboard in
+  one container. The authenticated dashboard is used only for internal
+  file/context operations, has no host-published port, and is not a second
+  management runtime.
 - Hermes deployment creates or verifies this internal bridge; Control Plane
   preflight only verifies it and never creates infrastructure.
 - Canonical dashboard, SSH and Yandex Cloud credential files remain root-owned
@@ -215,7 +217,11 @@ only to validate Compose and remains read-only. After all health checks pass,
 the script removes only older `fai-control-plane-mvp` images and dangling images
 carrying that Compose project label. It never removes the generic project
 runtime image. Project containers rotate JSON logs at 10 MiB with three files.
-Runtime images, containers and volumes are not pruned.
+Runtime images, containers and volumes are not pruned. Each configured project
+has one long-lived gateway container labeled with its exact workspace, project,
+runtime and component ownership. Worker recovery inspects and restarts only
+that deterministic container; it never lists, restarts or prunes unrelated
+host containers, including ASCON and MSA.
 
 After local acceptance, merge approval and a separate production approval:
 

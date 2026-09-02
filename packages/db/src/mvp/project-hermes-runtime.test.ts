@@ -2,29 +2,75 @@ import {describe,expect,it,vi} from 'vitest';
 import type {Database} from './runtime.ts';
 import {listProjectHermesRuntimeBindings,parseProjectHermesRuntimeArtifact,projectHermesRuntimeImageVersion,projectHermesSecretPurpose,
   type ProjectHermesSecretKind} from './project-hermes-runtime.ts';
+import {projectHermesRuntimeCoordinates} from './project-runtime-provisioning.ts';
 
 const projects={one:'00000000-0000-4000-8000-000000000001',two:'00000000-0000-4000-8000-000000000002'} as const;
-const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','management-username','management-password','telegram-bot','inbound-actions'];
+const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','dashboard-username','dashboard-password','telegram-bot','inbound-actions'];
 const secret=(project:'one'|'two',index:number)=>`00000000-0000-4000-8${project==='one'?'1':'2'}00-${String(index).padStart(12,'0')}`;
-const artifact=(project:'one'|'two',sharedChat=false)=>JSON.stringify({contract:'fai.project-hermes-runtime.v1',status:'ready',
+const artifact=(project:'one'|'two',sharedChat=false)=>JSON.stringify({contract:'fai.project-hermes-runtime.v2',status:'ready',
+  imageVersion:projectHermesRuntimeImageVersion,
   runtimeId:`runtime-${project}`,gatewayEndpoint:`http://runtime-${project}-gateway:8642/v1/runs`,
-  managementEndpoint:`http://runtime-${project}-management:9119/`,workspacePath:`/srv/hermes/${project}`,
+  dashboardEndpoint:`http://runtime-${project}-gateway:9119/`,workspacePath:`/srv/hermes/${project}`,
   telegram:{chatId:sharedChat?'-1001':project==='one'?'-1001':'-1002',allowedUserIds:['42']},secretRefs:{
-    agentDelivery:secret(project,1),managementUsername:secret(project,2),managementPassword:secret(project,3),
+    agentDelivery:secret(project,1),dashboardUsername:secret(project,2),dashboardPassword:secret(project,3),
     telegramBot:secret(project,4),inboundActions:secret(project,5)}});
+const legacyArtifact=(project:'one'|'two')=>{const value=JSON.parse(artifact(project)) as Record<string,unknown>;
+  const refs=value.secretRefs as Record<string,unknown>;value.contract='fai.project-hermes-runtime.v1';
+  value.imageVersion='v2026.8.29-codex-0.144.1';value.managementEndpoint=`http://runtime-${project}-management:9119/`;delete value.dashboardEndpoint;
+  refs.managementUsername=refs.dashboardUsername;refs.managementPassword=refs.dashboardPassword;
+  delete refs.dashboardUsername;delete refs.dashboardPassword;return JSON.stringify(value);};
 
-const database=(sharedChat=false,sharedLocator=false)=>{
+const database=(sharedChat=false,sharedLocator=false,legacy=false)=>{
   const query=vi.fn(async(sql:string)=>{
     if(sql.includes('runtime.sha256'))return {rows:(['one','two'] as const).map((project)=>({workspaceId:'workspace',
-      projectId:projects[project],slug:project,artifactVersion:project.repeat(64).slice(0,64),content:artifact(project,sharedChat)}))};
+      projectId:projects[project],slug:project,artifactVersion:project.repeat(64).slice(0,64),
+      content:legacy?legacyArtifact(project):artifact(project,sharedChat)}))};
     return {rows:(['one','two'] as const).flatMap((project)=>kinds.map((kind,index)=>({id:secret(project,index+1),
-      purpose:projectHermesSecretPurpose(projects[project],kind),locator:sharedLocator&&project==='two'&&kind==='telegram-bot'
+      purpose:legacy&&kind.startsWith('dashboard-')?`project-hermes:${projects[project]}:${kind.replace('dashboard','management')}`:
+        projectHermesSecretPurpose(projects[project],kind),locator:sharedLocator&&project==='two'&&kind==='telegram-bot'
         ?'/run/secrets/one/telegram-bot':`/run/secrets/${project}/${kind}`})))};
   });
   return {query} as unknown as Database;
 };
 
 describe('dedicated project Hermes runtime binding',()=>{
+  it('routes API and authenticated file access to one project gateway container',()=>{
+    expect(projectHermesRuntimeCoordinates('control',projects.one)).toEqual({runtimeId:'fai-control-00000000',
+      gatewayEndpoint:'http://fai-control-00000000-gateway:8642/v1/runs',
+      dashboardEndpoint:'http://fai-control-00000000-gateway:9119/',
+      workspacePath:'/opt/data/work/fai-control-00000000'});
+  });
+
+  it('normalizes only the retained v1 management JSON fallback',()=>{
+    const value=JSON.parse(artifact('one')) as Record<string,unknown>;const refs=value.secretRefs as Record<string,unknown>;
+    value.contract='fai.project-hermes-runtime.v1';value.imageVersion='v2026.8.29-codex-0.144.1';
+    value.managementEndpoint='http://runtime-one-management:9119/';delete value.dashboardEndpoint;
+    refs.managementUsername=refs.dashboardUsername;refs.managementPassword=refs.dashboardPassword;
+    delete refs.dashboardUsername;delete refs.dashboardPassword;
+    expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toMatchObject({legacyV1:true,
+      dashboardEndpoint:'http://runtime-one-management:9119/',secretIds:{
+        'dashboard-username':secret('one',2),'dashboard-password':secret('one',3)}});
+  });
+
+  it('resolves persisted v1 credential purposes only through that fallback',async()=>{
+    await expect(listProjectHermesRuntimeBindings(database(false,false,true),'workspace')).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({legacyV1:true,dashboardEndpoint:'http://runtime-one-management:9119/',
+        dashboardUsernameRef:expect.objectContaining({purpose:'hermes_dashboard_username'})})]));
+  });
+
+  it('rejects unrecognized v1 image versions',()=>{
+    const value=JSON.parse(legacyArtifact('one')) as Record<string,unknown>;value.imageVersion='v2026.1.1-unknown';
+    expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toBeNull();
+  });
+
+  it('rejects management-shaped fields from the dashboard-native v2 contract',()=>{
+    const value=JSON.parse(artifact('one')) as Record<string,unknown>;const refs=value.secretRefs as Record<string,unknown>;
+    value.managementEndpoint=value.dashboardEndpoint;delete value.dashboardEndpoint;
+    refs.managementUsername=refs.dashboardUsername;refs.managementPassword=refs.dashboardPassword;
+    delete refs.dashboardUsername;delete refs.dashboardPassword;
+    expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toBeNull();
+  });
+
   it('accepts a dedicated Hermes runtime before a messenger is configured',()=>{
     const value=JSON.parse(artifact('one')) as Record<string,unknown>;
     value.imageVersion=projectHermesRuntimeImageVersion;delete value.telegram;
@@ -51,7 +97,7 @@ describe('dedicated project Hermes runtime binding',()=>{
 
   it('rejects another private service even when it has a single-label host',()=>{
     const value=JSON.parse(artifact('one')) as Record<string,unknown>;
-    value.managementEndpoint='http://database:9119/';
+    value.dashboardEndpoint='http://database:9119/';
     expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toBeNull();
   });
 

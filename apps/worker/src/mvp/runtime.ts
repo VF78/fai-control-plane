@@ -37,7 +37,7 @@ import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProjectBindings,
   runProjectBindingsIsolated,
   type WorkerProjectBinding} from './project-runtime.ts';
-import {provisionProjectHermesRuntime} from './docker-project-runtime.ts';
+import {provisionProjectHermesRuntime,restartProjectHermesGateway,type DockerRequest} from './docker-project-runtime.ts';
 
 const env = (name: string): string => {
   const value = process.env[name];
@@ -87,28 +87,11 @@ export const inspectConfirmedGitHubProject=async(input:Readonly<{projectUrl:stri
   return {remainingDelta,capabilities:remainingDelta.length===0&&typeof hermes?.id==='string'&&typeof done?.id==='string'&&
     typeof defaultBranch==='string'?{provider:'github',agentOwnerOptionId:hermes.id,doneStatusOptionId:done.id,defaultBranch}:null};};
 export const restartHermesGateway = async (
-  runtime: WorkerProjectBinding['runtime'],
-  request: typeof fetch = fetch,
-  credentialResolver: SecretResolverPort = secrets
+  runtime: WorkerProjectBinding['runtime'],docker?:DockerRequest
 ): Promise<void> => {
-  const endpoint = new URL(runtime.managementEndpoint);
   const gateway = new URL(runtime.gatewayEndpoint);
-  if (endpoint.toString() !== `http://${runtime.runtimeId}-management:9119/` ||
-    gateway.toString() !== `http://${runtime.runtimeId}-gateway:8642/v1/runs`) {
-    throw new Error('hermes_management_denied');
-  }
-  const username = (await credentialResolver.resolve(runtime.managementUsernameRef, 'hermes_management_username')).value;
-  const password = (await credentialResolver.resolve(runtime.managementPasswordRef, 'hermes_management_password')).value;
-  const login = await request(new URL('/auth/password-login', endpoint), {method: 'POST',
-    headers: {'content-type': 'application/json'}, body: JSON.stringify({provider: 'basic', username, password}),
-    signal: AbortSignal.timeout(10_000)});
-  if (!login.ok) throw new Error('hermes_management_unavailable');
-  const values = typeof login.headers.getSetCookie === 'function'
-    ? login.headers.getSetCookie() : [login.headers.get('set-cookie') ?? ''];
-  const cookie = values.map((value) => value.split(';', 1)[0]).filter(Boolean).join('; ');
-  const restarted = await request(new URL('/api/gateway/restart', endpoint), {method: 'POST', headers: {cookie},
-    signal: AbortSignal.timeout(10_000)});
-  if (!restarted.ok) throw new Error('hermes_restart_failed');
+  if (gateway.toString() !== `http://${runtime.runtimeId}-gateway:8642/v1/runs`) throw new Error('hermes_restart_denied');
+  await restartProjectHermesGateway(runtime,docker);
 };
 
 /** Process-local endpoint health only; canonical attempt state remains in the
