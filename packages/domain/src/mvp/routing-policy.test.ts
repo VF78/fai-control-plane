@@ -40,10 +40,19 @@ describe('Hermes routing policy', () => {
       (route, index) => index === 1 ? {...route, taskClass: 'manager_project_ops'} : route)};
     expect(parseAgentRoutingPolicy(duplicate)).toBeNull();
   });
-  it('rejects models outside the bounded Control Plane catalog', () => {
+  it('accepts a bounded alternative model when its configured executor exposes it', () => {
     const policy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map((route,index) =>
-      index === 0 ? {...route,model:'provider-injected'} : route)};
-    expect(parseAgentRoutingPolicy(policy)).toBeNull();
+      index === 1 ? {...route,executor:{kind:'cli' as const,id:'claude-code-cli'},model:'claude-sonnet'} : route)};
+    expect(parseAgentRoutingPolicy(policy)).not.toBeNull();
+    expect(resolveAgentRoute(policy,'ordinary_implementation',{...catalog,
+      'claude-code-cli':{available:true,models:['claude-sonnet']}})).toMatchObject({
+        executor:{kind:'cli',id:'claude-code-cli'},model:'claude-sonnet'});
+  });
+  it('rejects unbounded or multiline model identifiers', () => {
+    const replace=(model:string)=>({...defaultAgentRoutingPolicy,routes:defaultAgentRoutingPolicy.routes.map((route,index)=>
+      index===0?{...route,model}:route)});
+    expect(parseAgentRoutingPolicy(replace('line one\nline two'))).toBeNull();
+    expect(parseAgentRoutingPolicy(replace('x'.repeat(257)))).toBeNull();
   });
   it('keeps implementation in CLI, protected operations direct, and exact gates bounded', () => {
     const replace = (taskClass: AgentRoutingPolicy['routes'][number]['taskClass'], change: object) => ({

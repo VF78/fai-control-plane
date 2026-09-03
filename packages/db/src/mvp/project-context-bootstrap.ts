@@ -43,7 +43,7 @@ const parseResult=(output:unknown,architecturePresent:boolean):Readonly<{context
   try{const value=object(JSON.parse(normalized));const context=value?.context;const proposal=value?.architectureProposal;
     const sources=object(value?.sources);
     if(value?.contract!=='fai.project-context-result.v1'||typeof context!=='string'||context.length<1||
-      sources?.documents!==true||sources.repository!==true||sources.githubProject!==true||
+      sources?.documents!==true||sources.repository!==true||sources.tracker!==true||
       new TextEncoder().encode(context).byteLength>49_152||
       (proposal!==null&&(typeof proposal!=='string'||proposal.length<1||new TextEncoder().encode(proposal).byteLength>16_384))||
       (architecturePresent?proposal!==null:typeof proposal!=='string'))return null;

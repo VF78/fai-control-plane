@@ -40,7 +40,7 @@ export const validateAgentRoleRequest = (value: AgentRoleRequest): boolean => {
   return value.approval === null;
 };
 
-/** Compact hand-off to the persistent project Hermes. Repository, documents,
+/** Compact hand-off to the persistent project agent. Repository, documents,
  * profile configuration, issue text and chat history remain in its persistent
  * project context and provider tools. */
 export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSON.stringify({

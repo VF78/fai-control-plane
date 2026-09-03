@@ -424,7 +424,7 @@ export const createWorker = (database: Database = createDatabase()) => {
               instructions: defaultAgentStageInstructions});
           },
           composeTerminalNotification: async (attempt, observed, key) =>
-            composeAgentTerminalNotification(project.projectId, attempt, observed, key)});
+            composeAgentTerminalNotification(project.projectId, 'telegram:internal', attempt, observed, key)});
       });
       await reportFailures('observe', results);
     },

@@ -186,6 +186,6 @@ export const recordProjectTrackerPreparationBlocker=async(database:Database,inpu
 
 export const projectTrackerPreparationAssignment=(input:Readonly<{repositoryUrl:string;projectUrl:string;process:ProjectProcessPolicy;
   remainingDelta:readonly string[]}>)=>({input:JSON.stringify({contract:'fai.project-tracker-preparation-assignment.v1',repository:input.repositoryUrl,
-    githubProject:input.projectUrl,confirmedProcess:input.process,requiredFields:{Owner:['Hermes'],Blocked:['No','Yes']},
+    tracker:input.projectUrl,confirmedProcess:input.process,requiredFields:{Owner:['Hermes'],Blocked:['No','Yes']},
     remainingDelta:input.remainingDelta}),instructions:`Bring the bound GitHub Project to exactly the confirmed process using gh directly. Control Plane will only verify readback. Make safe idempotent additions and configuration. Before any deletion or removal of foreign repository items, return approval_required with one exact human-readable approvalText and do not perform those changes. Return only JSON: {contract:"${resultContract}",status:"completed"|"approval_required"|"blocked",remainingDelta:string[],approvalText?:string,blocker?:string}.`,
   provider:'openai-codex',model:'gpt-5.6-sol',model_options:{reasoning_effort:'medium'},orchestration:{kind:'project-tracker-preparation',attempts:1}});

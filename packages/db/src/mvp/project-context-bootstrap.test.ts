@@ -23,7 +23,7 @@ describe('project context bootstrap persistence',()=>{
       return {rowCount:1,rows:[]};});
     const database={connect:vi.fn(async()=>({query,release:vi.fn()}))} as unknown as Database;
     const output='```json\n'+JSON.stringify({contract:'fai.project-context-result.v1',context:'Compact facts',
-      architectureProposal:'Exact proposal',sources:{documents:true,repository:true,githubProject:true}})+'\n```';
+      architectureProposal:'Exact proposal',sources:{documents:true,repository:true,tracker:true}})+'\n```';
     await expect(completeProjectContextBootstrap(database,attempt,output)).resolves.toMatchObject({
       status:'awaiting_architecture',documentFingerprint:attempt.documentFingerprint});
     expect(queries.some(({sql,parameters})=>sql.includes("'Compact project context'")&&
@@ -37,7 +37,7 @@ describe('project context bootstrap persistence',()=>{
 
   it('rejects a context result when Hermes did not read every required authority',async()=>{
     const output=JSON.stringify({contract:'fai.project-context-result.v1',context:'Unverified facts',
-      architectureProposal:'Proposal',sources:{documents:true,repository:false,githubProject:false}});
+      architectureProposal:'Proposal',sources:{documents:true,repository:false,tracker:false}});
     await expect(completeProjectContextBootstrap({} as Database,attempt,output))
       .rejects.toThrow('project_context_result_invalid');
   });

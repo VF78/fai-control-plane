@@ -5,7 +5,6 @@ export const agentTaskClasses = [
   'qa_audit', 'architecture_design', 'critical_decision', 'release_preflight', 'protected_operation'
 ] as const;
 export type AgentTaskClass = (typeof agentTaskClasses)[number];
-export const agentModels = ['gpt-5.6-terra', 'gpt-5.6-sol'] as const;
 export type AgentRoute = Readonly<{
   taskClass: AgentTaskClass;
   executor: Readonly<{kind: 'direct-agent'}> | Readonly<{kind: 'cli'; id: string}>;
@@ -41,7 +40,7 @@ export const parseAgentRoutingPolicy = (value: unknown): AgentRoutingPolicy | nu
     if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
     const route = candidate as Record<string, unknown>; const executor = route.executor;
     if (!agentTaskClasses.includes(route.taskClass as AgentTaskClass) ||
-      !agentModels.includes(route.model as typeof agentModels[number]) ||
+      typeof route.model !== 'string' || !isBoundedId(route.model) ||
       !['medium', 'high'].includes(String(route.effort)) || route.runtimeAcceptance !== 'required' ||
       !['none', 'product_visual', 'architecture_decision', 'production_exact'].includes(String(route.humanGate)) ||
       executor === null || typeof executor !== 'object' || Array.isArray(executor)) return null;

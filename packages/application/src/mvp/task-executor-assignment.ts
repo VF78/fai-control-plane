@@ -3,14 +3,14 @@ import type {AgentRole, ProjectRole, TrackerExecutorAssignmentPort, TrackerSnaps
 import type {AgentSubmissionContext, AgentSubmissionPorts} from './agent-submission.ts';
 import {submitExplicitAgent} from './agent-submission.ts';
 
-export type TaskExecutor = Readonly<{kind: 'human'; candidate: Readonly<{id: string; login: string}>}> | Readonly<{kind: 'hermes'}>;
-type HermesTaskRole = Extract<AgentRole, 'manager' | 'developer' | 'qa'>;
+export type TaskExecutor = Readonly<{kind: 'human'; candidate: Readonly<{id: string; login: string}>}> | Readonly<{kind: 'agent'}>;
+type AgentTaskRole = Extract<AgentRole, 'manager' | 'developer' | 'qa'>;
 export type TaskExecutorAssignmentCommand = Readonly<{actorId: string; projectId: string; projectItemId: string; executor: TaskExecutor;
   retry?: Readonly<{deliveryReference: string; nonce: string; confirmUnobservableFailure?: boolean}>;
   root?: Readonly<{chainReference: string; sourceReference: string; commandIdempotencyKey: string}>}>;
 export type TaskExecutorAssignmentPorts = AgentSubmissionPorts & Readonly<{
   tracker: TrackerExecutorAssignmentPort;
-  agentInstructions(role: HermesTaskRole): Readonly<{constraints: readonly string[]; acceptanceCriteria: readonly string[]}>;
+  agentInstructions(role: AgentTaskRole): Readonly<{constraints: readonly string[]; acceptanceCriteria: readonly string[]}>;
 }>;
 
 export type TaskExecutorAssignmentResult = Readonly<{
@@ -53,7 +53,7 @@ const refresh = async (ports: TaskExecutorAssignmentPorts, context: AgentSubmiss
 };
 
 /**
- * One GitHub-native executor assignment. Receipts keep Hermes delivery
+ * One provider-native executor assignment. Receipts keep agent delivery
  * idempotent; no local task/run state is introduced.
  */
 export const assignTaskExecutor = async (
@@ -69,14 +69,14 @@ export const assignTaskExecutor = async (
   if (context === null || !['project_owner', 'operator'].includes(context.requesterRole as ProjectRole)) {
     throw new Error('task_executor_denied');
   }
-  if (command.executor.kind === 'hermes' &&
+  if (command.executor.kind === 'agent' &&
     (!bounded(context.agentTrackerOwnerOptionId, 512) || !bounded(context.doneStatusOptionId, 512))) {
     throw new Error('task_executor_unavailable');
   }
   const snapshot = await refresh(ports, context);
   const item = itemFor(snapshot, context, command.projectItemId);
   if (item.statusOptionName === null || item.blocked === null) throw new Error('task_executor_unavailable');
-  const target = configuredTarget(context, item.statusOptionName, command.executor.kind === 'hermes');
+  const target = configuredTarget(context, item.statusOptionName, command.executor.kind === 'agent');
   const expectedBlocked = item.blocked;
   if (command.retry?.confirmUnobservableFailure === true) {
     const observed = await ports.delivery.observe(command.retry.deliveryReference);
@@ -139,7 +139,7 @@ export const startProcess = async (command: ProcessStartCommand,
   const chainReference = `browser:${createHash('sha256').update(JSON.stringify({projectId: command.projectId,
     itemId, sourceReference: command.sourceReference, idempotencyKey: command.idempotencyKey})).digest('hex')}`;
   const result = await assignTaskExecutor({actorId: command.actorId, projectId: command.projectId,
-    projectItemId: itemId, executor: {kind: 'hermes'}, root: {chainReference,
+    projectItemId: itemId, executor: {kind: 'agent'}, root: {chainReference,
       sourceReference: command.sourceReference, commandIdempotencyKey: command.idempotencyKey}}, ports);
   return {...result, itemId, chainReference};
 };

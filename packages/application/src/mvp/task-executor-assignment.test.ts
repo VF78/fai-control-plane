@@ -73,7 +73,7 @@ describe('task executor assignment', () => {
           automation:{agentRole:'developer',afterRoles:['qa'],maxStarts:1,reworkStageId:null}}
       ]}};
     }};
-    await expect(assignTaskExecutor({actorId:'actor',projectId:'project',projectItemId:'item',executor:{kind:'hermes'}}, custom))
+    await expect(assignTaskExecutor({actorId:'actor',projectId:'project',projectItemId:'item',executor:{kind:'agent'}}, custom))
       .resolves.toMatchObject({status:'started'});
     expect(value.delivery).toHaveBeenCalledWith(expect.objectContaining({role:'developer',
       process:expect.objectContaining({policyVersion:'c'.repeat(64),stageId:'build',stageTitle:'Build',successTargetTitle:null})}));
@@ -92,12 +92,12 @@ describe('task executor assignment', () => {
   it('denies Hermes on Acceptance before delivery', async () => {
     const value = ports(); const baseRead = value.value.readFreshSnapshot;
     const acceptance: TaskExecutorAssignmentPorts = {...value.value, readFreshSnapshot: async (context) => { const snapshot = await baseRead(context); return {...snapshot, items: [{...snapshot.items[0]!, statusOptionName: 'Acceptance'}]}; }};
-    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, acceptance)).rejects.toThrow('task_executor_unavailable');
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'}}, acceptance)).rejects.toThrow('task_executor_unavailable');
     expect(value.delivery).not.toHaveBeenCalled();
   });
 
   it.each(['In Dev', 'QA'])('starts Hermes in %s without changing the current stage', async (stage) => {
-    const value = ports(false, stage); const command = {actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'} as const};
+    const value = ports(false, stage); const command = {actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'} as const};
     await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'started', deliveryReference: 'hermes:receipt'});
     expect(value.delivery).toHaveBeenCalledTimes(1);
     const context = await value.value.resolveContext({actorId: 'actor', projectId: 'project'});
@@ -108,25 +108,25 @@ describe('task executor assignment', () => {
 
   it('delivers the ASCON developer and QA status-verification contract', async () => {
     const developer = ports(false, 'In Dev');
-    await assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, developer.value);
+    await assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'}}, developer.value);
     expect(developer.delivery).toHaveBeenCalledWith(expect.objectContaining({role: 'developer', constraints: expect.arrayContaining([
       expect.stringContaining('In Dev to QA'), expect.stringContaining('verify')
     ])}));
     const qa = ports(false, 'QA');
-    await assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, qa.value);
+    await assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'}}, qa.value);
     expect(qa.delivery).toHaveBeenCalledWith(expect.objectContaining({role: 'qa', constraints: expect.arrayContaining([
       expect.stringContaining('QA to In Dev'), expect.stringContaining('QA to Acceptance')
     ])}));
   });
 
   it('does not deliver Hermes twice when the confirmed start command is replayed', async () => {
-    const value = ports(); const command = {actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'} as const};
+    const value = ports(); const command = {actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'} as const};
     await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'started', deliveryReference: 'hermes:receipt'});
     await expect(assignTaskExecutor(command, value.value)).resolves.toMatchObject({status: 'duplicate', deliveryReference: 'hermes:receipt'});
     expect(value.delivery).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['human','hermes'] as const)('starts a blocked Backlog item with one explicit %s command', async (kind) => {
+  it.each(['human','agent'] as const)('starts a blocked Backlog item with one explicit %s command', async (kind) => {
     const value = ports(false, 'Backlog', true, 'chatgpt-work');
     const start = vi.spyOn(value.value.tracker, 'startExecutor');
     const executor = kind === 'human' ? {kind, candidate: {id: 'U_1', login: 'octo'}} as const : {kind} as const;
@@ -147,7 +147,7 @@ describe('task executor assignment', () => {
     const recovered: TaskExecutorAssignmentPorts = {...value.value,
       delivery: {...value.value.delivery, observe: vi.fn(async (reference) => { order.push(`observe:${reference}`); return {status: 'unknown' as const}; })},
       tracker: {...tracker, startExecutor: async (command) => { order.push('github:start'); return tracker.startExecutor(command); }}};
-    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'},
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'},
       retry: {deliveryReference: 'run_old', nonce: 'confirmed', confirmUnobservableFailure: true}}, recovered))
       .resolves.toMatchObject({status: 'started'});
     expect(order.slice(0,2)).toEqual(['observe:run_old','github:start']);
@@ -155,7 +155,7 @@ describe('task executor assignment', () => {
 
   it('denies a claimed unknown recovery before GitHub when the exact prior run is still active', async () => {
     const value = ports(false, 'Backlog', true, 'chatgpt-work'); const start = vi.spyOn(value.value.tracker, 'startExecutor');
-    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'},
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'},
       retry: {deliveryReference: 'run_active', nonce: 'claimed', confirmUnobservableFailure: true}}, value.value))
       .rejects.toThrow('agent_retry_denied');
     expect(value.value.delivery.observe).toHaveBeenCalledWith('run_active');
@@ -172,7 +172,7 @@ describe('task executor assignment', () => {
 
   it('denies Done before any tracker mutation or delivery', async () => {
     const value = ports(false, 'Done', true); const start = vi.spyOn(value.value.tracker, 'startExecutor');
-    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'hermes'}}, value.value))
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'}}, value.value))
       .rejects.toThrow('task_executor_unavailable');
     expect(start).not.toHaveBeenCalled(); expect(value.delivery).not.toHaveBeenCalled();
   });

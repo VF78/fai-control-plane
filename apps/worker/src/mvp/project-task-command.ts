@@ -127,7 +127,7 @@ export const projectTaskCommand=async(database:Database,request:Request):Promise
       deliveryReference:required(retryBody.deliveryReference,256),nonce:required(retryBody.nonce,128),
       confirmUnobservableFailure:retryBody.confirmUnobservableFailure===true};})();
   if(retry!==undefined)return Response.json(await assignTaskExecutor({actorId:operator.actorId,projectId,projectItemId:itemId,
-    executor:{kind:'hermes'},retry},composed.ports));
+    executor:{kind:'agent'},retry},composed.ports));
   return Response.json(await startProcess({actorId:operator.actorId,projectId,task:{kind:'existing',itemId},
     sourceReference:'ui:task-executor',idempotencyKey:`process.start:ui:${projectId}:${itemId}`},composed.ports));
 }catch(error){return commandError(error);}};
