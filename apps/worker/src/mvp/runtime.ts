@@ -83,6 +83,9 @@ export const restartHermesGateway = async (
   await restartProjectHermesGateway(runtime,docker);
 };
 
+export const projectContextRunFailureCode=(status:number):string|null=>status===404?'run_not_found':
+  status>=400&&status<500?'provider_authentication_failed':null;
+
 /** Process-local endpoint health only; canonical attempt state remains in the
  * existing receipts/audit tables. */
 export const createEndpointRecoveryGate = (threshold = 2) => {
@@ -321,10 +324,8 @@ export const createWorker = (database: Database = createDatabase()) => {
         const endpoint=new URL(`${runs.pathname}/${encodeURIComponent(attempt.deliveryReference)}`,runs);
         const request=()=>fetch(endpoint,{headers:{accept:'application/json',authorization:`Bearer ${credential.value}`},
           signal:AbortSignal.timeout(15_000)});
-        let response=await request();
-        if(response.status>=400&&response.status<500){await restartHermesGateway(runtime);response=await request();
-          if(response.status>=400&&response.status<500){await failProjectContextBootstrap(database,attempt,
-            response.status===404?'run_not_found':'provider_authentication_failed');continue;}}
+        const response=await request();const failureCode=projectContextRunFailureCode(response.status);
+        if(failureCode!==null){await failProjectContextBootstrap(database,attempt,failureCode);continue;}
         if(!response.ok){await notifyRecovery(attempt.projectId,attempt.deliveryReference,'bootstrap-unavailable',
           'Hermes временно недоступен во время настройки контекста. Worker продолжает контроль.');continue;}
         const value=await response.json().catch(()=>null) as {run_id?:unknown;status?:unknown;output?:unknown}|null;
