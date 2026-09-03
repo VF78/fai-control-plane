@@ -1,4 +1,5 @@
-import type {Database} from './runtime.ts';
+import {defaultProjectProcessPolicy} from '@fai-control-plane/domain';
+import {saveProjectProcessPolicy,type Database} from './runtime.ts';
 
 export type ProjectWizardProgress=Readonly<{processConfirmed:boolean;teamSkipped:boolean;communicationsSkipped:boolean}>;
 const commands=['project.wizard.process-confirm','project.wizard.team-skip','project.wizard.communications-skip'] as const;
@@ -12,7 +13,9 @@ export const readProjectWizardProgress=async(database:Database,actorId:string,pr
 
 export const recordProjectWizardDecision=async(database:Database,input:Readonly<{workspaceId:string;projectId:string;actorId:string;
   decision:ProjectWizardDecision;idempotencyKey:string;occurredAt:string}>):Promise<ProjectWizardProgress>=>{if(!commands.includes(input.decision))
-    throw new Error('project_wizard_decision_invalid');const client=await database.connect();try{await client.query('begin');const allowed=await client.query(
+    throw new Error('project_wizard_decision_invalid');if(input.decision==='project.wizard.process-confirm')await saveProjectProcessPolicy(database,
+      {workspaceId:input.workspaceId,projectId:input.projectId,actorId:input.actorId,policy:defaultProjectProcessPolicy,
+        idempotencyKey:`wizard-process:${input.projectId}`,occurredAt:input.occurredAt});const client=await database.connect();try{await client.query('begin');const allowed=await client.query(
       `select 1 from project_memberships where project_id=$1 and actor_id=$2 and role='project_owner' and active=true for update`,
     [input.projectId,input.actorId]);if(allowed.rowCount!==1)throw new Error('project_wizard_decision_denied');await client.query(
       `insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)

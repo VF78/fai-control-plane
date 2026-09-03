@@ -13,4 +13,15 @@ describe('persisted project wizard progress',()=>{
         actorId:'actor',decision:'project.wizard.team-skip',idempotencyKey:'skip-team:one',occurredAt:'2026-08-30T00:00:00.000Z'}))
       .resolves.toMatchObject({teamSkipped:true});expect(statements.some((sql)=>sql.includes('insert into command_receipts'))).toBe(true);
     expect(statements.some((sql)=>sql.includes('$2::uuid::text'))).toBe(true);});
+  it('activates the canonical process before confirming the wizard step',async()=>{const statements:string[]=[];const query=vi.fn(async(sql:string)=>{
+    statements.push(sql);if(sql.includes('from project_memberships m join projects p'))return {rows:[{workspaceId:'workspace'}]};
+    if(sql.includes("kind='project_process_policy_v1' and sha256"))return {rows:[{id:'policy-id'}]};
+    if(sql.includes('from project_memberships'))return {rowCount:1,rows:[{}]};if(sql.includes('select distinct'))return {rows:[
+      {commandType:'project.wizard.process-confirm'}]};return {rowCount:1,rows:[]};});const database={connect:vi.fn(async()=>({query,
+      release:vi.fn()})),query} as unknown as Database;await expect(recordProjectWizardDecision(database,{workspaceId:'workspace',projectId:
+        '00000000-0000-4000-8000-000000000001',actorId:'actor',decision:'project.wizard.process-confirm',
+        idempotencyKey:'confirm-process:one',occurredAt:'2026-08-30T00:00:00.000Z'})).resolves.toMatchObject({processConfirmed:true});
+    const activation=statements.findIndex((sql)=>sql.includes("'project.process.configure'"));
+    expect(activation).toBeGreaterThan(-1);
+    expect(statements.findIndex((sql,index)=>index>activation&&sql==='begin')).toBeGreaterThan(activation);});
 });
