@@ -120,6 +120,10 @@ Reviewed non-secret Control Plane environment example SHA-256:
   tree, changes project files to Hermes UID/GID `10000:10000` and controls the
   Docker socket. Its resource operations remain limited by exact project labels
   and deterministic names; it is not a general host-management process.
+- Web authenticates operator commands and forwards them over the existing
+  internal worker endpoint. Worker is the sole Control Plane process that reads
+  project-runtime credentials or calls a project Hermes gateway/dashboard;
+  web never mounts the project runtime tree.
 - Control Plane preflight verifies the existing internal bridge and never
   creates unrelated host infrastructure.
 - The project gateway image pins Yandex Cloud CLI `1.22.0` and OpenSSH. The
