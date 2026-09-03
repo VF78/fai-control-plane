@@ -4,7 +4,7 @@ import {defaultAgentRoutingPolicy, defaultProjectProcessPolicy, projectContextSn
 import type {OpaqueSecretRef} from '@fai-control-plane/domain';
 import type {Database} from './runtime.ts';
 
-export const projectAgentProfileTemplateVersion = 'v2026.8.28-dedicated-runtime-v1';
+export const projectAgentProfileTemplateVersion = 'v2026.9.3-verified-sources-v2';
 
 export type RegisterProjectInput = Readonly<{
   workspaceId: string; actorId: string; name: string; slug: string; repositoryUrl: string; repositoryId: string;
