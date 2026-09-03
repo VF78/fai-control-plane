@@ -67,7 +67,8 @@ describe('multi-project worker composition', () => {
     request as typeof fetch);
     expect(result).toEqual({remainingDelta:[],capabilities:{provider:'github',agentOwnerOptionId:'hermes',
       doneStatusOptionId:'s5',defaultBranch:'main'}});
-    expect(request).toHaveBeenCalledTimes(1);expect(request.mock.calls[0]?.[1]?.method).toBe('POST');
+    expect(request).toHaveBeenCalledTimes(1);expect(request.mock.calls[0]?.[1]).toMatchObject({method:'POST',headers:{
+      authorization:'Bearer secret'}});
   });
   it('resolves separate repository, Project and dedicated Hermes runtime for each binding', async () => {
     const trackerRows=[row('one','control'),row('two','ascon')];
