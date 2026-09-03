@@ -85,7 +85,8 @@ export const listProjectTrackerPreparationAttempts=async(database:Database,works
     join lateral(select content_text from project_source_artifacts where project_id=p.id and kind=$2 order by created_at desc,id desc limit 1)state on true
     join lateral(select actor_id,correlation_id from audit_events where project_id=p.id and action='project.tracker-prepare.start'
       order by occurred_at desc,id desc limit 1)started on true where p.workspace_id=$1 order by p.id limit $3`,
-  [workspaceId,projectTrackerPreparationKind,limit]);return result.rows.flatMap(row=>{const state=parseState(row.content);return state?.status==='configuring'&&
+  [workspaceId,projectTrackerPreparationKind,limit]);return result.rows.flatMap(row=>{const state=parseState(row.content);return state!==null&&
+    ['configuring','verifying'].includes(state.status)&&
     state.runId!==null?[{workspaceId,projectId:row.projectId,actorId:row.actorId,runId:state.runId,
       correlationId:row.correlationId,processVersion:state.processVersion,remainingDelta:state.remainingDelta}]:[];});};
 
@@ -128,11 +129,17 @@ export const recordProjectTrackerPreparationResult=async(database:Database,attem
   if(result===null)throw new Error('project_tracker_preparation_result_invalid');const occurredAt=new Date().toISOString();
   const approval=result.status==='approval_required'?{id:randomUUID(),
     text:result.approvalText,version:sha(result.approvalText)}:undefined;const status=result.status==='completed'?'verifying':result.status;
-  const state:State={contract,status,runId:null,processVersion:attempt.processVersion,remainingDelta:result.remainingDelta,
+  const state:State={contract,status,runId:attempt.runId,processVersion:attempt.processVersion,remainingDelta:result.remainingDelta,
     ...(approval===undefined?{}:{approval}),...(result.status==='blocked'?{blocker:result.blocker}:{})};const client=await database.connect();try{
     await client.query('begin');await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))',[attempt.correlationId]);
     const key=`${attempt.correlationId}:result:${attempt.runId}`;const prior=await client.query(`select 1 from command_receipts where idempotency_key=$1`,[key]);
-    if(prior.rowCount!==0){await client.query('rollback');return readProjectTrackerPreparation(database,attempt.actorId,attempt.projectId);}
+    if(prior.rowCount!==0){const latest=await client.query<{content:string}>(`select content_text as content from project_source_artifacts
+      where project_id=$1 and kind=$2 order by created_at desc,id desc limit 1`,[attempt.projectId,projectTrackerPreparationKind]);
+      const current=latest.rows[0]===undefined?null:parseState(latest.rows[0].content);if(result.status==='completed'&&
+        current?.status==='configuring'&&current.runId===attempt.runId){const version=await insertState(client,{projectId:attempt.projectId,
+          actorId:attempt.actorId,state,provenance:'control-plane:tracker-readback-resume'});await client.query('commit');return {status,
+            version,runId:attempt.runId,remainingDelta:result.remainingDelta,approval:null,blocker:null};}
+      await client.query('rollback');return readProjectTrackerPreparation(database,attempt.actorId,attempt.projectId);}
     if(approval!==undefined)await client.query(`insert into project_source_artifacts(id,project_id,created_by_actor_id,kind,name,media_type,
       sha256,content_text,source_url,provenance) values($1,$2,$3,$4,'Project preparation approval','text/plain',$5,$6,null,'hermes:tracker-preparation')
       on conflict(project_id,kind,sha256) do nothing`,[randomUUID(),attempt.projectId,attempt.actorId,projectTrackerPreparationApprovalKind,
@@ -148,12 +155,12 @@ export const recordProjectTrackerPreparationResult=async(database:Database,attem
         and kind='project_hermes_runtime_v2' and content_text::jsonb ? 'telegram') on conflict(idempotency_key) do nothing`,
     [attempt.projectId,`${key}:notify`,JSON.stringify({message:{projectId:attempt.projectId,contour:'trusted-main',
       channelReference:'telegram:internal',text:approval.text,idempotencyKey:`${key}:notify`}}),occurredAt]);await client.query('commit');
-    return {status,version,runId:null,remainingDelta:result.remainingDelta,approval:approval??null,
+    return {status,version,runId:attempt.runId,remainingDelta:result.remainingDelta,approval:approval??null,
       blocker:result.status==='blocked'?result.blocker:null};}catch(error){await client.query('rollback');throw error;}finally{client.release();}};
 
 export const recordVerifiedProjectTrackerCapabilities=async(database:Database,input:Readonly<{attempt:ProjectTrackerPreparationAttempt;
   capabilities:ProjectTrackerCapabilities;occurredAt:string}>):Promise<void>=>{const value={contract:'fai.project-tracker-capabilities.v1',...input.capabilities};
-  const content=JSON.stringify(value);const version=sha(content);const state:State={contract,status:'ready',runId:null,
+  const content=JSON.stringify(value);const version=sha(content);const state:State={contract,status:'ready',runId:input.attempt.runId,
     processVersion:input.attempt.processVersion,remainingDelta:[]};const client=await database.connect();try{await client.query('begin');
     await client.query(`insert into project_source_artifacts(id,project_id,created_by_actor_id,kind,name,media_type,sha256,content_text,
       source_url,provenance) values($1,$2,$3,'project_tracker_capabilities_v1','Project tracker capabilities','application/json',$4,$5,null,
@@ -168,9 +175,10 @@ export const recordVerifiedProjectTrackerCapabilities=async(database:Database,in
     await client.query('commit');}catch(error){await client.query('rollback');throw error;}finally{client.release();}};
 
 export const recordProjectTrackerPreparationBlocker=async(database:Database,input:Readonly<{workspaceId:string;projectId:string;
-  actorId:string;processVersion:string;remainingDelta:readonly string[];correlationId:string;blocker:string;occurredAt:string}>)=>{
+  actorId:string;processVersion:string;remainingDelta:readonly string[];correlationId:string;runId?:string;
+  blocker:string;occurredAt:string}>)=>{
   if(delta(input.remainingDelta)===null||!bounded(input.blocker))throw new Error('project_tracker_preparation_invalid');
-  const state:State={contract,status:'blocked',runId:null,processVersion:input.processVersion,remainingDelta:input.remainingDelta,
+  const state:State={contract,status:'blocked',runId:input.runId??null,processVersion:input.processVersion,remainingDelta:input.remainingDelta,
     blocker:input.blocker};const client=await database.connect();try{await client.query('begin');const version=await insertState(client,{projectId:input.projectId,
       actorId:input.actorId,state,provenance:'control-plane:github-readback'});const key=`${input.correlationId}:blocked:${sha(JSON.stringify(input.remainingDelta))}`;
     await client.query(`insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)

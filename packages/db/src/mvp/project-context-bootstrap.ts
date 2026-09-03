@@ -84,7 +84,7 @@ export const completeProjectContextBootstrap=async(database:Database,attempt:Pro
       details,occurred_at) values($1,$2,$3,'project.context-bootstrap.complete',$4,$5,$6,$7)`,
     [attempt.workspaceId,attempt.projectId,attempt.actorId,attempt.documentFingerprint,attempt.correlationId,
       JSON.stringify({status,deliveryReference:attempt.deliveryReference,contextSha,...(proposalSha===undefined?{}:{proposalSha})}),occurredAt]);
-    const text=status==='ready'?'Контекст проекта настроен. ИИ агент готов к работе.':
+    const text=status==='ready'?'Контекст проекта настроен. ИИ-агент готов к работе.':
       'Контекст проекта собран. Требуется точное согласование архитектурного предложения в настройках проекта.';
     await client.query(`insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
       values($1,'messenger-notification',$2,$3,$4) on conflict(idempotency_key) do nothing`,[attempt.projectId,
@@ -156,7 +156,7 @@ export const promoteApprovedProjectArchitectures=async(database:Database,workspa
       await client.query(`insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
         values($1,'messenger-notification',$2,$3,now()) on conflict(idempotency_key) do nothing`,[candidate.projectId,
         `${key}:notify`,JSON.stringify({message:{projectId:candidate.projectId,contour:'trusted-main',
-          channelReference:'telegram:internal',text:'Архитектурное предложение согласовано. ИИ агент готов к работе.',
+          channelReference:'telegram:internal',text:'Архитектурное предложение согласовано. ИИ-агент готов к работе.',
           idempotencyKey:`${key}:notify`}})]);await client.query('commit');promoted+=1;
     }catch(error){await client.query('rollback');throw error;}finally{client.release();}}
   return promoted;

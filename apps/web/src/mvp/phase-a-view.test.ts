@@ -25,8 +25,8 @@ describe('Phase A read projections', () => {
 
   it('projects one executor fact without hiding a conflicting provider fact', () => {
     expect(executorFact(task('Ready', {assignees: [{id: 'U', login: 'octo', name: 'Octo'}]}), 'hermes')).toBe('Octo');
-    expect(executorFact(task('Ready', {ownerOptionId: 'hermes'}), 'hermes')).toBe('Hermes');
-    expect(executorFact(task('Ready', {ownerOptionId: 'hermes', assignees: [{id: 'U', login: 'octo', name: null}]}), 'hermes')).toBe('Конфликт: Hermes + octo');
+    expect(executorFact(task('Ready', {ownerOptionId: 'hermes'}), 'hermes')).toBe('ИИ-агент');
+    expect(executorFact(task('Ready', {ownerOptionId: 'hermes', assignees: [{id: 'U', login: 'octo', name: null}]}), 'hermes')).toBe('Конфликт: ИИ-агент + octo');
     expect(executorFact(task('Ready'), 'hermes')).toBe('Не назначен');
   });
 });

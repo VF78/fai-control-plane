@@ -19,8 +19,8 @@ export type ProjectProcessPolicy = Readonly<{
 export const defaultProjectProcessPolicy: ProjectProcessPolicy = {contract: 'fai.project-process.v1', stages: [
   {id:'backlog',title:'Backlog',responsibility:'Product Owner',gate:'Уточнение',evidence:'Цель, требования, риски',nextStageId:'ready',automation:null},
   {id:'ready',title:'Ready',responsibility:'Product Owner',gate:'PO Ready: требуется',evidence:'Acceptance criteria, исполнитель, проверка',nextStageId:'in-dev',automation:null},
-  {id:'in-dev',title:'In Dev',responsibility:'Разработчик или ИИ агент',gate:'Явная команда оператора для запуска цепочки ИИ агента',evidence:'Branch/worktree, PR, локальная проверка',nextStageId:'qa',automation:{agentRole:'developer',afterRoles:['qa'],maxStarts:2,reworkStageId:null}},
-  {id:'qa',title:'QA',responsibility:'ИИ агент',gate:'Автоматическое продолжение явно запущенной цепочки после подтверждённого статуса QA',evidence:'PR, checks, QA evidence',nextStageId:'acceptance',automation:{agentRole:'qa',afterRoles:['developer'],maxStarts:2,reworkStageId:'in-dev'}},
+  {id:'in-dev',title:'In Dev',responsibility:'Разработчик или ИИ-агент',gate:'Явная команда оператора для запуска цепочки ИИ-агента',evidence:'Branch/worktree, PR, локальная проверка',nextStageId:'qa',automation:{agentRole:'developer',afterRoles:['qa'],maxStarts:2,reworkStageId:null}},
+  {id:'qa',title:'QA',responsibility:'ИИ-агент',gate:'Автоматическое продолжение явно запущенной цепочки после подтверждённого статуса QA',evidence:'PR, checks, QA evidence',nextStageId:'acceptance',automation:{agentRole:'qa',afterRoles:['developer'],maxStarts:2,reworkStageId:'in-dev'}},
   {id:'acceptance',title:'Acceptance',responsibility:'Product Owner',gate:'PO gate в Done: требуется',evidence:'QA evidence, staging deploy, smoke-test',nextStageId:'done',automation:null},
   {id:'done',title:'Done',responsibility:'Product Owner',gate:'Терминальное состояние',evidence:'Явная приёмка результата',nextStageId:null,automation:null}
 ]};

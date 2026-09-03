@@ -1,7 +1,7 @@
 export type PhaseArea = 'dashboard'|'tasks'|'process'|'conversations'|'people'|'systems'|'settings';
 
 export const navigation: readonly PhaseArea[] = ['dashboard','tasks','process','conversations','systems','settings','people'];
-export const labels: Record<PhaseArea,string> = {dashboard:'Обзор',tasks:'Задачи',process:'Процесс',conversations:'Чаты',systems:'Агенты и системы',settings:'Проекты',people:'Роли и доступы'};
+export const labels: Record<PhaseArea,string> = {dashboard:'Обзор',tasks:'Задачи',process:'Процесс',conversations:'Чаты',systems:'ИИ-агенты и системы',settings:'Проекты',people:'Роли и доступы'};
 export const paths: Record<PhaseArea,string> = {dashboard:'/overview',tasks:'/tasks',process:'/process',conversations:'/chats',systems:'/systems',settings:'/projects',people:'/people'};
 
 export const phaseHref = (view: PhaseArea, project?: string, task?: string, filter?: string) => {

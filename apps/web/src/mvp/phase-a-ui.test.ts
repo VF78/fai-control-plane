@@ -53,8 +53,8 @@ describe('portfolio Phase A pages', () => {
     expect(view).toContain('aria-valuetext={stateLegend.map');
     expect(view).toContain('текущий фокус и подтверждённые риски');
     expect(view).not.toContain('errorCode');
-    expect(view).toContain("['warning','Снимок GitHub устарел.']");
-    expect(view).toContain("['danger','Источник пока не подтвердил обновление.']");
+    expect(view).toContain("['warning','Данные таск-трекера устарели.']");
+    expect(view).toContain("['danger','Таск-трекер пока не подтвердил обновление.']");
   });
 
   it('renders scan-first project sections with one project-qualified agent action', async () => {

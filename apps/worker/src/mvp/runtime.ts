@@ -62,7 +62,8 @@ export const inspectConfirmedGitHubProject=async(input:Readonly<{projectUrl:stri
   const response=await request('https://api.github.com/graphql',{method:'POST',headers:{accept:'application/vnd.github+json',
     authorization:`Bearer ${input.token}`,'content-type':'application/json','x-github-api-version':'2022-11-28'},body:JSON.stringify({query,
       variables:{owner:projectMatch[1],number:Number(projectMatch[2]),repositoryOwner:repositoryMatch[1],repository:repositoryMatch[2]}}),
-    signal:AbortSignal.timeout(15_000)});if(!response.ok)throw new Error('github_read_failed');const payload=await response.json() as {data?:{
+    signal:AbortSignal.timeout(15_000)});if(!response.ok)throw new Error(response.status===401||response.status===403
+      ?'tracker_authentication_failed':response.status===429||response.status>=500?'tracker_read_retryable':'tracker_read_failed');const payload=await response.json() as {data?:{
       user?:{projectV2?:{fields?:{nodes?:readonly {id?:string;name?:string;options?:readonly {id?:string;name?:string}[]}[];pageInfo?:{hasNextPage?:boolean}}}},
       repository?:{defaultBranchRef?:{name?:string}}}};const fields=payload.data?.user?.projectV2?.fields;
   if(fields===undefined||fields.pageInfo?.hasNextPage===true)throw new Error('github_response_invalid');const nodes=fields.nodes??[];
@@ -85,6 +86,8 @@ export const restartHermesGateway = async (
 
 export const projectContextRunFailureCode=(status:number):string|null=>status===404?'run_not_found':
   status>=400&&status<500?'provider_authentication_failed':null;
+export const trackerReadbackRetryable=(error:unknown):boolean=>error instanceof TypeError||error instanceof DOMException&&
+  error.name==='TimeoutError'||error instanceof Error&&error.message==='tracker_read_retryable';
 
 /** Process-local endpoint health only; canonical attempt state remains in the
  * existing receipts/audit tables. */
@@ -123,6 +126,7 @@ export const createWorker = (database: Database = createDatabase()) => {
   const agentDeliveries = new Map<string, Readonly<{signature: string;
     delivery: AgentDeliveryPort&AutonomousPmDeliveryPort}>>();
   const recoveryGate = createEndpointRecoveryGate();
+  const trackerReadbackGate = createEndpointRecoveryGate(3);
 
   const projectRuntime = (project: WorkerProjectBinding) => {
     const executorCatalog=projectHermesExecutorCatalog(project.runtime);
@@ -167,7 +171,7 @@ export const createWorker = (database: Database = createDatabase()) => {
       delivery: agentDelivery,
       composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: project.projectId,
         contour: 'trusted-main', channelReference: 'telegram:internal',
-        text: `ИИ агент начал следующий этап: ${item.title} — ${item.url}`, idempotencyKey}),
+        text: `ИИ-агент начал следующий этап: ${item.title} — ${item.url}`, idempotencyKey}),
       transaction: {execute: (input, submit) => executeAgentSubmissionTransaction(database, input, submit)}
     };
     const statusChanged = async (
@@ -211,16 +215,16 @@ export const createWorker = (database: Database = createDatabase()) => {
       notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:${suffix}`,text)});
   const recoverAutonomousPm=async(runtime:ReturnType<typeof projectRuntime>,attempt:Awaited<ReturnType<
     typeof listActiveAutonomousPmAttempts>>[number])=>{if(attempt.retryOf!==null){await failAutonomousPm(attempt,'exhausted',
-      'Автономный режим остановлен: Hermes недоступен после одной попытки восстановления.');return null;}
+      'Автономный режим остановлен: ИИ-агент недоступен после одной попытки восстановления.');return null;}
     const claim=await claimAutonomousPmRecovery(database,attempt);if(claim==='exhausted'){await failAutonomousPm(attempt,
-      'exhausted','Автономный режим остановлен: Hermes недоступен после одной попытки восстановления.');return null;}
+      'exhausted','Автономный режим остановлен: ИИ-агент недоступен после одной попытки восстановления.');return null;}
     if(claim==='claimed'){await notifyRecovery(attempt.projectId,attempt.deliveryReference,'autonomous-pm',
-      'Hermes недоступен во время автономной сверки. Перезапускаю только ИИ агента этого проекта.');
+      'ИИ-агент недоступен во время автономной сверки. Перезапускаю только ИИ-агента этого проекта.');
       try{await restartHermesGateway(runtime.project.runtime);}catch{await failAutonomousPm(attempt,'restart-failed',
-        'Автономный режим остановлен: Hermes не удалось восстановить.');return null;}}
+        'Автономный режим остановлен: ИИ-агента не удалось восстановить.');return null;}}
     try{await stores.snapshots.replace(await runtime.tracker.readSnapshot(runtime.project.bindingId,null));}
     catch{await failAutonomousPm(attempt,'recovery-facts-failed',
-      'Автономный режим остановлен: после восстановления не удалось подтвердить факты GitHub Project.');return null;}
+      'Автономный режим остановлен: после восстановления не удалось подтвердить данные таск-трекера.');return null;}
     let observed:Awaited<ReturnType<AutonomousPmDeliveryPort['observeReconciliation']>>={status:'unknown'};
     try{observed=await runtime.agentDelivery.observeReconciliation(attempt.deliveryReference);}catch{/* retry below */}
     if(observed.status!=='unknown'){recoveryGate.succeeded(attempt.deliveryReference,
@@ -235,7 +239,7 @@ export const createWorker = (database: Database = createDatabase()) => {
         notification:null});else if(retried.status==='busy')await failAutonomousPm(attempt,'retry-overlap',
         'Автономный режим остановлен: в проекте уже выполняется другая задача.');return null;
     }catch{await failAutonomousPm(attempt,'recovery-failed',
-      'Автономный режим остановлен: восстановление Hermes не завершилось.');return null;}}
+      'Автономный режим остановлен: восстановление ИИ-агента не завершилось.');return null;}}
   const observeAutonomousPm=async()=>{const projects=new Map((await activeProjects()).map((project)=>[project.projectId,project]));
     for(const attempt of await listActiveAutonomousPmAttempts(database,workspaceId,20)){const project=projects.get(attempt.projectId);
       if(project===undefined)continue;const runtime=projectRuntime(project);let observed:Awaited<ReturnType<
@@ -243,17 +247,17 @@ export const createWorker = (database: Database = createDatabase()) => {
         attempt.deliveryReference);}catch{observed={status:'unknown'};}
       if(observed.status==='unknown'&&observed.progress===undefined){const recovery=recoveryGate.failed(attempt.deliveryReference);
         if(recovery==='wait')continue;if(recovery==='exhausted'){await failAutonomousPm(attempt,'exhausted',
-          'Автономный режим остановлен: Hermes недоступен после одной попытки восстановления.');continue;}
+          'Автономный режим остановлен: ИИ-агент недоступен после одной попытки восстановления.');continue;}
         const recovered=await recoverAutonomousPm(runtime,attempt);if(recovered===null)continue;observed=recovered;
       }else recoveryGate.succeeded(attempt.deliveryReference,observed.status==='completed'||observed.status==='failed');
       if(observed.status==='started'||observed.status==='unknown')continue;
       if(observed.status==='failed'||observed.result===undefined){await finishAutonomousPmAttempt(database,attempt,{status:'failed',
         result:null,notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:failed`,
-          'Автономный режим остановлен: Hermes не завершил сверку Project.')});continue;}
+          'Автономный режим остановлен: ИИ-агент не завершил сверку таск-трекера.')});continue;}
       const result=observed.result;if(result.outcome!=='selected'){await finishAutonomousPmAttempt(database,attempt,{status:'completed',
         result,notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:${result.outcome}`,
           result.outcome==='no-eligible'?'Автономный режим: готовых задач нет.':
-            'Автономный режим остановлен: Hermes подтвердил блокер в GitHub Project.')});continue;}
+            'Автономный режим остановлен: ИИ-агент подтвердил блокер в таск-трекере.')});continue;}
       const mode=await readActiveProjectExecutionMode(database,attempt.projectId);
       if(!sameAutonomousActivation(mode,attempt)){await finishAutonomousPmAttempt(database,attempt,{status:'completed',
         result,notification:null});continue;}
@@ -264,7 +268,7 @@ export const createWorker = (database: Database = createDatabase()) => {
           doneStatusOptionId:project.doneStatusOptionId,process:processPolicy.policy});
       if(selected===null){await finishAutonomousPmAttempt(database,attempt,{status:'failed',result,
         notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:invalid-selection`,
-          'Автономный режим остановлен: выбор Hermes не подтверждён актуальными фактами GitHub Project.')});continue;}
+          'Автономный режим остановлен: выбор ИИ-агента не подтверждён актуальными данными таск-трекера.')});continue;}
       const instructions=defaultAgentStageInstructions(selected.role);const oneSnapshotPorts:AgentSubmissionPorts={
         ...runtime.submissionPorts,readFreshSnapshot:async()=>snapshot};
       try{await submitExplicitAgent({actorId:attempt.actorId,projectId:attempt.projectId,projectItemId:selected.itemId,
@@ -282,7 +286,7 @@ export const createWorker = (database: Database = createDatabase()) => {
     if (recovery === 'exhausted') throw new Error('agent_recovery_exhausted');
     if (attempt.retryOf !== null && attempt.retryOf !== undefined) throw new Error('agent_recovery_exhausted');
     await notifyRecovery(attempt.projectId, attempt.deliveryReference, 'restart',
-      `Hermes недоступен. Перезапускаю ИИ агента и сохраняю текущую задачу: ${attempt.itemTitle ?? attempt.itemId}${attempt.itemUrl === null ? '' : ` — ${attempt.itemUrl}`}`);
+      `ИИ-агент недоступен. Перезапускаю ИИ-агента и сохраняю текущую задачу: ${attempt.itemTitle ?? attempt.itemId}${attempt.itemUrl === null ? '' : ` — ${attempt.itemUrl}`}`);
     await restartHermesGateway(runtime.project.runtime);
     let observed: Awaited<ReturnType<AgentDeliveryPort['observe']>> = {status: 'unknown'};
     for (let probe = 0; probe < 5; probe += 1) {
@@ -328,7 +332,7 @@ export const createWorker = (database: Database = createDatabase()) => {
         const response=await request();const failureCode=projectContextRunFailureCode(response.status);
         if(failureCode!==null){await failProjectContextBootstrap(database,attempt,failureCode);continue;}
         if(!response.ok){await notifyRecovery(attempt.projectId,attempt.deliveryReference,'bootstrap-unavailable',
-          'Hermes временно недоступен во время настройки контекста. Worker продолжает контроль.');continue;}
+          'ИИ-агент временно недоступен во время настройки контекста. Контроль продолжается.');continue;}
         const value=await response.json().catch(()=>null) as {run_id?:unknown;status?:unknown;output?:unknown}|null;
         if(value?.run_id!==attempt.deliveryReference||typeof value.status!=='string')continue;
         if(value.status==='completed')await completeProjectContextBootstrap(database,attempt,value.output);
@@ -338,7 +342,7 @@ export const createWorker = (database: Database = createDatabase()) => {
         if(error instanceof Error&&error.message==='project_context_result_invalid')
           await failProjectContextBootstrap(database,attempt,'project_context_result_invalid');
         else await notifyRecovery(attempt.projectId,attempt.deliveryReference,'bootstrap-unavailable',
-          'Hermes временно недоступен во время настройки контекста. Worker продолжает контроль.');
+          'ИИ-агент временно недоступен во время настройки контекста. Контроль продолжается.');
       }
     }
   };
@@ -364,7 +368,7 @@ export const createWorker = (database: Database = createDatabase()) => {
         throw new Error('project_tracker_preparation_unavailable');return value.run_id;});};
   const observeTrackerPreparations=async()=>{
     for(const rejected of await listRejectedProjectTrackerPreparations(database,workspaceId,20))await recordProjectTrackerPreparationBlocker(database,{...rejected,
-      blocker:'Владелец проекта отклонил запрошенную Hermes операцию. Подготовка Project остановлена.',occurredAt:new Date().toISOString()});
+      blocker:'Владелец проекта отклонил операцию, запрошенную ИИ-агентом. Настройка таск-трекера остановлена.',occurredAt:new Date().toISOString()});
     for(const approved of await listApprovedProjectTrackerPreparations(database,workspaceId,20)){try{await submitTrackerPreparation({
       projectId:approved.projectId,actorId:approved.actorId,remainingDelta:approved.remainingDelta,processVersion:approved.processVersion,
       idempotencyKey:`${approved.correlationId}:approved:${approved.approvalVersion}`});}catch(error){await recordProjectTrackerPreparationBlocker(database,{...approved,
@@ -374,16 +378,19 @@ export const createWorker = (database: Database = createDatabase()) => {
       const response=await fetch(endpoint,{headers:{accept:'application/json',authorization:`Bearer ${binding.token}`},signal:AbortSignal.timeout(15_000)});
       if(!response.ok)continue;const value=await response.json().catch(()=>null) as {run_id?:unknown;status?:unknown;output?:unknown}|null;
       if(value?.run_id!==attempt.runId||typeof value.status!=='string')continue;if(['failed','cancelled'].includes(value.status)){await recordProjectTrackerPreparationBlocker(database,{...attempt,
-        blocker:`Hermes завершил подготовку Project со статусом ${value.status}.`,occurredAt:new Date().toISOString()});continue;}
+        blocker:`ИИ-агент завершил настройку таск-трекера со статусом ${value.status}.`,occurredAt:new Date().toISOString()});continue;}
       if(value.status!=='completed')continue;const result=await recordProjectTrackerPreparationResult(database,attempt,value.output);
-      if(result.status!=='verifying')continue;const inspected=await inspectConfirmedGitHubProject({projectUrl:binding.projectUrl,
-        repositoryUrl:binding.repositoryUrl,token:binding.token,stages:binding.process.policy.stages.map((stage)=>stage.title)});
+      if(result.status!=='verifying')continue;let inspected:Awaited<ReturnType<typeof inspectConfirmedGitHubProject>>;try{
+        inspected=await inspectConfirmedGitHubProject({projectUrl:binding.projectUrl,
+          repositoryUrl:binding.repositoryUrl,token:binding.token,stages:binding.process.policy.stages.map((stage)=>stage.title)});
+        trackerReadbackGate.succeeded(attempt.runId,true);
+      }catch(error){if(trackerReadbackRetryable(error)&&trackerReadbackGate.failed(attempt.runId)!=='exhausted')continue;throw error;}
       if(inspected.capabilities!==null){await recordVerifiedProjectTrackerCapabilities(database,{attempt,capabilities:inspected.capabilities,
         occurredAt:new Date().toISOString()});continue;}if(trackerPreparationDeltaShrank(attempt.remainingDelta,inspected.remainingDelta)){await submitTrackerPreparation({
           projectId:attempt.projectId,actorId:attempt.actorId,remainingDelta:inspected.remainingDelta,processVersion:attempt.processVersion,
           idempotencyKey:`${attempt.correlationId}:retry:${createHash('sha256').update(JSON.stringify(inspected.remainingDelta)).digest('hex')}`});continue;}
       await recordProjectTrackerPreparationBlocker(database,{...attempt,remainingDelta:inspected.remainingDelta,
-        blocker:'Project по-прежнему не соответствует подтверждённому процессу; повтор Hermes не дал наблюдаемого прогресса.',
+        blocker:'Таск-трекер по-прежнему не соответствует подтверждённому процессу; повтор ИИ-агента не дал наблюдаемого прогресса.',
         occurredAt:new Date().toISOString()});}catch(error){await recordProjectTrackerPreparationBlocker(database,{...attempt,
         blocker:error instanceof Error?error.message:'project_tracker_preparation_unavailable',occurredAt:new Date().toISOString()});}}
   };
@@ -442,7 +449,7 @@ export const createWorker = (database: Database = createDatabase()) => {
           idempotencyKey: `agent-chain:${project.projectId}:process-policy-blocker`,
           availableAt: new Date().toISOString(), payload: {message: {projectId: project.projectId,
             contour: 'trusted-main', channelReference: 'telegram:internal',
-            text: 'Автоматическое продолжение ИИ агента остановлено: активные настройки процесса недоступны или некорректны.',
+            text: 'Автоматическое продолжение ИИ-агента остановлено: активные настройки процесса недоступны или некорректны.',
             idempotencyKey: `agent-chain:${project.projectId}:process-policy-blocker`}}});
         const reconciled=await reconcileTracker({bindingId: project.bindingId, workspaceId, projectId: project.projectId,
           cursor: project.cursor, ports: {tracker: runtime.tracker, snapshots: stores.snapshots,
