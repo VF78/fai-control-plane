@@ -152,7 +152,7 @@ export const projectGatewayContainerSpec=(request:ProjectRuntimeProvisioningRequ
     `${assets.profile}/SOUL.md:/opt/data/profiles/internal/SOUL.md:ro`];
   return {Image:image,Cmd:['sleep','infinity'],WorkingDir:request.artifact.workspacePath,Env:env,
     Labels:projectRuntimeOwnership(request,'gateway'),
-    Healthcheck:{Test:['CMD','python','-c',"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5); urllib.request.urlopen('http://127.0.0.1:9119/api/status', timeout=5)"],
+    Healthcheck:{Test:['CMD','python','-c',"import os,subprocess,urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5); urllib.request.urlopen('http://127.0.0.1:9119/api/status', timeout=5); subprocess.run(['gh','auth','status'],env={**os.environ,'HOME':'/opt/data/home'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=5)"],
       Interval:10_000_000_000,Timeout:5_000_000_000,Retries:12,StartPeriod:20_000_000_000},
     HostConfig:{...commonHost(root,projectNetwork),Binds:binds},
     NetworkingConfig:endpoints(projectNetwork,managementNetwork,[`${request.artifact.runtimeId}-gateway`])};

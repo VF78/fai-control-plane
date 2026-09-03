@@ -328,6 +328,14 @@ render_target_environment
         self.assertIn("docker image ls fai-control-plane-mvp", cleanup)
         self.assertNotIn("fai-hermes-project", cleanup)
 
+    def test_project_hermes_initializes_github_in_the_agent_tool_home(self):
+        init = (ROOT / "infra/hermes-project/runtime-init.sh").read_text()
+
+        self.assertIn("runtime_home=/opt/data/home", init)
+        self.assertIn("gh_config_dir=$runtime_home/.config/gh", init)
+        self.assertEqual(init.count('HOME="$runtime_home"'), 2)
+        self.assertNotIn("HOME=/opt/data GH_CONFIG_DIR", init)
+
     def test_project_logs_are_bounded(self):
         compose = (ROOT / "infra/production/compose.yaml").read_text()
 
