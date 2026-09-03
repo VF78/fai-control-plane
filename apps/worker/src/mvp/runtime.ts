@@ -44,7 +44,7 @@ const env = (name: string): string => {
 };
 const pause = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
-type TrackerPreparationBinding=Readonly<{projectUrl:string;repositoryUrl:string;token:string}>;
+type TrackerPreparationBinding=Readonly<{projectUrl:string;repositoryUrl:string;agentToken:string;trackerToken:string}>;
 export const trackerPreparationDeltaShrank=(prior:readonly string[],next:readonly string[])=>next.length<prior.length&&
   next.every((item)=>prior.includes(item));
 export const inspectConfirmedGitHubProject=async(input:Readonly<{projectUrl:string;repositoryUrl:string;token:string;
@@ -352,8 +352,12 @@ export const createWorker = (database: Database = createDatabase()) => {
       listProjectHermesRuntimeBindings(database,workspaceId),readActiveProjectProcessPolicy(database,projectId)]);
     const runtime=runtimes.find((candidate)=>candidate.projectId===projectId);
     if(binding===null||runtime===undefined||process===null)throw new Error('project_tracker_preparation_unavailable');
-    const token=(await secrets.resolve(runtime.agentCredentialRef,'agent_delivery')).value;
-    return {projectUrl:binding.projectUrl,repositoryUrl:binding.repositoryUrl,token,endpoint:runtime.gatewayEndpoint,process};
+    const [agentCredential,trackerCredential]=await Promise.all([
+      secrets.resolve(runtime.agentCredentialRef,'agent_delivery'),
+      secrets.resolve(binding.trackerCredentialRef,'tracker_read')
+    ]);
+    return {projectUrl:binding.projectUrl,repositoryUrl:binding.repositoryUrl,agentToken:agentCredential.value,
+      trackerToken:trackerCredential.value,endpoint:runtime.gatewayEndpoint,process};
   };
   const submitTrackerPreparation=async(input:Readonly<{projectId:string;actorId:string;remainingDelta:readonly string[];
     processVersion:string;idempotencyKey:string}>)=>{const binding=await trackerPreparationBinding(input.projectId,input.actorId);
@@ -362,7 +366,7 @@ export const createWorker = (database: Database = createDatabase()) => {
     return recordProjectTrackerPreparationStart(database,{workspaceId,projectId:input.projectId,actorId:input.actorId,
       processVersion:input.processVersion,remainingDelta:input.remainingDelta,idempotencyKey:input.idempotencyKey,
       occurredAt:new Date().toISOString()},async()=>{const response=await fetch(binding.endpoint,{method:'POST',headers:{accept:'application/json',
-        authorization:`Bearer ${binding.token}`,'content-type':'application/json'},body:JSON.stringify(assignment),signal:AbortSignal.timeout(15_000)});
+        authorization:`Bearer ${binding.agentToken}`,'content-type':'application/json'},body:JSON.stringify(assignment),signal:AbortSignal.timeout(15_000)});
       if(response.status!==202)throw new Error('project_tracker_preparation_unavailable');const value=await response.json().catch(()=>null) as
         {run_id?:unknown;status?:unknown}|null;if(typeof value?.run_id!=='string'||value.status!=='started')
         throw new Error('project_tracker_preparation_unavailable');return value.run_id;});};
@@ -375,14 +379,14 @@ export const createWorker = (database: Database = createDatabase()) => {
         blocker:error instanceof Error?error.message:'project_tracker_preparation_unavailable',occurredAt:new Date().toISOString()});}}
     for(const attempt of await listProjectTrackerPreparationAttempts(database,workspaceId,20)){try{const binding=await trackerPreparationBinding(
       attempt.projectId,attempt.actorId);const endpoint=new URL(binding.endpoint);endpoint.pathname=`${endpoint.pathname}/${encodeURIComponent(attempt.runId)}`;
-      const response=await fetch(endpoint,{headers:{accept:'application/json',authorization:`Bearer ${binding.token}`},signal:AbortSignal.timeout(15_000)});
+      const response=await fetch(endpoint,{headers:{accept:'application/json',authorization:`Bearer ${binding.agentToken}`},signal:AbortSignal.timeout(15_000)});
       if(!response.ok)continue;const value=await response.json().catch(()=>null) as {run_id?:unknown;status?:unknown;output?:unknown}|null;
       if(value?.run_id!==attempt.runId||typeof value.status!=='string')continue;if(['failed','cancelled'].includes(value.status)){await recordProjectTrackerPreparationBlocker(database,{...attempt,
         blocker:`ИИ-агент завершил настройку таск-трекера со статусом ${value.status}.`,occurredAt:new Date().toISOString()});continue;}
       if(value.status!=='completed')continue;const result=await recordProjectTrackerPreparationResult(database,attempt,value.output);
       if(result.status!=='verifying')continue;let inspected:Awaited<ReturnType<typeof inspectConfirmedGitHubProject>>;try{
         inspected=await inspectConfirmedGitHubProject({projectUrl:binding.projectUrl,
-          repositoryUrl:binding.repositoryUrl,token:binding.token,stages:binding.process.policy.stages.map((stage)=>stage.title)});
+          repositoryUrl:binding.repositoryUrl,token:binding.trackerToken,stages:binding.process.policy.stages.map((stage)=>stage.title)});
         trackerReadbackGate.succeeded(attempt.runId,true);
       }catch(error){if(trackerReadbackRetryable(error)&&trackerReadbackGate.failed(attempt.runId)!=='exhausted')continue;throw error;}
       if(inspected.capabilities!==null){await recordVerifiedProjectTrackerCapabilities(database,{attempt,capabilities:inspected.capabilities,
