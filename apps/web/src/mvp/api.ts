@@ -115,7 +115,7 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
       readActiveProjectContext(database, actorId, projectId),
     composeAcceptedNotification: async (item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput> => ({projectId: context.projectId,
       contour: 'trusted-main', channelReference: 'telegram:internal',
-      text: `Hermes принял задачу: ${item.title} — ${item.url}`, idempotencyKey}),
+      text: `ИИ-агент принял задачу: ${item.title} — ${item.url}`, idempotencyKey}),
     repository, delivery, tracker, agentInstructions: defaultAgentStageInstructions, transaction: {execute: (
       input: Parameters<AgentSubmissionPorts['transaction']['execute']>[0], submit: Parameters<AgentSubmissionPorts['transaction']['execute']>[1]
     ) => executeAgentSubmissionTransaction(database, input, submit)}}};

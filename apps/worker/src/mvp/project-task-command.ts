@@ -54,7 +54,7 @@ const assignment=async(database:Database,actorId:string,projectId:string,deliver
     readActiveProjectContext(database,requester,project),repository,delivery,
   composeAcceptedNotification:async(item:TrackerItemFact,idempotencyKey:string):Promise<MessengerDeliveryInput>=>({
     projectId:context.projectId,contour:'trusted-main',channelReference:'telegram:internal',
-    text:`Hermes принял задачу: ${item.title} — ${item.url}`,idempotencyKey}),transaction:{execute:(input:Parameters<
+    text:`ИИ-агент принял задачу: ${item.title} — ${item.url}`,idempotencyKey}),transaction:{execute:(input:Parameters<
       AgentSubmissionPorts['transaction']['execute']>[0],submit:Parameters<AgentSubmissionPorts['transaction']['execute']>[1])=>
       executeAgentSubmissionTransaction(database,input,submit)},tracker,agentInstructions:defaultAgentStageInstructions};
   return {context,tracker,read,ports};

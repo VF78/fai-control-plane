@@ -46,16 +46,16 @@ export const composeAgentTerminalNotification = (
   idempotencyKey: string
 ): MessengerDeliveryInput => {
   const result = observed.result;
-  const heading = observed.status === 'completed' ? 'Агент завершил этап задачи'
-    : result?.decision === 'rejected' ? 'Агент не смог выполнить этап задачи' : 'Этап агента завершился ошибкой';
+  const heading = observed.status === 'completed' ? 'ИИ-агент завершил этап задачи'
+    : result?.decision === 'rejected' ? 'ИИ-агент не смог выполнить этап задачи' : 'Этап ИИ-агента завершился ошибкой';
   const failure = observed.status === 'failed' ? ({
-    provider_failed: 'Агент завершил выполнение с ошибкой.',
-    provider_cancelled: 'Выполнение агента отменено.',
-    provider_unavailable: 'Агент или источник задач недоступен после двух автоматических попыток.',
-    provider_timeout: 'Агент не завершил этап в установленный срок.',
-    provider_blocked: 'Агент подтвердил блокер на текущем этапе.',
-    agent_result_rejected: result?.reason ?? 'Агент отклонил результат этапа.',
-    agent_result_invalid: 'Результат агента не соответствует настройкам процесса.'
+    provider_failed: 'ИИ-агент завершил выполнение с ошибкой.',
+    provider_cancelled: 'Выполнение ИИ-агента отменено.',
+    provider_unavailable: 'ИИ-агент или источник задач недоступен после двух автоматических попыток.',
+    provider_timeout: 'ИИ-агент не завершил этап в установленный срок.',
+    provider_blocked: 'ИИ-агент подтвердил блокер на текущем этапе.',
+    agent_result_rejected: result?.reason ?? 'ИИ-агент отклонил результат этапа.',
+    agent_result_invalid: 'Результат ИИ-агента не соответствует настройкам процесса.'
   } as const)[observed.failureCode ?? 'provider_failed'] : undefined;
   const reason = failure === undefined ? (result?.reason === undefined ? '' : `\n${result.reason}`) : `\n${failure}`;
   const deliverables = result?.deliverables.length

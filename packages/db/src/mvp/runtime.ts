@@ -599,7 +599,7 @@ export const saveProjectExecutionMode = async (database: Database, input: Readon
       input.mode,`mode:${input.idempotencyKey}`,JSON.stringify({mode: input.mode}),input.occurredAt]);
     const notificationKey = `${input.idempotencyKey}:telegram`;
     const text = input.mode === 'autonomous'
-      ? 'Автономный режим проекта включён. ИИ агент будет брать по одной готовой задаче до обязательного согласования, блокера или завершения работ.'
+      ? 'Автономный режим проекта включён. ИИ-агент будет брать по одной готовой задаче до обязательного согласования, блокера или завершения работ.'
       : 'Автономный режим проекта остановлен. Текущая задача продолжает контролироваться, новые задачи автоматически не запускаются.';
     await client.query(`insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
       values($1,'messenger-notification',$2,$3,$4) on conflict(idempotency_key) do nothing`, [input.projectId,

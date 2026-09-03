@@ -6,11 +6,11 @@ describe('task executor control', () => {
     const source = await readFile(new URL('./operator-controls.tsx', import.meta.url), 'utf8');
     expect(source).not.toContain('<details className="fcp-control fcp-task-executor"');
     expect(source).toContain('<optgroup label="Люди">');
-    expect(source).toContain('<optgroup label="Агенты">');
+    expect(source).toContain('<optgroup label="ИИ-агенты">');
     expect(source).toContain('Назначить и начать');
     expect(source).toContain('Подтвердить и начать');
-    expect(source).toContain('Запуск Hermes выполняется');
-    expect(source).toContain('Worker проверяет результат автоматически раз в минуту');
+    expect(source).toContain('Запуск ИИ-агента выполняется');
+    expect(source).toContain('Результат проверяется автоматически раз в минуту');
     expect(source).not.toContain('Проверить статус');
     expect(source).toContain('Запустить заново');
     expect(source).toContain('pendingLabel="Запускаем…"');

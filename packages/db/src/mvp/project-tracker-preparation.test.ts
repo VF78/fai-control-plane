@@ -1,7 +1,8 @@
 import {describe,expect,it,vi} from 'vitest';
 import {defaultProjectProcessPolicy} from '@fai-control-plane/domain';
 import {parseProjectTrackerPreparationResult,projectTrackerPreparationAssignment,
-  recordProjectTrackerPreparationResult,recordProjectTrackerPreparationStart,type Database} from './index.ts';
+  listProjectTrackerPreparationAttempts,recordProjectTrackerPreparationResult,recordProjectTrackerPreparationStart,
+  type Database} from './index.ts';
 
 describe('persisted project tracker preparation',()=>{
   it('accepts only the bounded terminal Hermes contract',()=>{
@@ -47,7 +48,33 @@ describe('persisted project tracker preparation',()=>{
     expect(view.approval?.id).toMatch(/^[a-f0-9-]{36}$/);
     expect(view.approval?.version).toMatch(/^[a-f0-9]{64}$/);
     expect(view.approval?.id).not.toBe(view.approval?.version);
+    expect(view.runId).toBe('run_one');
     expect(queries.some(({parameters})=>parameters?.includes('project_tracker_preparation_approval_v1')&&
       parameters.includes(view.approval?.version))).toBe(true);
+  });
+
+  it('keeps a completed run observable while tracker readback is being verified',async()=>{
+    const content=JSON.stringify({contract:'fai.project-tracker-preparation.v1',status:'verifying',runId:'run_one',
+      processVersion:'a'.repeat(64),remainingDelta:[]});
+    const database={query:vi.fn(async()=>({rows:[{projectId:'00000000-0000-4000-8000-000000000001',actorId:'actor',
+      content,correlationId:'prepare:one'}]}))} as unknown as Database;
+    await expect(listProjectTrackerPreparationAttempts(database,'workspace')).resolves.toEqual([{workspaceId:'workspace',
+      projectId:'00000000-0000-4000-8000-000000000001',actorId:'actor',runId:'run_one',correlationId:'prepare:one',
+      processVersion:'a'.repeat(64),remainingDelta:[]}]);
+  });
+
+  it('repairs an old configuring state whose result receipt already exists',async()=>{
+    const current=JSON.stringify({contract:'fai.project-tracker-preparation.v1',status:'configuring',runId:'run_one',
+      processVersion:'a'.repeat(64),remainingDelta:[]});const queries:string[]=[];
+    const query=vi.fn(async(sql:string)=>{queries.push(sql);if(sql.includes('select 1 from command_receipts'))return {rowCount:1,rows:[{}]};
+      if(sql.includes('select content_text as content'))return {rowCount:1,rows:[{content:current}]};return {rowCount:1,rows:[]};});
+    const database={connect:vi.fn(async()=>({query,release:vi.fn()}))} as unknown as Database;
+    const view=await recordProjectTrackerPreparationResult(database,{workspaceId:'workspace',
+      projectId:'00000000-0000-4000-8000-000000000001',actorId:'actor',runId:'run_one',correlationId:'prepare:one',
+      processVersion:'a'.repeat(64),remainingDelta:[]},JSON.stringify({contract:'fai.project-tracker-preparation-result.v1',
+      status:'completed',remainingDelta:[]}));
+    expect(view).toMatchObject({status:'verifying',runId:'run_one'});
+    expect(queries.some((sql)=>sql.includes("'Project tracker preparation'"))).toBe(true);
+    expect(queries).toContain('commit');
   });
 });

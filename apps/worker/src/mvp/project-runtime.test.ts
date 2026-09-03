@@ -4,7 +4,7 @@ import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProje
   runProjectBindingsIsolated,
   type WorkerProjectBinding} from './project-runtime.ts';
 import {createEndpointRecoveryGate,inspectConfirmedGitHubProject,projectContextRunFailureCode,restartHermesGateway,
-  trackerPreparationDeltaShrank} from './runtime.ts';
+  trackerPreparationDeltaShrank,trackerReadbackRetryable} from './runtime.ts';
 
 const ids={one:'00000000-0000-4000-8000-000000000001',two:'00000000-0000-4000-8000-000000000002'} as const;
 const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','dashboard-username','dashboard-password','telegram-bot','inbound-actions'];
@@ -50,6 +50,11 @@ describe('multi-project worker composition', () => {
     expect(trackerPreparationDeltaShrank(['Status','Owner','Blocked'],['Owner','Blocked'])).toBe(true);
     expect(trackerPreparationDeltaShrank(['Status','Owner'],['Blocked'])).toBe(false);
     expect(trackerPreparationDeltaShrank(['Status'],['Status'])).toBe(false);
+  });
+  it('retries only temporary tracker readback failures',()=>{
+    expect(trackerReadbackRetryable(new Error('tracker_read_retryable'))).toBe(true);
+    expect(trackerReadbackRetryable(new TypeError('fetch failed'))).toBe(true);
+    expect(trackerReadbackRetryable(new Error('tracker_authentication_failed'))).toBe(false);
   });
   it('verifies only the bound Project fields with one read-only GraphQL request',async()=>{
     const request=vi.fn<(input:URL|RequestInfo,init?:RequestInit)=>Promise<Response>>(async()=>new Response(JSON.stringify({data:{user:{projectV2:{fields:{nodes:[

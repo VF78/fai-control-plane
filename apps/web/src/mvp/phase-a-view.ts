@@ -10,8 +10,8 @@ export const phaseAState = (status: string | null): PhaseAState =>
 export const executorFact = (item: TrackerItemFact, hermesOwnerOptionId: string | undefined): string => {
   const humans = item.assignees.map((assignee) => assignee.name ?? assignee.login).join(', ');
   const hermes = hermesOwnerOptionId !== undefined && item.ownerOptionId === hermesOwnerOptionId;
-  if (hermes && humans) return `Конфликт: Hermes + ${humans}`;
-  return hermes ? 'Hermes' : humans || 'Не назначен';
+  if (hermes && humans) return `Конфликт: ИИ-агент + ${humans}`;
+  return hermes ? 'ИИ-агент' : humans || 'Не назначен';
 };
 export const readableAssignees = (item: TrackerItemFact, hermesOwnerOptionId?: string): string => executorFact(item, hermesOwnerOptionId);
 
