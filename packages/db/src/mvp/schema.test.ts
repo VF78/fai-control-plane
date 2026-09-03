@@ -19,6 +19,8 @@ const attemptLifecycle = readFileSync(fileURLToPath(
   new URL('../../mvp-drizzle/0003_agent_attempt_lifecycle_index.sql', import.meta.url)), 'utf8');
 const binaryArtifact = readFileSync(fileURLToPath(
   new URL('../../mvp-drizzle/0004_source_artifact_binary_payload.sql', import.meta.url)), 'utf8');
+const confirmedProcess = readFileSync(fileURLToPath(
+  new URL('../../mvp-drizzle/0005_activate_confirmed_process.sql', import.meta.url)), 'utf8');
 
 describe('MVP fresh schema', () => {
   it('declares exactly the approved 16 tables', () => {
@@ -70,5 +72,12 @@ describe('MVP fresh schema', () => {
     expect(attemptLifecycle).toContain('CREATE INDEX IF NOT EXISTS "audit_events_attempt_lifecycle_idx"');
     expect(attemptLifecycle).not.toMatch(/CREATE\s+TABLE|DROP|DELETE|TRUNCATE/i);
     expect(sql).not.toContain('CREATE TABLE "agent_run');
+  });
+
+  it('activates an existing process when an older wizard confirmation lacks activation',()=>{
+    expect(confirmedProcess).toContain("project.wizard.process-confirm");
+    expect(confirmedProcess).toContain("project.process.configure");
+    expect(confirmedProcess).toContain("wizard-process:");
+    expect(confirmedProcess).not.toMatch(/\b(?:UPDATE|DELETE|DROP|TRUNCATE)\b/i);
   });
 });

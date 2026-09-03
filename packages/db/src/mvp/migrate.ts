@@ -31,6 +31,10 @@ export const migrate = async (): Promise<void> => {
       ? new URL('../mvp-drizzle/0004_source_artifact_binary_payload.sql', import.meta.url)
       : new URL('../../mvp-drizzle/0004_source_artifact_binary_payload.sql', import.meta.url);
     const binaryArtifact = await readFile(fileURLToPath(binaryArtifactMigration), 'utf8');
+    const confirmedProcessMigration = import.meta.url.includes('/dist/')
+      ? new URL('../mvp-drizzle/0005_activate_confirmed_process.sql', import.meta.url)
+      : new URL('../../mvp-drizzle/0005_activate_confirmed_process.sql', import.meta.url);
+    const confirmedProcess = await readFile(fileURLToPath(confirmedProcessMigration), 'utf8');
     const applyCleanup = async (): Promise<void> => {
       const constraint = await database.query<{definition: string}>(
         `select pg_get_constraintdef(oid) as definition from pg_constraint
@@ -48,6 +52,7 @@ export const migrate = async (): Promise<void> => {
       if (!columns.rows.some(({name}) => name === 'content_bytes')) {
         await database.query(`begin;\n${binaryArtifact}\ncommit;`);
       }
+      await database.query(`begin;\n${confirmedProcess}\ncommit;`);
     };
     if (names.length > 0) {
       if (JSON.stringify(names) !== JSON.stringify(expected) || !await databaseMvpReady(database)) {
