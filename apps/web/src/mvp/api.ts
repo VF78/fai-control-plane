@@ -38,15 +38,16 @@ import {
   subjectHash
 } from '@fai-control-plane/db';
 import {projectDocumentUploadCategories, type ProjectDocumentUploadCategory} from '@fai-control-plane/db';
-import {defaultAgentStageInstructions, assignTaskExecutor, startProcess, decideApproval,
+import {defaultAgentStageInstructions,decideApproval,
   type AgentSubmissionPorts} from '@fai-control-plane/application';
-import {verifyGitHubWebhook, createGitHubRepositoryReadAdapter, createGitHubTrackerMutationAdapter, createGitHubTrackerReadAdapter, createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
+import {verifyGitHubWebhook,createGitHubRepositoryReadAdapter,createGitHubTrackerMutationAdapter,
+  createGitHubTrackerReadAdapter} from '@fai-control-plane/integrations';
 import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, mayChangeMembership, parseAgentRoutingPolicy,
   projectPassportPaths, type AgentDeliveryPort, type ApprovalEvidence, type ApprovalKind,
   type MessengerDeliveryInput, type OpaqueSecretRef, type ProjectRole, type TrackerItemFact} from '@fai-control-plane/domain';
 import {getDatabase, jsonError, requireCsrf, requireSession, secretResolver} from './runtime.ts';
 import {readiness} from './http-surface.ts';
-import {ensureProjectAgentProfile, prepareProjectTracker, resolveAndRegisterProject} from './project-onboarding.ts';
+import {resolveAndRegisterProject} from './project-onboarding.ts';
 
 const json = async (request: Request): Promise<Record<string, unknown>> => {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('media_type_invalid');
@@ -62,6 +63,13 @@ const string = (value: unknown, max = 256): string => {
   }
   return value;
 };
+const workerTaskCommand=async(request:Request,body?:Record<string,unknown>)=>{const endpoint=new URL(
+  process.env.FCP_WORKER_INTERNAL_URL??'http://worker:3001');if(endpoint.toString()!=='http://worker:3001/')
+  throw new Error('project_runtime_unavailable');const target=new URL('/project-task',endpoint);target.search=new URL(request.url).search;
+  const response=await fetch(target,{method:request.method,
+    headers:{'content-type':'application/json',cookie:request.headers.get('cookie')??''},...(body===undefined?{}:{body:JSON.stringify(body)}),
+    signal:AbortSignal.timeout(30_000)});return new Response(await response.text(),{status:response.status,
+      headers:{'content-type':'application/json','cache-control':'no-store'}});};
 const optionalHttps = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;
   const parsed = new URL(string(value, 2_048));
@@ -71,23 +79,6 @@ const optionalHttps = (value: unknown): string | null => {
 export const effectiveAgentRouting = (routing: Awaited<ReturnType<typeof readAgentRoutingPolicy>>) => routing ?? {
   policy: defaultAgentRoutingPolicy,
   version: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex')
-};
-const agentRuntime = async (
-  database: ReturnType<typeof getDatabase>,
-  actorId: string,
-  projectId: string
- ) => {
-  const profile = await readProjectAgentProfile(database, actorId, projectId);
-  if (profile.status !== 'ready') return null;
-  return readProjectHermesRuntimeBinding(database, actorId, projectId);
-};
-const privateAgentEndpoint = (runtime: NonNullable<Awaited<ReturnType<typeof agentRuntime>>>): boolean => {
-  try {
-    return new URL(runtime.gatewayEndpoint).toString() ===
-      `http://${runtime.runtimeId}-gateway:8642/v1/runs`;
-  } catch {
-    return false;
-  }
 };
 const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorId: string, projectId: string, delivery: AgentDeliveryPort) => {
   const context = await resolveAgentSubmissionBinding(database, actorId, projectId);
@@ -130,20 +121,6 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
     ) => executeAgentSubmissionTransaction(database, input, submit)}}};
 };
 
-/** UI composition for starting one exact existing Project item. */
-export const startGitHubProcess = async (database: ReturnType<typeof getDatabase>, input: Readonly<{
-  actorId: string; projectId: string; task: Readonly<{kind: 'existing'; itemId: string}>;
-  sourceReference: string; idempotencyKey: string;
-}>) => {
-  const runtime = await agentRuntime(database,input.actorId,input.projectId);
-  if (runtime === null) throw new Error('agent_provider_unavailable');
-  const delivery = createHermesDeliveryAdapter({endpoint: string(runtime.gatewayEndpoint, 2_048),
-    credentialRef: runtime.agentCredentialRef, secrets: secretResolver,
-    allowPrivateHttp: privateAgentEndpoint(runtime)});
-  const {ports} = await githubAssignment(database, input.actorId, input.projectId, delivery);
-  return startProcess(input, ports);
-};
-
 export const projects = async (request: Request): Promise<Response> => {
   try {
     const database = getDatabase();
@@ -174,10 +151,12 @@ export const projectAgentProfile = async (request:Request,projectId:string):Prom
     if(request.method==='GET') return Response.json(await readProjectAgentProfile(database,session.actorId,projectId),
       {headers:{'cache-control':'no-store'}});
     if(request.method!=='POST') return new Response(null,{status:405,headers:{allow:'GET, POST'}});
-    requireCsrf(request); const body=await json(request);
-    return Response.json(await ensureProjectAgentProfile(database,{workspaceId:session.workspaceId,actorId:session.actorId,
-      projectId,idempotencyKey:string(body.idempotencyKey,128),force:body.force===true}),
-    {headers:{'cache-control':'no-store'}});
+    requireCsrf(request);const endpoint=new URL(process.env.FCP_WORKER_INTERNAL_URL??'http://worker:3001');
+    if(endpoint.toString()!=='http://worker:3001/')throw new Error('project_runtime_unavailable');
+    const response=await fetch(new URL(`/project-agent-profile/${encodeURIComponent(projectId)}`,endpoint),{method:'POST',
+      headers:{'content-type':request.headers.get('content-type')??'',cookie:request.headers.get('cookie')??''},
+      body:await request.text(),signal:AbortSignal.timeout(30_000)});
+    return new Response(await response.text(),{status:response.status,headers:{'content-type':'application/json','cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
 };
 
@@ -186,8 +165,12 @@ export const projectTrackerPreparation=async(request:Request,projectId:string):P
     if(request.method==='GET')return Response.json(await readProjectTrackerPreparation(database,session.actorId,projectId),
       {headers:{'cache-control':'no-store'}});
     if(request.method!=='POST')return new Response(null,{status:405,headers:{allow:'GET, POST'}});
-    requireCsrf(request);const body=await json(request);return Response.json(await prepareProjectTracker(database,{workspaceId:session.workspaceId,
-      actorId:session.actorId,projectId,idempotencyKey:string(body.idempotencyKey,128)}),{headers:{'cache-control':'no-store'}});
+    requireCsrf(request);const endpoint=new URL(process.env.FCP_WORKER_INTERNAL_URL??'http://worker:3001');
+    if(endpoint.toString()!=='http://worker:3001/')throw new Error('project_runtime_unavailable');
+    const response=await fetch(new URL(`/project-tracker-preparation/${encodeURIComponent(projectId)}`,endpoint),{method:'POST',
+      headers:{'content-type':request.headers.get('content-type')??'',cookie:request.headers.get('cookie')??''},
+      body:await request.text(),signal:AbortSignal.timeout(30_000)});
+    return new Response(await response.text(),{status:response.status,headers:{'content-type':'application/json','cache-control':'no-store'}});
   }catch(error){return jsonError(error);}
 };
 
@@ -429,113 +412,13 @@ const unavailableDelivery: AgentDeliveryPort = {submit: async () => { throw new 
   observe: async () => { throw new Error('agent_provider_unavailable'); }};
 
 export const taskAssignableUsers = async (request: Request): Promise<Response> => {
-  try {
-    if (request.method !== 'GET') return new Response(null, {status: 405, headers: {allow: 'GET'}});
-    const session = await requireSession(); const projectId = string(new URL(request.url).searchParams.get('projectId'));
-    const {tracker} = await githubAssignment(getDatabase(), session.actorId, projectId, unavailableDelivery);
-    return Response.json({users: await tracker.listAssignableUsers()});
-  } catch (error) {
-    const code = error instanceof Error ? error.message : 'request_failed';
-    if (['tracker_provider_unsupported','github_binding_invalid','github_read_failed','github_response_invalid',
-      'github_credential_invalid','secret_purpose_denied','secret_path_must_be_absolute','secret_invalid'].includes(code)) {
-      return Response.json({error: 'provider_error'}, {status: 502});
-    }
-    return jsonError(error);
-  }
+  try{if(request.method!=='GET')return new Response(null,{status:405,headers:{allow:'GET'}});await requireSession();
+    return workerTaskCommand(request);}catch(error){return jsonError(error);}
 };
 
 export const taskExecutor = async (request: Request): Promise<Response> => {
-  try {
-    if (request.method !== 'POST') return new Response(null, {status: 405, headers: {allow: 'POST'}});
-    const database = getDatabase(); const session = await requireSession(); requireCsrf(request);
-    const body = await json(request); const projectId = string(body.projectId);
-    const action = body.action === undefined ? 'assign' : string(body.action, 32);
-    if(action==='confirm_and_start'){
-      if(body.confirmed!==true)throw new Error('body_invalid');const itemId=string(body.projectItemId);
-      const expectedVersion=string(body.version,1_024);const exactStatement=body.exactStatement===null||body.exactStatement===undefined
-        ?null:string(body.exactStatement,20_000);
-      const runtime=await agentRuntime(database,session.actorId,projectId);if(runtime===null)throw new Error('agent_provider_unavailable');
-      const delivery=createHermesDeliveryAdapter({endpoint:string(runtime.gatewayEndpoint,2_048),
-        credentialRef:runtime.agentCredentialRef,secrets:secretResolver,allowPrivateHttp:privateAgentEndpoint(runtime)});
-      const assignment=await githubAssignment(database,session.actorId,projectId,delivery);
-      const snapshot=await assignment.trackerRead.readSnapshot(assignment.context.bindingId,null);
-      await assignment.ports.persistSnapshot(snapshot);const item=snapshot.items.find((candidate)=>candidate.itemId===itemId);
-      if(item===undefined||item.version!==expectedVersion||(item.statement??null)!==exactStatement||item.blocked===true)throw new Error('task_executor_conflict');
-      const result=await startGitHubProcess(database,{actorId:session.actorId,projectId,task:{kind:'existing',itemId},
-        sourceReference:'ui:project-wizard',idempotencyKey:string(body.idempotencyKey,128)});
-      return Response.json({...result,itemId:item.itemId,itemUrl:item.url});
-    }
-    if(action==='create_and_start'){
-      const title=string(body.title,160);const scope=string(body.scope,1_500);const acceptance=string(body.acceptance,1_500);
-      if(body.confirmed!==true)throw new Error('body_invalid');const runtime=await agentRuntime(database,session.actorId,projectId);
-      if(runtime===null)throw new Error('agent_provider_unavailable');const delivery=createHermesDeliveryAdapter({
-        endpoint:string(runtime.gatewayEndpoint,2_048),credentialRef:runtime.agentCredentialRef,secrets:secretResolver,
-        allowPrivateHttp:privateAgentEndpoint(runtime)});const assignment=await githubAssignment(database,session.actorId,projectId,delivery);
-      const processPolicy=await readProjectProcessPolicy(database,session.actorId,projectId);const initialStage=processPolicy?.policy.stages[0]?.title;
-      if(initialStage===undefined)throw new Error('project_process_policy_unavailable');const idempotencyKey=string(body.idempotencyKey,128);
-      const created=await assignment.tracker.createIssue({projectId,title,statement:`## Scope\n\n${scope}\n\n## Acceptance\n\n${acceptance}`,
-        initialStage,idempotencyKey:`${idempotencyKey}:create`});
-      const snapshot=await assignment.trackerRead.readSnapshot(assignment.context.bindingId,null);
-      await assignment.ports.persistSnapshot(snapshot);const item=snapshot.items.find((candidate)=>candidate.url===created.url);
-      if(item===undefined)throw new Error('tracker_item_unavailable');
-      const result=await startGitHubProcess(database,{actorId:session.actorId,projectId,task:{kind:'existing',itemId:item.itemId},
-        sourceReference:'ui:project-wizard',idempotencyKey:`${idempotencyKey}:start`});
-      return Response.json({...result,itemId:item.itemId,itemUrl:item.url});
-    }
-    if (action !== 'assign') throw new Error('body_invalid');
-    const executor = body.executor;
-    if (executor === null || typeof executor !== 'object' || Array.isArray(executor)) throw new Error('body_invalid');
-    const choice = executor as Record<string, unknown>;
-    const kind = string(choice.kind, 16);
-    if (kind !== 'human' && kind !== 'hermes') throw new Error('body_invalid');
-    const candidate = kind === 'human' ? choice.candidate : undefined;
-    if (kind === 'human' && (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))) throw new Error('body_invalid');
-    const runtime = kind === 'hermes' ? await agentRuntime(database,session.actorId,projectId) : null;
-    const delivery = runtime === null ? unavailableDelivery
-      : createHermesDeliveryAdapter({endpoint: string(runtime.gatewayEndpoint, 2_048),
-        credentialRef: runtime.agentCredentialRef, secrets: secretResolver,
-        allowPrivateHttp: privateAgentEndpoint(runtime)});
-    const {ports} = await githubAssignment(database, session.actorId, projectId, kind === 'hermes' ? delivery : unavailableDelivery);
-    const retryValue = body.retry;
-    const retry = retryValue === undefined ? undefined : (() => {
-      if (retryValue === null || typeof retryValue !== 'object' || Array.isArray(retryValue)) throw new Error('body_invalid');
-      const value = retryValue as Record<string, unknown>;
-      return {deliveryReference: string(value.deliveryReference), nonce: string(value.nonce, 128),
-        confirmUnobservableFailure: value.confirmUnobservableFailure === true};
-    })();
-    if (retry !== undefined && kind !== 'hermes') throw new Error('body_invalid');
-    const projectItemId = string(body.projectItemId);
-    const result = kind === 'hermes' && retry === undefined
-      ? await startGitHubProcess(database, {actorId: session.actorId, projectId,
-        task: {kind: 'existing', itemId: projectItemId}, sourceReference: 'ui:task-executor',
-        idempotencyKey: `process.start:ui:${projectId}:${projectItemId}`})
-      : await assignTaskExecutor({actorId: session.actorId, projectId, projectItemId,
-        executor: kind === 'hermes' ? {kind} : {kind, candidate: {id: string((candidate as Record<string, unknown>).id, 512), login: string((candidate as Record<string, unknown>).login, 256)}},
-        ...(retry === undefined ? {} : {retry})}, ports);
-    return Response.json(result);
-  } catch (error) {
-    const code = error instanceof Error ? error.message : 'request_failed';
-    if (['github_version_conflict','task_executor_conflict'].includes(code)) return Response.json({error: 'task_conflict'}, {status: 409});
-    if (['github_assignee_unavailable','task_executor_candidate_unavailable'].includes(code)) return Response.json({error: 'candidate_unavailable'}, {status: 409});
-    if (code === 'github_assignment_partial') return Response.json({error: 'assignment_partial'}, {status: 409});
-    if (['github_owner_unavailable','task_executor_unavailable'].includes(code)) return Response.json({error: 'operation_unavailable'}, {status: 409});
-    if (['agent_attempt_active','agent_retry_denied'].includes(code)) return Response.json({error: 'retry_unavailable'}, {status: 409});
-    if (code === 'agent_context_unavailable') return Response.json({error: 'context_unavailable'}, {status: 409});
-    if (['agent_submit_denied','agent_routing_policy_invalid','agent_request_invalid','agent_profile_denied'].includes(code)) {
-      return Response.json({error: 'execution_unavailable'}, {status: 409});
-    }
-    if (['agent_profile_unavailable','agent_profile_probe_failed'].includes(code)) {
-      return Response.json({error: 'profile_unavailable'}, {status: 502});
-    }
-    if (['agent_delivery_failed','agent_response_invalid'].includes(code)) return Response.json({error: 'delivery_failed'}, {status: 502});
-    if (['tracker_provider_unsupported','github_binding_invalid','github_read_failed','github_response_invalid',
-      'github_mutation_failed','github_status_unavailable','github_credential_invalid',
-      'agent_endpoint_invalid','agent_provider_unavailable','agent_credential_invalid','agent_status_failed','agent_status_invalid',
-      'secret_purpose_denied','secret_path_must_be_absolute','secret_invalid'].includes(code)) {
-      return Response.json({error: 'provider_error'}, {status: 502});
-    }
-    return jsonError(error);
-  }
+  try{if(request.method!=='POST')return new Response(null,{status:405,headers:{allow:'POST'}});await requireSession();
+    requireCsrf(request);return workerTaskCommand(request,await json(request));}catch(error){return jsonError(error);}
 };
 
 const envSecret = (prefix: string, purpose: string): OpaqueSecretRef => ({

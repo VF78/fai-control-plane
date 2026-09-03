@@ -2,6 +2,8 @@ import {createServer} from 'node:http';
 import {createDatabase} from '@fai-control-plane/db';
 import {createWorker} from './mvp/runtime.ts';
 import {projectRuntimeSetupCommand} from './mvp/project-runtime-setup.ts';
+import {projectOnboardingCommand} from './mvp/project-onboarding-command.ts';
+import {projectTaskCommand} from './mvp/project-task-command.ts';
 import {exclusiveRunner, workerActive, workerAgentObserveIntervalMs, workerRetryIntervalMs,
   workerTrackerPollIntervalMs, workerReady} from './mvp/jobs.ts';
 
@@ -43,6 +45,22 @@ const reconcileInterval = active ? setInterval(() => void reconcile(), workerTra
 const observeInterval = active ? setInterval(() => void observe(), workerAgentObserveIntervalMs) : null;
 const retryInterval = active ? setInterval(() => void retry(), workerRetryIntervalMs) : null;
 const server = createServer((request, response) => {
+  if(/^\/project-task(?:\?|$)/.test(request.url??'')){if(!active){response.writeHead(503,{'content-type':'application/json'}).end('{"error":"project_runtime_unavailable"}');return;}
+    const chunks:Buffer[]=[];request.on('data',(chunk)=>{if(chunks.reduce((size,value)=>size+value.length,0)<250_001)chunks.push(Buffer.from(chunk));});
+    request.on('end',()=>{const webRequest=new Request(`http://worker:3001${request.url}`,{method:request.method??'GET',
+      headers:{'content-type':request.headers['content-type']??'',cookie:request.headers.cookie??''},
+      ...(request.method==='POST'?{body:Buffer.concat(chunks)}:{})});void projectTaskCommand(database,webRequest).then(async(result)=>{
+        response.writeHead(result.status,{'content-type':'application/json','cache-control':'no-store'}).end(await result.text());
+      }).catch(()=>response.writeHead(500,{'content-type':'application/json'}).end('{"error":"request_failed"}'));});return;}
+  const onboardingMatch=/^\/project-(agent-profile|tracker-preparation)\/([0-9a-f-]{36})$/.exec(request.url??'');
+  if(onboardingMatch!==null){if(!active){response.writeHead(503,{'content-type':'application/json'}).end('{"error":"project_runtime_unavailable"}');return;}
+    const chunks:Buffer[]=[];request.on('data',(chunk)=>{if(chunks.reduce((size,value)=>size+value.length,0)<8_193)chunks.push(Buffer.from(chunk));});
+    request.on('end',()=>{const webRequest=new Request(`http://worker:3001${request.url}`,{method:request.method??'GET',
+      headers:{'content-type':request.headers['content-type']??'',cookie:request.headers.cookie??''},
+      ...(request.method==='POST'?{body:Buffer.concat(chunks)}:{})});void projectOnboardingCommand(database,webRequest,onboardingMatch[2]!,
+        onboardingMatch[1] as 'agent-profile'|'tracker-preparation').then(async(result)=>{
+          response.writeHead(result.status,{'content-type':'application/json','cache-control':'no-store'}).end(await result.text());
+        }).catch(()=>response.writeHead(500,{'content-type':'application/json'}).end('{"error":"request_failed"}'));});return;}
   const runtimeMatch=/^\/project-runtime\/([0-9a-f-]{36})$/.exec(request.url??'');
   if(runtimeMatch!==null){if(!active){response.writeHead(503,{'content-type':'application/json'}).end('{"error":"project_runtime_unavailable"}');return;}
     const chunks:Buffer[]=[];request.on('data',(chunk)=>{if(chunks.reduce((size,value)=>size+value.length,0)<8_193)chunks.push(Buffer.from(chunk));});

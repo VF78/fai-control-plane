@@ -1,4 +1,3 @@
-import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, createStores,
   completeProjectContextBootstrap, failProjectContextBootstrap, listProjectContextBootstrapAttempts,
@@ -13,7 +12,7 @@ import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, c
   claimAutonomousPmRecovery,hasActiveAgentAttempt,retryAutonomousPmTransaction,
   readActiveProjectExecutionMode,readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, composeAgentTerminalNotification, continueExplicitAgentChain,
-  autonomousPmEnabled,autonomousPmKey,deliverPending, reconcileActiveAgentAttempts, reconcileTracker,
+  autonomousPmEnabled,autonomousPmKey,deliverPending,reconcileActiveAgentAttempts,reconcileTracker,
   sameAutonomousActivation,submitExplicitAgent,
   verifyAutonomousPmSelection,
   type AgentAttemptRecord, type AgentSubmissionPorts
@@ -29,7 +28,6 @@ import type {
   AutonomousPmDeliveryPort,
   MessengerDeliveryPort,
   MessengerDeliveryInput,
-  SecretResolverPort,
   TrackerItemFact
 } from '@fai-control-plane/domain';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
@@ -37,21 +35,13 @@ import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProje
   runProjectBindingsIsolated,
   type WorkerProjectBinding} from './project-runtime.ts';
 import {provisionProjectHermesRuntime,restartProjectHermesGateway,type DockerRequest} from './docker-project-runtime.ts';
+import {projectRuntimeSecrets as secrets} from './runtime-secrets.ts';
 
 const env = (name: string): string => {
   const value = process.env[name];
   if (value === undefined || value.length === 0) throw new Error(`${name}_required`);
   return value;
 };
-const secrets: SecretResolverPort = {async resolve(reference, expectedPurpose) {
-  if (reference.purpose !== expectedPurpose || !reference.locator.startsWith('/')) {
-    throw new Error('secret_reference_denied');
-  }
-  const value = (await readFile(reference.locator, 'utf8')).trim();
-  if (value.length === 0 || value.length > 65_536 || value.includes('\0')) throw new Error('secret_invalid');
-  return {value};
-}};
-
 const pause = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 type TrackerPreparationBinding=Readonly<{projectUrl:string;repositoryUrl:string;token:string}>;
@@ -183,7 +173,7 @@ export const createWorker = (database: Database = createDatabase()) => {
       channelReference: 'telegram:internal',
       text: `Статус задачи изменён: ${prior.statusOptionName ?? 'Не указан'} → ${item.statusOptionName ?? 'Не указан'}\n${item.title} — ${item.url}`,
       idempotencyKey});
-    return {project, tracker, agentDelivery, submissionPorts, statusChanged};
+    return {project,tracker,agentDelivery,submissionPorts,statusChanged};
   };
 
   const activeProjects = async () => {
