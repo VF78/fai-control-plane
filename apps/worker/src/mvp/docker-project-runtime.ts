@@ -1,6 +1,6 @@
 import {request as httpRequest} from 'node:http';
 import {dirname} from 'node:path';
-import {chmod,chown,rm,stat,writeFile} from 'node:fs/promises';
+import {chmod,chown,readFile,rm,stat,writeFile} from 'node:fs/promises';
 import type {ProjectHermesRuntimeBinding,ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {prepareProjectHermesAssets} from './hermes-project-template.ts';
 
@@ -65,7 +65,18 @@ const ensureNetwork=async(docker:DockerRequest,request:ProjectRuntimeProvisionin
 const rootFor=(request:ProjectRuntimeProvisioningRequest)=>{const roots=new Set(Object.values(request.secrets).map(({locator})=>dirname(dirname(locator))));
   if(roots.size!==1)throw new Error('project_runtime_secret_conflict');const root=[...roots][0]!;
   if(root==='/'||root.includes('..')||!root.startsWith('/'))throw new Error('project_runtime_secret_conflict');return root;};
-const authCached=async(root:string)=>{try{const value=await stat(`${root}/codex-home/auth.json`);return value.isFile()&&value.size>100&&value.size<1_048_576;}catch{return false;}};
+const authJson=async(path:string):Promise<Record<string,unknown>|null>=>{try{const details=await stat(path);
+  if(!details.isFile()||details.size<100||details.size>1_048_576)return null;
+  const value=JSON.parse(await readFile(path,'utf8')) as unknown;
+  return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:null;
+}catch{return null;}};
+const nested=(value:unknown,key:string)=>value!==null&&typeof value==='object'&&!Array.isArray(value)
+  ?(value as Record<string,unknown>)[key]:undefined;
+export const projectOAuthCached=async(root:string)=>{const [codex,hermes]=await Promise.all([
+  authJson(`${root}/codex-home/auth.json`),authJson(`${root}/data/auth.json`)]);
+  const codexTokens=nested(codex,'tokens');const hermesTokens=nested(nested(nested(hermes,'providers'),'openai-codex'),'tokens');
+  return typeof nested(codexTokens,'access_token')==='string'&&typeof nested(codexTokens,'refresh_token')==='string'&&
+    typeof nested(hermesTokens,'access_token')==='string'&&typeof nested(hermesTokens,'refresh_token')==='string';};
 export const ensureCodexConfig=async(root:string,owner:Readonly<{uid:number;gid:number}>={uid:10000,gid:10000})=>{
   const path=`${root}/codex-home/config.toml`;
   try{await writeFile(path,'cli_auth_credentials_store = "file"\n',{mode:0o600,flag:'wx'});}catch(error){
@@ -83,6 +94,13 @@ export const parseCodexDevicePrompt=(output:string):Readonly<{verificationUrl:st
 export const projectRuntimeResourceNames=(request:ProjectRuntimeProvisioningRequest)=>({
   network:`${request.artifact.runtimeId}-network`,auth:`${request.artifact.runtimeId}-codex-auth`,
   gateway:`${request.artifact.runtimeId}-gateway`
+});
+export const projectAuthContainerSpec=(request:ProjectRuntimeProvisioningRequest,image:string,root:string,projectNetwork:string)=>({
+  Image:image,User:'10000:10000',Entrypoint:['/usr/local/bin/fai-project-device-auth'],Cmd:[],
+  Env:['HOME=/opt/data','CODEX_HOME=/opt/data/codex-home'],Labels:projectRuntimeOwnership(request,'codex-auth'),
+  HostConfig:{Binds:[`${root}/data:/opt/data`,`${root}/codex-home:/opt/data/codex-home`],Memory:536_870_912,
+    NanoCpus:500_000_000,PidsLimit:128,Init:true,RestartPolicy:{Name:'no'},NetworkMode:projectNetwork},
+  NetworkingConfig:endpoints(projectNetwork)
 });
 export const removeProjectHermesRuntime=async(request:ProjectRuntimeOwnershipInput,root:string,
   docker:DockerRequest=dockerSocketRequest()):Promise<void>=>{
@@ -163,19 +181,17 @@ export const provisionProjectHermesRuntime=async(request:ProjectRuntimeProvision
     await ensureCodexConfig(root);
     const names=projectRuntimeResourceNames(request);const projectNetwork=names.network;const managementNetwork=process.env.FCP_HERMES_MANAGEMENT_NETWORK??'fai-hermes-management';
     await ensureNetwork(docker,request,managementNetwork,true);await ensureNetwork(docker,request,projectNetwork);
-    const baseBinds=[`${root}/data:/opt/data`,`${root}/codex-home:/opt/data/codex-home`];
-    if(!await authCached(root)){const authName=names.auth;
+    if(!await projectOAuthCached(root)){const authName=names.auth;
       const priorAuth=await inspectContainer(docker,authName);
       if(priorAuth!==null&&priorAuth.State?.Running!==true&&priorAuth.State?.Status!=='created')
         await removeOwned(docker,request,authName,'codex-auth');
-      const auth=await ensureContainer(docker,request,authName,'codex-auth',expectedImageId,{Image:image,User:'10000:10000',
-        Entrypoint:['codex'],Cmd:['login','--device-auth'],Env:['HOME=/opt/data','CODEX_HOME=/opt/data/codex-home'],
-        Labels:projectRuntimeOwnership(request,'codex-auth'),HostConfig:{Binds:baseBinds,Memory:536_870_912,NanoCpus:500_000_000,
-          PidsLimit:128,Init:true,RestartPolicy:{Name:'no'},NetworkMode:projectNetwork},NetworkingConfig:endpoints(projectNetwork)});
+      const auth=await ensureContainer(docker,request,authName,'codex-auth',expectedImageId,
+        projectAuthContainerSpec(request,image,root,projectNetwork));
       if(auth.State?.Running===true){const logs=await docker('GET',`/containers/${namePath(authName)}/logs?stdout=1&stderr=1&tail=200`);
         const prompt=parseCodexDevicePrompt(decodeLogs(expect(logs,[200]).body));return prompt===null?{status:'installing'}:{status:'auth_required',auth:prompt};}
       if(auth.State?.ExitCode!==0)return {status:'error',failure:'authentication_expired'};
-      if(!await authCached(root))return {status:'error',failure:'authentication_expired'};await removeOwned(docker,request,authName,'codex-auth');
+      if(!await projectOAuthCached(root))return {status:'error',failure:'authentication_expired'};
+      await removeOwned(docker,request,authName,'codex-auth');
     }
     const gatewayName=names.gateway;const gateway=await ensureContainer(docker,request,gatewayName,'gateway',expectedImageId,
       projectGatewayContainerSpec(request,image,root,assets,projectNetwork,managementNetwork));

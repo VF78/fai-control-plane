@@ -3,8 +3,9 @@ import {mkdir,mkdtemp,readFile,rm,stat,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
-import {assertProjectRuntimeOwnership,ensureCodexConfig,parseCodexDevicePrompt,projectRuntimeOwnership,
-  projectGatewayContainerSpec,projectRuntimeResourceNames,removeProjectHermesRuntime,restartProjectHermesGateway} from './docker-project-runtime.ts';
+import {assertProjectRuntimeOwnership,ensureCodexConfig,parseCodexDevicePrompt,projectAuthContainerSpec,projectOAuthCached,
+  projectRuntimeOwnership,projectGatewayContainerSpec,projectRuntimeResourceNames,removeProjectHermesRuntime,
+  restartProjectHermesGateway} from './docker-project-runtime.ts';
 import {ensureProjectWorkspace} from './hermes-project-template.ts';
 
 const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequest=>({
@@ -58,6 +59,22 @@ describe('direct project Docker adapter boundary',()=>{
     expect(parseCodexDevicePrompt('Open \u001b[94mhttps://auth.openai.com/codex/device\u001b[0m and enter \u001b[94mABCD-EFGH\u001b[0m.')).toEqual({
       verificationUrl:'https://auth.openai.com/codex/device',userCode:'ABCD-EFGH'});
     expect(parseCodexDevicePrompt('token auth.json secret')).toBeNull();
+  });
+
+  it('requires both Codex CLI and Hermes provider OAuth in the project root',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'fai-project-oauth-'));await mkdir(join(root,'codex-home'));
+    await mkdir(join(root,'data'));const tokens={access_token:'a'.repeat(64),refresh_token:'r'.repeat(64)};
+    await writeFile(join(root,'codex-home','auth.json'),JSON.stringify({tokens}));
+    expect(await projectOAuthCached(root)).toBe(false);
+    await writeFile(join(root,'data','auth.json'),JSON.stringify({providers:{'openai-codex':{tokens}}}));
+    expect(await projectOAuthCached(root)).toBe(true);await rm(root,{recursive:true});
+  });
+
+  it('uses one project-scoped device flow that persists both OAuth stores',()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
+    const spec=projectAuthContainerSpec(one,'fai-hermes:version','/runtime/one','project-network');
+    expect(spec.Entrypoint).toEqual(['/usr/local/bin/fai-project-device-auth']);expect(spec.Cmd).toEqual([]);
+    expect(spec.HostConfig.Binds).toEqual(['/runtime/one/data:/opt/data','/runtime/one/codex-home:/opt/data/codex-home']);
   });
 
   it('keeps an existing Codex config but repairs its private ownership and mode',async()=>{
