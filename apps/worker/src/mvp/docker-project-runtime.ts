@@ -132,7 +132,8 @@ export const projectGatewayContainerSpec=(request:ProjectRuntimeProvisioningRequ
     ...(request.artifact.telegramChatId===null?[]:[`${request.secrets['telegram-bot'].locator}:/run/secrets/telegram-bot:ro`]),
     `${assets.generated}/config.yaml:/opt/data/config.yaml:ro`,`${assets.profile}/config.yaml:/opt/data/profiles/internal/config.yaml:ro`,
     `${assets.profile}/SOUL.md:/opt/data/profiles/internal/SOUL.md:ro`];
-  return {Image:image,WorkingDir:request.artifact.workspacePath,Env:env,Labels:projectRuntimeOwnership(request,'gateway'),
+  return {Image:image,Cmd:['sleep','infinity'],WorkingDir:request.artifact.workspacePath,Env:env,
+    Labels:projectRuntimeOwnership(request,'gateway'),
     Healthcheck:{Test:['CMD','python','-c',"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5); urllib.request.urlopen('http://127.0.0.1:9119/api/status', timeout=5)"],
       Interval:10_000_000_000,Timeout:5_000_000_000,Retries:12,StartPeriod:20_000_000_000},
     HostConfig:{...commonHost(root,projectNetwork),Binds:binds},

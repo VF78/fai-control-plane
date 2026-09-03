@@ -39,6 +39,7 @@ describe('direct project Docker adapter boundary',()=>{
     const spec=projectGatewayContainerSpec(one,'fai-hermes:version','/runtime/one',
       {generated:'/runtime/one/generated',profile:'/runtime/one/generated/profile'},'project-network','internal-network');
     expect(spec).not.toHaveProperty('Entrypoint');expect(spec).not.toHaveProperty('User');
+    expect(spec.Cmd).toEqual(['sleep','infinity']);
     expect(spec.Env).toContain('HERMES_DASHBOARD=1');
     expect(spec.Env.some((value)=>value.startsWith('HERMES_GATEWAY_NO_SUPERVISE='))).toBe(false);
     expect(Object.keys(projectRuntimeResourceNames(one))).toEqual(['network','auth','gateway']);
