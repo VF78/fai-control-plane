@@ -3,7 +3,8 @@ import {projectHermesSecretPurpose, type Database, type ProjectHermesSecretKind}
 import {enqueueProjectFailureBlockers, githubBindingCoordinates, listWorkerProjectBindings,
   runProjectBindingsIsolated,
   type WorkerProjectBinding} from './project-runtime.ts';
-import {createEndpointRecoveryGate,inspectConfirmedGitHubProject,restartHermesGateway,trackerPreparationDeltaShrank} from './runtime.ts';
+import {createEndpointRecoveryGate,inspectConfirmedGitHubProject,projectContextRunFailureCode,restartHermesGateway,
+  trackerPreparationDeltaShrank} from './runtime.ts';
 
 const ids={one:'00000000-0000-4000-8000-000000000001',two:'00000000-0000-4000-8000-000000000002'} as const;
 const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','dashboard-username','dashboard-password','telegram-bot','inbound-actions'];
@@ -27,6 +28,12 @@ const row = (project: 'one'|'two', repository: string) => ({
 });
 
 describe('multi-project worker composition', () => {
+  it('finishes missing or rejected context runs without restarting Hermes',()=>{
+    expect(projectContextRunFailureCode(404)).toBe('run_not_found');
+    expect(projectContextRunFailureCode(401)).toBe('provider_authentication_failed');
+    expect(projectContextRunFailureCode(503)).toBeNull();
+  });
+
   it('waits on first unknown, recovers on second, resets on progress, and never recovers twice',()=>{
     const gate=createEndpointRecoveryGate();
     expect(gate.failed('run-one')).toBe('wait');

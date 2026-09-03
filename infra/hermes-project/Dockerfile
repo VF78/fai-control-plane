@@ -29,7 +29,10 @@ RUN if ! getent group 10000 >/dev/null; then groupadd --gid 10000 hermes-runtime
       /opt/data /opt/data/codex-home /opt/data/work /opt/data/work/project
 
 COPY --chown=root:root infra/hermes-project/runtime-init.sh /etc/cont-init.d/03-fai-runtime
-RUN chmod 0555 /etc/cont-init.d/03-fai-runtime
+COPY --chown=root:root infra/hermes-project/project-device-auth.sh /usr/local/bin/fai-project-device-auth
+COPY --chown=root:root infra/hermes-project/import-codex-oauth.py /usr/local/lib/fai/import-codex-oauth.py
+RUN chmod 0555 /etc/cont-init.d/03-fai-runtime /usr/local/bin/fai-project-device-auth \
+    && chmod 0444 /usr/local/lib/fai/import-codex-oauth.py
 
 ENV CODEX_HOME=/opt/data/codex-home
 WORKDIR /opt/data/work/project
