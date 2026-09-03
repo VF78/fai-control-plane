@@ -36,10 +36,11 @@ const stagingName=(index:number,name:string)=>{
   const extension=/\.(docx|pdf|md|txt)$/i.exec(name)?.[0].toLowerCase();
   if(extension===undefined)throw new Error('project_document_invalid');return `${String(index+1).padStart(2,'0')}${extension}`;
 };
-const stageDocuments=async(client:CookieClient,database:Database,input:Readonly<{actorId:string;projectId:string;
+export const stageProjectDocuments=async(client:CookieClient,database:Database,input:Readonly<{actorId:string;projectId:string;
   workDirectory:string;documents:Awaited<ReturnType<typeof readActiveProjectDocumentSet>>['documents']}>)=>{
   const root=`${input.workDirectory}/.fai-context/source`;
-  const removed=await client.request(`/api/files?path=${encodeURIComponent(root)}&recursive=true`,{method:'DELETE'});
+  const removed=await client.request('/api/files',{method:'DELETE',headers:{'content-type':'application/json'},
+    body:JSON.stringify({path:root,recursive:true})});
   if(!removed.ok&&removed.status!==404)await expectJson(removed);
   await expectJson(await client.request('/api/files/mkdir',{method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({path:root})}));const paths:string[]=[];
@@ -95,7 +96,7 @@ const activate=async(database:Database,input:Readonly<{workspaceId:string;actorI
     return recordProjectAgentProfile(database,{...input,profile,endpointPath:'/v1/runs',templateVersion:projectAgentProfileTemplateVersion,
       documentFingerprint:documentSet.fingerprint,idempotencyKey:`project-context-restore:${input.projectId}:${profile}:${documentSet.fingerprint}`,
       occurredAt:new Date().toISOString()});}
-  const paths=await stageDocuments(client,database,{actorId:input.actorId,projectId:input.projectId,
+  const paths=await stageProjectDocuments(client,database,{actorId:input.actorId,projectId:input.projectId,
     workDirectory:runtime.workspacePath,documents:documentSet.documents});
   const reason=stored.profile===null?'initial':stored.profile!==runtime.runtimeId?'agent_replaced':changed?'documents_changed':'manual';
   const attemptSeed=stored.status==='error'?input.idempotencyKey:'first';
