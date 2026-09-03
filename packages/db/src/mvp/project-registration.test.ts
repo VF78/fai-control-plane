@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import type {Database} from './runtime.ts';
-import {readProjectAgentProfile,registerProject,resolveProjectRuntimeByRepository} from './project-registration.ts';
+import {projectAgentProfileTemplateVersion,readProjectAgentProfile,registerProject,resolveProjectRuntimeByRepository} from './project-registration.ts';
 
 const input={workspaceId:'workspace',actorId:'actor',name:'Control',slug:'fai-control-plane',
   repositoryUrl:'https://github.com/VF78/fai-control-plane',repositoryId:'R_1',
@@ -45,6 +45,18 @@ describe('project registration',()=>{
     const database={query:vi.fn(async()=>({rows:[{sha256:'v',content:'{}'}]}))} as unknown as Database;
     await expect(readProjectAgentProfile(database,'actor','project')).resolves.toEqual({status:'not_configured',
       profile:null,endpointPath:null,version:null,documentFingerprint:null});
+  });
+
+  it('requires context to be rebuilt when the stored profile uses an older template',async()=>{
+    const fingerprint='a'.repeat(64);
+    const database={query:vi.fn(async()=>({
+      rows:[{sha256:'stored-version',content:JSON.stringify({contract:'fai.project-agent-profile.v1',status:'ready',
+        profile:'project-agent',endpointPath:'/v1/runs',templateVersion:'v2026.8.28-dedicated-runtime-v1',
+        documentFingerprint:fingerprint})}],
+    }))} as unknown as Database;
+    expect(projectAgentProfileTemplateVersion).not.toBe('v2026.8.28-dedicated-runtime-v1');
+    await expect(readProjectAgentProfile(database,'actor','project')).resolves.toEqual({status:'not_configured',
+      profile:'project-agent',endpointPath:null,version:'stored-version',documentFingerprint:fingerprint});
   });
 
   it('resolves two repositories to distinct canonical project runtimes',async()=>{
