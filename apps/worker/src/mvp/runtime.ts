@@ -314,7 +314,8 @@ export const createWorker = (database: Database = createDatabase()) => {
     return {status: 'started' as const};
   };
   const observeContextBootstraps=async()=>{
-    const projects = new Map((await activeProjects()).map((project) => [project.projectId, project]));
+    const projects=new Map((await listProjectHermesRuntimeBindings(database,workspaceId))
+      .map((runtime)=>[runtime.projectId,{runtime}] as const));
     for(const attempt of await listProjectContextBootstrapAttempts(database,workspaceId,20)){
       try{
         const runtime=projects.get(attempt.projectId)?.runtime;
