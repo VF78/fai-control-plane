@@ -12,16 +12,17 @@ if [ -n "$token_file" ]; then
     echo 'Hermes repository token is invalid' >&2
     exit 1
   }
-  gh_config_dir=/opt/data/.config/gh
+  runtime_home=/opt/data/home
+  gh_config_dir=$runtime_home/.config/gh
   runtime_user=$(getent passwd 10000 | cut -d: -f1)
   [ -n "$runtime_user" ] || { echo 'Hermes runtime user is unavailable' >&2; exit 1; }
-  install -d -o 10000 -g 10000 -m 0700 "$gh_config_dir"
-  if ! s6-setuidgid "$runtime_user" env -u GH_TOKEN HOME=/opt/data GH_CONFIG_DIR="$gh_config_dir" \
+  install -d -o 10000 -g 10000 -m 0700 "$runtime_home" "$runtime_home/.config" "$gh_config_dir"
+  if ! s6-setuidgid "$runtime_user" env -u GH_TOKEN HOME="$runtime_home" GH_CONFIG_DIR="$gh_config_dir" \
     gh auth login --hostname github.com --git-protocol https --with-token < "$token_file" >/dev/null 2>&1; then
     echo 'Hermes repository token could not initialize GitHub CLI' >&2
     exit 1
   fi
-  if ! s6-setuidgid "$runtime_user" env HOME=/opt/data GH_CONFIG_DIR="$gh_config_dir" gh auth setup-git >/dev/null 2>&1; then
+  if ! s6-setuidgid "$runtime_user" env HOME="$runtime_home" GH_CONFIG_DIR="$gh_config_dir" gh auth setup-git >/dev/null 2>&1; then
     echo 'Hermes Git credential helper could not be initialized' >&2
     exit 1
   fi

@@ -41,7 +41,9 @@ const parseResult=(output:unknown,architecturePresent:boolean):Readonly<{context
   if(typeof output!=='string'||new TextEncoder().encode(output).byteLength>65_536)return null;
   const normalized=output.startsWith('```json\n')&&output.endsWith('\n```')?output.slice(8,-4):output;
   try{const value=object(JSON.parse(normalized));const context=value?.context;const proposal=value?.architectureProposal;
+    const sources=object(value?.sources);
     if(value?.contract!=='fai.project-context-result.v1'||typeof context!=='string'||context.length<1||
+      sources?.documents!==true||sources.repository!==true||sources.tracker!==true||
       new TextEncoder().encode(context).byteLength>49_152||
       (proposal!==null&&(typeof proposal!=='string'||proposal.length<1||new TextEncoder().encode(proposal).byteLength>16_384))||
       (architecturePresent?proposal!==null:typeof proposal!=='string'))return null;

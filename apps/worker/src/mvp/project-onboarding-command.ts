@@ -62,14 +62,15 @@ const restoreContext=async(client:CookieClient,database:Database,input:Readonly<
   form.set('file',new Blob([compact.content],{type:'text/markdown'}),'PROJECT_CONTEXT.md');
   await expectJson(await client.request('/api/files/upload-stream',{method:'POST',body:form}));
 };
-const startBootstrap=async(input:Readonly<{endpoint:string;token:string;slug:string;repositoryUrl:string;projectUrl:string;
-  workDirectory:string;fingerprint:string;architecturePresent:boolean;paths:readonly string[];reason:string}>)=>{
+export const startBootstrap=async(input:Readonly<{endpoint:string;token:string;slug:string;repositoryUrl:string;projectUrl:string;
+  workDirectory:string;fingerprint:string;architecturePresent:boolean;paths:readonly string[];reason:string;
+  attemptReference:string}>)=>{
   const response=await fetch(input.endpoint,{method:'POST',headers:{accept:'application/json',authorization:`Bearer ${input.token}`,
     'content-type':'application/json'},body:JSON.stringify({input:JSON.stringify({contract:'fai.project-context-bootstrap.v1',
-      repository:input.repositoryUrl,githubProject:input.projectUrl,documentFingerprint:input.fingerprint,
+      repository:input.repositoryUrl,tracker:input.projectUrl,documentFingerprint:input.fingerprint,
       stagedDocuments:input.paths,architectureOriginalPresent:input.architecturePresent,
-      contextFile:`${input.workDirectory}/PROJECT_CONTEXT.md`}),instructions:'Read the staged exact project documents, repository and the bound GitHub Project natively. Produce a compact project context and write exactly that context to the contextFile from the input before returning. Then return only compact JSON (max 65536 UTF-8 bytes): {contract:"fai.project-context-result.v1",context:string,architectureProposal:string|null}. Never copy full source documents. When an Architecture original is absent, include the proposed architecture in the context and return the same bounded proposal separately; otherwise architectureProposal must be null. Do not mutate tasks, repository, deployment or production.',
-      session_id:`project-context-${input.slug}-${input.fingerprint.slice(0,16)}`,provider:'openai-codex',
+      contextFile:`${input.workDirectory}/PROJECT_CONTEXT.md`}),instructions:'Read the staged exact project documents, repository and the bound GitHub Project natively. If any of those three required authorities cannot be read, return only {contract:"fai.project-context-error.v1",error:"required_source_unavailable"}; do not synthesize partial context. Otherwise produce a compact project context and write exactly that context to the contextFile from the input before returning. Then return only compact JSON (max 65536 UTF-8 bytes): {contract:"fai.project-context-result.v1",context:string,architectureProposal:string|null,sources:{documents:true,repository:true,tracker:true}}. Never copy full source documents. When an Architecture original is absent, include the proposed architecture in the context and return the same bounded proposal separately; otherwise architectureProposal must be null. Do not mutate tasks, repository, deployment or production.',
+      session_id:`project-context-${input.slug}-${input.fingerprint.slice(0,16)}-${createHash('sha256').update(input.attemptReference).digest('hex').slice(0,16)}`,provider:'openai-codex',
       model:input.architecturePresent?'gpt-5.6-terra':'gpt-5.6-sol',model_options:{reasoning_effort:'medium'},
       orchestration:{kind:'project-context-bootstrap',attempts:1,reason:input.reason}}),signal:AbortSignal.timeout(15_000)});
   if(response.status!==202)throw new Error('agent_profile_unavailable');const value=await response.json().catch(()=>null) as
@@ -91,7 +92,7 @@ const activate=async(database:Database,input:Readonly<{workspaceId:string;actorI
   const profile=runtime.runtimeId;const client=await dashboardClient(runtime);const changed=stored.documentFingerprint!==documentSet.fingerprint;
   const compact=changed?null:await readLatestCompactProjectContext(database,input.actorId,input.projectId,documentSet.fingerprint);
   if(!await capabilities(runtime.gatewayEndpoint,token))throw new Error('agent_profile_probe_failed');
-  if(!changed&&compact!==null){if(input.force===true||stored.status!=='ready')await restoreContext(client,database,{actorId:input.actorId,
+  if(!changed&&compact!==null&&input.force!==true){if(stored.status!=='ready')await restoreContext(client,database,{actorId:input.actorId,
     projectId:input.projectId,workDirectory:runtime.workspacePath,fingerprint:documentSet.fingerprint});if(stored.status==='ready')return stored;
     return recordProjectAgentProfile(database,{...input,profile,endpointPath:'/v1/runs',templateVersion:projectAgentProfileTemplateVersion,
       documentFingerprint:documentSet.fingerprint,idempotencyKey:`project-context-restore:${input.projectId}:${profile}:${documentSet.fingerprint}`,
@@ -99,12 +100,14 @@ const activate=async(database:Database,input:Readonly<{workspaceId:string;actorI
   const paths=await stageProjectDocuments(client,database,{actorId:input.actorId,projectId:input.projectId,
     workDirectory:runtime.workspacePath,documents:documentSet.documents});
   const reason=stored.profile===null?'initial':stored.profile!==runtime.runtimeId?'agent_replaced':changed?'documents_changed':'manual';
-  const attemptSeed=stored.status==='error'?input.idempotencyKey:'first';
-  return recordProjectAgentBootstrapStart(database,{...input,idempotencyKey:`project-context:${input.projectId}:${profile}:${documentSet.fingerprint}:${attemptSeed}`,
+  const attemptSeed=stored.status==='error'||input.force===true?input.idempotencyKey:'first';
+  const correlationId=`project-context:${input.projectId}:${profile}:${documentSet.fingerprint}:${attemptSeed}`;
+  return recordProjectAgentBootstrapStart(database,{...input,idempotencyKey:correlationId,
     profile,endpointPath:'/v1/runs',documentFingerprint:documentSet.fingerprint,architecturePresent:documentSet.architecturePresent,
     reason,occurredAt:new Date().toISOString()},()=>startBootstrap({endpoint:runtime.gatewayEndpoint,token,slug,
       repositoryUrl:binding.repositoryUrl,projectUrl:binding.projectUrl,workDirectory:runtime.workspacePath,
-      fingerprint:documentSet.fingerprint,architecturePresent:documentSet.architecturePresent,paths,reason}));
+      fingerprint:documentSet.fingerprint,architecturePresent:documentSet.architecturePresent,paths,reason,
+      attemptReference:correlationId}));
 };
 const prepareTracker=async(database:Database,input:Readonly<{workspaceId:string;actorId:string;projectId:string;
   idempotencyKey:string}>)=>{const current=await readProjectTrackerPreparation(database,input.actorId,input.projectId);

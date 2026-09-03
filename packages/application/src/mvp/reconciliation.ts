@@ -76,7 +76,7 @@ export const reconcileTracker = async (input: Readonly<{
   for (const {prior, item} of statusChanges) {
     const idempotencyKey = statusChangeKey(input.bindingId, prior, item);
     // A version/title/owner change without a Status transition is merely refreshed
-    // factual context. Status is still never authority to start Hermes.
+    // factual context. Status is still never authority to start the agent.
     const delivery = {topic: 'messenger-notification' as const, payload: {message:
       await input.ports.compose.statusChanged(prior, item, idempotencyKey)}};
     const result = await input.ports.outbox.enqueue({

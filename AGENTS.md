@@ -37,6 +37,11 @@ failure, and submit the next configured stage. It never brokers repository,
 GitHub Project, CLI, SSH or deployment commands and never selects or performs
 project work on Hermes' behalf.
 
+Production code in `packages/domain` and `packages/application` keeps tracker,
+repository, agent and messenger semantics provider-neutral. Concrete provider
+behaviour and identifiers belong only to adapters and composition; opaque
+configured executor/model IDs remain project data.
+
 Do not recreate a local task/status/DAG, TaskPacket/AgentRun platform, QA or
 deployment lifecycle, chat history, agent scheduler, generic IAM, provider
 registry, workflow canvas or compatibility layer. Provider-specific code stays

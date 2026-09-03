@@ -28,7 +28,7 @@ const readTracker = async () => snapshot();
 
 describe('agent attempt reconciliation', () => {
   it('uses the provider-native task title and URL in Telegram instead of an opaque item id', () => {
-    const message = composeAgentTerminalNotification('project', attempt, {status: 'failed',
+    const message = composeAgentTerminalNotification('project', 'internal', attempt, {status: 'failed',
       failureCode: 'agent_result_rejected', result: {contract: 'fai.agent-executor-result.v1', decision: 'rejected',
         execution: {taskClass: 'ordinary_implementation', executor: {kind: 'cli', id: 'codex-cli'},
           model: 'gpt-5.6-terra', effort: 'medium'}, outcome: 'rework',

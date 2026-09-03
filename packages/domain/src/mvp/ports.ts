@@ -95,11 +95,11 @@ export type AgentRoleRequest = Readonly<{
 export type AgentExecutorResult = Readonly<{
   contract: 'fai.agent-executor-result.v1';
   decision: 'accepted' | 'rejected';
-  /** Hermes classifies once, then attests the exact policy route it actually used. */
+  /** The agent classifies once, then attests the exact policy route it actually used. */
   execution: Readonly<{taskClass: AgentTaskClass; executor: AgentRoute['executor']; model: string;
     effort: 'medium' | 'high'}>;
   outcome: 'success' | 'rework';
-  /** Provider-native transition performed and read back by Hermes; Control Plane verifies it independently. */
+  /** Provider-native transition performed and read back by the agent; Control Plane verifies it independently. */
   transition: Readonly<{itemId: string; fromVersion: string; targetStage: string}>;
   reason: string;
   evidence: readonly Readonly<{kind: string; result: string}>[];

@@ -13,7 +13,7 @@ export const sameAutonomousActivation=(mode:Readonly<{mode:'manual'|'autonomous'
   changedAt:string|null}>,activation:Readonly<{actorId:string;modeChangedAt:string}>):boolean=>
   autonomousPmEnabled(mode)&&mode.actorId===activation.actorId&&mode.changedAt===activation.modeChangedAt;
 
-/** Verifies only Hermes' exact selection. It never searches, ranks or chooses
+/** Verifies only the agent's exact selection. It never searches, ranks or chooses
  * another snapshot item. */
 export const verifyAutonomousPmSelection=(input:Readonly<{result:AutonomousPmResult;snapshot:TrackerSnapshot;
   projectId:string;bindingId:string;ownerOptionId:string;doneStatusOptionId:string;

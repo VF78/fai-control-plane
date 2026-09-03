@@ -40,30 +40,31 @@ const validDeliverables = (result: AgentExecutorResult): boolean => result.deliv
 
 export const composeAgentTerminalNotification = (
   projectId: string,
+  channelReference: string,
   attempt: AgentAttemptRecord,
   observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>,
   idempotencyKey: string
 ): MessengerDeliveryInput => {
   const result = observed.result;
-  const heading = observed.status === 'completed' ? 'Hermes завершил этап задачи'
-    : result?.decision === 'rejected' ? 'Hermes не смог выполнить этап задачи' : 'Этап Hermes завершился ошибкой';
+  const heading = observed.status === 'completed' ? 'Агент завершил этап задачи'
+    : result?.decision === 'rejected' ? 'Агент не смог выполнить этап задачи' : 'Этап агента завершился ошибкой';
   const failure = observed.status === 'failed' ? ({
-    provider_failed: 'Hermes завершил выполнение с ошибкой.',
-    provider_cancelled: 'Выполнение Hermes отменено.',
-    provider_unavailable: 'Hermes или GitHub недоступен после двух автоматических попыток.',
-    provider_timeout: 'Hermes не завершил этап в установленный срок.',
-    provider_blocked: 'Hermes подтвердил блокер на текущем этапе.',
-    agent_result_rejected: result?.reason ?? 'Hermes отклонил результат этапа.',
-    agent_result_invalid: 'Результат Hermes не соответствует настройкам процесса.'
+    provider_failed: 'Агент завершил выполнение с ошибкой.',
+    provider_cancelled: 'Выполнение агента отменено.',
+    provider_unavailable: 'Агент или источник задач недоступен после двух автоматических попыток.',
+    provider_timeout: 'Агент не завершил этап в установленный срок.',
+    provider_blocked: 'Агент подтвердил блокер на текущем этапе.',
+    agent_result_rejected: result?.reason ?? 'Агент отклонил результат этапа.',
+    agent_result_invalid: 'Результат агента не соответствует настройкам процесса.'
   } as const)[observed.failureCode ?? 'provider_failed'] : undefined;
   const reason = failure === undefined ? (result?.reason === undefined ? '' : `\n${result.reason}`) : `\n${failure}`;
   const deliverables = result?.deliverables.length
     ? `\nРезультат:\n${result.deliverables.map((item) => `${item.label}: ${item.url}`).join('\n')}` : '';
   const stage = observed.status === 'completed' && result !== undefined
-    ? `\nСтатус GitHub Project: ${result.transition.targetStage}` : '';
-  const task = attempt.itemUrl === null ? (attempt.itemTitle ?? 'Задача GitHub Project')
-    : `${attempt.itemTitle ?? 'Задача GitHub Project'} — ${attempt.itemUrl}`;
-  return {projectId, contour: 'trusted-main', channelReference: 'telegram:internal',
+    ? `\nСтатус задачи: ${result.transition.targetStage}` : '';
+  const task = attempt.itemUrl === null ? (attempt.itemTitle ?? 'Задача')
+    : `${attempt.itemTitle ?? 'Задача'} — ${attempt.itemUrl}`;
+  return {projectId, contour: 'trusted-main', channelReference,
     text: `${heading}\n${task}${reason}${stage}${deliverables}`, idempotencyKey};
 };
 
@@ -98,7 +99,7 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
         const item = snapshot.items.find((candidate) => candidate.itemId === attempt.itemId &&
           candidate.issueId === attempt.issueId && candidate.projectId === attempt.projectId);
         if (item === undefined || item.statusOptionName !== target ||
-          item.ownerOptionId !== attempt.expectedOwnerOptionId) throw new Error('github_readback_failed');
+          item.ownerOptionId !== attempt.expectedOwnerOptionId) throw new Error('tracker_readback_failed');
         if (item.blocked !== false) verified = {status: 'failed', failureCode: 'provider_blocked', result};
       } catch { verified = {status: 'failed', failureCode: 'provider_unavailable', result}; }
     }
@@ -138,7 +139,7 @@ export const reconcileActiveAgentAttempts = async (limit: number, ports: AgentAt
       try {
         // A single endpoint error is not evidence that the run failed. The
         // composition-owned recovery policy may count repeated failures and
-        // still return started without restarting Hermes.
+        // still return started without restarting the agent.
         observed = ports.recoverUnavailable === undefined ? {status: 'started'}
           : await ports.recoverUnavailable(attempt);
       } catch {
