@@ -6,15 +6,16 @@ ARG YC_VERSION=1.22.0
 USER root
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gh git libolm-dev openssh-client \
+    && apt-get install -y --no-install-recommends ca-certificates curl gh git openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && curl --fail --silent --show-error --location \
       "https://storage.yandexcloud.net/yandexcloud-yc/release/${YC_VERSION}/linux/amd64/yc" \
       --output /usr/local/bin/yc \
     && chmod 0555 /usr/local/bin/yc \
     && npm install --global --omit=dev --no-audit --no-fund @openai/codex@0.144.1 \
-    && python -m pip install --no-cache-dir 'mautrix[encryption]==0.21.1' \
     && test "$(codex --version)" = "codex-cli 0.144.1" \
+    && uv pip show --python /opt/hermes/.venv/bin/python mautrix | grep -Fx 'Version: 0.21.1' \
+    && uv pip show --python /opt/hermes/.venv/bin/python python-olm >/dev/null \
     && yc version | grep -Eq "^Yandex Cloud CLI ${YC_VERSION}([[:space:]]|$)" \
     && command -v git >/dev/null \
     && command -v gh >/dev/null \
