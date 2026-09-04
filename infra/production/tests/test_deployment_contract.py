@@ -193,7 +193,15 @@ active_mvp_health
         self.assertIn('git ls-remote --exit-code "$source"', host_checks)
         self.assertIn('git fetch --no-tags "$release_source"', script)
 
-    def test_environment_render_changes_only_release_and_bitrix_gate(self):
+    def test_read_only_compose_helper_derives_the_pinned_runtime_image(self):
+        helper = (ROOT / "scripts/production-compose-readonly.sh").read_text()
+        self.assertIn("ps|logs|config", helper)
+        self.assertIn("docker image inspect --format '{{.Id}}'", helper)
+        self.assertIn('export FCP_PROJECT_HERMES_IMAGE_ID="$runtime_image_id"', helper)
+        for mutation in (" up", " down", " restart", " rm", " build", " pull"):
+            self.assertNotIn(mutation, helper)
+
+    def test_environment_render_changes_only_release(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
         start = script.index("render_target_environment() {")
         end = script.index("\n}\n\ncheck_host_contract()", start) + 3
@@ -201,13 +209,13 @@ active_mvp_health
         old = """A=one
 FCP_RELEASE_COMMIT=old
 MIDDLE=kept
-BITRIX24_CLIENT_ACTIONS_ENABLED=true
+BITRIX24_TASK_ID=154312
+BITRIX24_CLIENT_ACTIONS_ENABLED=false
 Z=last
 """
         expected = """A=one
 FCP_RELEASE_COMMIT=0123456789abcdef0123456789abcdef01234567
 MIDDLE=kept
-BITRIX24_CLIENT_ACTIONS_ENABLED=false
 Z=last
 """
         with tempfile.NamedTemporaryFile(mode="w") as environment:
@@ -229,23 +237,6 @@ render_target_environment
                 text=True,
             )
         self.assertEqual(result.stdout, expected)
-
-        without_gate = old.replace("BITRIX24_CLIENT_ACTIONS_ENABLED=true\n", "")
-        with tempfile.NamedTemporaryFile(mode="w") as environment:
-            environment.write(without_gate)
-            environment.flush()
-            result = subprocess.run(
-                ["bash", "-c", harness],
-                check=True,
-                env={"PATH": "/usr/bin:/bin", "ENVIRONMENT_FILE": environment.name},
-                capture_output=True,
-                text=True,
-            )
-        self.assertEqual(
-            result.stdout,
-            expected.replace("BITRIX24_CLIENT_ACTIONS_ENABLED=false\n", "")
-            + "BITRIX24_CLIENT_ACTIONS_ENABLED=false\n",
-        )
 
     def test_deploy_fast_forwards_then_builds_before_atomic_environment_install(self):
         script = (ROOT / "scripts/deploy-prod.sh").read_text()
@@ -276,7 +267,6 @@ render_target_environment
             dockerfile,
         )
         self.assertIn("FCP_APPROVED_CONFIG_SHA256", deploy)
-        self.assertIn("BITRIX24_CLIENT_ACTIONS_ENABLED=false", deploy)
         self.assertNotIn("switch_upstream", deploy)
         self.assertNotIn("systemctl reload nginx", deploy)
         self.assertNotIn('install -o root -g root -m 0644', deploy)
