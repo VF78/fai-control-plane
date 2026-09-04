@@ -170,18 +170,13 @@ prepare_project_runtime_root() {
 }
 
 render_target_environment() {
-  local release_count bitrix_count
+  local release_count
   release_count=$(grep -Ec '^FCP_RELEASE_COMMIT=' "$environment_file")
-  bitrix_count=$(grep -Ec '^BITRIX24_CLIENT_ACTIONS_ENABLED=' "$environment_file" || true)
   [[ "$release_count" -eq 1 ]] || fail 'production environment must contain one release commit'
-  [[ "$bitrix_count" -le 1 ]] || fail 'production environment contains duplicate Bitrix gates'
   awk -v release="$release_commit" '
     /^FCP_RELEASE_COMMIT=/ { print "FCP_RELEASE_COMMIT=" release; next }
-    /^BITRIX24_CLIENT_ACTIONS_ENABLED=/ {
-      print "BITRIX24_CLIENT_ACTIONS_ENABLED=false"; bitrix = 1; next
-    }
+    /^BITRIX24_/ { next }
     { print }
-    END { if (!bitrix) print "BITRIX24_CLIENT_ACTIONS_ENABLED=false" }
   ' "$environment_file"
 }
 
@@ -274,9 +269,6 @@ chmod 0600 "$temporary_environment"
   fail 'rendered production environment digest changed'
 [[ $(grep -Fxc "FCP_RELEASE_COMMIT=$release_commit" "$temporary_environment") -eq 1 ]] ||
   fail 'rendered release commit is incorrect'
-[[ $(grep -Fxc 'BITRIX24_CLIENT_ACTIONS_ENABLED=false' "$temporary_environment") -eq 1 ]] ||
-  fail 'Bitrix client actions must remain disabled'
-
 candidate_compose=(docker compose --project-name fai-control-plane-mvp --env-file "$temporary_environment" -f "$compose_file")
 FCP_PROJECT_HERMES_IMAGE_ID="$project_runtime_config_placeholder" \
   "${candidate_compose[@]}" config --quiet

@@ -88,7 +88,7 @@ network change.
 ### Hermes GitHub credential boundary
 
 Reviewed non-secret Control Plane environment example SHA-256:
-`9a8530ab0060e65e8f5ddb8195f452df8c3ce6836b2be71ade52d27bba4c6ff7`.
+`f97278acbd69730676f3d5c051c704c3eb119496d528859ead42d6c8c02fe300`.
 
 - The canonical GitHub credential is the root-owned mode `0600` file
   `/etc/fai-control-plane-mvp/secrets/github-projects-token`. On explicit agent
@@ -239,6 +239,20 @@ curl -fsS --max-time 15 https://f-ai.studio/ >/dev/null
 Also verify DNS still matches the topology and AmneziaWG connects through
 Sprintbox. Do not send test messenger messages, submit Hermes work or mutate a
 real GitHub item merely as a health check.
+
+For ordinary read-only Compose diagnostics, use the bounded helper. It derives
+the required Hermes image ID from the already pinned local image, so
+`production.env` remains the single persisted configuration source:
+
+```bash
+cd /opt/fai-control-plane-mvp
+sudo scripts/production-compose-readonly.sh ps
+sudo scripts/production-compose-readonly.sh logs --tail 100 worker
+sudo scripts/production-compose-readonly.sh config --quiet
+```
+
+The helper accepts only `ps`, `logs`, and `config`; lifecycle commands remain
+owned by the approved deployment workflow.
 
 ## Recovery
 

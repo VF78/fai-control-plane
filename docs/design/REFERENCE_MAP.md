@@ -48,9 +48,6 @@ provider identifiers or a second visual language.
 - Agent health and run inspection: approved LangSmith references, never as the global
   shell.
 
-The source candidate gallery is
-`references/candidates/reference-gallery.png`.
-
 ## Missing official visuals
 
 The official Vercel Projects and Project Settings documentation pages did not

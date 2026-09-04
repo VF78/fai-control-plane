@@ -11,7 +11,7 @@ export const projectSetupState=(item:ProjectSetupInput,documentsReady:boolean,co
     (item.evidence?.people.filter((person)=>person.active).length??0)>1||item.wizardProgress?.teamSkipped===true,
     item.config?.channels.internal.configured===true||item.runtimeSetup?.telegramConfigured===true,
     item.runtimeSetup?.status==='ready',contextCurrent,item.trackerPreparation?.status==='ready'];
-  const order=[0,7,1,4,5,6,2,3];const navigable=[...states];if(item.wizardProgress?.communicationsSkipped===true)navigable[4]=true;
+  const order=[0,1,4,5,6,2,3,7];const navigable=[...states];if(item.wizardProgress?.communicationsSkipped===true)navigable[4]=true;
   const pending=order.find((step)=>!navigable[step]);const complete=navigable.every(Boolean);
   return {states,complete,nextStep:pending??(complete?9:4)};
 };
@@ -25,10 +25,11 @@ export const projectActiveDocuments=<T extends Readonly<{kind:string}>>(sources:
 };
 
 export const projectSetupGroups=(item:ProjectSetupInput,documentsReady:boolean,contextCurrent:boolean,trackerBound:boolean)=>{
-  const setup=projectSetupState(item,documentsReady,contextCurrent);const states=setup.states;
+  const current=projectSetupState(item,documentsReady,contextCurrent);const states=[...current.states,trackerBound];
+  const setup=trackerBound?{...current,states}:{...current,states,complete:false,nextStep:8};
   const communicationsSkipped=item.wizardProgress?.communicationsSkipped===true&&states[4]!==true;
-  const groups=[states[0]===true,trackerBound&&states[7]===true,states[1]===true,
+  const groups=[states[0]===true,trackerBound,states[1]===true,
     states[4]===true||communicationsSkipped,states[5]===true&&states[6]===true,
-    states[2]===true&&states[3]===true] as const;
+    states[2]===true&&states[3]===true&&states[7]===true] as const;
   return {setup,groups,communicationsSkipped,complete:groups.filter(Boolean).length};
 };

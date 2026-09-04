@@ -32,6 +32,9 @@ After human approval, copy only approved screenshots to:
 
 `docs/design/references/approved/<product>/`
 
+Remove the corresponding candidate capture after approval; the candidate tree
+is temporary staging, not a second retained reference pack.
+
 Then create:
 
 `docs/design/REFERENCE_MAP.md`
