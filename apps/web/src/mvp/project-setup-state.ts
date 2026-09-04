@@ -1,6 +1,7 @@
 type ProjectSetupInput=Readonly<{
   evidence:Readonly<{people:readonly Readonly<{active:boolean}>[]}>|null;
   runtimeSetup:Readonly<{telegramConfigured:boolean;status:string}>|null;
+  config?:Readonly<{channels:Readonly<{internal:Readonly<{configured:boolean}>}>}>;
   trackerPreparation:Readonly<{status:string}>|null;
   wizardProgress:Readonly<{processConfirmed:boolean;teamSkipped:boolean;communicationsSkipped:boolean}>|null;
 }>;
@@ -8,10 +9,11 @@ type ProjectSetupInput=Readonly<{
 export const projectSetupState=(item:ProjectSetupInput,documentsReady:boolean,contextCurrent:boolean)=>{
   const states=[true,documentsReady,item.wizardProgress?.processConfirmed===true,
     (item.evidence?.people.filter((person)=>person.active).length??0)>1||item.wizardProgress?.teamSkipped===true,
-    item.runtimeSetup?.telegramConfigured===true||item.wizardProgress?.communicationsSkipped===true,
+    item.config?.channels.internal.configured===true||item.runtimeSetup?.telegramConfigured===true,
     item.runtimeSetup?.status==='ready',contextCurrent,item.trackerPreparation?.status==='ready'];
-  const pending=states.findIndex((value)=>!value);
-  return {states,complete:pending===-1,nextStep:pending===-1?9:pending};
+  const order=[0,7,1,4,5,6,2,3];const navigable=[...states];if(item.wizardProgress?.communicationsSkipped===true)navigable[4]=true;
+  const pending=order.find((step)=>!navigable[step]);const complete=navigable.every(Boolean);
+  return {states,complete,nextStep:pending??(complete?9:4)};
 };
 
 export const projectActiveDocuments=<T extends Readonly<{kind:string}>>(sources:readonly T[])=>{
@@ -24,6 +26,9 @@ export const projectActiveDocuments=<T extends Readonly<{kind:string}>>(sources:
 
 export const projectSetupGroups=(item:ProjectSetupInput,documentsReady:boolean,contextCurrent:boolean,trackerBound:boolean)=>{
   const setup=projectSetupState(item,documentsReady,contextCurrent);const states=setup.states;
-  const groups=[states[0]===true,trackerBound,states[1]===true,states[5]===true&&states[6]===true,states[2]===true&&states[3]===true&&states[4]===true&&states[7]===true] as const;
-  return {setup,groups,complete:groups.filter(Boolean).length};
+  const communicationsSkipped=item.wizardProgress?.communicationsSkipped===true&&states[4]!==true;
+  const groups=[states[0]===true,trackerBound&&states[7]===true,states[1]===true,
+    states[4]===true||communicationsSkipped,states[5]===true&&states[6]===true,
+    states[2]===true&&states[3]===true] as const;
+  return {setup,groups,communicationsSkipped,complete:groups.filter(Boolean).length};
 };

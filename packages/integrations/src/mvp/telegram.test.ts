@@ -15,4 +15,13 @@ describe('Telegram internal contour', () => {
     await expect(delivery.send({projectId: 'other', contour: 'trusted-main', channelReference: 'telegram:internal',
       text: 'Status changed', idempotencyKey: 'delivery-2'})).rejects.toThrow('telegram_message_invalid');
   });
+
+  it('delivers a client-edge notification without accepting an internal contour',async()=>{
+    const fetch=vi.fn<typeof globalThis.fetch>(async()=>new Response(JSON.stringify({ok:true,result:{message_id:10}})));
+    const delivery=createTelegramDeliveryAdapter({config:{...config,contour:'client-edge'},secrets,fetch});
+    await expect(delivery.send({projectId:'ascon',contour:'client-edge',channelReference:'telegram:client',
+      text:'Статус обновлён',idempotencyKey:'client-delivery'})).resolves.toEqual({deliveryReference:'telegram:10'});
+    await expect(delivery.send({projectId:'ascon',contour:'trusted-main',channelReference:'telegram:internal',
+      text:'Нельзя',idempotencyKey:'wrong-contour'})).rejects.toThrow('telegram_message_invalid');
+  });
 });

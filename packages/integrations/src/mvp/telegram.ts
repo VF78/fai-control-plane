@@ -4,7 +4,7 @@ type Fetch = typeof globalThis.fetch;
 const bounded = (value: unknown, max = 4_000): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= max && !value.includes('\0');
 export type TelegramConfig = Readonly<{
-  projectId: string; chatId: string; tokenRef: OpaqueSecretRef;
+  projectId: string; chatId: string; tokenRef: OpaqueSecretRef; contour?:'trusted-main'|'client-edge';
 }>;
 export const createTelegramDeliveryAdapter = (input: Readonly<{
   config: TelegramConfig; secrets: SecretResolverPort; fetch?: Fetch;
@@ -26,7 +26,7 @@ export const createTelegramDeliveryAdapter = (input: Readonly<{
     return value;
   };
   return {async send(message) {
-      if (message.projectId !== input.config.projectId || message.contour !== 'trusted-main' || !bounded(message.text)) {
+      if (message.projectId !== input.config.projectId || message.contour !== (input.config.contour??'trusted-main') || !bounded(message.text)) {
         throw new Error('telegram_message_invalid');
       }
       const value = await call('sendMessage', {chat_id: input.config.chatId, text: message.text});

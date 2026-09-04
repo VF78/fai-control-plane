@@ -10,7 +10,8 @@ import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, c
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
   executeAutonomousPmTransaction,finishAutonomousPmAttempt,listActiveAutonomousPmAttempts,
   claimAutonomousPmRecovery,hasActiveAgentAttempt,retryAutonomousPmTransaction,
-  readActiveProjectExecutionMode,readActiveProjectProcessPolicy, resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
+  readActiveProjectExecutionMode,readActiveProjectProcessPolicy, readProjectMessengerDeliveryBinding,
+  resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, composeAgentTerminalNotification, continueExplicitAgentChain,
   autonomousPmEnabled,autonomousPmKey,deliverPending,reconcileActiveAgentAttempts,reconcileTracker,
   sameAutonomousActivation,submitExplicitAgent,
@@ -21,6 +22,7 @@ import {
   createHermesDeliveryAdapter,
   createGitHubRepositoryReadAdapter,
   createGitHubTrackerReadAdapter,
+  createMatrixDeliveryAdapter,
   createTelegramDeliveryAdapter
 } from '@fai-control-plane/integrations';
 import type {
@@ -114,10 +116,22 @@ export const createWorker = (database: Database = createDatabase()) => {
   const workspaceId = env('FCP_WORKSPACE_ID');
   const stores = createStores(database, workspaceId);
   const continuations = createAgentContinuationStore(database);
-  const clientMessenger: MessengerDeliveryPort = {async send() {
-    throw new Error('client_messenger_not_configured');
-  }};
+  const configuredMessenger=async(message:MessengerDeliveryInput,contour:'internal'|'client')=>{
+    const binding=await readProjectMessengerDeliveryBinding(database,workspaceId,message.projectId,contour);
+    if(binding===null)throw new Error(contour==='client'?'client_messenger_not_configured':'internal_messenger_not_configured');
+    const deliveryContour=contour==='internal'?'trusted-main':'client-edge';
+    if(binding.channel.provider==='telegram')return createTelegramDeliveryAdapter({config:{projectId:message.projectId,
+      chatId:binding.channel.telegram!.chatId,tokenRef:binding.credentialRefs[`${contour}-telegram-bot`]!,
+      contour:deliveryContour},secrets}).send(message);
+    return createMatrixDeliveryAdapter({config:{projectId:message.projectId,
+      homeserver:binding.channel.element!.homeserver,roomReference:binding.channel.element!.roomReference,
+      loginRef:binding.credentialRefs[`${contour}-element-login`]!,
+      passwordRef:binding.credentialRefs[`${contour}-element-password`]!,contour:deliveryContour},secrets}).send(message);
+  };
+  const clientMessenger: MessengerDeliveryPort = {send:async(message)=>configuredMessenger(message,'client')};
   const internalMessenger: MessengerDeliveryPort = {async send(message) {
+    const configured=await readProjectMessengerDeliveryBinding(database,workspaceId,message.projectId,'internal');
+    if(configured!==null)return configuredMessenger(message,'internal');
     const project = (await activeProjects()).find((candidate) => candidate.projectId === message.projectId);
     if (project === undefined || project.runtime.telegramChatId === null) throw new Error('telegram_config_invalid');
     return createTelegramDeliveryAdapter({config: {projectId: project.projectId,

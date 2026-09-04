@@ -6,8 +6,8 @@ const item={evidence:{people:[{active:true}]},runtimeSetup:null,trackerPreparati
   wizardProgress:{processConfirmed:false,teamSkipped:false,communicationsSkipped:false}};
 
 describe('project setup state',()=>{
-  it('returns the first unfinished wizard step without a client runtime',()=>{
-    expect(projectSetupState(item,false,false)).toMatchObject({complete:false,nextStep:1});
+  it('returns the tracker step before documents and the chat step',()=>{
+    expect(projectSetupState(item,false,false)).toMatchObject({complete:false,nextStep:7});
   });
 
   it('marks a fully prepared project complete',()=>{
@@ -15,6 +15,17 @@ describe('project setup state',()=>{
       runtimeSetup:{telegramConfigured:true,status:'ready'},trackerPreparation:{status:'ready'},
       wizardProgress:{processConfirmed:true,teamSkipped:false,communicationsSkipped:false}},true,true))
       .toMatchObject({complete:true,nextStep:9});
+  });
+
+  it('accepts a verified provider-neutral internal channel without legacy Telegram runtime fields',()=>{
+    expect(projectSetupState({...item,config:{channels:{internal:{configured:true}}},
+      trackerPreparation:{status:'ready'}},true,false)).toMatchObject({nextStep:5});
+  });
+
+  it('lets an explicitly deferred optional chat step advance without marking the channel configured',()=>{
+    const deferred={...item,wizardProgress:{...item.wizardProgress,communicationsSkipped:true},
+      trackerPreparation:{status:'ready'}};expect(projectSetupGroups(deferred,true,false,true))
+      .toMatchObject({groups:[true,true,true,true,false,false],communicationsSkipped:true,complete:4});
   });
 
   it('projects one authoritative fixed version and every supplemental document',()=>{
@@ -28,8 +39,8 @@ describe('project setup state',()=>{
     expect(documents.documentsReady).toBe(true);
   });
 
-  it('owns the five presentation groups used by portfolio and detail',()=>{
-    expect(projectSetupGroups(item,false,false,true)).toMatchObject({groups:[true,true,false,false,false],complete:2});
+  it('owns the six presentation groups used by portfolio and detail',()=>{
+    expect(projectSetupGroups(item,false,false,true)).toMatchObject({groups:[true,false,false,false,false,false],complete:1});
   });
 
   it('keeps the shared calculation outside the client component boundary',async()=>{

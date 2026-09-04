@@ -1,0 +1,5 @@
+name: fai-client-issues
+version: 1.0.0
+description: Create a new client-reported issue in the project repository and task tracker.
+provides_tools:
+  - report_project_issue

@@ -57,15 +57,18 @@ affordance. Two current projects fit fully at 1440×900. No inline document
 editor, agent form or delete action appears in a portfolio row.
 
 Project detail uses one header with health, setup progress, one primary next
-action and an overflow menu; five tabs: **Обзор**, **Интеграции**,
+action; five tabs: **Обзор**, **Интеграции**,
 **Контекст**, **Агент**, **Доступ**; and the visible setup summary:
 
-`Репозиторий → Трекер → Документы → Агент → Проверка`.
+`Репозиторий → Таск-трекер → Документы → Чаты → ИИ-агент → Проверка`.
 
 The existing process, team, communications, context, tracker preparation,
 approval and readiness commands remain reachable inside those groups without
 API, permission or idempotency changes. Starting the first task is the next
 explicit safe action after readiness, not a hidden setup-completion condition.
+The Chats step uses the same channel-settings component as the portfolio-wide
+Chats page. It exposes internal Telegram and a separate client contour with
+Telegram or Matrix/Element, and may be explicitly deferred without appearing healthy.
 
 Documents use one obvious upload workflow. Delete exists only in the final
 Danger Zone, requires the exact project name in an accessible dialog and

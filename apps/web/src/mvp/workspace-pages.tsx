@@ -1,4 +1,4 @@
-import {listProjectHermesRuntimeBindings,listProjectOperatorEvidenceViews,listProjectSourceViews,listWorkspaceHumanActors,projectHermesExecutorCatalog,readAgentRoutingPolicy,readProjectAgentProfile,readProjectAgentSubmissionView,readProjectContextStatus,readProjectExecutionMode,readProjectHermesRuntimeSetup,readProjectMembershipRole,readProjectProcessPolicy,readProjectTrackerCapabilities,readProjectTrackerPreparation,readProjectWizardProgress,type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
+import {listProjectHermesRuntimeBindings,listProjectOperatorEvidenceViews,listProjectSourceViews,listWorkspaceHumanActors,projectHermesExecutorCatalog,readAgentRoutingPolicy,readProjectAgentProfile,readProjectAgentSubmissionView,readProjectContextStatus,readProjectExecutionMode,readProjectHermesRuntimeSetup,readProjectMembershipRole,readProjectMessengerBindings,readProjectProcessPolicy,readProjectTrackerCapabilities,readProjectTrackerPreparation,readProjectWizardProgress,type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import {Dashboard,Process,Tasks} from './phase-a-ui.tsx';
 import {executorFact} from './phase-a-view.ts';
@@ -46,9 +46,9 @@ export async function PhaseBPage({view,setup}:Readonly<{view:PhaseBView;setup?:s
     view==='people'||view==='settings'?listWorkspaceHumanActors(database,session.workspaceId):Promise.resolve([])
   ]);
   const runtimeByProject=new Map(runtimes.map((runtime)=>[runtime.projectId,runtime]));
-  const projectDetails=await Promise.all(projects.map(async(project)=>{const [agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress]=view==='settings'||view==='systems'?await Promise.all([
-    readProjectAgentProfile(database,session.actorId,project.id),readProjectHermesRuntimeSetup(database,session.actorId,project.id),view==='settings'?readProjectTrackerCapabilities(database,session.actorId,project.id):Promise.resolve(null),view==='settings'?readProjectTrackerPreparation(database,session.actorId,project.id):Promise.resolve(null),view==='settings'?readProjectWizardProgress(database,session.actorId,project.id):Promise.resolve(null)
-  ]):[null,null,null,null,null];return {project,agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress,config:integrationConfig(process.env,runtimeByProject.get(project.id)??null)};}));
+  const projectDetails=await Promise.all(projects.map(async(project)=>{const [agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress,messengerBindings]=view==='settings'||view==='systems'||view==='conversations'?await Promise.all([
+    readProjectAgentProfile(database,session.actorId,project.id),readProjectHermesRuntimeSetup(database,session.actorId,project.id),view==='settings'?readProjectTrackerCapabilities(database,session.actorId,project.id):Promise.resolve(null),view==='settings'?readProjectTrackerPreparation(database,session.actorId,project.id):Promise.resolve(null),view==='settings'?readProjectWizardProgress(database,session.actorId,project.id):Promise.resolve(null),readProjectMessengerBindings(database,session.actorId,project.id)
+  ]):[null,null,null,null,null,{}];const runtime=runtimeByProject.get(project.id);return {project,agentProfile,runtimeSetup,trackerCapabilities,trackerPreparation,wizardProgress,config:integrationConfig(runtime??null,messengerBindings)};}));
   const phaseBProjects=projectDetails.map((item)=>({...item,sources,evidence:operatorEvidence.find((evidence)=>evidence.projectId===item.project.id)??null}));
   return <PhaseB view={view} projects={phaseBProjects} actorId={session.actorId} setup={setup} workspacePeople={workspacePeople}/>;
 }

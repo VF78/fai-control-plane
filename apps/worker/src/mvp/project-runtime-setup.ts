@@ -4,6 +4,7 @@ import {
   deleteProjectRecords,
   projectHermesRuntimeCoordinates,
   projectHermesSecretPurpose,
+  recordProjectMessengerBinding,
   readProjectHermesRuntimeArtifact,
   readProjectHermesRuntimeSetup,
   readProjectDeletionTarget,
@@ -14,6 +15,7 @@ import {
   type ProjectRuntimeSecretLocators
 } from '@fai-control-plane/db';
 import {actorForSession} from '@fai-control-plane/db';
+import {verifyMatrixConnection} from '@fai-control-plane/integrations';
 import {removeProjectHermesRuntime} from './docker-project-runtime.ts';
 
 const runtimeRoot=()=>{
@@ -84,9 +86,35 @@ const refs=async(database:Database,workspaceId:string,projectId:string,directory
 
 const telegramRequest=async(botToken:string,method:string,payload:Record<string,unknown>)=>{
   const response=await fetch(`https://api.telegram.org/bot${encodeURIComponent(botToken)}/${method}`,{method:'POST',
-    headers:{'content-type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(15_000)});
+    headers:{'content-type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10_000)});
   const value=await response.json().catch(()=>null) as {ok?:unknown;result?:unknown}|null;
   if(!response.ok||value?.ok!==true)throw new Error('project_messenger_verification_failed');return value.result;
+};
+const messengerSecretRefs=async(database:Database,workspaceId:string,projectId:string,directory:string,keys:readonly string[])=>{const references:Record<string,{id:string;locator:string}>={};for(const key of keys){const purpose=`project-messenger:${projectId}:${key}`;const current=await database.query<{id:string}>(`select id from secret_refs where workspace_id=$1 and purpose=$2`,[workspaceId,purpose]);const id=current.rows[0]?.id??randomUUID();const locator=`${directory}/secrets/${key}`;await database.query(`insert into secret_refs(id,workspace_id,purpose,locator) values($1,$2,$3,$4) on conflict(workspace_id,purpose) do update set locator=excluded.locator`,[id,workspaceId,purpose,locator]);references[key]={id,locator};}return references;};
+const connectElementChannel=async(database:Database,input:Readonly<{workspaceId:string;actorId:string;projectId:string;
+  contour:'client';homeserver:string;roomReference:string;login:string;password:string;
+  idempotencyKey:string}>)=>{
+  if(!/^https:\/\/[^\s\0]{1,2040}$/.test(input.homeserver)||input.roomReference.length===0||
+    input.roomReference.length>512||input.login.length===0||input.password.length===0||
+    input.login.length>512||input.password.length>4_096)throw new Error('project_messenger_invalid');
+  const bound=await project(database,input.actorId,input.projectId);
+  if(bound.workspaceId!==input.workspaceId)throw new Error('project_runtime_denied');
+  const setup=await readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);
+  const verified=await verifyMatrixConnection(input);
+  const directory=await ensureProjectRuntimeDirectory(input.workspaceId,input.projectId);
+  const references=await messengerSecretRefs(database,input.workspaceId,input.projectId,directory,
+    [`${input.contour}-element-login`,`${input.contour}-element-password`]);
+  await safeWrite(references[`${input.contour}-element-login`]!.locator,verified.userId);
+  await safeWrite(references[`${input.contour}-element-password`]!.locator,input.password);
+  await recordProjectMessengerBinding(database,{workspaceId:input.workspaceId,projectId:input.projectId,
+    actorId:input.actorId,contour:input.contour,channel:{provider:'element',
+      allowedUserIds:[],status:'interactive',
+      element:{homeserver:input.homeserver,roomReference:verified.roomId}},
+    secretRefs:Object.fromEntries(Object.entries(references).map(([key,value])=>[key,value.id])),
+    idempotencyKey:input.idempotencyKey,occurredAt:new Date().toISOString()});
+  if(['ready','error'].includes(setup.status))await requestProjectRuntimeInstall(database,{
+    workspaceId:input.workspaceId,projectId:input.projectId,actorId:input.actorId,
+    idempotencyKey:`${input.idempotencyKey}:runtime`,occurredAt:new Date().toISOString()});
 };
 const idempotentCommand=async<T>(database:Database,input:Readonly<{projectId:string;actorId:string;
   idempotencyKey:string;commandType:string}>,current:()=>Promise<T>,execute:()=>Promise<T>):Promise<T>=>{
@@ -108,10 +136,12 @@ export const connectProjectMessenger=async(database:Database,input:Readonly<{wor
   return idempotentCommand(database,{...input,commandType:'project.messenger.connect'},
     ()=>readProjectHermesRuntimeSetup(database,input.actorId,input.projectId),async()=>{
       const setup=await readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);
-      if(!['not_configured','messenger_ready'].includes(setup.status))throw new Error('project_runtime_unavailable');
-      await telegramRequest(input.botToken,'getMe',{});await telegramRequest(input.botToken,'getChat',{chat_id:input.chatId});
+      if(!['not_configured','messenger_ready','ready','error'].includes(setup.status))throw new Error('project_runtime_unavailable');
+      const reprovision=['ready','error'].includes(setup.status);
+      await Promise.all([telegramRequest(input.botToken,'getMe',{}),
+        telegramRequest(input.botToken,'getChat',{chat_id:input.chatId})]);
       await telegramRequest(input.botToken,'sendMessage',{chat_id:input.chatId,
-        text:'f(AI) Control подтвердил отдельный рабочий канал проекта. Настройка ИИ-агента продолжится в интерфейсе.'});
+        text:'f(AI) Control подтвердил подключение канала проекта.'});
       const directory=await ensureProjectRuntimeDirectory(input.workspaceId,input.projectId);const secretRefs=await refs(database,input.workspaceId,input.projectId,directory);
       const coordinates=projectHermesRuntimeCoordinates(bound.slug,input.projectId);
       await safeWrite(secretRefs['telegram-bot'].locator,input.botToken);
@@ -122,8 +152,51 @@ export const connectProjectMessenger=async(database:Database,input:Readonly<{wor
       await existingOrCreate(`${directory}/secrets/dashboard-signing`,token);
       await recordProjectMessengerSetup(database,{...input,telegramChatId:input.chatId,
         telegramAllowedUserIds:[...new Set(input.allowedUserIds)],secrets:secretRefs,occurredAt:new Date().toISOString()});
+      if(reprovision)await requestProjectRuntimeInstall(database,{workspaceId:input.workspaceId,
+        projectId:input.projectId,actorId:input.actorId,idempotencyKey:`${input.idempotencyKey}:runtime`,
+        occurredAt:new Date().toISOString()});
       return readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);
     });
+};
+
+const assertTelegramChannel=(input:Readonly<{botToken:string;chatId:string;allowedUserIds:readonly string[]}>)=>{
+  if(!/^\d{6,12}:[A-Za-z0-9_-]{20,100}$/.test(input.botToken)||!/^-?[1-9][0-9]{0,19}$/.test(input.chatId)||
+    input.allowedUserIds.length===0||input.allowedUserIds.length>100||
+    input.allowedUserIds.some((id)=>!/^[1-9][0-9]{0,19}$/.test(id)))throw new Error('project_messenger_invalid');
+};
+const verifyTelegramChannel=async(input:Readonly<{botToken:string;chatId:string}>)=>{
+  await Promise.all([telegramRequest(input.botToken,'getMe',{}),
+    telegramRequest(input.botToken,'getChat',{chat_id:input.chatId})]);
+  await telegramRequest(input.botToken,'sendMessage',{chat_id:input.chatId,
+    text:'f(AI) Control подтвердил подключение канала проекта.'});
+};
+export const connectClientTelegramChannel=async(database:Database,input:Readonly<{workspaceId:string;actorId:string;
+  projectId:string;botToken:string;chatId:string;allowedUserIds:readonly string[];idempotencyKey:string;
+}>)=>{
+  assertTelegramChannel(input);
+  const bound=await project(database,input.actorId,input.projectId);
+  if(bound.workspaceId!==input.workspaceId)throw new Error('project_runtime_denied');
+  const setup=await readProjectHermesRuntimeSetup(database,input.actorId,input.projectId);await verifyTelegramChannel(input);
+  const directory=await ensureProjectRuntimeDirectory(input.workspaceId,input.projectId);
+  const refs=await messengerSecretRefs(database,input.workspaceId,input.projectId,directory,['client-telegram-bot']);
+  await safeWrite(refs['client-telegram-bot']!.locator,input.botToken);
+  await recordProjectMessengerBinding(database,{workspaceId:input.workspaceId,projectId:input.projectId,actorId:input.actorId,
+    contour:'client',channel:{provider:'telegram',allowedUserIds:[...new Set(input.allowedUserIds)],status:'interactive',
+      telegram:{chatId:input.chatId}},secretRefs:{'client-telegram-bot':refs['client-telegram-bot']!.id},
+    idempotencyKey:input.idempotencyKey,occurredAt:new Date().toISOString()});
+  if(['ready','error'].includes(setup.status))await requestProjectRuntimeInstall(database,{workspaceId:input.workspaceId,
+    projectId:input.projectId,actorId:input.actorId,idempotencyKey:`${input.idempotencyKey}:runtime`,
+    occurredAt:new Date().toISOString()});
+};
+const recordInternalTelegramBinding=async(database:Database,input:Readonly<{workspaceId:string;actorId:string;projectId:string;
+  chatId:string;allowedUserIds:readonly string[];idempotencyKey:string;}>)=>{
+  const artifact=await readProjectHermesRuntimeArtifact(database,input.actorId,input.projectId);
+  const secretId=artifact?.secretIds['telegram-bot'];
+  if(secretId===undefined)throw new Error('project_runtime_unavailable');
+  await recordProjectMessengerBinding(database,{workspaceId:input.workspaceId,projectId:input.projectId,actorId:input.actorId,
+    contour:'internal',channel:{provider:'telegram',allowedUserIds:[...new Set(input.allowedUserIds)],status:'ready',
+      telegram:{chatId:input.chatId}},secretRefs:{'internal-telegram-bot':secretId},
+    idempotencyKey:`${input.idempotencyKey}:binding`,occurredAt:new Date().toISOString()});
 };
 
 const githubHeaders=(credential:string)=>({accept:'application/vnd.github+json',authorization:`Bearer ${credential}`,
@@ -195,10 +268,17 @@ export const projectRuntimeSetupCommand=async(database:Database,request:Request,
     if(session===null)throw new Error('authentication_required');
     if(request.method==='DELETE')return Response.json(await deleteProject(database,{actorId:session.actorId,projectId}));
     const value=await body(request);const action=required(value.action,32);
-    const result=action==='connect_messenger'?await connectProjectMessenger(database,{workspaceId:session.workspaceId,
-      actorId:session.actorId,projectId,botToken:required(value.botToken,256),chatId:required(value.chatId,32),
-      allowedUserIds:required(value.allowedUserIds,2_400).split(',').map((item)=>item.trim()).filter(Boolean),
-      idempotencyKey:required(value.idempotencyKey,128)}):action==='install'?await installProjectRuntime(database,{workspaceId:session.workspaceId,
+    const contour=action==='connect_messenger'?required(value.contour,16):null;const provider=action==='connect_messenger'?required(value.provider,16):null;const allowed=action==='connect_messenger'&&provider==='telegram'?required(value.allowedUserIds,2_400).split(',').map((item)=>item.trim()).filter(Boolean):[];
+    if(action==='connect_messenger'&&(contour!=='internal'&&contour!=='client'||provider!=='telegram'&&provider!=='element'||
+      contour==='internal'&&provider!=='telegram'))throw new Error('project_messenger_provider_unavailable');
+    const idempotencyKey=action==='connect_messenger'||action==='install'?required(value.idempotencyKey,128):'';
+    const telegramInput=()=>({workspaceId:session.workspaceId,actorId:session.actorId,projectId,botToken:required(value.botToken,256),
+      chatId:required(value.chatId,32),allowedUserIds:allowed,idempotencyKey});
+    const result=action==='connect_messenger'&&provider==='telegram'&&contour==='internal'?await (async()=>{const input=telegramInput();
+      const setup=await connectProjectMessenger(database,input);await recordInternalTelegramBinding(database,input);return setup;
+    })():action==='connect_messenger'&&provider==='telegram'&&contour==='client'?await connectClientTelegramChannel(database,telegramInput()):
+      action==='connect_messenger'&&provider==='element'&&contour==='client'?await connectElementChannel(database,{workspaceId:session.workspaceId,actorId:session.actorId,projectId,contour,
+      homeserver:required(value.homeserver,2_048),roomReference:required(value.roomReference,512),login:required(value.login,512),password:required(value.password,4_096),idempotencyKey:required(value.idempotencyKey,128)} as Parameters<typeof connectElementChannel>[1]):action==='install'?await installProjectRuntime(database,{workspaceId:session.workspaceId,
         actorId:session.actorId,projectId,idempotencyKey:required(value.idempotencyKey,128)}):
       (()=>{throw new Error('body_invalid');})();return Response.json(result);
   }catch(error){const code=error instanceof Error?error.message:'request_failed';return Response.json({error:code},{status:

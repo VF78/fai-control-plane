@@ -52,6 +52,16 @@ same contracts with its own bindings; it is not a fork.
   gate or blocker.
 - UI shows confirmed facts, provenance, freshness and error state. Missing data
   is `Unknown`/`Not configured`; controls exist only for canonical commands.
+- Each project may have two independent messenger contours. Internal uses
+  Telegram. Client uses Telegram or Matrix/Element through a separate restricted
+  profile of the same project Hermes. Bindings and credentials are project-scoped;
+  the client profile cannot access internal tools, context, approvals or delivery
+  roles. Its only project mutation is a narrow project-scoped tool that creates a
+  new client-reported Issue/bug and adds it to the bound task tracker. For client
+  Telegram, configured IDs are client representatives; internal participant IDs
+  are inherited automatically. Element membership is managed by the client: the
+  binding stores one room link/ID and the agent's password login, with no member
+  allowlist in Control Plane. Legacy client connectors are not active product requirements.
 - UX is premium-minimal and manager-first: compact visualization, progressive
   disclosure, one desktop model with responsive mobile detail, no decorative
   clutter, text-heavy debug panels, dead navigation or duplicate UI.

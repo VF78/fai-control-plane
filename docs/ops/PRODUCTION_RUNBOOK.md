@@ -78,8 +78,8 @@ network change.
 - Hermes submission requires an authenticated operator and an exact non-Done
   Project item whose provider-native `Owner` is `Hermes`.
 - Existing backlog/snapshot initialization produces no notifications.
-- Bitrix client actions remain disabled until a separately approved stable
-  browser-identity proof.
+- Client-messenger inbound actions remain disabled unless the configured
+  provider has a separately approved, provider-native identity proof.
 - Secret values must never be printed, copied into GitHub, stored in the
   business database or included in release evidence.
 - GitHub Actions are not required for deployment; use approved local checks
@@ -175,7 +175,7 @@ image, device credential and gateway/dashboard health pass for that runtime.
 `scripts/deploy-prod.sh` is the source of truth. It accepts only exact current
 `origin/main`, a clean isolated checkout, healthy neighbours and approved
 host-owned configuration. It builds/replaces only the MVP web/worker/migration
-image and keeps Bitrix client actions disabled. The same approved deploy builds
+image and keeps unconfigured client-messenger actions disabled. The same approved deploy builds
 the pinned generic `infra/hermes-project` image, inspects its exact Docker image
 ID and passes that ID directly to the worker; it does not persist runtime
 settings into `production.env`. The bounded project runtime root is created as
@@ -237,7 +237,7 @@ curl -fsS --max-time 15 https://f-ai.studio/ >/dev/null
 ```
 
 Also verify DNS still matches the topology and AmneziaWG connects through
-Sprintbox. Do not send Telegram/Bitrix messages, submit Hermes work or mutate a
+Sprintbox. Do not send test messenger messages, submit Hermes work or mutate a
 real GitHub item merely as a health check.
 
 ## Recovery
