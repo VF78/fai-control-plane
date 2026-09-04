@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {assertProjectRuntimeOwnership,ensureCodexConfig,parseCodexDevicePrompt,projectAuthContainerSpec,projectOAuthCached,
-  projectRuntimeOwnership,projectGatewayContainerSpec,projectRuntimeResourceNames,removeProjectHermesRuntime,
+  projectRuntimeOwnership,projectGatewayContainerSpec,projectRuntimeResourceNames,reconcileProjectRuntimeContainer,removeProjectHermesRuntime,
   restartProjectHermesGateway} from './docker-project-runtime.ts';
 import {ensureProjectWorkspace,renderClientHermesConfig,renderClientHermesSoul,renderProjectHermesConfig} from './hermes-project-template.ts';
 
@@ -92,6 +92,69 @@ describe('direct project Docker adapter boundary',()=>{
     const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
     const labels={...projectRuntimeOwnership(one,'gateway'),'fai.control-plane.project-id':'00000000-0000-4000-8000-000000000002'};
     expect(()=>assertProjectRuntimeOwnership(labels,one,'gateway')).toThrow('docker_ownership_conflict');
+  });
+
+  const containerHarness=(one:ProjectRuntimeProvisioningRequest,currentValue:Record<string,unknown>|null)=>{
+    let current=currentValue;const calls:{method:string;path:string;body?:unknown}[]=[];
+    const docker=async(method:string,path:string,body?:unknown)=>{calls.push({method,path,...(body===undefined?{}:{body})});
+      if(method==='GET')return current===null?{status:404,body:Buffer.from('{}')}:
+        {status:200,body:Buffer.from(JSON.stringify(current))};
+      if(method==='DELETE'){current=null;return {status:204,body:Buffer.alloc(0)};}
+      if(method==='POST'&&path.includes('/containers/create')){const spec=body as Record<string,unknown>;
+        current={Name:`/${one.artifact.runtimeId}-gateway`,Image:'sha256:'+ '2'.repeat(64),
+          Config:{Labels:spec.Labels},State:{Running:false,Status:'created'}};
+        return {status:201,body:Buffer.from('{}')};}
+      if(method==='POST'&&path.endsWith('/start')){current={...current,State:{Running:true,Status:'running'}};
+        return {status:204,body:Buffer.alloc(0)};}
+      return {status:500,body:Buffer.from('{}')};};
+    return {docker,calls,current:()=>current};
+  };
+  const gatewaySpec=(one:ProjectRuntimeProvisioningRequest,extraEnv:readonly string[]=[])=>{
+    const spec=projectGatewayContainerSpec(one,'fai-hermes:version','/runtime/one',
+      {generated:'/runtime/one/generated',profile:'/runtime/one/generated/profile',client:'/runtime/one/generated/client-profile'},
+      'project-network','internal-network');
+    return {...spec,Env:[...spec.Env,...extraEnv]};
+  };
+
+  it('replaces only an owned gateway when its image changed',async()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
+    const harness=containerHarness(one,{Name:'/fai-one-00000000-gateway',Image:'sha256:'+ '1'.repeat(64),
+      Config:{Labels:projectRuntimeOwnership(one,'gateway')},State:{Running:true,Status:'running'}});
+    await reconcileProjectRuntimeContainer(harness.docker,one,'fai-one-00000000-gateway','gateway',
+      'sha256:'+ '2'.repeat(64),gatewaySpec(one));
+    expect(harness.calls.map(({method,path})=>`${method} ${path}`)).toContain(
+      'DELETE /containers/fai-one-00000000-gateway?force=1&v=1');
+    expect(harness.current()).toMatchObject({Image:'sha256:'+ '2'.repeat(64),State:{Running:true}});
+  });
+
+  it('replaces an owned gateway when its effective configuration changed',async()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
+    const harness=containerHarness(one,null);const image='sha256:'+ '2'.repeat(64);
+    await reconcileProjectRuntimeContainer(harness.docker,one,'fai-one-00000000-gateway','gateway',image,gatewaySpec(one));
+    harness.calls.length=0;
+    await reconcileProjectRuntimeContainer(harness.docker,one,'fai-one-00000000-gateway','gateway',image,
+      gatewaySpec(one,['TELEGRAM_ALLOWED_USERS=202']));
+    expect(harness.calls.map(({method,path})=>`${method} ${path}`)).toContain(
+      'DELETE /containers/fai-one-00000000-gateway?force=1&v=1');
+  });
+
+  it('leaves an owned gateway running when image and configuration are unchanged',async()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
+    const harness=containerHarness(one,null);const image='sha256:'+ '2'.repeat(64);const spec=gatewaySpec(one);
+    await reconcileProjectRuntimeContainer(harness.docker,one,'fai-one-00000000-gateway','gateway',image,spec);
+    harness.calls.length=0;
+    await reconcileProjectRuntimeContainer(harness.docker,one,'fai-one-00000000-gateway','gateway',image,spec);
+    expect(harness.calls.every(({method})=>method==='GET')).toBe(true);
+  });
+
+  it('never replaces a deterministic gateway name owned by another project',async()=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
+    const harness=containerHarness(one,{Name:'/fai-one-00000000-gateway',Image:'sha256:'+ '1'.repeat(64),
+      Config:{Labels:{...projectRuntimeOwnership(one,'gateway'),'fai.control-plane.project-id':'another-project'}},
+      State:{Running:true,Status:'running'}});
+    await expect(reconcileProjectRuntimeContainer(harness.docker,one,'fai-one-00000000-gateway','gateway',
+      'sha256:'+ '2'.repeat(64),gatewaySpec(one))).rejects.toThrow('docker_ownership_conflict');
+    expect(harness.calls.every(({method})=>method==='GET')).toBe(true);
   });
 
   it('extracts only the official HTTPS device prompt and one-time code',()=>{

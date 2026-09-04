@@ -1,4 +1,5 @@
 import {request as httpRequest} from 'node:http';
+import {createHash} from 'node:crypto';
 import {dirname} from 'node:path';
 import {chmod,chown,readFile,rm,stat,writeFile} from 'node:fs/promises';
 import type {ProjectHermesRuntimeBinding,ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
@@ -35,18 +36,38 @@ type ContainerInspect=Readonly<{Name?:unknown;Image?:unknown;Config?:Readonly<{L
   State?:Readonly<{Running?:unknown;Status?:unknown;ExitCode?:unknown;Health?:Readonly<{Status?:unknown}>}>}>;
 const inspectContainer=async(docker:DockerRequest,name:string)=>{const response=await docker('GET',`/containers/${namePath(name)}/json`);
   return response.status===404?null:json<ContainerInspect>(expect(response,[200]));};
-const ensureContainer=async(docker:DockerRequest,request:ProjectRuntimeProvisioningRequest,name:string,component:string,
-  imageId:string,spec:unknown)=>{
-  const expected=projectRuntimeOwnership(request,component);let current=await inspectContainer(docker,name);
-  if(current===null){expect(await docker('POST',`/containers/create?name=${namePath(name)}`,spec),[201]);current=await inspectContainer(docker,name);}
-  if(current===null||current.Name!==`/${name}`||current.Image!==imageId||!exactLabels(current.Config?.Labels,expected))throw new Error('docker_ownership_conflict');
-  if(current.State?.Running!==true&&current.State?.Status==='created')expect(await docker('POST',`/containers/${namePath(name)}/start`),[204,304]);
-  return (await inspectContainer(docker,name))!;
+const specFingerprintLabel='fai.control-plane.spec-sha256';
+const fingerprintedSpec=(spec:unknown)=>{if(spec===null||typeof spec!=='object'||Array.isArray(spec))
+  throw new Error('project_runtime_spec_invalid');
+  const value=spec as Record<string,unknown>;const labels=value.Labels;
+  if(labels===null||typeof labels!=='object'||Array.isArray(labels))throw new Error('project_runtime_spec_invalid');
+  const fingerprint=createHash('sha256').update(JSON.stringify(spec)).digest('hex');
+  return {fingerprint,spec:{...value,Labels:{...labels as Record<string,unknown>,[specFingerprintLabel]:fingerprint}}};
 };
-const removeOwned=async(docker:DockerRequest,request:ProjectRuntimeProvisioningRequest,name:string,component:string)=>{
+const removeOwned=async(docker:DockerRequest,request:ProjectRuntimeProvisioningRequest,name:string,component:string,
+  force=false)=>{
   const current=await inspectContainer(docker,name);if(current===null)return;
   assertProjectRuntimeOwnership(current.Config?.Labels,request,component);
-  expect(await docker('DELETE',`/containers/${namePath(name)}?v=1`),[204,404]);
+  expect(await docker('DELETE',`/containers/${namePath(name)}?${force?'force=1&':''}v=1`),[204,404]);
+};
+export const reconcileProjectRuntimeContainer=async(docker:DockerRequest,request:ProjectRuntimeProvisioningRequest,
+  name:string,component:string,imageId:string,spec:unknown)=>{
+  const expected=projectRuntimeOwnership(request,component);let current=await inspectContainer(docker,name);
+  const desired=fingerprintedSpec(spec);
+  if(current!==null){
+    if(current.Name!==`/${name}`||!exactLabels(current.Config?.Labels,expected))throw new Error('docker_ownership_conflict');
+    const labels=current.Config?.Labels as Record<string,unknown>;
+    if(current.Image!==imageId||labels[specFingerprintLabel]!==desired.fingerprint){
+      await removeOwned(docker,request,name,component,true);current=null;
+    }
+  }
+  if(current===null){expect(await docker('POST',`/containers/create?name=${namePath(name)}`,desired.spec),[201]);current=await inspectContainer(docker,name);}
+  if(current===null||current.Name!==`/${name}`||current.Image!==imageId||
+    !exactLabels(current.Config?.Labels,expected)||
+    (current.Config?.Labels as Record<string,unknown>)[specFingerprintLabel]!==desired.fingerprint)
+    throw new Error('docker_ownership_conflict');
+  if(current.State?.Running!==true&&current.State?.Status==='created')expect(await docker('POST',`/containers/${namePath(name)}/start`),[204,304]);
+  return (await inspectContainer(docker,name))!;
 };
 const removeOwnedForProject=async(docker:DockerRequest,request:ProjectRuntimeOwnershipInput,name:string,component:string)=>{
   const current=await inspectContainer(docker,name);if(current===null)return;
@@ -202,7 +223,7 @@ export const provisionProjectHermesRuntime=async(request:ProjectRuntimeProvision
       const priorAuth=await inspectContainer(docker,authName);
       if(priorAuth!==null&&priorAuth.State?.Running!==true&&priorAuth.State?.Status!=='created')
         await removeOwned(docker,request,authName,'codex-auth');
-      const auth=await ensureContainer(docker,request,authName,'codex-auth',expectedImageId,
+      const auth=await reconcileProjectRuntimeContainer(docker,request,authName,'codex-auth',expectedImageId,
         projectAuthContainerSpec(request,image,root,projectNetwork));
       if(auth.State?.Running===true){const logs=await docker('GET',`/containers/${namePath(authName)}/logs?stdout=1&stderr=1&tail=200`);
         const prompt=parseCodexDevicePrompt(decodeLogs(expect(logs,[200]).body));return prompt===null?{status:'installing'}:{status:'auth_required',auth:prompt};}
@@ -210,7 +231,7 @@ export const provisionProjectHermesRuntime=async(request:ProjectRuntimeProvision
       if(!await projectOAuthCached(root))return {status:'error',failure:'authentication_expired'};
       await removeOwned(docker,request,authName,'codex-auth');
     }
-    const gatewayName=names.gateway;const gateway=await ensureContainer(docker,request,gatewayName,'gateway',expectedImageId,
+    const gatewayName=names.gateway;const gateway=await reconcileProjectRuntimeContainer(docker,request,gatewayName,'gateway',expectedImageId,
       projectGatewayContainerSpec(request,image,root,assets,projectNetwork,managementNetwork));
     if(gateway.State?.Health?.Status==='unhealthy')return {status:'error',failure:'readiness_failed'};
     return gateway.State?.Health?.Status==='healthy'?{status:'ready'}:{status:'installing'};
