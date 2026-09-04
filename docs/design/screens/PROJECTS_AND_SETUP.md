@@ -16,7 +16,7 @@ A Product Owner must be able to:
 - identify incomplete setup;
 - open a project;
 - understand the next required setup action;
-- inspect repository, tracker, documents, agent, and access;
+- inspect repository, task tracker, documents, chats, agent, and access;
 - avoid accidental destructive actions.
 
 ## Portfolio screen
@@ -95,7 +95,7 @@ The delete action must not be permanently visible in the normal header.
 
 Show a compact progress rail:
 
-`Репозиторий -> Трекер -> Документы -> Агент -> Проверка`
+`Репозиторий -> Таск-трекер -> Документы -> Чаты -> ИИ-агент -> Проверка`
 
 States:
 
@@ -113,7 +113,7 @@ Rows, not nested cards:
 
 - GitHub Repository;
 - GitHub Project or configured tracker;
-- Telegram/notification channel;
+- internal and client messenger channels (Telegram or Matrix/Element);
 - Agent Runtime.
 
 Each row shows:

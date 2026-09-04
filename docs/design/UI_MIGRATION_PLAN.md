@@ -122,7 +122,7 @@ Scope:
 
 - migrate the remaining portfolio-wide sections to the same project rows,
   integration/status patterns and read-only notice;
-- preserve Telegram, Bitrix, Hermes and membership behavior;
+- preserve configured project messenger, AI-agent and membership behavior;
 - add skip-to-content, mobile session action, shell-preserving loading/error
   recovery and offline notice;
 - remove every remaining legacy file, selector, trivial wrapper and unused

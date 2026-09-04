@@ -36,10 +36,10 @@ describe('project member onboarding', () => {
     expect(String(query.mock.calls[0]?.[0])).not.toContain('insert into actors');
   });
 
-  it('allows a client with Bitrix identity only and creates CP access without a messenger call', async () => {
+  it('requires a GitHub identity for a client and creates CP access without a messenger call', async () => {
     const db = database();
     await expect(onboardProjectMember(db.value, {workspaceId: 'workspace', projectId: 'project', displayName: 'Client',
-      role: 'client', identities: [{provider: 'bitrix24', subjectHash: hash('a')}]})).resolves.toMatchObject({created: true});
+      role: 'client', identities: [{provider: 'github', subjectHash: hash('a')}]})).resolves.toMatchObject({created: true});
     expect(db.queries.some((sql) => sql.includes('insert into project_memberships'))).toBe(true);
     expect(db.queries.every((sql) => !/send|room|chat/i.test(sql))).toBe(true);
   });
@@ -68,7 +68,7 @@ describe('project member onboarding', () => {
     ]);
     await expect(onboardProjectMember(db.value, {workspaceId: 'workspace', projectId: 'project', displayName: 'Conflict',
       role: 'client', identities: [{provider: 'github', subjectHash: hash('e')},
-        {provider: 'bitrix24', subjectHash: hash('f')}]})).rejects.toThrow('onboarding_identity_conflict');
+        {provider: 'telegram', subjectHash: hash('f')}]})).rejects.toThrow('onboarding_identity_conflict');
     expect(db.queries.at(-1)).toBe('rollback');
   });
 });

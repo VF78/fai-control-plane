@@ -129,27 +129,44 @@ const commonHost=(root:string,projectNetwork:string)=>({Binds:[`${root}/data:/op
 const endpoints=(projectNetwork:string,managementNetwork?:string,aliases:readonly string[]=[])=>({EndpointsConfig:{
   [projectNetwork]:{Aliases:[...aliases]},...(managementNetwork===undefined?{}:{[managementNetwork]:{Aliases:[...aliases]}})}});
 export const projectGatewayContainerSpec=(request:ProjectRuntimeProvisioningRequest,image:string,root:string,
-  assets:Readonly<{generated:string;profile:string}>,projectNetwork:string,managementNetwork:string)=>{
+  assets:Readonly<{generated:string;profile:string;client:string}>,projectNetwork:string,managementNetwork:string)=>{
+  const internal=request.messengerBindings?.internal;
+  const telegram=internal?.provider==='telegram'&&internal.status==='ready'?internal:
+    internal===undefined&&request.artifact.telegramChatId!==null?{allowedUserIds:request.artifact.telegramAllowedUserIds,
+      telegram:{chatId:request.artifact.telegramChatId}}:null;
+  const client=request.messengerBindings?.client?.status==='interactive'?request.messengerBindings.client:null;
   const env=['HOME=/opt/data','CODEX_HOME=/opt/data/codex-home','API_SERVER_ENABLED=true','API_SERVER_HOST=0.0.0.0',
     'API_SERVER_PORT=8642','HERMES_DASHBOARD=1','HERMES_PROVIDER=openai-codex',
     'HERMES_MODEL=gpt-5.6-terra','TERMINAL_MAX_FOREGROUND_TIMEOUT=1800','HERMES_GITHUB_REPOSITORY_TOKEN_FILE=/run/secrets/github-token',
     'HERMES_API_SERVER_KEY_FILE=/run/secrets/agent-delivery',
     'HERMES_DASHBOARD_USERNAME_FILE=/run/secrets/dashboard-username','HERMES_DASHBOARD_PASSWORD_FILE=/run/secrets/dashboard-password',
     'HERMES_DASHBOARD_SIGNING_SECRET_FILE=/run/secrets/dashboard-signing',
-    ...(request.artifact.telegramChatId===null?[]:['HERMES_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram-bot',
-    `TELEGRAM_ALLOWED_USERS=${request.artifact.telegramAllowedUserIds.join(',')}`,
-    `TELEGRAM_ALLOWED_CHATS=${request.artifact.telegramChatId}`,
-    `TELEGRAM_GROUP_ALLOWED_USERS=${request.artifact.telegramAllowedUserIds.join(',')}`,
-    `TELEGRAM_GROUP_ALLOWED_CHATS=${request.artifact.telegramChatId}`])];
+    `FCP_PROJECT_REPOSITORY_URL=${request.repositoryUrl}`,`FCP_PROJECT_TRACKER_URL=${request.projectUrl}`,
+    ...(telegram===null?[]:['HERMES_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram-bot',
+    `TELEGRAM_ALLOWED_USERS=${telegram.allowedUserIds.join(',')}`,
+    `TELEGRAM_ALLOWED_CHATS=${telegram.telegram!.chatId}`,
+    `TELEGRAM_GROUP_ALLOWED_USERS=${telegram.allowedUserIds.join(',')}`,
+    `TELEGRAM_GROUP_ALLOWED_CHATS=${telegram.telegram!.chatId}`]),
+    ...(client?.provider==='telegram'?['CLIENT_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/client-telegram-bot',
+      `CLIENT_TELEGRAM_ALLOWED_USERS=${[...new Set([...(telegram?.allowedUserIds??[]),...client.allowedUserIds])].join(',')}`,
+      `CLIENT_TELEGRAM_ALLOWED_CHATS=${client.telegram!.chatId}`] :[]),
+    ...(client?.provider==='element'?[`CLIENT_MATRIX_HOMESERVER=${client.element!.homeserver}`,
+      `CLIENT_MATRIX_ALLOWED_ROOMS=${client.element!.roomReference}`,'CLIENT_MATRIX_ALLOW_ALL_USERS=true',
+      'CLIENT_MATRIX_USER_ID_FILE=/run/secrets/client-element-login','CLIENT_MATRIX_PASSWORD_FILE=/run/secrets/client-element-password',
+      'CLIENT_MATRIX_E2EE_MODE=optional'] :[])];
   const baseBinds=[`${root}/data:/opt/data`,`${root}/codex-home:/opt/data/codex-home`];
   const binds=[...baseBinds,`${root}/secrets/github-token:/run/secrets/github-token:ro`,
     `${request.secrets['agent-delivery'].locator}:/run/secrets/agent-delivery:ro`,
     `${request.secrets['dashboard-username'].locator}:/run/secrets/dashboard-username:ro`,
     `${request.secrets['dashboard-password'].locator}:/run/secrets/dashboard-password:ro`,
     `${root}/secrets/dashboard-signing:/run/secrets/dashboard-signing:ro`,
-    ...(request.artifact.telegramChatId===null?[]:[`${request.secrets['telegram-bot'].locator}:/run/secrets/telegram-bot:ro`]),
+    ...(telegram===null?[]:[`${request.secrets['telegram-bot'].locator}:/run/secrets/telegram-bot:ro`]),
+    ...(client?.provider==='telegram'&&request.messengerSecrets?.['client-telegram-bot']!==undefined?[`${request.messengerSecrets['client-telegram-bot']!.locator}:/run/secrets/client-telegram-bot:ro`]:[]),
+    ...(client?.provider==='element'&&request.messengerSecrets?.['client-element-login']!==undefined&&request.messengerSecrets?.['client-element-password']!==undefined?[`${request.messengerSecrets['client-element-login']!.locator}:/run/secrets/client-element-login:ro`,`${request.messengerSecrets['client-element-password']!.locator}:/run/secrets/client-element-password:ro`]:[]),
     `${assets.generated}/config.yaml:/opt/data/config.yaml:ro`,`${assets.profile}/config.yaml:/opt/data/profiles/internal/config.yaml:ro`,
-    `${assets.profile}/SOUL.md:/opt/data/profiles/internal/SOUL.md:ro`];
+    `${assets.profile}/SOUL.md:/opt/data/profiles/internal/SOUL.md:ro`,`${assets.client}/config.yaml:/opt/data/profiles/client/config.yaml:ro`,
+    `${assets.client}/SOUL.md:/opt/data/profiles/client/SOUL.md:ro`,
+    `${assets.client}/plugins:/opt/data/profiles/client/plugins:ro`];
   return {Image:image,Cmd:['sleep','infinity'],WorkingDir:request.artifact.workspacePath,Env:env,
     Labels:projectRuntimeOwnership(request,'gateway'),
     Healthcheck:{Test:['CMD','python','-c',"import os,subprocess,urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5); urllib.request.urlopen('http://127.0.0.1:9119/api/status', timeout=5); subprocess.run(['gh','auth','status'],env={**os.environ,'HOME':'/opt/data/home'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=5)"],

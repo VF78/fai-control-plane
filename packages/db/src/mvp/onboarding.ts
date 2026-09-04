@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import type {ProjectRole} from '@fai-control-plane/domain';
 import type {Database} from './runtime.ts';
 
-export type OnboardingIdentity = Readonly<{provider: 'github' | 'telegram' | 'bitrix24'; subjectHash: string}>;
+export type OnboardingIdentity = Readonly<{provider: 'github' | 'telegram'; subjectHash: string}>;
 export type OnboardProjectMemberInput = Readonly<{workspaceId: string; projectId: string; displayName: string;
   role: Exclude<ProjectRole, 'project_owner'>; identities: readonly OnboardingIdentity[]}>;
 export type WorkspaceHumanActorView = Readonly<{actorId: string; displayName: string}>;
@@ -36,13 +36,14 @@ export const onboardProjectMember = async (database: Database, input: OnboardPro
   actorId: string; created: boolean;
 }>> => {
   const providers = input.identities.map(({provider}) => provider);
-  const hasGitHub = providers.includes('github'); const hasBitrix = providers.includes('bitrix24');
+  const hasGitHub = providers.includes('github');
+  const hasTelegram = providers.includes('telegram');
   if (!valid(input.workspaceId, 256) || !valid(input.projectId, 256) || !valid(input.displayName, 200) ||
     !['operator', 'contributor', 'client'].includes(input.role) || input.identities.length === 0 ||
     new Set(providers).size !== providers.length ||
     input.identities.some(({provider, subjectHash}) =>
-      !['github', 'telegram', 'bitrix24'].includes(provider) || !/^[a-f0-9]{64}$/.test(subjectHash)) ||
-    (input.role === 'client' ? !hasGitHub && !hasBitrix : !hasGitHub)) throw new Error('onboarding_invalid');
+      !['github', 'telegram'].includes(provider) || !/^[a-f0-9]{64}$/.test(subjectHash)) ||
+    (input.role==='client'?!hasGitHub&&!hasTelegram:!hasGitHub)) throw new Error('onboarding_invalid');
   const client = await database.connect();
   try {
     await client.query('begin');

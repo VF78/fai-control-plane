@@ -31,7 +31,9 @@ fi
 install -d -m 0700 /run/s6/container_environment
 for binding in \
   "API_SERVER_KEY:${HERMES_API_SERVER_KEY_FILE:-}" \
-  "TELEGRAM_BOT_TOKEN:${HERMES_TELEGRAM_BOT_TOKEN_FILE:-}"; do
+  "TELEGRAM_BOT_TOKEN:${HERMES_TELEGRAM_BOT_TOKEN_FILE:-}" \
+  "MATRIX_USER_ID:${MATRIX_USER_ID_FILE:-}" \
+  "MATRIX_PASSWORD:${MATRIX_PASSWORD_FILE:-}"; do
   name=${binding%%:*}
   secret_file=${binding#*:}
   if [ -n "$secret_file" ]; then
@@ -76,3 +78,30 @@ case "${HERMES_DASHBOARD:-}" in
     done
     ;;
 esac
+
+client_env=/opt/data/profiles/client/.env
+if [ -n "${CLIENT_TELEGRAM_BOT_TOKEN_FILE:-}" ] || [ -n "${CLIENT_MATRIX_USER_ID_FILE:-}" ]; then
+  install -d -o 10000 -g 10000 -m 0700 /opt/data/profiles/client
+  : > "$client_env"
+  chmod 0600 "$client_env"
+  chown 10000:10000 "$client_env"
+  for binding in \
+    "TELEGRAM_BOT_TOKEN:${CLIENT_TELEGRAM_BOT_TOKEN_FILE:-}" \
+    "MATRIX_USER_ID:${CLIENT_MATRIX_USER_ID_FILE:-}" \
+    "MATRIX_PASSWORD:${CLIENT_MATRIX_PASSWORD_FILE:-}"; do
+    name=${binding%%:*}
+    secret_file=${binding#*:}
+    if [ -n "$secret_file" ]; then
+      [ -f "$secret_file" ] && [ ! -L "$secret_file" ] && [ -r "$secret_file" ] || exit 1
+      value=$(tr -d '\r\n' < "$secret_file")
+      [ -n "$value" ] || exit 1
+      printf '%s=%s\n' "$name" "$value" >> "$client_env"
+    fi
+  done
+  [ -z "${CLIENT_MATRIX_HOMESERVER:-}" ] || printf 'MATRIX_HOMESERVER=%s\n' "$CLIENT_MATRIX_HOMESERVER" >> "$client_env"
+  [ -z "${CLIENT_MATRIX_ALLOWED_ROOMS:-}" ] || printf 'MATRIX_ALLOWED_ROOMS=%s\n' "$CLIENT_MATRIX_ALLOWED_ROOMS" >> "$client_env"
+  [ -z "${CLIENT_MATRIX_ALLOW_ALL_USERS:-}" ] || printf 'MATRIX_ALLOW_ALL_USERS=%s\n' "$CLIENT_MATRIX_ALLOW_ALL_USERS" >> "$client_env"
+  [ -z "${CLIENT_TELEGRAM_ALLOWED_USERS:-}" ] || printf 'TELEGRAM_ALLOWED_USERS=%s\nTELEGRAM_GROUP_ALLOWED_USERS=%s\n' "$CLIENT_TELEGRAM_ALLOWED_USERS" "$CLIENT_TELEGRAM_ALLOWED_USERS" >> "$client_env"
+  [ -z "${CLIENT_TELEGRAM_ALLOWED_CHATS:-}" ] || printf 'TELEGRAM_ALLOWED_CHATS=%s\nTELEGRAM_GROUP_ALLOWED_CHATS=%s\n' "$CLIENT_TELEGRAM_ALLOWED_CHATS" "$CLIENT_TELEGRAM_ALLOWED_CHATS" >> "$client_env"
+  printf 'MATRIX_REQUIRE_MENTION=true\nMATRIX_DEVICE_ID=FCP_CLIENT\nMATRIX_E2EE_MODE=%s\n' "${CLIENT_MATRIX_E2EE_MODE:-off}" >> "$client_env"
+fi

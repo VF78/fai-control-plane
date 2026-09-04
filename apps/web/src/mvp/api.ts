@@ -232,14 +232,14 @@ export const onboard = async (request: Request): Promise<Response> => {
         role: role as 'operator'|'contributor'|'client'});
       return Response.json({actorId, created: false});
     }
-    const identity = (provider: 'github'|'telegram'|'bitrix24', value: unknown, numeric: boolean) => {
+    const identity = (provider: 'github'|'telegram', value: unknown, numeric: boolean) => {
       if (value === undefined || value === null || value === '') return null;
       const subject = string(value, 64);
       if (numeric && !/^[1-9][0-9]*$/.test(subject)) throw new Error('body_invalid');
       return {provider, subjectHash: subjectHash(provider, subject)} as const;
     };
-    const identities = [identity('github', body.githubUserId, true), identity('telegram', body.telegramUserId, true),
-      identity('bitrix24', body.bitrix24UserId, false)].filter((value) => value !== null);
+    const identities = [identity('github', body.githubUserId, true), identity('telegram', body.telegramUserId, true)]
+      .filter((value) => value !== null);
     const result = await onboardProjectMember(database, {workspaceId: session.workspaceId, projectId,
       displayName: string(body.displayName, 200), role: role as 'operator'|'contributor'|'client', identities});
     return Response.json({actorId: result.actorId, created: result.created}, {status: result.created ? 201 : 200});

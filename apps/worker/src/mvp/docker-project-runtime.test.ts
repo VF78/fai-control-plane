@@ -6,7 +6,7 @@ import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 import {assertProjectRuntimeOwnership,ensureCodexConfig,parseCodexDevicePrompt,projectAuthContainerSpec,projectOAuthCached,
   projectRuntimeOwnership,projectGatewayContainerSpec,projectRuntimeResourceNames,removeProjectHermesRuntime,
   restartProjectHermesGateway} from './docker-project-runtime.ts';
-import {ensureProjectWorkspace} from './hermes-project-template.ts';
+import {ensureProjectWorkspace,renderClientHermesConfig,renderClientHermesSoul,renderProjectHermesConfig} from './hermes-project-template.ts';
 
 const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequest=>({
   projectId,workspaceId:'00000000-0000-4000-8000-000000000100',ownerActorId:'actor',slug:'project',
@@ -38,7 +38,7 @@ describe('direct project Docker adapter boundary',()=>{
   it('uses upstream supervision for the only long-lived project container',()=>{
     const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
     const spec=projectGatewayContainerSpec(one,'fai-hermes:version','/runtime/one',
-      {generated:'/runtime/one/generated',profile:'/runtime/one/generated/profile'},'project-network','internal-network');
+      {generated:'/runtime/one/generated',profile:'/runtime/one/generated/profile',client:'/runtime/one/generated/client-profile'},'project-network','internal-network');
     expect(spec).not.toHaveProperty('Entrypoint');expect(spec).not.toHaveProperty('User');
     expect(spec.Cmd).toEqual(['sleep','infinity']);
     expect(spec.Env).toContain('HERMES_DASHBOARD=1');
@@ -47,6 +47,45 @@ describe('direct project Docker adapter boundary',()=>{
     expect(spec.Env.some((value)=>value.startsWith('HERMES_GATEWAY_NO_SUPERVISE='))).toBe(false);
     expect(Object.keys(projectRuntimeResourceNames(one))).toEqual(['network','auth','gateway']);
     expect(JSON.stringify(spec)).not.toContain('management');expect(JSON.stringify(spec)).not.toContain('readiness');
+  });
+
+  it('mounts a client Element profile without replacing internal Telegram',()=>{
+    const one={...request('00000000-0000-4000-8000-000000000001','fai-one-00000000'),
+      messengerBindings:{client:{provider:'element' as const,status:'interactive' as const,
+        allowedUserIds:[],element:{homeserver:'https://matrix.example',roomReference:'!room:matrix.example'}}},
+      messengerSecrets:{'client-element-login':{id:'login',locator:'/runtime/one/secrets/matrix-login'},
+        'client-element-password':{id:'password',locator:'/runtime/one/secrets/matrix-password'}}};
+    const spec=projectGatewayContainerSpec(one,'fai-hermes:version','/runtime/one',
+      {generated:'/runtime/one/generated',profile:'/runtime/one/generated/profile',client:'/runtime/one/generated/client-profile'},'project-network','internal-network');
+    expect(spec.Env).toContain('CLIENT_MATRIX_HOMESERVER=https://matrix.example');
+    expect(spec.Env).toContain('CLIENT_MATRIX_ALLOWED_ROOMS=!room:matrix.example');
+    expect(spec.Env).toContain('CLIENT_MATRIX_ALLOW_ALL_USERS=true');
+    expect(spec.Env).toContain('CLIENT_MATRIX_E2EE_MODE=optional');
+    expect(spec.Env.some((value)=>value.startsWith('CLIENT_MATRIX_ALLOWED_USERS='))).toBe(false);
+    expect(spec.HostConfig.Binds.some((value)=>value.endsWith('/run/secrets/client-element-login:ro'))).toBe(true);
+    expect(renderProjectHermesConfig(one)).toContain('platform: matrix');
+    expect(renderProjectHermesConfig(one)).toContain('profile: client');
+  });
+
+  it('mounts a separate client Telegram credential and allowlist in the same gateway',()=>{
+    const one={...request('00000000-0000-4000-8000-000000000001','fai-one-00000000'),
+      messengerBindings:{client:{provider:'telegram' as const,status:'interactive' as const,
+        allowedUserIds:['202'],telegram:{chatId:'-1002'}}},
+      messengerSecrets:{'client-telegram-bot':{id:'client-token',locator:'/runtime/one/secrets/client-telegram'}}};
+    const spec=projectGatewayContainerSpec(one,'fai-hermes:version','/runtime/one',
+      {generated:'/runtime/one/generated',profile:'/runtime/one/generated/profile',client:'/runtime/one/generated/client-profile'},'project-network','internal-network');
+    expect(spec.Env).toContain('CLIENT_TELEGRAM_ALLOWED_USERS=101,202');
+    expect(spec.Env).toContain('CLIENT_TELEGRAM_ALLOWED_CHATS=-1002');
+    expect(spec.Env).toContain('FCP_PROJECT_REPOSITORY_URL=https://github.com/example/project');
+    expect(spec.Env).toContain('FCP_PROJECT_TRACKER_URL=https://github.com/users/example/projects/1');
+    expect(spec.HostConfig.Binds.some((value)=>value.endsWith('/run/secrets/client-telegram-bot:ro'))).toBe(true);
+    expect(spec.HostConfig.Binds).toContain('/runtime/one/generated/client-profile/plugins:/opt/data/profiles/client/plugins:ro');
+    expect(renderProjectHermesConfig(one)).toContain('platform: telegram');
+    expect(renderProjectHermesConfig(one)).toContain('profile: client');
+    expect(renderClientHermesConfig()).toContain('client_issue');
+    expect(renderClientHermesConfig()).toContain('- fai-client-issues');
+    expect(renderClientHermesSoul('project')).toContain('only with report_project_issue');
+    expect(renderClientHermesSoul('project')).toContain('Never read or change existing tracker items');
   });
 
   it('fails closed for a foreign project label',()=>{

@@ -10,6 +10,7 @@ import {
   type ParsedProjectHermesRuntimeArtifact,
   type ProjectHermesSecretKind
 } from './project-hermes-runtime.ts';
+import {parseProjectMessengerBindings,parseProjectMessengerSecretRefs,projectMessengerBindingsArtifactKind,type ProjectMessengerBindings} from './project-messenger-bindings.ts';
 
 const sha=(content:string)=>createHash('sha256').update(content).digest('hex');
 const validSlug=(value:string)=>/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/.test(value);
@@ -86,19 +87,23 @@ export const recordProjectMessengerSetup=async(database:Database,input:Readonly<
 };
 
 type RuntimeArtifactRow=Readonly<{projectId:string;workspaceId:string;ownerActorId:string;slug:string;
-  repositoryUrl:string;projectUrl:string;content:string}>;
+  repositoryUrl:string;projectUrl:string;content:string;messengerContent?:string|null}>;
 export type ProjectRuntimeProvisioningRequest=Readonly<RuntimeArtifactRow&{
   artifact:ParsedProjectHermesRuntimeArtifact;generation:string;secrets:ProjectRuntimeSecretLocators;
+  messengerBindings?:ProjectMessengerBindings;messengerSecrets?:Readonly<Record<string,{id:string;locator:string}>>;
 }>;
 
 const latestRuntimeRows=async(database:Database,workspaceId:string)=>database.query<RuntimeArtifactRow>(`select
   p.id as "projectId",p.workspace_id as "workspaceId",p.slug,p.repository_url as "repositoryUrl",
-  owner.actor_id as "ownerActorId",binding.project_url as "projectUrl",runtime.content_text as content
+  owner.actor_id as "ownerActorId",binding.project_url as "projectUrl",runtime.content_text as content,
+  messenger.content_text as "messengerContent"
   from projects p join tracker_bindings binding on binding.project_id=p.id and binding.enabled=true
   join lateral(select actor_id from project_memberships where project_id=p.id and role='project_owner' and active=true
     order by created_at,id limit 1)owner on true
   join lateral(select content_text from project_source_artifacts where project_id=p.id and kind=$2
-    order by created_at desc,id desc limit 1)runtime on true where p.workspace_id=$1`,[workspaceId,projectHermesRuntimeArtifactKind]);
+    order by created_at desc,id desc limit 1)runtime on true
+  left join lateral(select content_text from project_source_artifacts where project_id=p.id and kind=$3
+    order by created_at desc,id desc limit 1)messenger on true where p.workspace_id=$1`,[workspaceId,projectHermesRuntimeArtifactKind,projectMessengerBindingsArtifactKind]);
 
 export const listProjectRuntimeProvisioningRequests=async(database:Database,workspaceId:string):Promise<readonly ProjectRuntimeProvisioningRequest[]>=>{
   const rows=await latestRuntimeRows(database,workspaceId);const parsed=rows.rows.flatMap((row)=>{
@@ -106,14 +111,15 @@ export const listProjectRuntimeProvisioningRequests=async(database:Database,work
     try{raw=JSON.parse(row.content) as Record<string,unknown>;}catch{return [];}
     return artifact!==null&&['installing','auth_required'].includes(artifact.status)&&typeof raw.generation==='string'
       ?[{row,artifact,generation:raw.generation}]:[];});
-  const ids=[...new Set(parsed.flatMap(({artifact})=>Object.values(artifact.secretIds)))];if(ids.length===0)return [];
+  const ids=[...new Set(parsed.flatMap(({artifact,row})=>[...Object.values(artifact.secretIds),...Object.values(parseProjectMessengerSecretRefs(row.messengerContent??''))]))];if(ids.length===0)return [];
   const refs=await database.query<{id:string;purpose:string;locator:string}>(`select id,purpose,locator from secret_refs
     where workspace_id=$1 and id=any($2::uuid[])`,[workspaceId,ids]);const byId=new Map(refs.rows.map((value)=>[value.id,value]));
   return parsed.flatMap(({row,artifact,generation})=>{const secrets={} as Record<ProjectHermesSecretKind,SecretLocator>;
     for(const [kind,id] of Object.entries(artifact.secretIds) as [ProjectHermesSecretKind,string][]){const ref=byId.get(id);
       if(ref===undefined||ref.purpose!==projectHermesSecretPurpose(row.projectId,kind)||!ref.locator.startsWith('/'))return [];
       secrets[kind]={id,locator:ref.locator};}
-    return [{...row,artifact,generation,secrets}];});
+    const bindings=parseProjectMessengerBindings(row.messengerContent??'')??{};const refs=parseProjectMessengerSecretRefs(row.messengerContent??'');const messengerSecrets=Object.fromEntries(Object.entries(refs).flatMap(([key,id])=>{const ref=byId.get(id);return ref===undefined||!ref.locator.startsWith('/')?[]:[[key,{id,locator:ref.locator}]];}));
+    return [{...row,artifact,generation,secrets,messengerBindings:bindings,messengerSecrets}];});
 };
 
 export const requestProjectRuntimeInstall=async(database:Database,input:Readonly<{workspaceId:string;projectId:string;
@@ -125,7 +131,7 @@ export const requestProjectRuntimeInstall=async(database:Database,input:Readonly
       and m.role='project_owner' and m.active=true and s.kind=$3 order by s.created_at desc,s.id desc limit 1 for update`,
     [input.projectId,input.actorId,projectHermesRuntimeArtifactKind,input.workspaceId]);const current=row.rows[0]?.content;
     const artifact=current===undefined?null:parseProjectHermesRuntimeArtifact(current);
-    if(artifact===null||!['messenger_ready','error'].includes(artifact.status))throw new Error('project_runtime_unavailable');
+    if(artifact===null||!['messenger_ready','ready','error'].includes(artifact.status))throw new Error('project_runtime_unavailable');
     const coordinates={runtimeId:artifact.runtimeId,gatewayEndpoint:artifact.gatewayEndpoint,
       dashboardEndpoint:artifact.dashboardEndpoint,workspacePath:artifact.workspacePath};
     const secrets=Object.fromEntries((Object.entries(artifact.secretIds) as [ProjectHermesSecretKind,string][]).map(([kind,id])=>

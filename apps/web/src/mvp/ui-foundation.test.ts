@@ -9,7 +9,7 @@ describe('operator UI foundation', () => {
     expect(control).toContain("from './async-command.tsx'");
     expect(control).toContain('useAsyncCommand');
     expect(control).toContain('AsyncButton');
-    expect(control.match(/<button/g)).toHaveLength(1);
+    expect(control.match(/<button/g)).toHaveLength(3);
     expect(control).toContain('function DocumentCategoryChoice');
     expect(control).toContain('aria-pressed={value===category}');
     expect(primitive).toContain('inFlight.current');
