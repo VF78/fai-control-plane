@@ -62,6 +62,7 @@ describe('MVP agent role request', () => {
       task:{role:'developer',stage:{id:'in-dev',title:'In Dev'},issueUrl:'https://example.test/issues/1'},
       versions:{process:'b'.repeat(64),routing:value.routing.policyVersion},
       receipt:{correlationId:'correlation-1',idempotencyKey:'delivery-1',
+        itemId:'item-1',fromVersion:'version-1',successTarget:'QA',reworkTarget:'In Dev',
         contract:'fai.agent-executor-result.v1'}});
     const rendered = renderAgentRoleRequest(request());
     expect(rendered).not.toContain('codex-cli');

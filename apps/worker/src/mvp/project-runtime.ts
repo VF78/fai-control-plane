@@ -103,9 +103,9 @@ export const githubBindingCoordinates = (binding: WorkerProjectBinding): Readonl
   return {owner: project[1]!, repository: repository[2]!, projectNumber};
 };
 
-export const runProjectBindingsIsolated = async <T>(
-  bindings: readonly WorkerProjectBinding[],
-  operation: (binding: WorkerProjectBinding) => Promise<T>
+export const runProjectBindingsIsolated = async <T,B extends Readonly<{projectId:string}>>(
+  bindings: readonly B[],
+  operation: (binding: B) => Promise<T>
 ): Promise<readonly Readonly<{projectId: string; status: 'completed' | 'failed'; value?: T}>[]> => {
   const results = [];
   for (const binding of bindings) {

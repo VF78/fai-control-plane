@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {persistProjectHermesPolicies,syncProjectHermesPolicies} from './hermes-project-policy.ts';
 import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, createStores,
   completeProjectContextBootstrap, failProjectContextBootstrap, listProjectContextBootstrapAttempts,
   listApprovedProjectTrackerPreparations,listProjectHermesRuntimeBindings,listProjectTrackerPreparationAttempts,
@@ -171,6 +172,7 @@ export const createWorker = (database: Database = createDatabase()) => {
         const policy = configured?.policy ?? defaultAgentRoutingPolicy;
         const version = configured?.version ??
           createHash('sha256').update(JSON.stringify(policy)).digest('hex');
+        await persistProjectHermesPolicies(project.runtime,processPolicy,{policy,version});
         return {workspaceId, projectId, requesterRole: binding.requesterRole,
           bindingId: project.bindingId, repository: {id: project.repositoryId, url: project.repositoryUrl},
           agentTrackerOwnerOptionId: project.agentOwnerOptionId,
@@ -414,6 +416,8 @@ export const createWorker = (database: Database = createDatabase()) => {
   };
   const provisionProjectRuntimes=async()=>{
     for(const request of await listProjectRuntimeProvisioningRequests(database,workspaceId)){
+      await syncProjectHermesPolicies(database,request.ownerActorId,request.projectId,
+        {...request.artifact,agentCredentialRef:request.secrets['agent-delivery']});
       const outcome=await provisionProjectHermesRuntime(request);
       if(outcome.status==='installing')continue;
       await recordProjectRuntimeProvisioningState(database,{request,...outcome});
@@ -422,6 +426,14 @@ export const createWorker = (database: Database = createDatabase()) => {
   return {
     async observe() {
       await provisionProjectRuntimes();
+      const policySync=await runProjectBindingsIsolated(await listProjectHermesRuntimeBindings(database,workspaceId),async(runtime)=>{
+        const owners=await database.query<{actorId:string}>(`select actor_id as "actorId" from project_memberships
+          where project_id=$1 and role='project_owner' and active=true order by created_at,id limit 1`,[runtime.projectId]);
+        const actorId=owners.rows[0]?.actorId;
+        if(actorId===undefined)throw new Error('project_policy_owner_unavailable');
+        await syncProjectHermesPolicies(database,actorId,runtime.projectId,runtime);
+      });
+      await reportFailures('observe',policySync);
       await promoteApprovedProjectArchitectures(database,workspaceId);
       await observeContextBootstraps();
       await observeTrackerPreparations();
@@ -431,6 +443,8 @@ export const createWorker = (database: Database = createDatabase()) => {
         const projectAttempts = createAgentAttemptStore(database, project.projectId);
         await reconcileActiveAgentAttempts(20, {delivery: runtime.agentDelivery, attempts: projectAttempts,
           readTracker: () => runtime.tracker.readSnapshot(project.bindingId, null),
+          retryTrackerReadback: (attempt) => trackerReadbackGate.failed(`agent:${attempt.deliveryReference}`) !== 'exhausted',
+          trackerReadbackSucceeded: (attempt) => trackerReadbackGate.succeeded(`agent:${attempt.deliveryReference}`, true),
           observationSucceeded: (attempt, observed) => {
             recoveryGate.succeeded(attempt.deliveryReference,
               observed.status === 'completed' || observed.status === 'failed');
@@ -482,6 +496,7 @@ export const createWorker = (database: Database = createDatabase()) => {
           const configured=await readAgentRoutingPolicy(database,mode.actorId,project.projectId);
           const routingPolicy=configured?.policy??defaultAgentRoutingPolicy;const routingVersion=configured?.version??
             createHash('sha256').update(JSON.stringify(routingPolicy)).digest('hex');
+          await persistProjectHermesPolicies(project.runtime,processPolicy,{policy:routingPolicy,version:routingVersion});
           const idempotencyKey=autonomousPmKey({projectId:project.projectId,modeChangedAt:mode.changedAt,
             processVersion:processPolicy.version,routingVersion,snapshotVersion:reconciled.externalVersion});
           const correlationId=`browser:${idempotencyKey.slice('autonomous.pm:'.length)}`;

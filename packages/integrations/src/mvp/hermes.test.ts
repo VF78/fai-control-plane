@@ -63,6 +63,7 @@ describe('MVP Hermes adapter', () => {
         issueUrl: 'https://example.test/issues/1'},
       versions: {process: 'b'.repeat(64), routing: request.routing.policyVersion},
       receipt: {correlationId: request.correlationId, idempotencyKey: 'delivery',
+        itemId:'item',fromVersion:'v1',successTarget:'QA',reworkTarget:'In Dev',
         contract: 'fai.agent-executor-result.v1'}});
     expect(body.input).not.toContain('approval');
     expect(body.input).not.toContain('constraints');
