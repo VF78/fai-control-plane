@@ -7,6 +7,7 @@ import {
   recordProjectTrackerPreparationStart,resolveAgentSubmissionBinding,type Database,type ProjectAgentProfileView
 } from '@fai-control-plane/db';
 import {projectRuntimeSecrets} from './runtime-secrets.ts';
+import {syncProjectHermesPolicies} from './hermes-project-policy.ts';
 
 type CookieClient=Readonly<{request:(path:string,init?:RequestInit)=>Promise<Response>}>;
 const dashboardClient=async(runtime:NonNullable<Awaited<ReturnType<typeof readProjectHermesRuntimeBinding>>>):Promise<CookieClient>=>{
@@ -85,6 +86,7 @@ const activate=async(database:Database,input:Readonly<{workspaceId:string;actorI
     readActiveProjectDocumentSet(database,input.actorId,input.projectId)]);
   if(binding===null||runtime===null||binding.requesterRole!=='project_owner')throw new Error('agent_profile_denied');
   if(!documentSet.configured)throw new Error('project_documents_required');
+  await syncProjectHermesPolicies(database,input.actorId,input.projectId,runtime);
   if(['configuring','awaiting_architecture'].includes(stored.status)&&stored.documentFingerprint===documentSet.fingerprint)return stored;
   const token=(await projectRuntimeSecrets.resolve(runtime.agentCredentialRef,'agent_delivery')).value;
   const project=await database.query<{slug:string}>('select slug from projects where id=$1 and workspace_id=$2',

@@ -84,19 +84,23 @@ export const ensureProjectWorkspace=async(root:string,runtimeId:string,
   return workspace;
 };
 
-export const prepareProjectHermesAssets=async(request:ProjectRuntimeProvisioningRequest,root:string)=>{
+export const prepareProjectHermesAssets=async(request:ProjectRuntimeProvisioningRequest,root:string,
+  owner:Readonly<{uid:number;gid:number}>={uid:10000,gid:10000})=>{
   const generated=`${root}/generated`;const profile=`${generated}/profile`;const client=`${generated}/client-profile`;
   const expectedWorkspace=`/opt/data/work/${request.artifact.runtimeId}`;
   if(request.artifact.workspacePath!==expectedWorkspace)throw new Error('project_runtime_workspace_invalid');
-  await ensureProjectWorkspace(root,request.artifact.runtimeId);
+  await ensureProjectWorkspace(root,request.artifact.runtimeId,owner);
   await mkdir(profile,{recursive:true,mode:0o755});await mkdir(client,{recursive:true,mode:0o755});
   await writeFile(`${generated}/config.yaml`,renderProjectHermesConfig(request),{mode:0o644});
   const sharedRoot=`${process.cwd()}/infra/hermes-project`;
   await cp(`${sharedRoot}/profile-template/config.yaml`,`${profile}/config.yaml`,{force:true});
+  await cp(`${sharedRoot}/profile-template/skills`,`${profile}/skills`,{recursive:true,force:true});
   const soul=await readFile(`${sharedRoot}/profile-template/SOUL.md`,'utf8');
   await writeFile(`${profile}/SOUL.md`,`${soul.trim()}\n\nOn every new Telegram or API session, read PROJECT_CONTEXT.md from
 ${request.artifact.workspacePath} when it exists. The repository and task tracker URLs are
-${request.repositoryUrl} and ${request.projectUrl}. Never operate another project.\n`,{mode:0o644});
+${request.repositoryUrl} and ${request.projectUrl}. Read the fai-project-operator skill and the active
+.fai-context/process.json and .fai-context/routing.json in that workspace before project work.
+Never operate another project.\n`,{mode:0o644});
   await cp(`${sharedRoot}/client-profile-template/plugins`,`${client}/plugins`,{recursive:true,force:true});
   await writeFile(`${client}/config.yaml`,renderClientHermesConfig(),{mode:0o644});
   await writeFile(`${client}/SOUL.md`,renderClientHermesSoul(request.slug),{mode:0o644});

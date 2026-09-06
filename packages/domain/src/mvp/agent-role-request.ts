@@ -52,5 +52,8 @@ export const renderAgentRoleRequest = (request: AgentRoleRequest): string => JSO
     decision: request.approval.decision, targetReference: request.approval.target.id,
     targetVersion: request.approval.target.version}}),
   receipt: {correlationId: request.correlationId, idempotencyKey: request.idempotencyKey,
+    itemId: request.projectItem.id, fromVersion: request.observedVersion,
+    successTarget: request.process.successTargetTitle,
+    reworkTarget: request.process.reworkTargetTitle ?? request.process.stageTitle,
     contract: 'fai.agent-executor-result.v1'}
 });

@@ -9,6 +9,7 @@ import {createGitHubRepositoryReadAdapter,createGitHubTrackerMutationAdapter,cre
   createHermesDeliveryAdapter} from '@fai-control-plane/integrations';
 import {defaultAgentRoutingPolicy,type AgentDeliveryPort,type MessengerDeliveryInput,type TrackerItemFact} from '@fai-control-plane/domain';
 import {projectRuntimeSecrets} from './runtime-secrets.ts';
+import {persistProjectHermesPolicies} from './hermes-project-policy.ts';
 
 const required=(value:unknown,max=256)=>{if(typeof value!=='string'||value.length===0||value.length>max||value.includes('\0'))
   throw new Error('body_invalid');return value;};
@@ -44,11 +45,12 @@ const assignment=async(database:Database,actorId:string,projectId:string,deliver
   if(processPolicy===null||trackerCapabilities===null)throw new Error('project_process_policy_unavailable');
   const routing=configured??{policy:defaultAgentRoutingPolicy,
     version:createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex')};
-  const ports={resolveContext:async()=>({workspaceId:context.workspaceId,projectId:context.projectId,
+  const ports={resolveContext:async()=>{if(runtime!==null)await persistProjectHermesPolicies(runtime,processPolicy,routing);
+    return {workspaceId:context.workspaceId,projectId:context.projectId,
     requesterRole:context.requesterRole,bindingId:context.bindingId,repository:{id:context.repositoryId,url:context.repositoryUrl},
     agentTrackerOwnerOptionId:trackerCapabilities.agentOwnerOptionId,doneStatusOptionId:trackerCapabilities.doneStatusOptionId,
     routingPolicyVersion:routing.version,routingPolicy:routing.policy,processPolicyVersion:processPolicy.version,
-    processPolicy:processPolicy.policy,executorCatalog:projectHermesExecutorCatalog(runtime)}),
+    processPolicy:processPolicy.policy,executorCatalog:projectHermesExecutorCatalog(runtime)};},
   readFreshSnapshot:()=>read.readSnapshot(context.bindingId,context.cursor),persistSnapshot:stores.snapshots.replace,
   resolveActiveContext:({actorId:requester,projectId:project}:Readonly<{actorId:string;projectId:string}>)=>
     readActiveProjectContext(database,requester,project),repository,delivery,

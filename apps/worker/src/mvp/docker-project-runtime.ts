@@ -185,6 +185,8 @@ export const projectGatewayContainerSpec=(request:ProjectRuntimeProvisioningRequ
     ...(client?.provider==='telegram'&&request.messengerSecrets?.['client-telegram-bot']!==undefined?[`${request.messengerSecrets['client-telegram-bot']!.locator}:/run/secrets/client-telegram-bot:ro`]:[]),
     ...(client?.provider==='element'&&request.messengerSecrets?.['client-element-login']!==undefined&&request.messengerSecrets?.['client-element-password']!==undefined?[`${request.messengerSecrets['client-element-login']!.locator}:/run/secrets/client-element-login:ro`,`${request.messengerSecrets['client-element-password']!.locator}:/run/secrets/client-element-password:ro`]:[]),
     `${assets.generated}/config.yaml:/opt/data/config.yaml:ro`,`${assets.profile}/config.yaml:/opt/data/profiles/internal/config.yaml:ro`,
+    `${assets.profile}/skills/fai-project-operator:/opt/data/skills/fai-project-operator:ro`,
+    `${assets.profile}/skills/fai-project-operator:/opt/data/profiles/internal/skills/fai-project-operator:ro`,
     `${assets.profile}/SOUL.md:/opt/data/profiles/internal/SOUL.md:ro`,`${assets.client}/config.yaml:/opt/data/profiles/client/config.yaml:ro`,
     `${assets.client}/SOUL.md:/opt/data/profiles/client/SOUL.md:ro`,
     `${assets.client}/plugins:/opt/data/profiles/client/plugins:ro`];

@@ -45,6 +45,10 @@ same contracts with its own bindings; it is not a fork.
   persistent `git`/`gh` credentials. The worker only submits/observes, verifies
   provider readback, notifies, restarts Hermes and launches the next configured
   stage. No Control Plane GitHub/CLI broker is permitted.
+- Setup installs the internal operator skill and versioned project process/routing
+  files in Hermes' persistent workspace. Changed settings update only policy
+  bytes. Task handoffs carry versions and compact receipt identity; they do not
+  resend project documents/history or reset agent memory.
 - Default mode never executes the backlog automatically. Only an authenticated
   operator may submit a non-Done item whose provider-native `Owner` is exactly
   Hermes. A separately enabled autonomous project mode may select at most one

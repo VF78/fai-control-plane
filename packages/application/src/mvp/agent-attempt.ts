@@ -21,6 +21,8 @@ export type AgentAttemptStore = Readonly<{
 
 export type AgentAttemptReconciliationPorts = Readonly<{delivery: AgentDeliveryPort; attempts: AgentAttemptStore;
   readTracker(): Promise<TrackerSnapshot>;
+  retryTrackerReadback?(attempt: AgentAttemptRecord, error: unknown): boolean;
+  trackerReadbackSucceeded?(attempt: AgentAttemptRecord): void;
   observationSucceeded?(attempt: AgentAttemptRecord,
     observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>): void;
   recoverUnavailable?(attempt: AgentAttemptRecord): Promise<Awaited<ReturnType<AgentDeliveryPort['observe']>>>;
@@ -98,10 +100,15 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
         const snapshot = await ports.readTracker();
         const item = snapshot.items.find((candidate) => candidate.itemId === attempt.itemId &&
           candidate.issueId === attempt.issueId && candidate.projectId === attempt.projectId);
+        ports.trackerReadbackSucceeded?.(attempt);
         if (item === undefined || item.statusOptionName !== target ||
-          item.ownerOptionId !== attempt.expectedOwnerOptionId) throw new Error('tracker_readback_failed');
-        if (item.blocked !== false) verified = {status: 'failed', failureCode: 'provider_blocked', result};
-      } catch { verified = {status: 'failed', failureCode: 'provider_unavailable', result}; }
+          item.ownerOptionId !== attempt.expectedOwnerOptionId) verified = {status: 'failed', failureCode: 'agent_result_invalid', result};
+        else if (item.blocked !== false) verified = {status: 'failed', failureCode: 'provider_blocked', result};
+      } catch (error) {
+        if (ports.retryTrackerReadback?.(attempt, error) ?? true)
+          return {status: 'started' as const, deliveryReference: attempt.deliveryReference};
+        verified = {status: 'failed', failureCode: 'provider_unavailable', result};
+      }
     }
   }
   const idempotencyKey = `agent.attempt:${attempt.correlationId}:${verified.status}`;

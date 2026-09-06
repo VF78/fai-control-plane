@@ -76,7 +76,7 @@ describe('agent attempt reconciliation', () => {
     expect(continuation).toHaveBeenCalledOnce();
   });
 
-  it('records a blocker when provider Project readback is unavailable', async () => {
+  it('keeps completed work open while provider Project readback is unavailable', async () => {
     const finish = vi.fn<AgentAttemptStore['finish']>(async () => 'recorded');
     const exactAttempt = {...attempt,observedVersion:'v1',successTargetTitle:'QA',reworkTargetTitle:null,
       routingPolicy:{contract:'fai.agent-routing.v1' as const,routes:[
@@ -86,9 +86,9 @@ describe('agent attempt reconciliation', () => {
     await expect(reconcileAgentAttempt({actorId:'actor',projectId:'project',itemId:'item',deliveryReference:'run_ref'},
       {delivery:{submit:vi.fn(),observe:async()=>({status:'completed',result:accepted})},
         attempts:{...store(finish),resolve:async()=>exactAttempt},readTracker:providerReadback,
-        composeTerminalNotification:notification})).resolves.toMatchObject({status:'failed'});
+        composeTerminalNotification:notification})).resolves.toMatchObject({status:'started'});
     expect(providerReadback).toHaveBeenCalledOnce();
-    expect(finish).toHaveBeenCalledWith(expect.objectContaining({failureCode:'provider_unavailable'}));
+    expect(finish).not.toHaveBeenCalled();
   });
 
   it('stops the chain when provider readback confirms a blocker', async () => {

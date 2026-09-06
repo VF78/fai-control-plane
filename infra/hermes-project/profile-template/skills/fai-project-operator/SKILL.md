@@ -9,8 +9,12 @@ description: Authoritative project-manager and bounded Codex execution policy fo
 - Work as project manager directly: clarify, plan, create/update Issues and Project facts, answer questions, and route work.
 - Use one fresh `codex exec` for each Dev, QA or DevOps artifact. Never use a second Hermes or pass full chat history.
 - Send Codex only the exact issue, acceptance criteria, repository path, AGENTS.md, required files and compact context excerpts.
-- Routine code/docs/CSS/tests/audit: Terra medium. Complete responsive UI or difficult multi-module work: Terra high.
-  Architecture/security/migration/production design: Sol medium. Critical ambiguity or failed Sol medium: Sol high.
+- Read `.fai-context/process.json` and `.fai-context/routing.json` in the configured workspace.
+  Each file contains `version` and `policy`; verify versions against the task request before execution.
+  Select the exact configured task-class model and effort from routing.policy; model defaults apply only when that policy selects them.
+- Reuse the same issue worktree in the configured workspace's `items` directory after interruption, rework and QA.
+- Copy receipt.itemId and receipt.fromVersion exactly into the result; fromVersion is the original opaque receipt version.
+  Confirm the actual provider status equals receipt.successTarget or receipt.reworkTarget before returning that target.
 - Dev runs focused checks. QA checks the exact diff and missing acceptance/risk evidence without repeating current evidence.
   When safe, QA fixes a bounded defect in the same task and rechecks; otherwise it returns a precise blocker.
 - Change the provider-native stage only after accepted evidence. Merge, release, deploy and production require exact human approval.

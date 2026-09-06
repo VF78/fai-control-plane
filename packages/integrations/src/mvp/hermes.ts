@@ -12,9 +12,10 @@ import {agentTaskClasses} from '@fai-control-plane/domain';
 type Fetch = typeof globalThis.fetch;
 const purpose = 'agent_delivery';
 const roleRunInstructions = `Execute the exact project-role request from the input JSON.
+Read the installed fai-project-operator skill and .fai-context/process.json and .fai-context/routing.json in the configured workspace. Their version fields must match input.versions; do not execute with stale configuration.
 Act as the persistent project Hermes: read the issue, comments, Project fields, linked PR and current repository facts with native git/gh directly. Never ask Control Plane to proxy a provider command.
 If the issue is incomplete, act as PM: analyze it, add the missing scope and acceptance criteria to the same issue, request confirmation in Telegram, and wait before execution. Otherwise follow the requested role and configured CLI/model/reasoning route. Change the same GitHub Project item as work progresses and verify every change with gh. Approval material is never delivered in this request.
-Return only one compact valid fai.agent-executor-result.v1 JSON object requested by the input. Do not add prose.`;
+Return only JSON: {"contract":"fai.agent-executor-result.v1","decision":"accepted|rejected","execution":{"taskClass":"configured task class","executor":{"kind":"cli","id":"configured executor ID"},"model":"configured model","effort":"medium|high"},"outcome":"success|rework","transition":{"itemId":"receipt.itemId","fromVersion":"receipt.fromVersion","targetStage":"receipt.successTarget or receipt.reworkTarget"},"reason":"concise factual reason","evidence":[{"kind":"checks","result":"factual evidence"}],"deliverables":[{"label":"result","url":"https://provider/evidence"}]}. For a direct route executor is {"kind":"direct-agent"}. Copy receipt identity exactly; targetStage is the actual confirmed configured target. Do not add prose.`;
 const autonomousPmInstructions = `Act only as the persistent project Hermes PM. Read the configured GitHub Project, issues and dependency facts directly. Return no-eligible, blocker, or at most one unblocked Hermes-owned item at the configured automated entry stage (Ready only when Ready itself is configured for automation). If the current autonomous chain is at a human gate, return blocker and select nothing else. Do not execute or mutate the item. Return only fai.autonomous-pm-result.v1 JSON with the exact provider item id, issue URL and observed version for a selected item. Never ask Control Plane to select or rank backlog.`;
 const bounded = (value: unknown, maximum: number): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
@@ -91,6 +92,9 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
   // This cache is verification context for accepted runs, not a scheduler or
   // lifecycle. Canonical attempt/receipt state remains in PostgreSQL.
   const submitted = new Map<string, Parameters<AgentDeliveryPort['submit']>[0]>();
+  // Keep completed evidence available during bounded authoritative readback.
+  // An endpoint outage must not turn already completed work into a new run.
+  const completed = new Map<string, AgentExecutorResult>();
   const authorization = async (): Promise<string> => {
     const token = (await input.secrets.resolve(input.credentialRef, purpose)).value;
     if (token.length === 0 || token.length > 65_536 || token.includes('\0')) throw new Error('agent_credential_invalid');
@@ -115,8 +119,11 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
       throw new Error('agent_response_invalid');
     }
     submitted.set(value.run_id, roleRequest);
+    if(submitted.size>1_000)submitted.delete(submitted.keys().next().value!);
     return {deliveryReference: value.run_id, sessionReference: roleRequest.correlationId};
   }, async observe(deliveryReference) {
+    const confirmed = completed.get(deliveryReference);
+    if (confirmed !== undefined) return {status: 'completed', result: confirmed};
     if (!/^run_[A-Za-z0-9_-]{1,250}$/.test(deliveryReference)) throw new Error('agent_attempt_reference_invalid');
     const statusEndpoint = new URL(`${endpoint.pathname}/${encodeURIComponent(deliveryReference)}`, endpoint);
     const response = await request(statusEndpoint, {method: 'GET', headers: {
@@ -149,6 +156,10 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
           result.transition.targetStage !== target) {
           return {status: 'failed', failureCode: 'agent_result_invalid'};
         }
+      }
+      if (result.decision === 'accepted') {
+        completed.set(deliveryReference, result);
+        if(completed.size>1_000)completed.delete(completed.keys().next().value!);
       }
       return result.decision === 'accepted' ? {status: 'completed', result}
         : {status: 'failed', failureCode: 'agent_result_rejected', result};

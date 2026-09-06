@@ -9,7 +9,7 @@ export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa') 
   ? {constraints: [
     'Work only on the referenced tracker item and bound repository.',
     'Do not merge, release, deploy, or access production.',
-    'Use one stable issue worktree under /opt/data/work/items and reuse it after interruption, rework and QA.',
+    'Use one stable issue worktree in the configured project workspace and reuse it after interruption, rework and QA.',
     'Invoke the configured CLI once with the exact executor, model and effort. It reads AGENTS.md and the referenced issue and owns one implementation pass, focused self-checks and commit.',
     'If this item already has an open review request, update that same review branch for rework. Otherwise push one new review branch and create one review request. Never create a duplicate review request for the same item.',
     'Never push the default branch, merge, release, deploy, or access production.',
