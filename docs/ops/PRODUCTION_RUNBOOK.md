@@ -190,9 +190,10 @@ Backups are under the selected project's `upgrade-backups/upgrade-TIMESTAMP/`;
 `project.tar.gz` includes memory, sessions, credentials and workspace, while
 `gateway.json` and `worker.json` contain private original Docker specifications.
 Keep these root-only. Successful replacement retains the old gateway stopped;
-an unchanged worker is merely restarted, otherwise its old container is also
-retained stopped. A subsequent normal Compose release can reconcile the old
-worker container; the saved specification remains available.
+an unchanged worker is merely restarted. After a refreshed worker passes health
+and configuration verification, only its exact stopped predecessor is removed,
+without volumes. Its saved `worker.json` remains available for recovery, and
+normal Compose releases see a single worker container.
 After stability is confirmed, remove only the exact recorded stopped rollback
 containers and backup directory. Do not remove volumes or run host-wide image,
 container or volume pruning; these temporary rollback copies consume disk.

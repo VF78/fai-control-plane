@@ -56,6 +56,9 @@ class Docker:
     def create(self, name, spec):
         self.request("POST", f"/containers/create?name={name}", spec)
 
+    def remove_stopped(self, container_id):
+        self.request("DELETE", f"/containers/{container_id}")
+
     def healthy(self, name):
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
@@ -137,6 +140,21 @@ def owned_worker(value):
 
 
 def replacement_spec(value, image, environment=None):
+    # Config.Volumes alone would allocate fresh anonymous storage on recreation.
+    host = value["HostConfig"]
+    for mount in value.get("Mounts", []):
+        if mount.get("Type") not in ("bind", "volume") or mount.get("RW") is False:
+            continue
+        source = mount.get("Name") if mount["Type"] == "volume" else mount.get("Source")
+        destination = mount.get("Destination")
+        bindings = [binding.split(":") for binding in host.get("Binds") or []]
+        explicit_bind = any(len(parts) >= 2 and parts[:2] == [source, destination]
+                            for parts in bindings)
+        explicit_mount = any(item.get("Type") == mount["Type"]
+                             and item.get("Source") == source and item.get("Target") == destination
+                             for item in host.get("Mounts") or [])
+        if not source or not (explicit_bind or explicit_mount):
+            raise RuntimeError("writable persistent mount is not explicitly preserved; anonymous volume upgrade refused")
     # Config is Docker's create-config schema. HostConfig retains security and limits.
     spec = json.loads(json.dumps(value["Config"]))
     spec["Image"] = image
@@ -234,7 +252,10 @@ def perform_update(docker, gateway, gateway_value, worker_value, image, tag, bac
                            "If native startup occurred, the gateway and worker remain stopped; "
                            "follow the agent-update recovery section of PRODUCTION_RUNBOOK.md "
                            "before restarting the controller.") from None
-    return old_gateway, old_worker if refresh_worker else "worker unchanged"
+    if refresh_worker:
+        # Keep worker.json for recovery; duplicate Compose ownership labels confuse releases.
+        docker.remove_stopped(worker_value["Id"])
+    return old_gateway, "old worker removed" if refresh_worker else "worker unchanged"
 
 
 class Backup:
@@ -330,7 +351,7 @@ def main():
     old_gateway, old_worker = perform_update(docker, args.gateway, gateway, worker, image, tag, backup, probe,
                                             lambda name: require_idle(native_status(name)))
     print(f"Agent healthy; future installs use {image}. Backup: {backup.path}. "
-          f"Stopped rollback containers: {old_gateway}, {old_worker}.")
+          f"Stopped rollback gateway: {old_gateway}; {old_worker}.")
 
 
 if __name__ == "__main__":

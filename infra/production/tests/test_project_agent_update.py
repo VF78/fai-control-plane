@@ -54,6 +54,9 @@ class FakeDocker:
                             "HostConfig": body["HostConfig"],
                             "NetworkSettings": {"Networks": body["NetworkingConfig"]["EndpointsConfig"]}}
 
+    def remove_stopped(self, container_id):
+        self.events.append(("remove_stopped", container_id))
+
     def healthy(self, name):
         self.events.append(("healthy", name))
         if name == self.failure:
@@ -75,6 +78,21 @@ class Backup:
 
 
 class ProjectAgentUpdateTest(unittest.TestCase):
+    def test_anonymous_writable_volume_aborts_before_stopping_containers(self):
+        docker = FakeDocker()
+        value = docker.values["fai-test-gateway"]
+        value["Config"]["Volumes"] = {"/extra-data": {}}
+        value["Mounts"] = [{"Type": "volume", "Name": "anonymous-id",
+                            "Source": "/var/lib/docker/volumes/anonymous-id/_data",
+                            "Destination": "/extra-data", "RW": True}]
+        with self.assertRaisesRegex(RuntimeError, "anonymous volume"):
+            self.execute(docker)
+        self.assertEqual(docker.events, [])
+        value["HostConfig"]["Mounts"] = [{"Type": "volume", "Source": "anonymous-id",
+                                          "Target": "/extra-data"}]
+        self.assertEqual(update.replacement_spec(value, "sha256:new")["HostConfig"]["Mounts"],
+                         value["HostConfig"]["Mounts"])
+
     def test_accepts_only_exact_label_derived_root(self):
         value = container("fai-test-gateway")
         workspace = "00000000-0000-4000-8000-000000000001"
@@ -134,6 +152,8 @@ class ProjectAgentUpdateTest(unittest.TestCase):
         self.assertEqual(worker["Image"], "sha256:old")
         self.assertEqual(worker["Config"]["Env"], ["FCP_PROJECT_HERMES_IMAGE=new-tag",
                          "FCP_PROJECT_HERMES_IMAGE_ID=sha256:new", "CODEX_HOME=/opt/data/codex-home"])
+        self.assertLess(docker.events.index(("healthy", update.WORKER)),
+                        docker.events.index(("remove_stopped", update.WORKER + "id")))
 
     def test_does_not_replace_worker_when_image_environment_already_matches(self):
         docker = FakeDocker()
@@ -190,6 +210,7 @@ class ProjectAgentUpdateTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.execute(docker)
         self.assertEqual(docker.events[-2:], [("stop", "fai-test-gateway"), ("stop", update.WORKER)])
+        self.assertFalse(any(event[0] == "remove_stopped" for event in docker.events))
 
     def test_backup_failure_resumes_unchanged_originals_by_id(self):
         docker = FakeDocker()
