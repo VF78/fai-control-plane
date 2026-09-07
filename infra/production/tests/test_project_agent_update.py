@@ -108,12 +108,11 @@ class ProjectAgentUpdateTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "root"):
                 update.owned_gateway(value, "fai-test-gateway")
 
-    def test_idle_check_includes_native_api_and_background_work(self):
-        status = {"gateway_busy": False, "gateway_drainable": True, "active_agents": 0,
-                  "readiness": {"checks": {"background_queues": {
-                      "active_api_runs": 0, "process_completions": 0, "active_delegations": 0}}}}
+    def test_idle_check_requires_running_drainable_inactive_gateway(self):
+        status = {"gateway_running": True, "gateway_state": "running",
+                  "gateway_busy": False, "gateway_drainable": True, "active_agents": 0}
         update.require_idle(status)
-        status["readiness"]["checks"]["background_queues"]["active_api_runs"] = 1
+        status["gateway_busy"] = True
         with self.assertRaisesRegex(RuntimeError, "busy"):
             update.require_idle(status)
         with self.assertRaisesRegex(RuntimeError, "unknown"):
@@ -254,14 +253,15 @@ class ProjectAgentUpdateTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ownership"):
             update.owned_worker(value)
 
-    def test_native_status_uses_running_s6_key_without_exposing_it(self):
-        response = b'{"status":"ok","gateway_busy":false}'
+    def test_native_status_uses_public_dashboard_status_without_credentials(self):
+        response = b'{"gateway_running":true,"gateway_busy":false}'
         with patch.object(update, "run", return_value=response.decode()) as execute:
             self.assertFalse(update.native_status("fai-test-gateway")["gateway_busy"])
         command = execute.call_args.args[0]
-        self.assertEqual(command[:3], ["docker", "exec", "fai-test-gateway"])
-        self.assertIn("/run/s6/container_environment/API_SERVER_KEY", command[-1])
-        self.assertNotIn("/run/secrets/agent-delivery", command[-1])
+        self.assertEqual(command[:5], ["docker", "exec", "--user", "10000:10000",
+                                      "fai-test-gateway"])
+        self.assertIn("http://127.0.0.1:9119/api/status", command[-1])
+        self.assertNotIn("API_SERVER_KEY", command[-1])
 
 
 if __name__ == "__main__":
