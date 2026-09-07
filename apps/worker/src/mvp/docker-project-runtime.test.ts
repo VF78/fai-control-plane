@@ -26,16 +26,15 @@ const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequ
 });
 
 describe('direct project Docker adapter boundary',()=>{
-  it('installs the internal operator skill for a fresh runtime, never in the client profile',async()=>{
+  it('uses the existing persistent data bind for skills without generated copies or client skills',async()=>{
     const root=await mkdtemp(join(tmpdir(),'fai-skill-'));
     try{const input=request('project','fresh-project');
       const assets=await prepareProjectHermesAssets(input,root,{uid:process.getuid!(),gid:process.getgid!()});
-      const skill=await readFile(`${assets.profile}/skills/fai-project-operator/SKILL.md`,'utf8');
-      expect(skill).toContain('f(AI) project operator');
+      await expect(stat(`${assets.profile}/skills`)).rejects.toMatchObject({code:'ENOENT'});
       await expect(stat(`${assets.client}/skills`)).rejects.toMatchObject({code:'ENOENT'});
       const spec=projectGatewayContainerSpec(input,'image',root,assets,'project','management');
-      expect(spec.HostConfig.Binds).toContain(`${assets.profile}/skills/fai-project-operator:/opt/data/skills/fai-project-operator:ro`);
-      expect(spec.HostConfig.Binds).toContain(`${assets.profile}/skills/fai-project-operator:/opt/data/profiles/internal/skills/fai-project-operator:ro`);
+      expect(spec.HostConfig.Binds).toContain(`${root}/data:/opt/data`);
+      expect(spec.HostConfig.Binds.some(bind=>bind.includes('/skills'))).toBe(false);
     }finally{await rm(root,{recursive:true,force:true});}
   });
   it('derives disjoint names and exact ownership for two projects',()=>{

@@ -94,7 +94,6 @@ export const prepareProjectHermesAssets=async(request:ProjectRuntimeProvisioning
   await writeFile(`${generated}/config.yaml`,renderProjectHermesConfig(request),{mode:0o644});
   const sharedRoot=`${process.cwd()}/infra/hermes-project`;
   await cp(`${sharedRoot}/profile-template/config.yaml`,`${profile}/config.yaml`,{force:true});
-  await cp(`${sharedRoot}/profile-template/skills`,`${profile}/skills`,{recursive:true,force:true});
   const soul=await readFile(`${sharedRoot}/profile-template/SOUL.md`,'utf8');
   await writeFile(`${profile}/SOUL.md`,`${soul.trim()}\n\nOn every new Telegram or API session, read PROJECT_CONTEXT.md from
 ${request.artifact.workspacePath} when it exists. The repository and task tracker URLs are
