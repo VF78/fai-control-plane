@@ -81,11 +81,16 @@ def run(arguments, **kwargs):
 
 def native_status(name):
     code = ("import json,urllib.request; from pathlib import Path; "
-            "key=Path('/run/secrets/agent-delivery').read_text().strip(); "
+            # Probe with the credential held by the running native process. The
+            # mounted source can be rotated while that process still has the
+            # prior s6 environment, producing a false 401 before replacement.
+            "key=Path('/run/s6/container_environment/API_SERVER_KEY').read_text(); "
             "request=urllib.request.Request('http://127.0.0.1:8642/health/detailed', "
             "headers={'Authorization':'Bearer '+key}); "
             "print(urllib.request.urlopen(request,timeout=10).read().decode())")
-    return json.loads(run(["docker", "exec", "--user", "10000:10000", name, "python", "-c", code]))
+    # s6 stores its active environment root-only; the probe returns only the
+    # bounded health payload and never prints the key.
+    return json.loads(run(["docker", "exec", name, "python", "-c", code]))
 
 
 def require_idle(status):
