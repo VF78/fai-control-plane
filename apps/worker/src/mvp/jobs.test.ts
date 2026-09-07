@@ -42,9 +42,8 @@ describe('worker readiness', () => {
     expect(source).toContain('verifyAutonomousPmSelection');
     expect(source).toContain('autonomousPmEnabled(mode)');
     expect(source).toContain('submitReconciliation');
-    expect(source).toContain('claimAutonomousPmRecovery');
-    expect(source).toContain('retryAutonomousPmTransaction');
-    expect(source).toContain("attempt.retryOf!==null");
+    expect(source).toContain('observeAutonomousPmRun');
+    expect(source).not.toContain('retryAutonomousPmTransaction');
     expect(source).toContain('readActiveProjectProcessPolicy(database, project.projectId)');
     expect(source).toContain('listWorkerProjectBindings(database, workspaceId)');
     expect(source).not.toContain("env('FCP_PROJECT_ID')");

@@ -1187,7 +1187,7 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
 
 export type AutonomousPmAttempt=Readonly<{workspaceId:string;projectId:string;actorId:string;modeChangedAt:string;
   deliveryReference:string;correlationId:string;idempotencyKey:string;processVersion:string;routingVersion:string;
-  snapshotVersion:string;retryOf:string|null}>;
+  snapshotVersion:string}>;
 
 export const executeAutonomousPmTransaction=async(database:Database,input:Readonly<{workspaceId:string;
   projectId:string;actorId:string;idempotencyKey:string;correlationId:string;processVersion:string;
@@ -1227,64 +1227,13 @@ export const listActiveAutonomousPmAttempts=async(database:Database,workspaceId:
     a.project_id as "projectId",a.actor_id as "actorId",r.result_reference as "deliveryReference",
     a.correlation_id as "correlationId",r.idempotency_key as "idempotencyKey",
     a.details->>'modeChangedAt' as "modeChangedAt",a.details->>'processVersion' as "processVersion",
-    a.details->>'routingVersion' as "routingVersion",a.details->>'snapshotVersion' as "snapshotVersion",
-    a.details->>'retryOf' as "retryOf" from audit_events a
+    a.details->>'routingVersion' as "routingVersion",a.details->>'snapshotVersion' as "snapshotVersion" from audit_events a
     join command_receipts r on r.project_id=a.project_id and r.actor_id is not distinct from a.actor_id and
       r.occurred_at=a.occurred_at and r.command_type='autonomous.pm'
     where a.workspace_id=$1 and a.action='autonomous.pm' and not exists(select 1 from audit_events t where
       t.project_id=a.project_id and t.correlation_id=a.correlation_id and
       t.action in ('autonomous.pm.completed','autonomous.pm.failed')) order by a.occurred_at limit $2`,[workspaceId,limit]);
   return result.rows;};
-
-export const claimAutonomousPmRecovery=async(database:Database,attempt:AutonomousPmAttempt):Promise<
-  'claimed'|'already-claimed'|'exhausted'>=>{if(attempt.retryOf!==null)return'exhausted';const client=await database.connect();try{
-  await client.query('begin');await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))',[attempt.correlationId]);
-  const prior=await client.query(`select 1 from audit_events where project_id=$1 and correlation_id=$2 and
-    action='autonomous.pm.recovery'`,[attempt.projectId,attempt.correlationId]);
-  if(prior.rowCount!==0){await client.query('rollback');return'already-claimed';}
-  await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
-    values($1,$2,$3,'autonomous.pm.recovery',$4,$5,$6,$7)`,[attempt.workspaceId,attempt.projectId,attempt.actorId,
-    attempt.projectId,attempt.correlationId,JSON.stringify({deliveryReference:attempt.deliveryReference}),new Date().toISOString()]);
-  await client.query('commit');return'claimed';}catch(error){await client.query('rollback');throw error;}
-  finally{client.release();}};
-
-export const retryAutonomousPmTransaction=async(database:Database,attempt:AutonomousPmAttempt,input:Readonly<{
-  idempotencyKey:string;correlationId:string}>,submit:()=>Promise<Readonly<{deliveryReference:string}>>):Promise<
-  Readonly<{status:'started'|'duplicate'|'disabled'|'busy';deliveryReference:string|null}>>=>{const client=await database.connect();try{
-  await client.query('begin');await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))',
-    [`project-execution-mode:${attempt.projectId}`]);
-  const mode=await client.query(`select 1 from audit_events a where a.project_id=$1 and a.actor_id=$2 and
-    a.action='project.execution.mode' and a.details->>'mode'='autonomous' and a.occurred_at=$3::timestamptz and
-    a.id=(select latest.id from audit_events latest where latest.project_id=$1 and latest.action='project.execution.mode'
-      order by latest.occurred_at desc,latest.created_at desc limit 1)`,[attempt.projectId,attempt.actorId,attempt.modeChangedAt]);
-  if(mode.rowCount===0){await client.query('rollback');return{status:'disabled',deliveryReference:null};}
-  const task=await client.query(`select 1 from audit_events a where a.project_id=$1 and a.action='agent.submit' and
-    not exists(select 1 from audit_events t where t.project_id=a.project_id and t.correlation_id=a.correlation_id and
-      t.action in ('agent.attempt.completed','agent.attempt.failed')) limit 1`,[attempt.projectId]);
-  if(task.rowCount!==0){await client.query('rollback');return{status:'busy',deliveryReference:null};}
-  const prior=await client.query<{deliveryReference:string}>(`select result_reference as "deliveryReference" from command_receipts
-    where idempotency_key=$1 and command_type='autonomous.pm'`,[input.idempotencyKey]);
-  if(prior.rows[0]!==undefined){await client.query('rollback');return{status:'duplicate',
-    deliveryReference:prior.rows[0].deliveryReference};}
-  const active=await client.query(`select 1 from audit_events a where a.project_id=$1 and a.correlation_id=$2 and
-    a.action='autonomous.pm' and not exists(select 1 from audit_events t where t.project_id=a.project_id and
-      t.correlation_id=a.correlation_id and t.action in ('autonomous.pm.completed','autonomous.pm.failed'))`,
-  [attempt.projectId,attempt.correlationId]);if(active.rowCount===0)throw new Error('autonomous_pm_retry_denied');
-  const delivered=await submit();const occurredAt=new Date().toISOString();
-  await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
-    values($1,$2,$3,'autonomous.pm.failed',$4,$5,$6,$7)`,[attempt.workspaceId,attempt.projectId,attempt.actorId,
-    attempt.projectId,attempt.correlationId,JSON.stringify({status:'failed',deliveryReference:attempt.deliveryReference,
-      failureCode:'recovered_unobservable'}),occurredAt]);
-  await client.query(`insert into command_receipts(project_id,actor_id,idempotency_key,command_type,result_reference,occurred_at)
-    values($1,$2,$3,'autonomous.pm',$4,$5)`,[attempt.projectId,attempt.actorId,input.idempotencyKey,
-    delivered.deliveryReference,occurredAt]);
-  await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
-    values($1,$2,$3,'autonomous.pm',$4,$5,$6,$7)`,[attempt.workspaceId,attempt.projectId,attempt.actorId,
-    attempt.projectId,input.correlationId,JSON.stringify({deliveryReference:delivered.deliveryReference,
-      processVersion:attempt.processVersion,routingVersion:attempt.routingVersion,snapshotVersion:attempt.snapshotVersion,
-      modeChangedAt:attempt.modeChangedAt,retryOf:attempt.deliveryReference}),occurredAt]);
-  await client.query('commit');return{status:'started',deliveryReference:delivered.deliveryReference};
-}catch(error){await client.query('rollback');throw error;}finally{client.release();}};
 
 export const hasActiveAgentAttempt=async(database:Database,projectId:string):Promise<boolean>=>{
   const result=await database.query(`select 1 from audit_events a where a.project_id=$1 and a.action='agent.submit'
