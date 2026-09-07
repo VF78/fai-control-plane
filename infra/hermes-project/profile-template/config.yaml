@@ -9,7 +9,15 @@ terminal:
   cwd: /opt/data/work/project
 platform_toolsets:
   api_server:
+    - file
     - terminal
+    - search
+    - web
+    - skills
+    - todo
+    - memory
+    - session_search
+    - clarify
     - no_mcp
 agent:
   max_turns: 500
