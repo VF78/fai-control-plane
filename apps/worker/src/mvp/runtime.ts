@@ -144,6 +144,8 @@ export const observeAutonomousPmRun = async (
     }
   }
   ports.recoveryGate.succeeded(reference, observed.status === 'completed' || observed.status === 'failed');
+  if (observed.status === 'started' && observed.waitingFor === 'human-approval')
+    await ports.notify('human-approval', 'ИИ-агент ожидает решения человека. Автономная сверка продолжится после решения в исходном запуске.');
   return observed;
 };
 
@@ -433,6 +435,8 @@ export const createWorker = (database: Database = createDatabase()) => {
               observed.status === 'completed' || observed.status === 'failed');
           },
           recoverUnavailable: (attempt) => recoverAttempt(runtime, attempt),
+          notifyHumanWaiting: (attempt) => notifyRecovery(project.projectId, attempt.deliveryReference, 'human-approval',
+            `ИИ-агент ожидает решения человека.\n${attempt.itemTitle ?? 'Задача'}${attempt.itemUrl === null ? '' : ` — ${attempt.itemUrl}`}`),
           continueAgentChain: async (attempt, targetStage) => {
             const processPolicy = await readActiveProjectProcessPolicy(database, project.projectId);
             const stage = processPolicy?.policy.stages.find((candidate) => candidate.title === targetStage) ?? null;

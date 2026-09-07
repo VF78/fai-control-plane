@@ -111,6 +111,21 @@ describe('MVP Hermes adapter', () => {
       progress: {reference: 'tool:17', observedAt: '2026-08-31T10:00:00.000Z'}});
   });
 
+  it('observes a native approval wait without retaining approval payload and sees resumed progress', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({run_id:'run_ref',status:'waiting_for_approval',
+      approval:{command:'private command',token:'secret'}})));
+    const options = {endpoint:'https://hermes.example/v1/runs',
+      credentialRef:{id:'secret',purpose:'agent_delivery' as const,locator:'/run/secrets/agent'},
+      secrets:{resolve:async()=>({value:'bearer'})},fetch};
+    const adapter = createHermesDeliveryAdapter(options);
+    await expect(adapter.observe('run_ref')).resolves.toEqual({status:'started',waitingFor:'human-approval'});
+    await expect(createHermesDeliveryAdapter(options).observe('run_ref')).resolves.toEqual({status:'started',waitingFor:'human-approval'});
+    await expect(adapter.observeReconciliation('run_ref')).resolves.toEqual({status:'started',waitingFor:'human-approval'});
+    fetch.mockImplementation(async()=>new Response(JSON.stringify({run_id:'run_ref',status:'running'})));
+    await expect(adapter.observe('run_ref')).resolves.toEqual({status:'started'});
+    await expect(adapter.observeReconciliation('run_ref')).resolves.toEqual({status:'started'});
+  });
+
   it('accepts only the bounded executor-result contract and preserves stable deliverable links', async () => {
     const result = {contract: 'fai.agent-executor-result.v1', decision: 'accepted', ...attestation,
       reason: 'Ready for QA',

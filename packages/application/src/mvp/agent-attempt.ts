@@ -27,6 +27,7 @@ export type AgentAttemptReconciliationPorts = Readonly<{delivery: AgentDeliveryP
   observationSucceeded?(attempt: AgentAttemptRecord,
     observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>): void;
   recoverUnavailable?(attempt: AgentAttemptRecord): Promise<Awaited<ReturnType<AgentDeliveryPort['observe']>>>;
+  notifyHumanWaiting?(attempt: AgentAttemptRecord): Promise<void>;
   continueAgentChain?(attempt: AgentAttemptRecord, targetStage: string): Promise<void>;
   composeTerminalNotification(attempt: AgentAttemptRecord, observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>,
     idempotencyKey: string): Promise<MessengerDeliveryInput>}>;
@@ -80,7 +81,10 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
   const observed = supplied ?? await ports.delivery.observe(attempt.deliveryReference);
   if (revalidating && observed.status !== 'completed') return {status: 'failed' as const, deliveryReference: attempt.deliveryReference};
   if (observed.status === 'started' || observed.status === 'unknown') {
-    return {status: observed.status, deliveryReference: attempt.deliveryReference};
+    if (observed.status === 'started' && observed.waitingFor === 'human-approval')
+      await ports.notifyHumanWaiting?.(attempt);
+    return {status: observed.status, deliveryReference: attempt.deliveryReference,
+      ...(observed.status === 'started' && observed.waitingFor !== undefined ? {waitingFor: observed.waitingFor} : {})};
   }
   let verified: Readonly<{status: 'completed'|'failed'; failureCode?: 'provider_failed'|'provider_cancelled'|
     'provider_unavailable'|'provider_timeout'|'provider_blocked'|

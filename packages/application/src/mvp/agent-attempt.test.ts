@@ -30,6 +30,50 @@ const pinnedAttempt: AgentAttemptRecord = {...attempt, observedVersion:'v1',succ
     {...accepted.execution,executor:{id:'codex-cli',kind:'cli'},runtimeAcceptance:'required',humanGate:'none'}]}};
 
 describe('agent attempt reconciliation', () => {
+  it('keeps a confirmed human pause active and continues the resumed run exactly once', async () => {
+    let current = pinnedAttempt;
+    const finish = vi.fn<AgentAttemptStore['finish']>(async input => {
+      if (current.status !== 'started') return 'duplicate';
+      current = {...current, status: input.status}; return 'recorded';
+    });
+    const observe = vi.fn<import('@fai-control-plane/domain').AgentDeliveryPort['observe']>()
+      .mockResolvedValue({status:'started',waitingFor:'human-approval'});
+    const submit = vi.fn(); const recoverUnavailable = vi.fn(); const continueAgentChain = vi.fn();
+    const notifyHumanWaiting = vi.fn(async () => undefined);
+    const providerReadback = vi.fn(readTracker);
+    const ports = {delivery:{submit,observe},attempts:{resolve:async()=>current,
+      listActive:async()=>current.status === 'started' ? [current] : [],finish},
+      readTracker:providerReadback,recoverUnavailable,continueAgentChain,notifyHumanWaiting,
+      composeTerminalNotification:notification};
+    for (let i = 0; i < 3; i++) await expect(reconcileActiveAgentAttempts(20,ports)).resolves.toEqual([
+      {status:'started',waitingFor:'human-approval',deliveryReference:'run_ref'}]);
+    expect(finish).not.toHaveBeenCalled(); expect(providerReadback).not.toHaveBeenCalled();
+    expect(recoverUnavailable).not.toHaveBeenCalled(); expect(continueAgentChain).not.toHaveBeenCalled();
+    expect(notifyHumanWaiting).toHaveBeenCalledTimes(3);
+    observe.mockResolvedValueOnce({status:'started',progress:{reference:'tool:18',observedAt:'2026-09-08T10:00:00Z'}})
+      .mockResolvedValue({status:'completed',result:accepted});
+    await reconcileActiveAgentAttempts(20,ports); await reconcileActiveAgentAttempts(20,ports);
+    await reconcileActiveAgentAttempts(20,ports);
+    expect(finish).toHaveBeenCalledOnce(); expect(continueAgentChain).toHaveBeenCalledExactlyOnceWith(pinnedAttempt,'QA');
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('records a technical failure without a result, tracker transition or next stage', async () => {
+    let current = pinnedAttempt;
+    const finish = vi.fn<AgentAttemptStore['finish']>(async input => {
+      current = {...current,status:input.status,failureCode:input.failureCode}; return 'recorded';
+    });
+    const compose = vi.fn(notification); const providerReadback = vi.fn(readTracker);
+    const continueAgentChain = vi.fn(); const recoverUnavailable = vi.fn();
+    const ports = {delivery:{submit:vi.fn(),observe:async()=>({status:'failed' as const,failureCode:'provider_failed' as const})},
+      attempts:{resolve:async()=>current,listActive:async()=>[current],finish},
+      readTracker:providerReadback,continueAgentChain,recoverUnavailable,composeTerminalNotification:compose};
+    await reconcileActiveAgentAttempts(20,ports); await reconcileActiveAgentAttempts(20,ports);
+    expect(finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({status:'failed',failureCode:'provider_failed',result:null}));
+    expect(compose).toHaveBeenCalledOnce(); expect(providerReadback).not.toHaveBeenCalled();
+    expect(continueAgentChain).not.toHaveBeenCalled(); expect(recoverUnavailable).not.toHaveBeenCalled();
+  });
+
   it('revalidates the original failed run once, using fresh tracker facts without replaying Dev', async () => {
     let current: AgentAttemptRecord = {...pinnedAttempt,status:'failed',failureCode:'agent_result_invalid'};
     const finish = vi.fn<AgentAttemptStore['finish']>(async () => {

@@ -114,6 +114,8 @@ export type AgentDeliveryPort = Readonly<{
   /** Provider-neutral, bounded observation of one previously accepted attempt. */
   observe(deliveryReference: string): Promise<Readonly<{
     status: 'started' | 'completed' | 'failed' | 'unknown';
+    /** Confirmed native pause, not a local approval or task lifecycle. */
+    waitingFor?: 'human-approval';
     /** Optional provider progress fact. A changing reference keeps observation open; it is never a task status. */
     progress?: Readonly<{reference: string; observedAt: string}>;
     failureCode?: 'provider_failed' | 'provider_cancelled' | 'provider_unavailable' | 'provider_timeout' |
@@ -143,6 +145,7 @@ export type AutonomousPmDeliveryPort = Readonly<{
   }>>;
   observeReconciliation(deliveryReference: string): Promise<Readonly<{
     status: 'started'|'completed'|'failed'|'unknown'; result?: AutonomousPmResult;
+    waitingFor?: 'human-approval';
     progress?: Readonly<{reference: string; observedAt: string}>;
   }>>;
 }>;
