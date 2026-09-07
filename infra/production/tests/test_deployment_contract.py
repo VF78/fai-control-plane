@@ -326,6 +326,20 @@ render_target_environment
         self.assertEqual(init.count('HOME="$runtime_home"'), 2)
         self.assertNotIn("HOME=/opt/data GH_CONFIG_DIR", init)
 
+    def test_project_hermes_persists_telegram_allowlists_for_profile_auth(self):
+        init = (ROOT / "infra/hermes-project/runtime-init.sh").read_text()
+
+        self.assertIn('path = Path("/opt/data/.env")', init)
+        for variable in (
+            "TELEGRAM_ALLOWED_USERS",
+            "TELEGRAM_ALLOWED_CHATS",
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_CHATS",
+        ):
+            self.assertIn(f'"{variable}": re.compile', init)
+        self.assertIn("os.replace(temporary, path)", init)
+        self.assertIn("os.chown(temporary, 10000, 10000)", init)
+
     def test_project_logs_are_bounded(self):
         compose = (ROOT / "infra/production/compose.yaml").read_text()
 

@@ -51,6 +51,44 @@ for binding in \
   fi
 done
 
+# Hermes multiplex profiles resolve authorization from the persistent profile
+# environment instead of the container environment. Keep the project-owned
+# Telegram allowlists there so image updates preserve chat authorization.
+python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+path = Path("/opt/data/.env")
+if path.is_symlink():
+    raise SystemExit("Hermes profile environment must not be a symlink")
+
+patterns = {
+    "TELEGRAM_ALLOWED_USERS": re.compile(r"\d+(?:,\d+)*"),
+    "TELEGRAM_ALLOWED_CHATS": re.compile(r"-?\d+(?:,-?\d+)*"),
+    "TELEGRAM_GROUP_ALLOWED_USERS": re.compile(r"\d+(?:,\d+)*"),
+    "TELEGRAM_GROUP_ALLOWED_CHATS": re.compile(r"-?\d+(?:,-?\d+)*"),
+}
+values = {key: os.environ.get(key, "").strip() for key in patterns}
+for key, value in values.items():
+    if value and patterns[key].fullmatch(value) is None:
+        raise SystemExit(f"Invalid {key}")
+
+existing = path.read_text(encoding="utf-8") if path.exists() else ""
+assignment = re.compile(
+    rf"^\s*(?:export\s+)?(?:{'|'.join(map(re.escape, patterns))})\s*=.*$"
+)
+lines = [line for line in existing.splitlines() if assignment.fullmatch(line) is None]
+lines.extend(f"{key}={value}" for key, value in values.items() if value)
+content = "\n".join(lines).rstrip("\n") + "\n"
+
+temporary = path.with_name(f"{path.name}.fai-{os.getpid()}")
+temporary.write_text(content, encoding="utf-8")
+temporary.chmod(0o600)
+os.chown(temporary, 10000, 10000)
+os.replace(temporary, path)
+PY
+
 case "${HERMES_DASHBOARD:-}" in
   1|true|TRUE|True|yes|YES|Yes)
     for binding in \
