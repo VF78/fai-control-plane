@@ -159,6 +159,59 @@ after replacement, as a recreated bind mount picks up the current source inode.
 The artifact's image version records provisioning provenance; its v2 contract
 remains valid across image upgrades. Verify the running Docker image separately.
 
+### Update an existing project agent
+
+From the clean reviewed checkout containing the desired committed image pins,
+run `sudo python3 scripts/update-project-agent.py --gateway EXACT_GATEWAY_NAME`.
+The command derives workspace/project ownership and the exact persistent root
+from the selected container's labels and mounts. It builds the shared pinned
+Hermes/Codex image; to reuse a previously built image, append
+`--use-image-id sha256:EXACT_IMAGE_ID` (the shared tag must resolve to that ID).
+It refuses busy/unknown native work state, pauses controller submissions,
+backs up the project root and container specifications privately, stops the
+old bot before replacement, and verifies native health, existing connected
+messengers and Codex login/version as UID `10000` with the project `CODEX_HOME`.
+No setup wizard, configuration regeneration, LLM run or web deployment occurs.
+
+Only when necessary, the command refreshes the existing worker with its same
+application image and configuration, changing the two existing runtime image
+environment values. Subsequent project installations therefore use the shared
+new image. The normal deployment script and Compose use the same committed
+source pins; this command checks their agreement. Merge/version updates remain
+source changes: always run from the reviewed revision that subsequent normal
+deployments will use, never an older checkout. No runtime-only version registry
+or `production.env` rewrite is introduced. If both gateway and worker already
+match, verification completes without container replacement. An already updated
+gateway with stale worker pins is reported explicitly for operator reconciliation.
+
+### Agent-update recovery
+
+Backups are under the selected project's `upgrade-backups/upgrade-TIMESTAMP/`;
+`project.tar.gz` includes memory, sessions, credentials and workspace, while
+`gateway.json` and `worker.json` contain private original Docker specifications.
+Keep these root-only. Successful replacement retains the old gateway stopped;
+an unchanged worker is merely restarted. After a refreshed worker passes health
+and configuration verification, only its exact stopped predecessor is removed,
+without volumes. Its saved `worker.json` remains available for recovery, and
+normal Compose releases see a single worker container.
+After stability is confirmed, remove only the exact recorded stopped rollback
+containers and backup directory. Do not remove volumes or run host-wide image,
+container or volume pruning; these temporary rollback copies consume disk.
+
+A failure before native startup restores the original gateway name and resumes
+the unchanged containers. After a start request, failure stops the replacement
+gateway and controller: native state may already have changed. Resolve this
+immediately using the printed backup path. Inspect the selected containers and
+native failure without printing credentials, then either repair and start the
+new gateway or restore the private snapshot and original gateway specification.
+Never start the old bot against potentially migrated state, or run both bots.
+Once the single chosen gateway is healthy and its mounted state is verified,
+restore the worker to its exact original name `fai-control-plane-mvp-worker-1`
+(from its stopped rollback container/specification if necessary) and start it.
+Verify its health and reconcile its image tag/ID to the chosen shared image
+before considering recovery complete. Other gateways are left running, but
+controller operations for all projects are paused until this recovery finishes.
+
 Hermes is the persistent project PM/Dev/QA/DevOps orchestrator. It reads the
 referenced issue, comments, Project fields, linked PR and repository facts
 directly with `git`/`gh`. If an issue lacks adequate scope or acceptance
