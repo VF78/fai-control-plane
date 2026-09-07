@@ -135,12 +135,29 @@ Reviewed non-secret Control Plane environment example SHA-256:
 ### Isolated Hermes Codex CLI credential
 
 The Hermes-derived image is built from the exact upstream digest recorded in
-`infra/hermes-project/Dockerfile` and pins `@openai/codex` `0.144.1`. Each
+`infra/hermes-project/Dockerfile`: Hermes `v2026.8.31` and `@openai/codex`
+`0.153.4`. Each
 gateway runs as UID/GID `10000:10000`. Its Codex credential and persistent
 memory live only under that project's runtime root. The setup UI starts a
 one-shot project-owned device-auth container when authentication is absent;
 after successful auth worker removes it and starts the single gateway. Never
 mount root's Codex home or another project's credential.
+
+For an approved existing-runtime image upgrade, replace only the exact owned
+gateway with the approved image ID, retaining its inspected command, environment,
+bind paths, networks, ownership labels, health check and resource limits.
+Recompute `fai.control-plane.spec-sha256` from the exact replacement Docker
+create body before adding that label; never copy the old image's fingerprint.
+Stop the old
+gateway before starting its replacement; retain it stopped for rollback until
+the replacement passes health checks. Do not rerun setup/provisioning: that path
+regenerates configuration and profiles. Persistent memory, sessions, workspace,
+OAuth and secret files stay in their existing project mounts. The derived image
+sets native `HERMES_SKIP_CONFIG_MIGRATION=1` because configuration is mounted
+read-only. Verify effective root/internal API toolsets and client restrictions
+after replacement, as a recreated bind mount picks up the current source inode.
+The artifact's image version records provisioning provenance; its v2 contract
+remains valid across image upgrades. Verify the running Docker image separately.
 
 Hermes is the persistent project PM/Dev/QA/DevOps orchestrator. It reads the
 referenced issue, comments, Project fields, linked PR and repository facts

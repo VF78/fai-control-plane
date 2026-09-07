@@ -3,7 +3,7 @@ import type {Database} from './runtime.ts';
 
 export const projectHermesRuntimeArtifactKind = 'project_hermes_runtime_v2';
 export const projectHermesRuntimeContract = 'fai.project-hermes-runtime.v2';
-export const projectHermesRuntimeImageVersion = 'v2026.9.2-codex-0.144.1';
+export const projectHermesRuntimeImageVersion = 'v2026.8.31-codex-0.153.4';
 
 export type ProjectHermesRuntimeStatus =
   | 'not_configured'
@@ -112,7 +112,7 @@ export const parseProjectHermesRuntimeArtifact = (content: string): ParsedProjec
       (telegram !== null && (!Array.isArray(allowed) || allowed.length === 0 || allowed.length > 100 ||
       allowed.some((id) => typeof id !== 'string' || !/^[1-9][0-9]{0,19}$/.test(id)) ||
       new Set(allowed).size !== allowed.length)) || Object.values(secretIds).some((id) => !uuid(id)) ||
-      value.imageVersion!==projectHermesRuntimeImageVersion ||
+      (typeof value.imageVersion!=='string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.imageVersion)) ||
       (status === 'auth_required' && parsedAuth === undefined) || (status === 'error' && failure === undefined)) return null;
     return {status,runtimeId, gatewayEndpoint, dashboardEndpoint,
       workspacePath: value.workspacePath, telegramChatId: typeof telegram?.chatId === 'string' ? telegram.chatId : null,

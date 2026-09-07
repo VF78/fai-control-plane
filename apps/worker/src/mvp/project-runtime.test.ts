@@ -10,7 +10,7 @@ const ids={one:'00000000-0000-4000-8000-000000000001',two:'00000000-0000-4000-80
 const kinds:readonly ProjectHermesSecretKind[]=['agent-delivery','dashboard-username','dashboard-password','telegram-bot','inbound-actions'];
 const secretId=(project:'one'|'two',index:number)=>`00000000-0000-4000-8${project==='one'?'1':'2'}00-${String(index).padStart(12,'0')}`;
 const runtimeArtifact=(project:'one'|'two')=>JSON.stringify({contract:'fai.project-hermes-runtime.v2',status:'ready',
-  imageVersion:'v2026.9.2-codex-0.144.1',
+  imageVersion:'v2026.8.31-codex-0.153.4',
   runtimeId:`runtime-${project}`,gatewayEndpoint:`http://runtime-${project}-gateway:8642/v1/runs`,
   dashboardEndpoint:`http://runtime-${project}-gateway:9119/`,workspacePath:`/opt/hermes/${project}`,
   telegram:{chatId:project==='one'?'-1001':'-1002',allowedUserIds:['42']},secretRefs:{agentDelivery:secretId(project,1),

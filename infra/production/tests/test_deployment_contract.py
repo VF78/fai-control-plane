@@ -283,7 +283,7 @@ render_target_environment
 
         self.assertIn("FCP_WORKER_INTERNAL_URL: http://worker:3001", web)
         self.assertIn("FCP_PROJECT_RUNTIME_HOST_DIR: /var/lib/fai-project-runtimes", worker)
-        self.assertIn("FCP_PROJECT_HERMES_IMAGE: fai-hermes-project:codex-0.144.1", worker)
+        self.assertIn("FCP_PROJECT_HERMES_IMAGE: fai-hermes-project:codex-0.153.4", worker)
         self.assertIn("FCP_PROJECT_HERMES_IMAGE_ID: ${FCP_PROJECT_HERMES_IMAGE_ID:?required}", worker)
         self.assertIn("FCP_HERMES_MANAGEMENT_NETWORK: fai-hermes-management", worker)
         self.assertIn("- /var/lib/fai-project-runtimes:/var/lib/fai-project-runtimes", worker)

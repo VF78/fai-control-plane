@@ -1,4 +1,4 @@
-ARG HERMES_UPSTREAM_IMAGE=nousresearch/hermes-agent:v2026.8.13@sha256:68e15ae2a6d894d0ccbd9f8aacbbe13d4d28fa5dc9b6a303970b67bb2499b1a6
+ARG HERMES_UPSTREAM_IMAGE=nousresearch/hermes-agent:v2026.8.31@sha256:64923faeae267792bf9bf87fe3b4c4869e35004e360c7df01730ad801b74d524
 FROM ${HERMES_UPSTREAM_IMAGE}
 
 ARG YC_VERSION=1.22.0
@@ -12,8 +12,8 @@ RUN apt-get update \
       "https://storage.yandexcloud.net/yandexcloud-yc/release/${YC_VERSION}/linux/amd64/yc" \
       --output /usr/local/bin/yc \
     && chmod 0555 /usr/local/bin/yc \
-    && npm install --global --omit=dev --no-audit --no-fund @openai/codex@0.144.1 \
-    && test "$(codex --version)" = "codex-cli 0.144.1" \
+    && npm install --global --omit=dev --no-audit --no-fund @openai/codex@0.153.4 \
+    && test "$(codex --version)" = "codex-cli 0.153.4" \
     && uv pip show --python /opt/hermes/.venv/bin/python mautrix | grep -Fx 'Version: 0.21.1' \
     && uv pip show --python /opt/hermes/.venv/bin/python python-olm >/dev/null \
     && yc version | grep -Eq "^Yandex Cloud CLI ${YC_VERSION}([[:space:]]|$)" \
@@ -37,5 +37,7 @@ RUN chmod 0555 /etc/cont-init.d/03-fai-runtime /usr/local/bin/fai-project-device
     && chmod 0444 /usr/local/lib/fai/import-codex-oauth.py
 
 ENV CODEX_HOME=/opt/data/codex-home
+# Control Plane mounts reviewed configuration read-only; skip native boot migrations.
+ENV HERMES_SKIP_CONFIG_MIGRATION=1
 WORKDIR /opt/data/work/project
 USER root

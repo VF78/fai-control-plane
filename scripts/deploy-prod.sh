@@ -55,7 +55,7 @@ readonly secret_names=(
 )
 readonly hermes_management_network=fai-hermes-management
 readonly project_runtime_root=/var/lib/fai-project-runtimes
-readonly project_runtime_image=fai-hermes-project:codex-0.144.1
+readonly project_runtime_image=fai-hermes-project:codex-0.153.4
 readonly project_runtime_config_placeholder=sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 protected_health() {
