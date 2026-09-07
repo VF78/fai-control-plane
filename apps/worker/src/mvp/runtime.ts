@@ -10,7 +10,7 @@ import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, c
   promoteApprovedProjectArchitectures,
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
   executeAutonomousPmTransaction,finishAutonomousPmAttempt,listActiveAutonomousPmAttempts,
-  claimAutonomousPmRecovery,hasActiveAgentAttempt,retryAutonomousPmTransaction,
+  hasActiveAgentAttempt,
   readActiveProjectExecutionMode,readActiveProjectProcessPolicy, readProjectMessengerDeliveryBinding,
   resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, composeAgentTerminalNotification, continueExplicitAgentChain,
@@ -110,6 +110,41 @@ export const createEndpointRecoveryGate = (threshold = 2) => {
       if (terminal) recovered.delete(reference);
     }
   };
+};
+
+export const observeAutonomousPmRun = async (
+  reference: string,
+  ports: Readonly<{
+    delivery: Pick<AutonomousPmDeliveryPort, 'observeReconciliation'>;
+    recoveryGate: ReturnType<typeof createEndpointRecoveryGate>;
+    restartUnhealthy: () => Promise<boolean>;
+    notify: (step: string, text: string) => Promise<void>;
+  }>
+): Promise<Awaited<ReturnType<AutonomousPmDeliveryPort['observeReconciliation']>>> => {
+  const observe = async () => {
+    try { return await ports.delivery.observeReconciliation(reference); }
+    catch { return {status: 'unknown' as const}; }
+  };
+  let observed = await observe();
+  if (observed.status === 'unknown' && observed.progress === undefined) {
+    const recovery = ports.recoveryGate.failed(reference);
+    if (recovery === 'recover') {
+      try {
+        if (await ports.restartUnhealthy()) {
+          await ports.notify('autonomous-pm-restart',
+            'Контейнер ИИ-агента неработоспособен; выполнен перезапуск. Проверяю исходный запуск автономной сверки.');
+          observed = await observe();
+        } else ports.recoveryGate.succeeded(reference, true);
+      } catch { /* Runtime recovery failure cannot establish the original run's outcome. */ }
+    }
+    if (observed.status === 'unknown' && observed.progress === undefined) {
+      if (recovery !== 'wait') await ports.notify('autonomous-pm-reconciliation-pending',
+        'Наблюдение автономной сверки недоступно; результат требует сверки. Исходный запуск продолжает проверяться, новый не создан.');
+      return observed;
+    }
+  }
+  ports.recoveryGate.succeeded(reference, observed.status === 'completed' || observed.status === 'failed');
+  return observed;
 };
 
 export const createWorker = (database: Database = createDatabase()) => {
@@ -225,46 +260,14 @@ export const createWorker = (database: Database = createDatabase()) => {
   };
   const autonomousNotification=(projectId:string,key:string,text:string):MessengerDeliveryInput=>({projectId,
     contour:'trusted-main',channelReference:'telegram:internal',text,idempotencyKey:key});
-  const failAutonomousPm=async(attempt:Awaited<ReturnType<typeof listActiveAutonomousPmAttempts>>[number],
-    suffix:string,text:string)=>finishAutonomousPmAttempt(database,attempt,{status:'failed',result:null,
-      notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:${suffix}`,text)});
-  const recoverAutonomousPm=async(runtime:ReturnType<typeof projectRuntime>,attempt:Awaited<ReturnType<
-    typeof listActiveAutonomousPmAttempts>>[number])=>{if(attempt.retryOf!==null){await failAutonomousPm(attempt,'exhausted',
-      'Автономный режим остановлен: ИИ-агент недоступен после одной попытки восстановления.');return null;}
-    const claim=await claimAutonomousPmRecovery(database,attempt);if(claim==='exhausted'){await failAutonomousPm(attempt,
-      'exhausted','Автономный режим остановлен: ИИ-агент недоступен после одной попытки восстановления.');return null;}
-    if(claim==='claimed'){await notifyRecovery(attempt.projectId,attempt.deliveryReference,'autonomous-pm',
-      'ИИ-агент недоступен во время автономной сверки. Перезапускаю только ИИ-агента этого проекта.');
-      try{await restartHermesGateway(runtime.project.runtime);}catch{await failAutonomousPm(attempt,'restart-failed',
-        'Автономный режим остановлен: ИИ-агента не удалось восстановить.');return null;}}
-    try{await stores.snapshots.replace(await runtime.tracker.readSnapshot(runtime.project.bindingId,null));}
-    catch{await failAutonomousPm(attempt,'recovery-facts-failed',
-      'Автономный режим остановлен: после восстановления не удалось подтвердить данные таск-трекера.');return null;}
-    let observed:Awaited<ReturnType<AutonomousPmDeliveryPort['observeReconciliation']>>={status:'unknown'};
-    try{observed=await runtime.agentDelivery.observeReconciliation(attempt.deliveryReference);}catch{/* retry below */}
-    if(observed.status!=='unknown'){recoveryGate.succeeded(attempt.deliveryReference,
-      observed.status==='completed'||observed.status==='failed');return observed;}
-    const idempotencyKey=`${attempt.idempotencyKey}:retry`;const correlationId=`browser:${createHash('sha256').update(
-      idempotencyKey).digest('hex')}`;
-    try{const retried=await retryAutonomousPmTransaction(database,attempt,{idempotencyKey,correlationId},async()=>
-      runtime.agentDelivery.submitReconciliation({contract:'fai.autonomous-pm-request.v1',project:{id:attempt.projectId,
-        repositoryUrl:runtime.project.repositoryUrl,trackerUrl:runtime.project.projectUrl},versions:{
-        process:attempt.processVersion,routing:attempt.routingVersion},correlationId,idempotencyKey}));
-      if(retried.status==='disabled')await finishAutonomousPmAttempt(database,attempt,{status:'completed',result:null,
-        notification:null});else if(retried.status==='busy')await failAutonomousPm(attempt,'retry-overlap',
-        'Автономный режим остановлен: в проекте уже выполняется другая задача.');return null;
-    }catch{await failAutonomousPm(attempt,'recovery-failed',
-      'Автономный режим остановлен: восстановление ИИ-агента не завершилось.');return null;}}
   const observeAutonomousPm=async()=>{const projects=new Map((await activeProjects()).map((project)=>[project.projectId,project]));
     for(const attempt of await listActiveAutonomousPmAttempts(database,workspaceId,20)){const project=projects.get(attempt.projectId);
-      if(project===undefined)continue;const runtime=projectRuntime(project);let observed:Awaited<ReturnType<
-        AutonomousPmDeliveryPort['observeReconciliation']>>;try{observed=await runtime.agentDelivery.observeReconciliation(
-        attempt.deliveryReference);}catch{observed={status:'unknown'};}
-      if(observed.status==='unknown'&&observed.progress===undefined){const recovery=recoveryGate.failed(attempt.deliveryReference);
-        if(recovery==='wait')continue;if(recovery==='exhausted'){await failAutonomousPm(attempt,'exhausted',
-          'Автономный режим остановлен: ИИ-агент недоступен после одной попытки восстановления.');continue;}
-        const recovered=await recoverAutonomousPm(runtime,attempt);if(recovered===null)continue;observed=recovered;
-      }else recoveryGate.succeeded(attempt.deliveryReference,observed.status==='completed'||observed.status==='failed');
+      if(project===undefined)continue;const runtime=projectRuntime(project);
+      const observed=await observeAutonomousPmRun(attempt.deliveryReference,{
+        delivery:runtime.agentDelivery,recoveryGate,
+        restartUnhealthy:()=>restartProjectHermesGateway(runtime.project.runtime,undefined,true),
+        notify:(step,text)=>notifyRecovery(attempt.projectId,attempt.deliveryReference,step,text)
+      });
       if(observed.status==='started'||observed.status==='unknown')continue;
       if(observed.status==='failed'||observed.result===undefined){await finishAutonomousPmAttempt(database,attempt,{status:'failed',
         result:null,notification:autonomousNotification(attempt.projectId,`${attempt.idempotencyKey}:failed`,
