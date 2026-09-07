@@ -80,30 +80,24 @@ def run(arguments, **kwargs):
 
 
 def native_status(name):
-    code = ("import json,urllib.request; from pathlib import Path; "
-            # Probe with the credential held by the running native process. The
-            # mounted source can be rotated while that process still has the
-            # prior s6 environment, producing a false 401 before replacement.
-            "key=Path('/run/s6/container_environment/API_SERVER_KEY').read_text(); "
-            "request=urllib.request.Request('http://127.0.0.1:8642/health/detailed', "
-            "headers={'Authorization':'Bearer '+key}); "
-            "print(urllib.request.urlopen(request,timeout=10).read().decode())")
-    # s6 stores its active environment root-only; the probe returns only the
-    # bounded health payload and never prints the key.
-    return json.loads(run(["docker", "exec", name, "python", "-c", code]))
+    code = ("import urllib.request; "
+            "print(urllib.request.urlopen('http://127.0.0.1:9119/api/status', "
+            "timeout=10).read().decode())")
+    return json.loads(run(["docker", "exec", "--user", "10000:10000", name,
+                           "python", "-c", code]))
 
 
 def require_idle(status):
-    counts = status.get("readiness", {}).get("checks", {}).get("background_queues", {})
-    if (status.get("gateway_busy") is not False or status.get("active_agents") != 0
-            or status.get("gateway_drainable") is not True
-            or any(counts.get(key) != 0 for key in
-                   ("active_api_runs", "process_completions", "active_delegations"))):
+    if (status.get("gateway_running") is not True
+            or status.get("gateway_state") != "running"
+            or status.get("gateway_busy") is not False
+            or status.get("active_agents") != 0
+            or status.get("gateway_drainable") is not True):
         raise RuntimeError("agent is busy or native idle state is unknown; retry after its work finishes")
 
 
 def connected_platforms(status):
-    platforms = status.get("platforms", {})
+    platforms = status.get("gateway_platforms", {})
     return {key for key, value in platforms.items() if value.get("state") == "connected"}
 
 
@@ -341,7 +335,9 @@ def main():
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             status = native_status(name)
-            if status.get("status") == "ok" and required_platforms <= connected_platforms(status):
+            if (status.get("gateway_running") is True
+                    and status.get("gateway_state") == "running"
+                    and required_platforms <= connected_platforms(status)):
                 return
             time.sleep(3)
         raise RuntimeError("native API/messenger connections did not recover")
