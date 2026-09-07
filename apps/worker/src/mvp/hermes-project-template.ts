@@ -2,6 +2,7 @@ import {chmod,chown,cp,mkdir,readFile,writeFile} from 'node:fs/promises';
 import type {ProjectRuntimeProvisioningRequest} from '@fai-control-plane/db';
 
 const yamlString=(value:string)=>JSON.stringify(value);
+const projectToolsets=['file','terminal','search','web','skills','todo','memory','session_search'];
 export const renderProjectHermesConfig=(request:ProjectRuntimeProvisioningRequest)=>`_config_version: 34
 model:
   provider: openai-codex
@@ -13,19 +14,12 @@ terminal:
   cwd: ${yamlString(request.artifact.workspacePath)}
 platform_toolsets:
   api_server:
-    - terminal
+${projectToolsets.map(toolset=>`    - ${toolset}`).join('\n')}
     - no_mcp
 agent:
   max_turns: 500
 toolsets:
-  - file
-  - terminal
-  - search
-  - web
-  - skills
-  - todo
-  - memory
-  - session_search
+${projectToolsets.map(toolset=>`  - ${toolset}`).join('\n')}
 ${request.artifact.telegramChatId===null&&request.messengerBindings?.client===undefined?'':`gateway:
   multiplex_profiles: true
   multiplex_profile_allowlist:

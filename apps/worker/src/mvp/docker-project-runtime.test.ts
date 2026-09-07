@@ -26,6 +26,22 @@ const request=(projectId:string,runtimeId:string):ProjectRuntimeProvisioningRequ
 });
 
 describe('direct project Docker adapter boundary',()=>{
+  it('exposes configured native tools to API runs while preserving API-only MCP exclusion and client restrictions',async()=>{
+    const configs=[renderProjectHermesConfig(request('project','fresh-project')),
+      await readFile('infra/hermes-project/profile-template/config.yaml','utf8')];
+    for(const [index,config] of configs.entries()){
+      const native=config.match(/^toolsets:\n((?:  - [^\n]+\n)+)/m)![1]!
+        .trim().split('\n').map(line=>line.trim().slice(2));
+      const api=config.match(/^  api_server:\n((?:    - [^\n]+\n)+)/m)![1]!
+        .trim().split('\n').map(line=>line.trim().slice(2));
+      expect(native).toEqual(['file','terminal','search','web','skills','todo','memory','session_search',
+        ...(index===1?['clarify']:[])]);
+      expect(api).toEqual([...native,'no_mcp']);
+      expect(config.match(/no_mcp/g)).toHaveLength(1);
+    }
+    expect(renderClientHermesConfig()).not.toContain('api_server:');
+    expect(renderClientHermesConfig()).toContain('toolsets:\n  - clarify\n  - client_issue\n');
+  });
   it('uses the existing persistent data bind for skills without generated copies or client skills',async()=>{
     const root=await mkdtemp(join(tmpdir(),'fai-skill-'));
     try{const input=request('project','fresh-project');
