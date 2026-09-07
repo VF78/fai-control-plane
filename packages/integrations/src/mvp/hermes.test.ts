@@ -76,6 +76,21 @@ describe('MVP Hermes adapter', () => {
       model_options: {reasoning_effort: 'medium'}});
   });
 
+  it('observes reversed executor keys identically with and without in-memory submission', async () => {
+    const result = {contract:'fai.agent-executor-result.v1',decision:'accepted',...attestation,
+      execution:{...attestation.execution,executor:{id:'codex-cli',kind:'cli'}},
+      reason:'done',evidence:[{kind:'checks',result:'passed'}],deliverables:[{label:'PR',url:'https://example.test/pr/1'}]};
+    const fetch = vi.fn(async (_input: unknown, init?: RequestInit) => init?.method === 'POST'
+      ? new Response(JSON.stringify({run_id:'run_ref',status:'started'}),{status:202})
+      : new Response(JSON.stringify({run_id:'run_ref',status:'completed',output:JSON.stringify(result)})));
+    const options = {endpoint:'https://hermes.example/v1/runs',
+      credentialRef:{id:'secret',purpose:'agent_delivery' as const,locator:'/run/secrets/agent'},
+      secrets:{resolve:async()=>({value:'bearer'})},fetch};
+    const adapter = createHermesDeliveryAdapter(options); await adapter.submit(request);
+    expect(await adapter.observe('run_ref')).toEqual({status:'completed',result});
+    expect(await createHermesDeliveryAdapter(options).observe('run_ref')).toEqual({status:'completed',result});
+  });
+
   it('maps retained Hermes terminal status without exposing provider output', async () => {
     const fetch = vi.fn<(input:string|URL|Request,init?:RequestInit)=>Promise<Response>>(async () =>
       new Response(JSON.stringify({run_id: 'run_ref', status: 'failed', error: 'secret detail'})));

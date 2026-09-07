@@ -30,12 +30,55 @@ describe('focused page projections', () => {
 
 describe('project-scoped active attempts', () => {
   it('filters by project before applying the bounded limit', async () => {
-    const query = vi.fn(async () => ({rows: []}));
+    const query = vi.fn(async (_sql: string, _values: unknown[]) => ({rows: []}));
     const store = createAgentAttemptStore({query} as unknown as Database,
       '00000000-0000-4000-8000-000000000001');
     await store.listActive(20);
     expect(query).toHaveBeenCalledWith(expect.stringContaining('($2::uuid is null or a.project_id=$2)'),
       [20, '00000000-0000-4000-8000-000000000001']);
+    const sql = query.mock.calls[0]![0] as string;
+    expect(sql).toContain("terminal.details->>'failureCode'='agent_result_invalid'");
+    expect(sql).toContain('and a.id=(select latest.id');
+    expect(sql).toContain('order by (terminal.details is not null),a.occurred_at asc limit $1');
+  });
+});
+
+describe('terminal completion correction', () => {
+  const completion = {workspaceId:'workspace',projectId:'project',actorId:'actor',itemId:'item',issueId:'issue',
+    role:'developer' as const,itemTitle:null,itemUrl:null,deliveryReference:'run_original',correlationId:'correlation',
+    status:'completed' as const,failureCode:null,result:{contract:'fai.agent-executor-result.v1' as const,
+      decision:'accepted' as const,execution:{taskClass:'ordinary_implementation' as const,
+        executor:{kind:'cli' as const,id:'codex-cli'},model:'model',effort:'medium' as const},outcome:'success' as const,
+      transition:{itemId:'item',fromVersion:'v1',targetStage:'QA'},reason:'done',evidence:[],deliverables:[]},
+    notification:{projectId:'project',contour:'trusted-main' as const,channelReference:'channel',text:'done',
+      idempotencyKey:'agent.attempt:correlation:completed'}};
+  it('appends one correction and outbox message; repeated finish is duplicate', async () => {
+    let terminal = {status:'failed',failureCode:'agent_result_invalid' as string|null,deliveryReference:'run_original'};
+    const query = vi.fn(async (sql:string) => {
+      if (sql.startsWith('select details')) return {rows:[terminal],rowCount:1};
+      if (sql.startsWith('select correlation_id')) return {rows:[{correlationId:'correlation'}],rowCount:1};
+      if (sql.startsWith('insert into audit_events')) terminal = {...terminal,status:'completed',failureCode:null};
+      return {rows:[],rowCount:0};
+    });
+    const release = vi.fn(); const database = {connect:async()=>({query,release})} as unknown as Database;
+    const attempts = createAgentAttemptStore(database);
+    expect(await attempts.finish(completion)).toBe('recorded');
+    expect(await attempts.finish(completion)).toBe('duplicate');
+    expect(query.mock.calls.filter(([sql])=>sql.startsWith('insert into audit_events'))).toHaveLength(1);
+    expect(query.mock.calls.filter(([sql])=>sql.includes('insert into outbox_events'))).toHaveLength(1);
+    expect(query.mock.calls.filter(([sql])=>sql.includes('pg_advisory_xact_lock'))).toHaveLength(2);
+  });
+  it.each(['provider_failed','different-run','superseded'])( 'does not correct %s', async (reason) => {
+    const query = vi.fn(async (sql:string) => {
+      if (sql.startsWith('select details')) return {rows:[{status:'failed',
+        failureCode:reason === 'provider_failed' ? reason : 'agent_result_invalid',
+        deliveryReference:reason === 'different-run' ? 'run_other' : 'run_original'}],rowCount:1};
+      if (sql.startsWith('select correlation_id')) return {rows:[{correlationId:'newer'}],rowCount:1};
+      return {rows:[],rowCount:0};
+    });
+    const attempts = createAgentAttemptStore({connect:async()=>({query,release:vi.fn()})} as unknown as Database);
+    expect(await attempts.finish(completion)).toBe('duplicate');
+    expect(query.mock.calls.some(([sql])=>sql.includes('insert into'))).toBe(false);
   });
 });
 

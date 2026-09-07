@@ -5,6 +5,7 @@ export type AgentAttemptRecord = Readonly<{
   role: 'manager'|'developer'|'qa'; retryOf?: string|null;
   itemTitle: string | null; itemUrl: string | null;
   deliveryReference: string; correlationId: string; status: 'started'|'completed'|'failed';
+  failureCode?: string|null;
   occurredAt?: string;
   observedVersion?: string; successTargetTitle?: string|null; reworkTargetTitle?: string|null;
   expectedOwnerOptionId?: string; routingPolicy?: AgentRoutingPolicy; executorCatalog?: AgentExecutorCatalog;
@@ -48,7 +49,9 @@ export const composeAgentTerminalNotification = (
   idempotencyKey: string
 ): MessengerDeliveryInput => {
   const result = observed.result;
-  const heading = observed.status === 'completed' ? 'ИИ-агент завершил этап задачи'
+  const heading = observed.status === 'completed' && attempt.failureCode === 'agent_result_invalid'
+    ? 'Повторная проверка подтвердила завершение этапа ИИ-агента'
+    : observed.status === 'completed' ? 'ИИ-агент завершил этап задачи'
     : result?.decision === 'rejected' ? 'ИИ-агент не смог выполнить этап задачи' : 'Этап ИИ-агента завершился ошибкой';
   const failure = observed.status === 'failed' ? ({
     provider_failed: 'ИИ-агент завершил выполнение с ошибкой.',
@@ -72,8 +75,10 @@ export const composeAgentTerminalNotification = (
 
 const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptReconciliationPorts,
   supplied?: Awaited<ReturnType<AgentDeliveryPort['observe']>>) => {
-  if (attempt.status !== 'started') return {status: attempt.status, deliveryReference: attempt.deliveryReference};
+  const revalidating = attempt.status === 'failed' && attempt.failureCode === 'agent_result_invalid';
+  if (attempt.status !== 'started' && !revalidating) return {status: attempt.status, deliveryReference: attempt.deliveryReference};
   const observed = supplied ?? await ports.delivery.observe(attempt.deliveryReference);
+  if (revalidating && observed.status !== 'completed') return {status: 'failed' as const, deliveryReference: attempt.deliveryReference};
   if (observed.status === 'started' || observed.status === 'unknown') {
     return {status: observed.status, deliveryReference: attempt.deliveryReference};
   }
@@ -87,7 +92,9 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
     const target = result?.outcome === 'success' ? attempt.successTargetTitle : attempt.reworkTargetTitle;
     const expectedVersion = attempt.observedVersion;
     const exact = result !== undefined && route !== undefined &&
-      JSON.stringify(route.executor) === JSON.stringify(result.execution.executor) &&
+      route.executor.kind === result.execution.executor.kind &&
+      (route.executor.kind === 'direct-agent' || (result.execution.executor.kind === 'cli' &&
+        route.executor.id === result.execution.executor.id)) &&
       route.model === result.execution.model && route.effort === result.execution.effort &&
       typeof expectedVersion === 'string' && result.transition.itemId === attempt.itemId &&
       result.transition.fromVersion === expectedVersion &&
@@ -105,12 +112,16 @@ const reconcileRecord = async (attempt: AgentAttemptRecord, ports: AgentAttemptR
           item.ownerOptionId !== attempt.expectedOwnerOptionId) verified = {status: 'failed', failureCode: 'agent_result_invalid', result};
         else if (item.blocked !== false) verified = {status: 'failed', failureCode: 'provider_blocked', result};
       } catch (error) {
+        if (revalidating) return {status: 'failed' as const, deliveryReference: attempt.deliveryReference};
         if (ports.retryTrackerReadback?.(attempt, error) ?? true)
           return {status: 'started' as const, deliveryReference: attempt.deliveryReference};
         verified = {status: 'failed', failureCode: 'provider_unavailable', result};
       }
     }
   }
+  // Revalidation corrects only a proven completion, never retries execution or
+  // emits another failure notification for an already terminal receipt.
+  if (revalidating && verified.status !== 'completed') return {status: 'failed' as const, deliveryReference: attempt.deliveryReference};
   const idempotencyKey = `agent.attempt:${attempt.correlationId}:${verified.status}`;
   const notification = await ports.composeTerminalNotification(attempt, verified, idempotencyKey);
   const recorded = await ports.attempts.finish({...attempt, status: verified.status, failureCode: verified.failureCode ?? null,
@@ -138,6 +149,11 @@ export const reconcileActiveAgentAttempts = async (limit: number, ports: AgentAt
   const attempts = await ports.attempts.listActive(limit);
   const results = [];
   for (const attempt of attempts) {
+    if (attempt.status === 'failed') {
+      try { results.push(await reconcileRecord(attempt, ports)); }
+      catch { results.push({status: 'failed' as const, deliveryReference: attempt.deliveryReference}); }
+      continue;
+    }
     let observed: Awaited<ReturnType<AgentDeliveryPort['observe']>>;
     let observationFailed = false;
     try { observed = await ports.delivery.observe(attempt.deliveryReference); }
