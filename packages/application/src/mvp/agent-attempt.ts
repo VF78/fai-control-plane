@@ -163,16 +163,16 @@ export const reconcileActiveAgentAttempts = async (limit: number, ports: AgentAt
         // A single endpoint error is not evidence that the run failed. The
         // composition-owned recovery policy may count repeated failures and
         // still return started without restarting the agent.
-        observed = ports.recoverUnavailable === undefined ? {status: 'started'}
+        observed = ports.recoverUnavailable === undefined ? {status: 'unknown'}
           : await ports.recoverUnavailable(attempt);
       } catch {
-        observed = {status: 'failed', failureCode: 'provider_unavailable'};
+        observed = {status: 'unknown'};
       }
     }
     if (!observationFailed && observed.status === 'unknown' && observed.progress === undefined &&
       ports.recoverUnavailable !== undefined) {
       try { observed = await ports.recoverUnavailable(attempt); }
-      catch { observed = {status: 'failed', failureCode: 'provider_unavailable'}; }
+      catch { observed = {status: 'unknown'}; }
     } else if (!observationFailed && (observed.status !== 'unknown' || observed.progress !== undefined)) {
       ports.observationSucceeded?.(attempt, observed);
     }

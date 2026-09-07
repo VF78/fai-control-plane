@@ -5,13 +5,23 @@ import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSna
   projectContextSourceKind, serializeProjectContextSnapshot, serializeProjectContextSource,
   trackerPollIntervalMs, trackerStaleAfterMs} from '@fai-control-plane/domain';
 import {activateProjectContextSnapshot, addSourceArtifact, readActiveProjectContext, readAgentRoutingPolicy,
-  createAgentAttemptStore,
+  createAgentAttemptStore, createAgentContinuationStore,
   readProjectAgentSubmissionView, readProjectContextStatus,
   readProjectExecutionMode, readProjectProcessPolicy, refreshProjectContext, trackerSnapshotFreshness,
   claimAutonomousPmRecovery,executeAgentSubmissionTransaction,executeAutonomousPmTransaction,
   readProjectMembershipRole,retryAutonomousPmTransaction,type AutonomousPmAttempt, type Database} from './runtime.ts';
 
 describe('focused page projections', () => {
+  it('counts starts only within the latest explicit chain and returns its bound decision', async () => {
+    const chain = {actorId: 'actor', chainReference: 'chain', limitReached: false};
+    const query = vi.fn().mockResolvedValue({rows: [chain]});
+    expect(await createAgentContinuationStore({query} as unknown as Database).resolveActor({
+      projectId: 'project', itemId: 'item', role: 'qa', afterRoles: ['developer'], maxStarts: 2})).toEqual(chain);
+    const sql = query.mock.calls[0]?.[0] as string;
+    expect(sql).toContain("a.details->>'chainReference' is null or a.details->>'chainReference' like 'legacy:%'");
+    expect(sql).toContain("a.details->>'chainReference')) >= $5");
+    expect(query.mock.calls[0]?.[1]).toEqual(['project', 'item', 'qa', ['developer'], 2]);
+  });
   it('reads one active membership role', async () => {
     const query = vi.fn().mockResolvedValue({rows:[{role:'project_owner'}]});
     await expect(readProjectMembershipRole({query} as unknown as Database,'actor','project'))

@@ -174,7 +174,7 @@ describe('agent attempt reconciliation', () => {
     await expect(reconcileActiveAgentAttempts(20, {delivery: {submit: vi.fn(), observe: async () => {
       throw new Error('agent_status_failed');
     }}, attempts: store(finish), readTracker, composeTerminalNotification: notification})).resolves.toEqual([
-      {status: 'started', deliveryReference: 'run_ref'}
+      {status: 'unknown', deliveryReference: 'run_ref'}
     ]);
     expect(finish).not.toHaveBeenCalled();
   });
@@ -188,6 +188,21 @@ describe('agent attempt reconciliation', () => {
     composeTerminalNotification: notification})).resolves.toEqual([{status: 'started', deliveryReference: 'run_ref'}]);
     expect(recoverUnavailable).toHaveBeenCalledWith(attempt);
     expect(finish).not.toHaveBeenCalled();
+  });
+  it('keeps the original run open when recovery itself is unavailable, then observes its real failure', async () => {
+    const finish = vi.fn<AgentAttemptStore['finish']>(async () => 'recorded');
+    const submit = vi.fn();
+    const observe = vi.fn().mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({status: 'failed', failureCode: 'provider_failed'});
+    const ports = {delivery: {submit, observe}, attempts: store(finish), readTracker,
+      recoverUnavailable: async () => {throw new Error('notification unavailable');},
+      composeTerminalNotification: notification};
+    expect(await reconcileActiveAgentAttempts(20, ports)).toEqual([{status: 'unknown', deliveryReference: 'run_ref'}]);
+    expect(finish).not.toHaveBeenCalled();
+    expect(await reconcileActiveAgentAttempts(20, ports)).toEqual([{status: 'failed', deliveryReference: 'run_ref'}]);
+    expect(observe.mock.calls).toEqual([['run_ref'], ['run_ref']]);
+    expect(submit).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledOnce();
   });
 
   it('routes every unobservable run_not_found through recovery while leaving the attempt open', async () => {

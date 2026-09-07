@@ -28,7 +28,7 @@ export type AgentSubmissionPorts = Readonly<{
     processPolicyVersion: string; processStageId: string; processStageTitle: string;
     successTargetTitle: string | null; reworkTargetTitle: string | null;
     routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog; expectedOwnerOptionId: string;
-    rootSourceReference?: string; rootCommandIdempotencyKey?: string;
+    rootSourceReference?: string; rootCommandIdempotencyKey?: string; chainReference?: string;
     retryOf: string | null; confirmUnobservableFailure: boolean;
     notification: MessengerDeliveryInput;
   }>, submit: () => Promise<Readonly<{deliveryReference: string}>>): Promise<Readonly<{
@@ -39,6 +39,7 @@ export type AgentSubmissionPorts = Readonly<{
 export type AgentSubmissionCommand = Readonly<{
   actorId: string; projectId: string; projectItemId: string; role: AgentRole;
   constraints: readonly string[]; acceptanceCriteria: readonly string[];
+  chainReference?: string;
   retry?: Readonly<{deliveryReference: string; nonce: string; confirmUnobservableFailure?: boolean}>;
   root?: Readonly<{chainReference: string; sourceReference: string; commandIdempotencyKey: string}>;
 }>;
@@ -63,6 +64,9 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   if (command.retry !== undefined &&
     (!bounded(command.retry.deliveryReference, 256) || !bounded(command.retry.nonce, 128) ||
       (command.retry.confirmUnobservableFailure !== undefined && typeof command.retry.confirmUnobservableFailure !== 'boolean'))) {
+    throw new Error('agent_request_invalid');
+  }
+  if (command.chainReference !== undefined && !bounded(command.chainReference, 256)) {
     throw new Error('agent_request_invalid');
   }
   if (command.root !== undefined && (!/^browser:[a-f0-9]{64}$/.test(command.root.chainReference) ||
@@ -123,7 +127,8 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
     ...(command.root === undefined ? {} : {chainReference: command.root.chainReference,
       sourceReference: command.root.sourceReference, rootCommand: command.root.commandIdempotencyKey}),
     ...(command.retry === undefined ? {} : {retryOf: command.retry.deliveryReference, retryNonce: command.retry.nonce})};
-  const idempotencyKey = stableKey(normalized);
+  const idempotencyKey = stableKey({...normalized,
+    ...(command.chainReference === undefined ? {} : {continuationChain: command.chainReference})});
   const correlationId = command.root?.chainReference ?? `browser:${idempotencyKey.slice('agent.submit:'.length)}`;
   const request: AgentRoleRequest = {role: command.role, repository: {id: repository.repositoryId,
     url: repository.url, defaultBranch: repository.defaultBranch, defaultBranchSha: repository.defaultBranchSha},
@@ -154,6 +159,7 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
     processStageTitle: processStage.title, successTargetTitle, reworkTargetTitle,
     routingPolicy: context.routingPolicy, executorCatalog: context.executorCatalog,
     expectedOwnerOptionId: context.agentTrackerOwnerOptionId,
+    ...(command.chainReference === undefined ? {} : {chainReference: command.chainReference}),
     ...(command.root === undefined ? {} : {rootSourceReference: command.root.sourceReference,
       rootCommandIdempotencyKey: command.root.commandIdempotencyKey}),
     retryOf: command.retry?.deliveryReference ?? null,

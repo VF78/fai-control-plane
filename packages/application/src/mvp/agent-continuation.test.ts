@@ -7,6 +7,14 @@ const item = {itemId: 'item', projectId: 'project', issueId: 'issue', title: 'Ta
   dependencyIssueIds: [], updatedAt: '2026-08-24T00:00:00.000Z', observedAt: '2026-08-24T00:00:00.000Z'} as const;
 
 describe('bounded policy-driven agent continuation', () => {
+  it('notifies an exhausted current chain without submitting another role', async () => {
+    const notifyLimitReached = vi.fn();
+    await expect(continueExplicitAgentChain({projectId: 'project', item,
+      stage: {agentRole: 'developer', afterRoles: ['qa'], maxStarts: 2},
+      stores: {resolveActor: async () => ({actorId: 'actor', chainReference: 'chain', limitReached: true})},
+      notifyLimitReached, instructions: vi.fn(), ports: {} as never})).resolves.toBe('limit-reached');
+    expect(notifyLimitReached).toHaveBeenCalledExactlyOnceWith('chain', 'developer', 2);
+  });
   it('does nothing without an accepted explicit developer chain', async () => {
     const submit = vi.fn();
     await expect(continueExplicitAgentChain({projectId: 'project', item, stage: {agentRole: 'qa', afterRoles: ['developer'], maxStarts: 2},

@@ -45,7 +45,6 @@ const env = (name: string): string => {
   if (value === undefined || value.length === 0) throw new Error(`${name}_required`);
   return value;
 };
-const pause = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 type TrackerPreparationBinding=Readonly<{projectUrl:string;repositoryUrl:string;agentToken:string;trackerToken:string}>;
 export const trackerPreparationDeltaShrank=(prior:readonly string[],next:readonly string[])=>next.length<prior.length&&
@@ -298,40 +297,21 @@ export const createWorker = (database: Database = createDatabase()) => {
   };
   const recoverAttempt = async (runtime: ReturnType<typeof projectRuntime>, attempt: AgentAttemptRecord) => {
     const recovery = recoveryGate.failed(attempt.deliveryReference);
-    if (recovery === 'wait') return {status: 'started' as const};
-    if (recovery === 'exhausted') throw new Error('agent_recovery_exhausted');
-    if (attempt.retryOf !== null && attempt.retryOf !== undefined) throw new Error('agent_recovery_exhausted');
-    await notifyRecovery(attempt.projectId, attempt.deliveryReference, 'restart',
-      `ИИ-агент недоступен. Перезапускаю ИИ-агента и сохраняю текущую задачу: ${attempt.itemTitle ?? attempt.itemId}${attempt.itemUrl === null ? '' : ` — ${attempt.itemUrl}`}`);
-    await restartHermesGateway(runtime.project.runtime);
-    let observed: Awaited<ReturnType<AgentDeliveryPort['observe']>> = {status: 'unknown'};
-    for (let probe = 0; probe < 5; probe += 1) {
-      await pause(probe === 0 ? 500 : 1_000);
+    // Missing observation is not evidence of a failed run. Keep observing the
+    // same receipt even across worker restarts; never manufacture retry consent.
+    if (recovery === 'recover') {
       try {
-        observed = await runtime.agentDelivery.observe(attempt.deliveryReference);
-        if (observed.status !== 'unknown') {
-          recoveryGate.succeeded(attempt.deliveryReference,
-            observed.status === 'completed' || observed.status === 'failed');
-          return observed;
-        }
-        break;
-      } catch { /* Gateway restart is asynchronous; probe for at most 4.5 seconds. */ }
+        if (await restartProjectHermesGateway(runtime.project.runtime, undefined, true)) {
+          await notifyRecovery(attempt.projectId, attempt.deliveryReference, 'restart',
+            `Контейнер ИИ-агента неработоспособен; выполнен перезапуск. Проверяю исходный запуск задачи ${attempt.itemTitle ?? 'Задача'}${attempt.itemUrl ? ` — ${attempt.itemUrl}` : ''}.`);
+          const observed = await runtime.agentDelivery.observe(attempt.deliveryReference);
+          if (observed.status !== 'unknown' || observed.progress !== undefined) return observed;
+        } else recoveryGate.succeeded(attempt.deliveryReference, true);
+      } catch { /* Preserve the original receipt even when runtime recovery is unavailable. */ }
     }
-    if (observed.status !== 'unknown') return observed;
-    const instructions = defaultAgentStageInstructions(attempt.role);
-    try {
-      await submitExplicitAgent({actorId: attempt.actorId, projectId: attempt.projectId,
-        projectItemId: attempt.itemId, role: attempt.role, constraints: instructions.constraints,
-        acceptanceCriteria: instructions.acceptanceCriteria,
-        retry: {deliveryReference: attempt.deliveryReference, nonce: 'worker-recovery-v1',
-          confirmUnobservableFailure: true}}, runtime.submissionPorts);
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'agent_retry_denied') throw error;
-      const resumed = await runtime.agentDelivery.observe(attempt.deliveryReference);
-      if (resumed.status === 'unknown') throw error;
-      return resumed;
-    }
-    return {status: 'started' as const};
+    if (recovery !== 'wait') await notifyRecovery(attempt.projectId, attempt.deliveryReference, 'reconciliation-pending',
+      `Наблюдение запуска ИИ-агента недоступно; результат требует сверки. Исходный запуск продолжает проверяться, новый не создан. Перед ручным повтором проверьте результат и подтвердите повтор: ${attempt.itemTitle ?? attempt.itemId}${attempt.itemUrl === null ? '' : ` — ${attempt.itemUrl}`}`);
+    return {status: 'unknown' as const};
   };
   const observeContextBootstraps=async()=>{
     const projects=new Map((await listProjectHermesRuntimeBindings(database,workspaceId))
@@ -460,6 +440,8 @@ export const createWorker = (database: Database = createDatabase()) => {
             await continueExplicitAgentChain({projectId: project.projectId,
               item: {projectId: attempt.projectId, itemId: attempt.itemId}, stage: stage.automation,
               stores: continuations, ports: runtime.submissionPorts,
+              notifyLimitReached: (chain, role, limit) => notifyRecovery(project.projectId, chain, `limit:${role}`,
+                `Автоматическое продолжение остановлено: достигнут лимит ${limit} запусков роли ${role === 'developer' ? 'разработчик' : role === 'qa' ? 'тестировщик' : 'менеджер'} в текущей цепочке задачи ${attempt.itemTitle ?? 'Задача'}${attempt.itemUrl ? ` — ${attempt.itemUrl}` : ''}. Требуется решение оператора.`),
               instructions: defaultAgentStageInstructions});
           },
           composeTerminalNotification: async (attempt, observed, key) =>
@@ -490,6 +472,8 @@ export const createWorker = (database: Database = createDatabase()) => {
               stage: processPolicy?.policy.stages.find((stage) => stage.title === item.statusOptionName)
                 ?.automation ?? null,
               stores: continuations, ports: runtime.submissionPorts,
+              notifyLimitReached: (chain, role, limit) => notifyRecovery(project.projectId, chain, `limit:${role}`,
+                `Автоматическое продолжение остановлено: достигнут лимит ${limit} запусков роли ${role === 'developer' ? 'разработчик' : role === 'qa' ? 'тестировщик' : 'менеджер'} в текущей цепочке задачи ${item.title} — ${item.url}. Требуется решение оператора.`),
               instructions: defaultAgentStageInstructions})}});
         const mode=await readActiveProjectExecutionMode(database,project.projectId);
         if(autonomousPmEnabled(mode)&&processPolicy!==null){

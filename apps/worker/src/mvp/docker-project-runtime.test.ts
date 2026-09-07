@@ -233,6 +233,22 @@ describe('direct project Docker adapter boundary',()=>{
       'POST /containers/fai-one-00000000-gateway/restart?t=30']);
   });
 
+  it.each([
+    [{Running:true,Health:{Status:'healthy'}},false],
+    [{Running:true,Health:{Status:'starting'}},false],
+    [{Running:true},false],
+    [{Running:true,Health:{Status:'unhealthy'}},true],
+    [{Running:false},true]
+  ])('recovery restarts only confirmed unhealthy or stopped containers: %j',async(state,restarted)=>{
+    const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');const calls:string[]=[];
+    const docker=async(method:string,path:string)=>{calls.push(`${method} ${path}`);return method==='GET'
+      ?{status:200,body:Buffer.from(JSON.stringify({Name:'/fai-one-00000000-gateway',State:state,Config:{Labels:
+        projectRuntimeOwnership(one,'gateway')}}))}:{status:204,body:Buffer.alloc(0)};};
+    expect(await restartProjectHermesGateway({workspaceId:one.workspaceId,projectId:one.projectId,
+      runtimeId:one.artifact.runtimeId},docker,true)).toBe(restarted);
+    expect(calls.filter((call)=>call.startsWith('POST'))).toHaveLength(restarted?1:0);
+  });
+
   it('refuses deletion when a deterministic name has foreign labels',async()=>{
     const one=request('00000000-0000-4000-8000-000000000001','fai-one-00000000');
     const root=await mkdtemp(join(tmpdir(),'fai-project-delete-'));await writeFile(join(root,'memory'),'must remain');
