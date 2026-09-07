@@ -137,12 +137,14 @@ export const removeProjectHermesRuntime=async(request:ProjectRuntimeOwnershipInp
   await rm(root,{recursive:true,force:true});
 };
 export const restartProjectHermesGateway=async(runtime:Pick<ProjectHermesRuntimeBinding,
-  'workspaceId'|'projectId'|'runtimeId'>,docker:DockerRequest=dockerSocketRequest()):Promise<void>=>{
+  'workspaceId'|'projectId'|'runtimeId'>,docker:DockerRequest=dockerSocketRequest(),onlyIfUnhealthy=false):Promise<boolean>=>{
   const request={workspaceId:runtime.workspaceId,projectId:runtime.projectId,artifact:{runtimeId:runtime.runtimeId}};
   const name=`${runtime.runtimeId}-gateway`;const current=await inspectContainer(docker,name);
   if(current===null||current.Name!==`/${name}`)throw new Error('docker_ownership_conflict');
   assertProjectRuntimeOwnership(current.Config?.Labels,request,'gateway');
+  if(onlyIfUnhealthy&&current.State?.Running!==false&&current.State?.Health?.Status!=='unhealthy')return false;
   expect(await docker('POST',`/containers/${namePath(name)}/restart?t=30`),[204]);
+  return true;
 };
 const commonHost=(root:string,projectNetwork:string)=>({Binds:[`${root}/data:/opt/data`,
   `${root}/codex-home:/opt/data/codex-home`],Memory:1_073_741_824,NanoCpus:1_000_000_000,PidsLimit:256,

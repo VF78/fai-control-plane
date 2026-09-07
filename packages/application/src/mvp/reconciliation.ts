@@ -16,7 +16,7 @@ export type ReconciliationPorts = Readonly<{
     statusChanged(prior: TrackerItemFact, current: TrackerItemFact,
       idempotencyKey: string): Promise<MessengerDeliveryInput>;
   }>;
-  continueAgentChain?(item: TrackerItemFact): Promise<'not-authorized' | 'started' | 'duplicate'>;
+  continueAgentChain?(item: TrackerItemFact): Promise<'not-authorized' | 'limit-reached' | 'started' | 'duplicate'>;
 }>;
 
 export type ReconciliationResult = Readonly<{

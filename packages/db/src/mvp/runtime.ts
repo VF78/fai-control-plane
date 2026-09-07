@@ -1115,7 +1115,7 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
   processPolicyVersion: string; processStageId: string; processStageTitle: string;
   successTargetTitle: string | null; reworkTargetTitle: string | null;
   routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog; expectedOwnerOptionId: string;
-  rootSourceReference?: string; rootCommandIdempotencyKey?: string;
+  rootSourceReference?: string; rootCommandIdempotencyKey?: string; chainReference?: string;
   retryOf: string | null; confirmUnobservableFailure: boolean;
   notification: MessengerDeliveryInput;
 }>, submit: () => Promise<Readonly<{deliveryReference: string}>>): Promise<Readonly<{
@@ -1132,9 +1132,10 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
       await client.query('rollback');
       return {status: 'duplicate', deliveryReference: existing.rows[0].deliveryReference};
     }
-    const latest = await client.query<{deliveryReference: string; status: string; correlationId: string; actorId: string}>(
+    const latest = await client.query<{deliveryReference: string; status: string; correlationId: string; actorId: string; chainReference: string}>(
       `select r.result_reference as "deliveryReference",coalesce(terminal.details->>'status','started') as status,
-       a.correlation_id as "correlationId",a.actor_id as "actorId"
+       a.correlation_id as "correlationId",a.actor_id as "actorId",
+       coalesce(a.details->>'chainReference','legacy:'||a.correlation_id) as "chainReference"
        from audit_events a join command_receipts r on r.project_id=a.project_id
          and r.actor_id is not distinct from a.actor_id and r.occurred_at=a.occurred_at and r.command_type='agent.submit'
        left join lateral (select t.details from audit_events t where t.project_id=a.project_id
@@ -1171,6 +1172,8 @@ export const executeAgentSubmissionTransaction = async (database: Database, inpu
           executorCatalog: input.executorCatalog, expectedOwnerOptionId: input.expectedOwnerOptionId,
           ...(input.rootSourceReference === undefined ? {} : {rootSourceReference: input.rootSourceReference}),
           ...(input.rootCommandIdempotencyKey === undefined ? {} : {rootCommandIdempotencyKey: input.rootCommandIdempotencyKey}),
+          chainReference: input.retryOf === null ? (input.chainReference ?? input.correlationId)
+            : (prior?.chainReference ?? `legacy:${prior?.correlationId ?? input.correlationId}`),
           status: 'started', ...(input.retryOf === null ? {} : {retryOf: input.retryOf})}),occurredAt]);
     await client.query(
       `insert into outbox_events(project_id,topic,idempotency_key,payload,available_at)
@@ -1416,8 +1419,13 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
 
 export const createAgentContinuationStore = (database: Database): AgentContinuationStore => ({
   async resolveActor(input) {
-    const result = await database.query<{actorId: string}>(
-      `select a.actor_id as "actorId" from audit_events a
+    const result = await database.query<{actorId: string; chainReference: string; limitReached: boolean}>(
+      `select a.actor_id as "actorId",coalesce(a.details->>'chainReference','legacy:'||a.correlation_id) as "chainReference",
+       (select count(*) from audit_events started where started.project_id=$1
+         and started.target_reference=$2 and started.action='agent.submit' and started.details->>'role'=$3
+         and (a.details->>'chainReference' is null or a.details->>'chainReference' like 'legacy:%' or started.details->>'chainReference'=
+           a.details->>'chainReference')) >= $5 as "limitReached"
+       from audit_events a
        join audit_events terminal on terminal.project_id=a.project_id and terminal.correlation_id=a.correlation_id
          and terminal.action='agent.attempt.completed'
        where a.project_id=$1 and a.target_reference=$2 and a.action='agent.submit'
@@ -1426,10 +1434,8 @@ export const createAgentContinuationStore = (database: Database): AgentContinuat
          and terminal.details->'result'->>'decision'='accepted'
          and a.id=(select latest.id from audit_events latest where latest.project_id=$1
            and latest.target_reference=$2 and latest.action='agent.submit' order by latest.occurred_at desc limit 1)
-         and (select count(*) from audit_events started where started.project_id=$1
-           and started.target_reference=$2 and started.action='agent.submit' and started.details->>'role'=$3) < $5
        order by terminal.occurred_at desc limit 1`,
       [input.projectId,input.itemId,input.role,input.afterRoles,input.maxStarts]);
-    return result.rows[0]?.actorId ?? null;
+    return result.rows[0] ?? null;
   }
 });
