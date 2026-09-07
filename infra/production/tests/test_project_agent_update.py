@@ -254,6 +254,15 @@ class ProjectAgentUpdateTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ownership"):
             update.owned_worker(value)
 
+    def test_native_status_uses_running_s6_key_without_exposing_it(self):
+        response = b'{"status":"ok","gateway_busy":false}'
+        with patch.object(update, "run", return_value=response.decode()) as execute:
+            self.assertFalse(update.native_status("fai-test-gateway")["gateway_busy"])
+        command = execute.call_args.args[0]
+        self.assertEqual(command[:3], ["docker", "exec", "fai-test-gateway"])
+        self.assertIn("/run/s6/container_environment/API_SERVER_KEY", command[-1])
+        self.assertNotIn("/run/secrets/agent-delivery", command[-1])
+
 
 if __name__ == "__main__":
     unittest.main()
