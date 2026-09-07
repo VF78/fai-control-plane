@@ -1,5 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
 import pg from 'pg';
+import {readProjectAgentProfile, readLatestCompactProjectContext} from './project-registration.ts';
+import {readActiveProjectDocumentSet} from './project-documents.ts';
 import type {
   ApprovalKind,
   AgentExecutorCatalog,
@@ -748,8 +750,15 @@ export const readProjectContextStatus = async (database: Database, actorId: stri
 
 export const readActiveProjectContext = async (database: Database, actorId: string,
   projectId: string): Promise<Readonly<SourceReference & {createdAt?: string}> | null> => {
-  const view = await readProjectContextStatus(database, actorId, projectId);
-  return view?.status === 'current' ? view.snapshot : null;
+  const profile = await readProjectAgentProfile(database, actorId, projectId);
+  if (profile.status !== 'ready' || !profile.documentFingerprint || !profile.contextSha) return null;
+  const documents = await readActiveProjectDocumentSet(database, actorId, projectId);
+  if (!documents.configured || documents.fingerprint !== profile.documentFingerprint) return null;
+  const context = await readLatestCompactProjectContext(database, actorId, projectId, documents.fingerprint);
+  return context !== null && context.sha256 === profile.contextSha &&
+    projectContextSnapshotVersion(context.content) === context.sha256 && context.content.length > 0 &&
+    !context.content.includes('\0') && new TextEncoder().encode(context.content).byteLength <= 49_152
+    ? context : null;
 };
 
 export const canonicalProjectContextKeys = Object.freeze([

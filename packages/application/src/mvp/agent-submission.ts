@@ -1,7 +1,6 @@
 import {createHash} from 'node:crypto';
 import type {AgentDeliveryPort, AgentExecutorCatalog, AgentRole, AgentRoleRequest, AgentRoutingPolicy, MessengerDeliveryInput, ProjectProcessPolicy, ProjectRole, RepositoryReadPort, SourceReference, TrackerItemFact, TrackerSnapshot} from '@fai-control-plane/domain';
-import {assertAgentRoutingPolicyAvailable, parseProjectContextSnapshot, projectContextSnapshotKind,
-  projectContextSnapshotMaxBytes, validateAgentRoleRequest} from '@fai-control-plane/domain';
+import {assertAgentRoutingPolicyAvailable, validateAgentRoleRequest} from '@fai-control-plane/domain';
 
 export type AgentSubmissionContext = Readonly<{
   workspaceId: string; projectId: string; requesterRole: ProjectRole;
@@ -86,14 +85,11 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
     throw new Error('repository_binding_mismatch');
   }
   const activeContext = await ports.resolveActiveContext({actorId: command.actorId, projectId: context.projectId});
-  if (activeContext === null || activeContext.kind !== projectContextSnapshotKind ||
-    utf8Size(activeContext.content) > projectContextSnapshotMaxBytes ||
+  if (activeContext === null || !/^project_context_compact_v1:[a-f0-9]{64}$/.test(activeContext.kind) ||
+    !bounded(activeContext.content, 49_152) || utf8Size(activeContext.content) > 49_152 ||
     createHash('sha256').update(activeContext.content).digest('hex') !== activeContext.sha256) {
     throw new Error('agent_context_unavailable');
   }
-  let decodedContext: unknown;
-  try { decodedContext = JSON.parse(activeContext.content); } catch { throw new Error('agent_context_unavailable'); }
-  if (parseProjectContextSnapshot(decodedContext) === null) throw new Error('agent_context_unavailable');
   const sources = [activeContext];
   // Read the provider-native task fact only after all other request material is ready,
   // immediately before the canonical delivery transaction. The configured exact

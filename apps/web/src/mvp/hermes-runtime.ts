@@ -12,7 +12,7 @@ import {
 } from '@fai-control-plane/db';
 import {decideApproval, dispatchConversationAction} from '@fai-control-plane/application';
 import {createGitHubTrackerReadAdapter} from '@fai-control-plane/integrations';
-import {parseProjectContextSnapshot, type ApprovalKind, type InternalConversationEnvelope} from '@fai-control-plane/domain';
+import {type ApprovalKind, type InternalConversationEnvelope} from '@fai-control-plane/domain';
 import {createHermesConversationActionHandler, resolveInboundHermesRuntime} from './hermes-actions.ts';
 import {getDatabase, secretResolver} from './runtime.ts';
 
@@ -85,15 +85,11 @@ export const hermesConversationAction = async (request: Request): Promise<Respon
       if (identity === null || identity.role === 'client') throw new Error('identity_denied');
       const source = await readActiveProjectContext(database, identity.actorId, message.projectId);
       if (source === null) throw new Error('project_context_unavailable');
-      let decoded: unknown;
-      try { decoded = JSON.parse(source.content); } catch { throw new Error('project_context_unavailable'); }
-      const snapshot = parseProjectContextSnapshot(decoded);
-      if (snapshot === null) throw new Error('project_context_unavailable');
       const refreshedAt = 'createdAt' in source && typeof source.createdAt === 'string' ? source.createdAt : null;
       return ifVersion === source.sha256
-        ? {status: 'duplicate' as const, version: source.sha256, sourceCount: snapshot.sources.length, refreshedAt}
-        : {status: 'completed' as const, version: source.sha256, capsule: snapshot.content,
-          sourceCount: snapshot.sources.length, refreshedAt};
+        ? {status: 'duplicate' as const, version: source.sha256, sourceCount: 1, refreshedAt}
+        : {status: 'completed' as const, version: source.sha256, capsule: source.content,
+          sourceCount: 1, refreshedAt};
     },
     dispatchInternal: (envelope: InternalConversationEnvelope) => dispatchConversationAction({workspaceId,
       envelope, ports: shared})

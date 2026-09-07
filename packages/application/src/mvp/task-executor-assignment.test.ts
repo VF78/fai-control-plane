@@ -1,15 +1,13 @@
 import {describe, expect, it, vi} from 'vitest';
 import {createHash} from 'node:crypto';
-import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSnapshotVersion, projectContextSourceKind,
-  serializeProjectContextSnapshot, type TrackerSnapshot} from '@fai-control-plane/domain';
+import {defaultAgentRoutingPolicy, projectContextSnapshotVersion, type TrackerSnapshot} from '@fai-control-plane/domain';
 import type {TaskExecutorAssignmentPorts} from './task-executor-assignment.ts';
 import {assignTaskExecutor, startProcess} from './task-executor-assignment.ts';
 
 const base: TrackerSnapshot = {bindingId: 'binding', externalVersion: 'v1', cursor: null, observedAt: '2026-08-24T00:00:00.000Z', sourceUrl: 'https://github.com/users/acme/projects/1', items: [{itemId: 'item', projectId: 'project', issueId: '219', title: 'Assign executor', url: 'https://github.com/acme/repo/issues/219', version: 'github:updated-at:v1', statusOptionId: 'ready', statusOptionName: 'Ready', ownerOptionId: null, blocked: false, targetDate: null, parentIssueId: null, subIssueIds: [], dependencyIssueIds: [], assigneeIds: [], assignees: [], observedAt: '2026-08-24T00:00:00.000Z'}]};
-const contextContent = serializeProjectContextSnapshot({contract:'fai.project-context.v1',
-  sources:[{id:'source',key:'requirements',kind:projectContextSourceKind,version:'a'.repeat(64),provenance:'operator'}],content:'Context'});
+const contextContent = 'Persistent project context';
 const activeContext = {id:'context',sha256:projectContextSnapshotVersion(contextContent),
-  kind:projectContextSnapshotKind,provenance:'control-plane:context',content:contextContent};
+  kind:`project_context_compact_v1:${'a'.repeat(64)}`,provenance:'hermes:context-bootstrap',content:contextContent};
 const processPolicy = {contract:'fai.project-process.v1' as const,stages:[
   {id:'backlog',title:'Backlog',responsibility:'Owner',gate:'Triage',evidence:'Task',nextStageId:'ready',automation:null},
   {id:'ready',title:'Ready',responsibility:'Owner',gate:'Explicit',evidence:'Task',nextStageId:'dev',automation:null},
