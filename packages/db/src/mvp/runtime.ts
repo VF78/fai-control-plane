@@ -1323,7 +1323,8 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
        a.details->>'successTargetTitle' as "successTargetTitle",a.details->>'reworkTargetTitle' as "reworkTargetTitle",
        a.details->>'expectedOwnerOptionId' as "expectedOwnerOptionId",a.details->'routingPolicy' as "routingPolicy",
        a.details->'executorCatalog' as "executorCatalog",
-       coalesce(terminal.details->>'status','started') as status
+       coalesce(terminal.details->>'status','started') as status,
+       terminal.details->>'failureCode' as "failureCode"
        from audit_events a join command_receipts r on r.project_id=a.project_id
          and r.actor_id is not distinct from a.actor_id and r.occurred_at=a.occurred_at and r.command_type='agent.submit'
        join project_memberships m on m.project_id=a.project_id and m.actor_id=$1 and m.active=true
@@ -1344,7 +1345,7 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
       itemTitle: string | null; itemUrl: string | null; issueId: string; role: 'manager'|'developer'|'qa'; retryOf: string|null;
       successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
       routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
-      deliveryReference: string; correlationId: string; status: 'started'; occurredAt: Date}>(
+      deliveryReference: string; correlationId: string; status: 'started'|'failed'; failureCode: string|null; occurredAt: Date}>(
       `select a.workspace_id as "workspaceId",a.project_id as "projectId",a.actor_id as "actorId",
        a.target_reference as "itemId",r.result_reference as "deliveryReference",a.correlation_id as "correlationId",
        a.occurred_at as "occurredAt",
@@ -1354,17 +1355,24 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
        a.details->>'successTargetTitle' as "successTargetTitle",a.details->>'reworkTargetTitle' as "reworkTargetTitle",
        a.details->>'expectedOwnerOptionId' as "expectedOwnerOptionId",a.details->'routingPolicy' as "routingPolicy",
        a.details->'executorCatalog' as "executorCatalog",
-       'started'::text as status
+       coalesce(terminal.details->>'status','started') as status,
+       terminal.details->>'failureCode' as "failureCode"
        from audit_events a join command_receipts r on r.project_id=a.project_id
          and r.actor_id is not distinct from a.actor_id and r.occurred_at=a.occurred_at and r.command_type='agent.submit'
        left join lateral (select fact->>'title' as title,fact->>'url' as url,fact->>'issueId' as "issueId" from tracker_bindings b
          join tracker_snapshots s on s.binding_id=b.id cross join lateral jsonb_array_elements(s.facts->'items') fact
          where b.project_id=a.project_id and fact->>'itemId'=a.target_reference and s.error_code is null
          order by s.observed_at desc limit 1) item on true
-       where a.action='agent.submit' and a.actor_id is not null and ($2::uuid is null or a.project_id=$2) and not exists
-         (select 1 from audit_events t where t.project_id=a.project_id and t.correlation_id=a.correlation_id
-          and t.action in ('agent.attempt.completed','agent.attempt.failed'))
-       order by a.occurred_at asc limit $1`, [limit, projectId]);
+       left join lateral (select t.details from audit_events t where t.project_id=a.project_id
+         and t.correlation_id=a.correlation_id and t.action in ('agent.attempt.completed','agent.attempt.failed')
+         order by t.occurred_at desc limit 1) terminal on true
+       where a.action='agent.submit' and a.actor_id is not null and ($2::uuid is null or a.project_id=$2)
+         and (terminal.details is null or (terminal.details->>'status'='failed'
+           and terminal.details->>'failureCode'='agent_result_invalid'
+           and a.id=(select latest.id from audit_events latest where latest.project_id=a.project_id
+             and latest.target_reference=a.target_reference and latest.action='agent.submit'
+             order by latest.occurred_at desc limit 1)))
+       order by (terminal.details is not null),a.occurred_at asc limit $1`, [limit, projectId]);
     return result.rows.map((row) => ({...row, occurredAt: row.occurredAt.toISOString()}));
   },
   async finish(input) {
@@ -1372,9 +1380,23 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
     try {
       await client.query('begin');
       await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [input.correlationId]);
-      const existing = await client.query(`select 1 from audit_events where project_id=$1 and correlation_id=$2
-        and action in ('agent.attempt.completed','agent.attempt.failed')`, [input.projectId,input.correlationId]);
-      if (existing.rowCount !== 0) { await client.query('rollback'); return 'duplicate'; }
+      const existing = await client.query<{status: string; failureCode: string|null; deliveryReference: string}>(
+        `select details->>'status' as status,details->>'failureCode' as "failureCode",
+         details->>'deliveryReference' as "deliveryReference" from audit_events where project_id=$1 and correlation_id=$2
+         and action in ('agent.attempt.completed','agent.attempt.failed') order by occurred_at desc limit 1`,
+        [input.projectId,input.correlationId]);
+      const previous = existing.rows[0];
+      if (previous !== undefined) {
+        if (previous.status !== 'failed' || previous.failureCode !== 'agent_result_invalid' ||
+          previous.deliveryReference !== input.deliveryReference || input.status !== 'completed' || input.result === null ||
+          input.result.decision !== 'accepted' || input.failureCode !== null) {
+          await client.query('rollback'); return 'duplicate';
+        }
+        const latest = await client.query<{correlationId: string}>(`select correlation_id as "correlationId"
+          from audit_events where project_id=$1 and target_reference=$2 and action='agent.submit'
+          order by occurred_at desc limit 1`, [input.projectId,input.itemId]);
+        if (latest.rows[0]?.correlationId !== input.correlationId) { await client.query('rollback'); return 'duplicate'; }
+      }
       const occurredAt = new Date().toISOString();
       await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
         values($1,$2,$3,$4,$5,$6,$7,$8)`, [input.workspaceId,input.projectId,input.actorId,

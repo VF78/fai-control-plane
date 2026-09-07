@@ -25,8 +25,60 @@ const snapshot = (statusOptionName = 'QA', ownerOptionId: string|null = 'hermes'
     assigneeIds: [], assignees: [], observedAt: '2026-08-26T00:00:00.000Z'}]
 });
 const readTracker = async () => snapshot();
+const pinnedAttempt: AgentAttemptRecord = {...attempt, observedVersion:'v1',successTargetTitle:'QA',
+  reworkTargetTitle:null,expectedOwnerOptionId:'hermes',routingPolicy:{contract:'fai.agent-routing.v1',routes:[
+    {...accepted.execution,executor:{id:'codex-cli',kind:'cli'},runtimeAcceptance:'required',humanGate:'none'}]}};
 
 describe('agent attempt reconciliation', () => {
+  it('revalidates the original failed run once, using fresh tracker facts without replaying Dev', async () => {
+    let current: AgentAttemptRecord = {...pinnedAttempt,status:'failed',failureCode:'agent_result_invalid'};
+    const finish = vi.fn<AgentAttemptStore['finish']>(async () => {
+      if (current.status === 'completed') return 'duplicate';
+      current = {...current,status:'completed',failureCode:null}; return 'recorded';
+    });
+    const observe = vi.fn(async () => ({status:'completed' as const,result:accepted}));
+    const submit = vi.fn(); const continuation = vi.fn(async () => undefined);
+    const providerReadback = vi.fn(readTracker);
+    const ports = {delivery:{submit,observe},attempts:{resolve:async()=>current,
+      listActive:async()=>current.status === 'completed' ? [] : [current],finish},readTracker:providerReadback,
+      continueAgentChain:continuation,composeTerminalNotification:notification};
+    await reconcileActiveAgentAttempts(20,ports);
+    await reconcileActiveAgentAttempts(20,ports);
+    await reconcileAgentAttempt({actorId:'actor',projectId:'project',itemId:'item',deliveryReference:'run_ref'},ports);
+    expect(observe).toHaveBeenCalledExactlyOnceWith('run_ref');
+    expect(providerReadback).toHaveBeenCalledOnce(); expect(finish).toHaveBeenCalledOnce();
+    expect(continuation).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({deliveryReference:'run_ref'}),'QA');
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it.each(['executor','model','effort','version','item','target','owner','blocked'])(
+    'keeps a genuine %s mismatch failed without notification or continuation', async (mismatch) => {
+      const result = structuredClone(accepted);
+      if (mismatch === 'executor') result.execution.executor.id = 'other-cli';
+      if (mismatch === 'model') result.execution.model = 'other-model';
+      if (mismatch === 'effort') Object.assign(result.execution,{effort:'high'});
+      if (mismatch === 'version') result.transition.fromVersion = 'other';
+      if (mismatch === 'item') result.transition.itemId = 'other';
+      if (mismatch === 'target') result.transition.targetStage = 'Done';
+      const finish = vi.fn(); const continuation = vi.fn(); const compose = vi.fn(notification);
+      const failed = {...pinnedAttempt,status:'failed' as const,failureCode:'agent_result_invalid'};
+      const ports = {delivery:{submit:vi.fn(),observe:async()=>({status:'completed' as const,result})},
+        attempts:{...store(finish),listActive:async()=>[failed]},
+        readTracker:async()=>snapshot('QA',mismatch === 'owner' ? 'human' : 'hermes',mismatch === 'blocked'),
+        continueAgentChain:continuation,composeTerminalNotification:compose};
+      await reconcileActiveAgentAttempts(20,ports); await reconcileActiveAgentAttempts(20,ports);
+      expect(finish).not.toHaveBeenCalled(); expect(compose).not.toHaveBeenCalled();
+      expect(continuation).not.toHaveBeenCalled();
+    });
+
+  it('never restarts an unavailable validation-failed run or revalidates a provider failure', async () => {
+    const finish = vi.fn(); const recoverUnavailable = vi.fn(); const observe = vi.fn(async () => {throw Error('offline');});
+    await reconcileActiveAgentAttempts(20,{delivery:{submit:vi.fn(),observe},attempts:{...store(finish),
+      listActive:async()=>[{...pinnedAttempt,status:'failed',failureCode:'agent_result_invalid'},
+        {...pinnedAttempt,status:'failed',failureCode:'provider_failed'}]},readTracker,
+      recoverUnavailable,composeTerminalNotification:notification});
+    expect(observe).toHaveBeenCalledOnce(); expect(recoverUnavailable).not.toHaveBeenCalled(); expect(finish).not.toHaveBeenCalled();
+  });
   it('uses the provider-native task title and URL in Telegram instead of an opaque item id', () => {
     const message = composeAgentTerminalNotification('project', 'internal', attempt, {status: 'failed',
       failureCode: 'agent_result_rejected', result: {contract: 'fai.agent-executor-result.v1', decision: 'rejected',

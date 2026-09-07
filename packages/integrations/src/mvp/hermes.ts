@@ -89,9 +89,6 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     throw new Error('agent_endpoint_invalid');
   }
   const request = input.fetch ?? globalThis.fetch;
-  // This cache is verification context for accepted runs, not a scheduler or
-  // lifecycle. Canonical attempt/receipt state remains in PostgreSQL.
-  const submitted = new Map<string, Parameters<AgentDeliveryPort['submit']>[0]>();
   // Keep completed evidence available during bounded authoritative readback.
   // An endpoint outage must not turn already completed work into a new run.
   const completed = new Map<string, AgentExecutorResult>();
@@ -118,8 +115,6 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
       value.status !== 'started') {
       throw new Error('agent_response_invalid');
     }
-    submitted.set(value.run_id, roleRequest);
-    if(submitted.size>1_000)submitted.delete(submitted.keys().next().value!);
     return {deliveryReference: value.run_id, sessionReference: roleRequest.correlationId};
   }, async observe(deliveryReference) {
     const confirmed = completed.get(deliveryReference);
@@ -144,19 +139,8 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     if (value.status === 'completed') {
       const result = executorResult(value.output);
       if (result === null) return {status: 'failed', failureCode: 'agent_result_invalid'};
-      const expected = submitted.get(deliveryReference);
-      if (expected !== undefined) {
-        const route = expected.routing.policy.routes.find((candidate) => candidate.taskClass === result.execution.taskClass);
-        const target = result.outcome === 'success' ? expected.process.successTargetTitle
-          : expected.process.reworkTargetTitle ?? expected.process.stageTitle;
-        if (route === undefined || JSON.stringify(route.executor) !== JSON.stringify(result.execution.executor) ||
-          route.model !== result.execution.model || route.effort !== result.execution.effort ||
-          result.transition.itemId !== expected.projectItem.id ||
-          result.transition.fromVersion !== expected.observedVersion || target === null ||
-          result.transition.targetStage !== target) {
-          return {status: 'failed', failureCode: 'agent_result_invalid'};
-        }
-      }
+      // Persisted application receipts own route/transition validation. Adapter
+      // observation must behave identically before and after a worker restart.
       if (result.decision === 'accepted') {
         completed.set(deliveryReference, result);
         if(completed.size>1_000)completed.delete(completed.keys().next().value!);
