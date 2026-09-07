@@ -212,6 +212,20 @@ class ProjectAgentUpdateTest(unittest.TestCase):
         self.assertEqual(docker.events[-2:], [("stop", "fai-test-gateway"), ("stop", update.WORKER)])
         self.assertFalse(any(event[0] == "remove_stopped" for event in docker.events))
 
+    def test_cleanup_refusal_keeps_healthy_replacements_running(self):
+        docker = FakeDocker()
+        def refuse(_):
+            raise RuntimeError("Docker temporarily unavailable")
+        docker.remove_stopped = refuse
+        with patch("sys.stderr") as stderr:
+            _, result = self.execute(docker)
+        self.assertIn("cleanup pending", result)
+        self.assertIn(update.WORKER + "id", result)
+        self.assertTrue(stderr.write.called)
+        self.assertEqual(docker.events[-1], ("healthy", update.WORKER))
+        self.assertEqual([event for event in docker.events if event[0] == "stop"],
+                         [("stop", update.WORKER), ("stop", "fai-test-gateway")])
+
     def test_backup_failure_resumes_unchanged_originals_by_id(self):
         docker = FakeDocker()
         with self.assertRaises(RuntimeError):

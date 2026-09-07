@@ -143,7 +143,7 @@ def replacement_spec(value, image, environment=None):
     # Config.Volumes alone would allocate fresh anonymous storage on recreation.
     host = value["HostConfig"]
     for mount in value.get("Mounts", []):
-        if mount.get("Type") not in ("bind", "volume") or mount.get("RW") is False:
+        if mount.get("Type") not in ("bind", "volume"):
             continue
         source = mount.get("Name") if mount["Type"] == "volume" else mount.get("Source")
         destination = mount.get("Destination")
@@ -154,7 +154,7 @@ def replacement_spec(value, image, environment=None):
                              and item.get("Source") == source and item.get("Target") == destination
                              for item in host.get("Mounts") or [])
         if not source or not (explicit_bind or explicit_mount):
-            raise RuntimeError("writable persistent mount is not explicitly preserved; anonymous volume upgrade refused")
+            raise RuntimeError("persistent mount is not explicitly preserved; anonymous volume upgrade refused")
     # Config is Docker's create-config schema. HostConfig retains security and limits.
     spec = json.loads(json.dumps(value["Config"]))
     spec["Image"] = image
@@ -254,7 +254,12 @@ def perform_update(docker, gateway, gateway_value, worker_value, image, tag, bac
                            "before restarting the controller.") from None
     if refresh_worker:
         # Keep worker.json for recovery; duplicate Compose ownership labels confuse releases.
-        docker.remove_stopped(worker_value["Id"])
+        try:
+            docker.remove_stopped(worker_value["Id"])
+        except Exception:
+            warning = f"cleanup pending: remove stopped old worker {worker_value['Id']} without volumes"
+            print(f"Warning: agent and worker healthy; {warning}", file=sys.stderr)
+            return old_gateway, warning
     return old_gateway, "old worker removed" if refresh_worker else "worker unchanged"
 
 
