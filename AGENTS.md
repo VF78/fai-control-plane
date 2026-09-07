@@ -76,11 +76,19 @@ semantics or schema.
 - Work directly only when it is roughly 10–15 minutes, at most three files and
   one verification surface. Otherwise use exactly one fresh executor for the
   bounded slice:
-  - Terra medium: routine audit, docs, code or CSS;
-  - Terra high: difficult multi-module implementation/debugging and UI;
-  - Sol medium: architecture, security/access, migration, policy or difficult
-    domain work;
-  - Sol high: irreversible risk, critical ambiguity or failed Sol medium.
+  - No extra LLM for deterministic Project/status/health operations;
+  - Luna medium: simple classification or summaries when delegation saves work;
+  - Terra medium: routine code, tests, docs or local fixes;
+  - Terra high: complex multi-file implementation with clear architecture and UI;
+  - Sol medium: bounded difficult analysis or justified independent review;
+  - Astra medium: architecture, coupled integrations/state and systemic debugging;
+  - Astra high: exceptional interactions requiring depth beyond medium.
+  Choose the minimum sufficient profile likely to produce an accepted change
+  on the first complete attempt. These are defaults, not a mandatory escalation
+  ladder; preserve demonstrated successful choices. Security, migrations or
+  production alone do not justify high. Keep the managing configuration unless
+  Vladimir requests a change; set executor model/effort through actual controls,
+  not just prose, and distinguish requested from runtime-confirmed parameters.
 - The executor owns implementation, focused tests and self-review. Its return
   is at most 250 words: result, files, checks, risks, next action. The managing
   chat reviews the final diff and runs at most one missing integration check.
@@ -99,13 +107,17 @@ semantics or schema.
 
 ## Context and cost
 
-- Use Standard tier. Do not enable Fast mode, paid GitHub Actions or another
-  paid capability without Vladimir's approval. Actions are currently avoided;
+- Use Standard tier; Fast mode is prohibited. Do not enable paid GitHub Actions
+  or another paid capability without Vladimir's approval. Actions are avoided;
   use local checks and `[skip ci]` where the issue requires it.
 - Keep output to 1,000–3,000 tokens by default. Prefer `rg`, `--stat`,
   `--name-only`, targeted hunks and the final 100–200 failure lines.
 - Do not paste full Project payloads, issue histories, manuals, logs, HTML,
   diffs or executor transcripts into the managing chat.
+- Reuse current evidence; do not repeat research or checks without changed inputs
+  or a specific gap. Batch independent commands and use bounded completion waits
+  instead of repeated short polling. Include review/rework/delegation overhead
+  when comparing accepted changes; missing usage is unknown, never zero.
 - Pause only for a real decision, approval or blocker. Before pausing, ensure
   no executor or background process remains active.
 
