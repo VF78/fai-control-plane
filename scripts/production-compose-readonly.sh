@@ -4,7 +4,7 @@ set -euo pipefail
 readonly deploy_root=/opt/fai-control-plane-mvp
 readonly environment_file=/etc/fai-control-plane-mvp/production.env
 readonly compose_file="$deploy_root/infra/production/compose.yaml"
-readonly runtime_image=fai-hermes-project:codex-0.144.1
+readonly runtime_image=fai-hermes-project:codex-0.153.4
 
 case "${1:-}" in
   ps|logs|config) ;;

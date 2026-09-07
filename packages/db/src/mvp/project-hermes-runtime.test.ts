@@ -51,6 +51,19 @@ describe('dedicated project Hermes runtime binding',()=>{
     expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toBeNull();
   });
 
+  it('preserves a valid existing v2 binding across image upgrades',()=>{
+    const value=JSON.parse(artifact('one')) as Record<string,unknown>;
+    value.imageVersion='v2026.9.2-codex-0.144.1';
+    expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toMatchObject({
+      status:'ready',imageVersion:'v2026.9.2-codex-0.144.1'});
+  });
+
+  it.each([undefined,null,1,'',' bad','bad/version','bad\nversion','a'.repeat(129)])(
+    'rejects malformed artifact image version %j',(imageVersion)=>{
+      const value={...JSON.parse(artifact('one')),imageVersion};
+      expect(parseProjectHermesRuntimeArtifact(JSON.stringify(value))).toBeNull();
+    });
+
   it('accepts a dedicated Hermes runtime before a messenger is configured',()=>{
     const value=JSON.parse(artifact('one')) as Record<string,unknown>;
     value.imageVersion=projectHermesRuntimeImageVersion;delete value.telegram;
