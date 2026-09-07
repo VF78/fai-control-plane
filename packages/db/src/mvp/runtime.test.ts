@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {projectAgentProfileTemplateVersion} from './project-registration.ts';
 import {describe, expect, it, vi} from 'vitest';
 import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSnapshotVersion,
   projectContextSourceKind, serializeProjectContextSnapshot, serializeProjectContextSource,
@@ -93,6 +94,48 @@ describe('project execution mode projection', () => {
   });
 });
 
+describe('persistent project context readiness', () => {
+  const document = {id:'document',projectId:'project',kind:'project_document_v1:combined',name:'Project.md',
+    mediaType:'text/markdown',sha256:'d'.repeat(64),sizeBytes:100,provenance:'operator',createdAt:new Date()};
+  const fingerprint = projectContextSnapshotVersion(`${document.kind}:${document.sha256}`);
+  const compact = {id:'compact',kind:`project_context_compact_v1:${fingerprint}`,provenance:'hermes:context-bootstrap',
+    content:'Persistent context in Hermes',sha256:projectContextSnapshotVersion('Persistent context in Hermes')};
+  const ready = {contract:'fai.project-agent-profile.v1',status:'ready',profile:'project-hermes',
+    endpointPath:'/v1/runs',templateVersion:projectAgentProfileTemplateVersion,documentFingerprint:fingerprint,
+    contextSha:compact.sha256};
+  const databaseFor = (profile:Record<string,unknown> = ready, documents:unknown[] = [document], context:unknown = compact) => {
+    const query = vi.fn(async (sql:string) => {
+      if(sql.includes("s.kind='project_agent_profile_v1'"))return {rows:[{content:JSON.stringify(profile),sha256:'a'.repeat(64)}]};
+      if(sql.includes("s.kind like 'project_document_v1:%'"))return {rows:documents};
+      if(sql.includes('s.kind=$3'))return {rows:context === null ? [] : [context]};
+      throw new Error('Unexpected legacy context query');
+    });
+    return {database:{query} as unknown as Database,query};
+  };
+
+  it('resolves completed current bootstrap without any legacy snapshot or activation', async () => {
+    const {database,query} = databaseFor();
+    await expect(readActiveProjectContext(database,'actor','project')).resolves.toEqual(compact);
+    expect(query.mock.calls).toHaveLength(3);
+    expect(query.mock.calls.every(([sql])=>sql.includes('m.active=true'))).toBe(true);
+  });
+
+  it.each(['configuring','awaiting_architecture','error','not_configured'])('rejects unfinished profile %s', async status => {
+    const {database,query} = databaseFor({...ready,status});
+    await expect(readActiveProjectContext(database,'actor','project')).resolves.toBeNull();
+    expect(query.mock.calls).toHaveLength(1);
+  });
+
+  it('rejects changed or missing documents, old templates, missing context and mismatched hashes', async () => {
+    for(const {database} of [databaseFor({...ready,documentFingerprint:'f'.repeat(64)}),
+      databaseFor(ready,[]),databaseFor({...ready,templateVersion:'old'}),
+      databaseFor({...ready,contextSha:undefined}),databaseFor(ready,[document],null),
+      databaseFor({...ready,contextSha:'f'.repeat(64)}),databaseFor(ready,[document],{...compact,content:'tampered'})]) {
+      await expect(readActiveProjectContext(database,'actor','project')).resolves.toBeNull();
+    }
+  });
+});
+
 describe('active project context projection', () => {
   const sourceId='00000000-0000-4000-8000-000000000001'; const sourceKey='requirements';
   const sourceText=serializeProjectContextSource({contract:'fai.project-context-source.v1',key:sourceKey,content:'Approved source'});
@@ -107,7 +150,7 @@ describe('active project context projection', () => {
 
   it('returns only the activated snapshot whose exact manifest is still present', async () => {
     const query = vi.fn().mockResolvedValueOnce({rows:[artifact]}).mockResolvedValueOnce({rows:[sourceRow()]});
-    await expect(readActiveProjectContext({query} as unknown as Database,'actor','project')).resolves.toEqual(artifactView);
+    await expect(readProjectContextStatus({query} as unknown as Database,'actor','project')).resolves.toMatchObject({status:'current',snapshot:artifactView});
     expect(query.mock.calls[0]?.[0]).toContain("action='project.context.activate'");
   });
 
@@ -115,7 +158,7 @@ describe('active project context projection', () => {
     const newerText=serializeProjectContextSource({contract:'fai.project-context-source.v1',key:sourceKey,content:'New source'});
     const query = vi.fn().mockResolvedValueOnce({rows:[artifact]}).mockResolvedValueOnce({rows:[sourceRow({
       id:'00000000-0000-4000-8000-000000000002',contentText:newerText,sha256:projectContextSnapshotVersion(newerText)})]});
-    await expect(readActiveProjectContext({query} as unknown as Database,'actor','project')).resolves.toBeNull();
+    await expect(readProjectContextStatus({query} as unknown as Database,'actor','project')).resolves.toMatchObject({status:'stale'});
   });
 
   it('preserves the last active version for a truthful stale UI state', async () => {
@@ -129,7 +172,7 @@ describe('active project context projection', () => {
 
   it('ignores unrelated or noncanonical artifacts when resolving current source versions', async () => {
     const query = vi.fn().mockResolvedValueOnce({rows:[artifact]}).mockResolvedValueOnce({rows:[sourceRow()]});
-    await expect(readActiveProjectContext({query} as unknown as Database,'actor','project')).resolves.toEqual(artifactView);
+    await expect(readProjectContextStatus({query} as unknown as Database,'actor','project')).resolves.toMatchObject({status:'current',snapshot:artifactView});
     expect(query.mock.calls[1]?.[1]).toEqual(['project',projectContextSourceKind,[sourceKey]]);
   });
 

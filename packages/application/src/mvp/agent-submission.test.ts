@@ -1,7 +1,6 @@
 import {createHash} from 'node:crypto';
 import {describe, expect, it, vi} from 'vitest';
-import {defaultAgentRoutingPolicy, projectContextSnapshotKind, projectContextSnapshotVersion, projectContextSourceKind,
-  serializeProjectContextSnapshot, type TrackerSnapshot} from '@fai-control-plane/domain';
+import {defaultAgentRoutingPolicy, projectContextSnapshotVersion, type TrackerSnapshot} from '@fai-control-plane/domain';
 import type {AgentSubmissionPorts} from './agent-submission.ts';
 import {submitExplicitAgent} from './agent-submission.ts';
 
@@ -21,11 +20,9 @@ const processPolicy = {contract: 'fai.project-process.v1' as const, stages: [
   {id:'dev',title:'In Dev',responsibility:'Agent',gate:'Work',evidence:'PR',nextStageId:null,
     automation:{agentRole:'developer' as const,afterRoles:['qa' as const],maxStarts:1,reworkStageId:null}}
 ]};
-const contextContent = serializeProjectContextSnapshot({contract:'fai.project-context.v1',
-  sources:[{id:'source',key:'requirements',kind:projectContextSourceKind,version:'a'.repeat(64),provenance:'operator'}],
-  content:'Approved project context'});
+const contextContent = 'Approved persistent project context';
 const activeContext = {id:'context',sha256:projectContextSnapshotVersion(contextContent),
-  kind:projectContextSnapshotKind,provenance:'control-plane:context',content:contextContent};
+  kind:`project_context_compact_v1:${'a'.repeat(64)}`,provenance:'hermes:context-bootstrap',content:contextContent};
 
 const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): AgentSubmissionPorts => ({
   resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: role,
@@ -90,7 +87,8 @@ describe('explicit agent submission', () => {
 
   it('rejects a missing, stale, or malformed active context before delivery', async () => {
     const base = ports();
-    for (const context of [null,{...activeContext,sha256:'b'.repeat(64)},{...activeContext,content:'not-json'}]) {
+    for (const context of [null,{...activeContext,sha256:'b'.repeat(64)},{...activeContext,content:''},
+      {...activeContext,kind:'project_context_snapshot_v1'}]) {
       const value: AgentSubmissionPorts = {...base, resolveActiveContext: async () => context};
       const deliver = vi.spyOn(value.delivery, 'submit');
       await expect(submitExplicitAgent(command, value)).rejects.toThrow('agent_context_unavailable');

@@ -200,6 +200,7 @@ export type ProjectAgentProfileView = Readonly<{
   endpointPath: string | null;
   version: string | null;
   documentFingerprint: string | null;
+  contextSha?: string | null;
   proposalSha?: string | null;
 }>;
 
@@ -211,7 +212,7 @@ export const readProjectAgentProfile = async (
   const result = await database.query<{sha256: string; content: string}>(`select s.sha256,s.content_text as content
     from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
     where s.project_id=$1 and m.actor_id=$2 and m.active=true and s.kind='project_agent_profile_v1'
-    order by s.created_at desc limit 1`, [projectId, actorId]);
+    order by s.created_at desc,s.id desc limit 1`, [projectId, actorId]);
   const row = result.rows[0];
   if (row === undefined) {
     return {status: 'not_configured', profile: null, endpointPath: null, version: null, documentFingerprint: null};
@@ -233,6 +234,7 @@ export const readProjectAgentProfile = async (
       }
       return {status: value.status as ProjectAgentProfileView['status'], profile: value.profile,
         endpointPath: value.endpointPath, version: row.sha256,
+        contextSha: typeof value.contextSha === 'string' && /^[a-f0-9]{64}$/.test(value.contextSha) ? value.contextSha : null,
         documentFingerprint,...(proposalSha===null?{}:{proposalSha})};
     }
   } catch { /* fail closed */ }
@@ -241,10 +243,10 @@ export const readProjectAgentProfile = async (
 
 export const readLatestCompactProjectContext = async (database:Database,actorId:string,projectId:string,
   documentFingerprint:string):Promise<Readonly<{
-  content:string;sha256:string;
+  id:string;kind:string;provenance:string;content:string;sha256:string;
 }>|null> => {
   if(!/^[a-f0-9]{64}$/.test(documentFingerprint))return null;
-  const result=await database.query<{content:string;sha256:string}>(`select s.content_text as content,s.sha256
+  const result=await database.query<{id:string;kind:string;provenance:string;content:string;sha256:string}>(`select s.id,s.kind,s.provenance,s.content_text as content,s.sha256
     from project_source_artifacts s join project_memberships m on m.project_id=s.project_id
     where s.project_id=$1 and m.actor_id=$2 and m.active=true and s.kind=$3
     order by s.created_at desc,s.id desc limit 1`,[projectId,actorId,`project_context_compact_v1:${documentFingerprint}`]);
