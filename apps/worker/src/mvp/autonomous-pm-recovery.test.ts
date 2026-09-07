@@ -27,6 +27,19 @@ const harness = (state: unknown, restartFails = false) => {
 };
 
 describe('autonomous PM observation recovery', () => {
+  it('deduplicates confirmed approval waiting across polls and worker restart without recovering the runtime', async () => {
+    const h = harness({Running:false});
+    h.observeReconciliation.mockResolvedValue({status:'started',waitingFor:'human-approval'});
+    for (let i = 0; i < 4; i++) await expect(h.poll()).resolves.toEqual({status:'started',waitingFor:'human-approval'});
+    h.ports.recoveryGate = createEndpointRecoveryGate();
+    await h.poll();
+    expect([...h.notifications.keys()]).toEqual(['agent.recovery:run_pm:human-approval']);
+    expect(h.docker).not.toHaveBeenCalled();
+    h.observeReconciliation.mockResolvedValue({status:'started'});
+    await expect(h.poll()).resolves.toEqual({status:'started'});
+    expect(h.notifications.size).toBe(1);
+  });
+
   it.each([
     [{Running: true, Health: {Status: 'healthy'}}, 0],
     [{Running: true}, 0],

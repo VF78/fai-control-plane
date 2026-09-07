@@ -152,7 +152,8 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
     if (value.status === 'cancelled') return {status: 'failed', failureCode: 'provider_cancelled'};
     if (['started','queued','running','stopping','waiting_for_approval'].includes(value.status)) {
       const progress = progressFact(value.progress);
-      return {status: 'started', ...(progress === undefined ? {} : {progress})};
+      return {status: 'started', ...(value.status === 'waiting_for_approval' ? {waitingFor: 'human-approval' as const} : {}),
+        ...(progress === undefined ? {} : {progress})};
     }
     throw new Error('agent_status_invalid');
   },async submitReconciliation(pmRequest){
@@ -181,7 +182,9 @@ export const createHermesDeliveryAdapter = (input: Readonly<{
       return result===null?{status:'failed'}:{status:'completed',result};}
     if(['failed','cancelled'].includes(value.status))return {status:'failed'};
     if(['started','queued','running','stopping','waiting_for_approval'].includes(value.status)){
-      const progress=progressFact(value.progress);return {status:'started',...(progress===undefined?{}:{progress})};}
+      const progress=progressFact(value.progress);return {status:'started',
+        ...(value.status==='waiting_for_approval'?{waitingFor:'human-approval' as const}:{}),
+        ...(progress===undefined?{}:{progress})};}
     throw new Error('agent_status_invalid');
   }};
 };
