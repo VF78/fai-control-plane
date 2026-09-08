@@ -2,7 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {assertAgentRoutingPolicyAvailable, defaultAgentRoutingPolicy, parseAgentRoutingPolicy, resolveAgentRoute,
   type AgentRoutingPolicy} from './routing-policy.ts';
 
-const catalog = {['codex-cli']: {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']},
+const catalog = {['codex-cli']: {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra', 'gpt-5.6-luna']},
   ['claude-code-cli']: {available: false, models: []}} as const;
 
 describe('Hermes routing policy', () => {
@@ -11,15 +11,19 @@ describe('Hermes routing policy', () => {
       executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-terra', effort: 'medium'
     });
   });
-  it('routes repository architecture and critical decisions to Codex with the approved Sol effort', () => {
+  it('routes repository architecture and critical decisions to Codex with the approved Astra effort', () => {
     expect(resolveAgentRoute(defaultAgentRoutingPolicy, 'architecture_design', catalog)).toMatchObject({
-      executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-sol', effort: 'medium'
+      executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-6-astra', effort: 'medium'
     });
     expect(resolveAgentRoute(defaultAgentRoutingPolicy, 'critical_decision', catalog)).toMatchObject({
-      executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-5.6-sol', effort: 'high'
+      executor: {kind: 'cli', id: 'codex-cli'}, model: 'gpt-6-astra', effort: 'high'
     });
   });
   it('denies unknown classes and unavailable future executors', () => {
+    expect(resolveAgentRoute(defaultAgentRoutingPolicy,'complex_implementation',catalog))
+      .toMatchObject({model:'gpt-5.6-terra',effort:'high'});
+    expect(resolveAgentRoute(defaultAgentRoutingPolicy,'qa_audit',catalog))
+      .toMatchObject({model:'gpt-5.6-terra',effort:'medium'});
     expect(() => resolveAgentRoute(defaultAgentRoutingPolicy, 'unknown', catalog)).toThrow('agent_route_denied');
     const future: AgentRoutingPolicy = {...defaultAgentRoutingPolicy, routes: defaultAgentRoutingPolicy.routes.map(
       (route) => route.taskClass === 'ordinary_implementation'

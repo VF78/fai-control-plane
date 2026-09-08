@@ -28,7 +28,7 @@ description: Authoritative project-manager and bounded Codex execution policy fo
   Container isolation is already provided; nested `read-only`/`workspace-write` sandboxes fail with `bwrap` here.
   Run the terminal call in the foreground with `timeout=1800`; the command returns immediately when Codex finishes.
   Pass the configured model and reasoning as real CLI arguments, for example:
-  `codex exec --dangerously-bypass-approvals-and-sandbox -m "$model" -c "model_reasoning_effort=\"$effort\"" -C "$issue_worktree" -o "$result_file" - < "$task_file"`.
+  `codex exec --dangerously-bypass-approvals-and-sandbox -m "$model" -c "model_reasoning_effort=\"$effort\"" -c 'service_tier="default"' -C "$issue_worktree" -o "$result_file" - < "$task_file"`.
   Use Standard service tier; never enable Fast. Read the exit status from the terminal result and the output file
   with the native file tool before assessing completion.
 - If the terminal call times out, do not start another Codex invocation. Preserve the same worktree and report the
@@ -37,6 +37,12 @@ description: Authoritative project-manager and bounded Codex execution policy fo
 - Read `.fai-context/process.json` and `.fai-context/routing.json` in the configured workspace.
   Each file contains `version` and `policy`; verify versions against the task request before execution.
   Select the exact configured task-class model and effort from routing.policy; model defaults apply only when that policy selects them.
+- Choose the minimum sufficient configured profile likely to complete the accepted task on its first full attempt.
+  For new policies: Terra medium for routine implementation and QA; Terra high for clear complex implementation or UI;
+  Sol medium for bounded difficult analysis; Astra medium for architecture, coupled state and systemic debugging;
+  Astra high only for exceptional interactions needing depth beyond medium. Luna medium suits simple bounded summaries.
+  Security, migrations and production alone do not justify high. Preserve demonstrated successful choices and saved policy overrides.
+  Reuse current passing evidence; do not add standing reviewer chains or repeat QA without a changed input or concrete missing check.
 - Reuse the same issue worktree in the configured workspace's `items` directory after interruption, rework and QA.
 - Treat configured workspace and issue-worktree paths as absolute. Never prepend `/opt/data`, the workspace or another root
   to an absolute path.

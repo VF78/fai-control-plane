@@ -110,6 +110,17 @@ describe('tracker snapshot freshness', () => {
 });
 
 describe('versioned agent routing projection', () => {
+  it.each(['gpt-5.6-sol','project-private-model'])('preserves the saved architecture model %s',async(model)=>{
+    const policy={...defaultAgentRoutingPolicy,routes:defaultAgentRoutingPolicy.routes.map((route)=>
+      route.taskClass==='architecture_design'?{...route,model}:route)};
+    const contentText=JSON.stringify(policy);
+    const query=vi.fn().mockResolvedValue({rows:[{id:'saved',projectId:'project',
+      sha256:createHash('sha256').update(contentText).digest('hex'),provenance:'control-plane:command',
+      createdAt:new Date('2026-08-24T10:00:00.000Z'),contentText}]});
+    const saved=await readAgentRoutingPolicy({query} as unknown as Database,'owner','project');
+    expect(saved?.policy).toEqual(policy);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
   it('reads the latest valid immutable source artifact with provenance', async () => {
     const contentText = JSON.stringify(defaultAgentRoutingPolicy);
     const query = vi.fn().mockResolvedValue({rows: [{id: 'version-id', projectId: 'project',

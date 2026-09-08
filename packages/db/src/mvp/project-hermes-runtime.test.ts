@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import type {Database} from './runtime.ts';
-import {listProjectHermesRuntimeBindings,parseProjectHermesRuntimeArtifact,projectHermesRuntimeImageVersion,projectHermesSecretPurpose,
+import {listProjectHermesRuntimeBindings,parseProjectHermesRuntimeArtifact,projectHermesExecutorCatalog,projectHermesRuntimeImageVersion,projectHermesSecretPurpose,
   type ProjectHermesSecretKind} from './project-hermes-runtime.ts';
 import {projectHermesRuntimeCoordinates} from './project-runtime-provisioning.ts';
 
@@ -27,6 +27,13 @@ const database=(sharedChat=false,sharedLocator=false)=>{
 };
 
 describe('dedicated project Hermes runtime binding',()=>{
+  it('exposes all supported Codex profiles only with a configured runtime',async()=>{
+    const [binding]=await listProjectHermesRuntimeBindings(database());
+    expect(projectHermesExecutorCatalog(binding)['codex-cli']).toEqual({available:true,
+      models:['gpt-5.6-terra','gpt-5.6-sol','gpt-6-astra','gpt-5.6-luna']});
+    for(const absent of [null,undefined])expect(projectHermesExecutorCatalog(absent)['codex-cli'])
+      .toEqual({available:false,models:[]});
+  });
   it('routes API and authenticated file access to one project gateway container',()=>{
     expect(projectHermesRuntimeCoordinates('control',projects.one)).toEqual({runtimeId:'fai-control-00000000',
       gatewayEndpoint:'http://fai-control-00000000-gateway:8642/v1/runs',
