@@ -34,8 +34,8 @@ export const saveProjectDevopsAccess=async(database:Database,input:Readonly<{
       values($1,$2,$3,'project.devops.configure',$4,$5) on conflict(idempotency_key) do nothing`,
     [input.projectId,input.actorId,input.idempotencyKey,sha,input.value.checkedAt]);
     await client.query(`insert into audit_events(workspace_id,project_id,actor_id,action,target_reference,correlation_id,details,occurred_at)
-      values($1,$2,$3,'project.devops.configure',$2,$4,$5,$6)`,[input.workspaceId,input.projectId,input.actorId,
-      input.idempotencyKey,JSON.stringify({ssh:input.value.ssh,cloud:input.value.cloud,cloudStatus:input.value.cloudStatus}),input.value.checkedAt]);
+      values($1,$2,$3,'project.devops.configure',$7,$4,$5,$6)`,[input.workspaceId,input.projectId,input.actorId,
+      input.idempotencyKey,JSON.stringify({ssh:input.value.ssh,cloud:input.value.cloud,cloudStatus:input.value.cloudStatus}),input.value.checkedAt,input.projectId]);
     await client.query('commit');
   }catch(error){await client.query('rollback');throw error;}finally{client.release();}
 };
