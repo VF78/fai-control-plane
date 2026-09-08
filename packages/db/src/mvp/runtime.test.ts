@@ -49,7 +49,9 @@ describe('project-scoped active attempts', () => {
     const sql = query.mock.calls[0]![0] as string;
     expect(sql).toContain("terminal.details->>'failureCode'='agent_result_invalid'");
     expect(sql).toContain('and a.id=(select latest.id');
-    expect(sql).toContain('order by (terminal.details is not null),a.occurred_at asc limit $1');
+    expect(sql).toContain('order by (terminal.details is not null)');
+    expect(sql).toContain('case when terminal.details is null then a.occurred_at end asc');
+    expect(sql).toContain('case when terminal.details is not null then a.occurred_at end desc');
   });
 });
 
