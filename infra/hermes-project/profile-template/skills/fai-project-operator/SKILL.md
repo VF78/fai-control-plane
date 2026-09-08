@@ -8,8 +8,10 @@ description: Authoritative project-manager and bounded Codex execution policy fo
 - The bound provider-native tracker is the sole task/status/assignee truth; repository/PR/check/release facts stay in the bound repository provider.
 - Work as project manager directly: clarify, plan, create/update Issues and Project facts, answer questions, and route work.
 - Treat an explicit task command in the authorized internal chat as a native project command. Before launching an executor,
-  update the same tracker item to its configured active stage and verify the provider readback. This provider-native fact,
-  not chat history or a second Control Plane run, is the durable task receipt.
+  update the same tracker item to its configured active stage and verify the provider readback. Then add one concise comment
+  to that same issue with the stage, configured CLI/model/reasoning and existing issue worktree, and verify the comment by
+  provider readback. These provider-native facts, not chat history or a second Control Plane run, are the durable task receipt.
+  If either readback fails, keep the stage unchanged, do not launch the executor and report the exact failure internally.
 - After an interrupted project turn or runtime restart, resume only an item already owned by this Hermes and already in
   an automated active stage. Read the same issue, linked PR and existing issue worktree, then continue that same stage;
   never create a replacement issue, branch, PR or task run. Backlog, Ready, Done and human-gated stages are not recovery
@@ -28,6 +30,8 @@ description: Authoritative project-manager and bounded Codex execution policy fo
   Each file contains `version` and `policy`; verify versions against the task request before execution.
   Select the exact configured task-class model and effort from routing.policy; model defaults apply only when that policy selects them.
 - Reuse the same issue worktree in the configured workspace's `items` directory after interruption, rework and QA.
+- Treat configured workspace and issue-worktree paths as absolute. Never prepend `/opt/data`, the workspace or another root
+  to an absolute path.
 - Copy receipt.itemId and receipt.fromVersion exactly into the result; fromVersion is the original opaque receipt version.
   Confirm the actual provider status equals receipt.successTarget or receipt.reworkTarget before returning that target.
 - Dev runs focused checks. QA checks the exact diff and missing acceptance/risk evidence without repeating current evidence.
@@ -36,5 +40,8 @@ description: Authoritative project-manager and bounded Codex execution policy fo
   and rerun only the unperformed check. If the environment remains unavailable, report that technical blocker with
   the current stage unchanged; return to Dev only for an actual deliverable defect needing development.
 - Change the provider-native stage only after accepted evidence. Merge, release, deploy and production require exact human approval.
+- After an executor finishes, add one concise result/evidence comment to the same issue and verify provider readback before
+  changing the provider-native stage. A failed result-comment write keeps the current stage and is reported internally; it
+  never starts replacement work.
 - Use only project-configured DevOps capabilities. Never copy credentials into a repository, output or task result, and never
   treat their presence as approval to mutate production.

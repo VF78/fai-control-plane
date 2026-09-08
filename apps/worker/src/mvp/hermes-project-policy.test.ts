@@ -71,6 +71,10 @@ describe('persistent project policy materialization',()=>{
       const policyBefore=await stat(`${directory}/process.json`);
       expect(await persistProjectHermesPolicies(runtime,...policies,owner)).toBe(2);
       const source=await readFile('infra/hermes-project/profile-template/skills/fai-project-operator/SKILL.md','utf8');
+      expect(source).toContain('add one concise comment');
+      expect(source).toContain('verify the comment by');
+      expect(source).toContain('Treat configured workspace and issue-worktree paths as absolute');
+      expect(source).toContain('never starts replacement work');
       const paths=[`${root}/data/skills/fai-project-operator/SKILL.md`,
         `${root}/data/profiles/internal/skills/fai-project-operator/SKILL.md`];
       for(const path of paths){
