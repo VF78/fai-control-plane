@@ -1,5 +1,6 @@
 import type {AgentExecutorCatalog,OpaqueSecretRef} from '@fai-control-plane/domain';
 import type {Database} from './runtime.ts';
+import {readProjectDevopsAccess,type ProjectDevopsAccess} from './project-devops-access.ts';
 
 export const projectHermesRuntimeArtifactKind = 'project_hermes_runtime_v2';
 export const projectHermesRuntimeContract = 'fai.project-hermes-runtime.v2';
@@ -192,6 +193,7 @@ export const projectHermesExecutorCatalog=(runtime:ProjectHermesRuntimeBinding|n
     'claude-code-cli':{available:false,models:[]}};
 
 export type ProjectHermesRuntimeSetupView = Readonly<{
+  devops?:ProjectDevopsAccess|null;
   status: ProjectHermesRuntimeStatus;
   telegramConfigured: boolean;
   auth: Readonly<{verificationUrl: string; userCode: string}> | null;
@@ -215,10 +217,11 @@ export const readProjectHermesRuntimeSetup = async (
   actorId: string,
   projectId: string
 ): Promise<ProjectHermesRuntimeSetupView> => {
-  const artifact=await readProjectHermesRuntimeArtifact(database,actorId,projectId);
+  const [artifact,devops]=await Promise.all([readProjectHermesRuntimeArtifact(database,actorId,projectId),
+    readProjectDevopsAccess(database,actorId,projectId)]);
   return artifact===null?{status:'not_configured',telegramConfigured:false,auth:null,failure:null}:
     {status:artifact.status,telegramConfigured:artifact.telegramChatId!==null,auth:artifact.auth??null,
-      failure:artifact.failure??null};
+      failure:artifact.failure??null,devops};
 };
 
 export const readProjectHermesRuntimeBinding = async (

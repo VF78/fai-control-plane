@@ -17,6 +17,8 @@ import {
 import {actorForSession} from '@fai-control-plane/db';
 import {verifyMatrixConnection} from '@fai-control-plane/integrations';
 import {removeProjectHermesRuntime} from './docker-project-runtime.ts';
+import {configureDevopsAccess} from './project-devops-access.ts';
+import {parseDevopsInput} from './project-devops-files.ts';
 
 const runtimeRoot=()=>{
   const value=process.env.FCP_PROJECT_RUNTIME_HOST_DIR;
@@ -121,7 +123,7 @@ const idempotentCommand=async<T>(database:Database,input:Readonly<{projectId:str
   const client=await database.connect();try{await client.query('select pg_advisory_lock(hashtextextended($1,0))',[input.idempotencyKey]);
     const prior=await client.query(`select 1 from command_receipts where project_id=$1 and actor_id=$2
       and idempotency_key=$3 and command_type=$4`,[input.projectId,input.actorId,input.idempotencyKey,input.commandType]);
-    return prior.rowCount===1?current():execute();
+    return await (prior.rowCount===1?current():execute());
   }finally{await client.query('select pg_advisory_unlock(hashtextextended($1,0))',[input.idempotencyKey]).catch(()=>undefined);client.release();}
 };
 
@@ -255,7 +257,7 @@ export const deleteProject=async(database:Database,input:Readonly<{actorId:strin
   await deleteProjectRecords(database,{...target,actorId:input.actorId});return {deleted:true};
 };
 
-const body=async(request:Request)=>{const text=await request.text();if(text.length===0||text.length>8_192)
+const body=async(request:Request)=>{const text=await request.text();if(text.length===0||text.length>131_072)
   throw new Error('body_invalid');const value=JSON.parse(text) as unknown;if(value===null||typeof value!=='object'||Array.isArray(value))
     throw new Error('body_invalid');return value as Record<string,unknown>;};
 const required=(value:unknown,maximum:number)=>{if(typeof value!=='string'||value.length===0||value.length>maximum||value.includes('\0'))
@@ -268,6 +270,16 @@ export const projectRuntimeSetupCommand=async(database:Database,request:Request,
     if(session===null)throw new Error('authentication_required');
     if(request.method==='DELETE')return Response.json(await deleteProject(database,{actorId:session.actorId,projectId}));
     const value=await body(request);const action=required(value.action,32);
+    if(action==='configure_devops'){
+      const bound=await project(database,session.actorId,projectId);if(bound.workspaceId!==session.workspaceId)throw new Error('project_runtime_denied');
+      const input={...parseDevopsInput(value),workspaceId:session.workspaceId,actorId:session.actorId,projectId,idempotencyKey:required(value.idempotencyKey,128)};
+      const root=await ensureProjectRuntimeDirectory(input.workspaceId,projectId);
+      return Response.json(await idempotentCommand(database,{...input,commandType:'project.devops.configure'},
+        ()=>readProjectHermesRuntimeSetup(database,input.actorId,projectId),async()=>{
+          await configureDevopsAccess(database,input,root);
+          return readProjectHermesRuntimeSetup(database,input.actorId,projectId);
+        }));
+    }
     const contour=action==='connect_messenger'?required(value.contour,16):null;const provider=action==='connect_messenger'?required(value.provider,16):null;const allowed=action==='connect_messenger'&&provider==='telegram'?required(value.allowedUserIds,2_400).split(',').map((item)=>item.trim()).filter(Boolean):[];
     if(action==='connect_messenger'&&(contour!=='internal'&&contour!=='client'||provider!=='telegram'&&provider!=='element'||
       contour==='internal'&&provider!=='telegram'))throw new Error('project_messenger_provider_unavailable');

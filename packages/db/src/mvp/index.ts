@@ -7,6 +7,7 @@ export * from './project-context-bootstrap.ts';
 export * from './project-hermes-runtime.ts';
 export * from './project-messenger-bindings.ts';
 export * from './project-runtime-provisioning.ts';
+export * from './project-devops-access.ts';
 export * from './project-tracker-preparation.ts';
 export * from './project-wizard-progress.ts';
 export * from './project-deletion.ts';
