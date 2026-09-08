@@ -25,5 +25,6 @@ export const verifyAutonomousPmSelection=(input:Readonly<{result:AutonomousPmRes
     item.version!==selected.observedVersion||item.blocked!==false||item.ownerOptionId!==input.ownerOptionId||
     item.statusOptionId===null||item.statusOptionId===input.doneStatusOptionId)return null;
   const stage=input.process.stages.find((candidate)=>candidate.title===item.statusOptionName);
-  return stage?.automation===null||stage===undefined?null:{itemId:item.itemId,role:stage.automation.agentRole};
+  return stage?.automation===null||stage===undefined||stage.automation.agentRole==='devops'
+    ? null : {itemId:item.itemId,role:stage.automation.agentRole};
 };

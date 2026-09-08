@@ -7,7 +7,7 @@ export type ProjectProcessStage = Readonly<{
   gate: string;
   evidence: string;
   nextStageId: string | null;
-  automation: Readonly<{agentRole: 'manager'|'developer'|'qa'; afterRoles: readonly ('manager'|'developer'|'qa')[];
+  automation: Readonly<{agentRole: 'manager'|'developer'|'qa'|'devops'; afterRoles: readonly ('manager'|'developer'|'qa'|'devops')[];
     maxStarts: number; reworkStageId: string | null}> | null;
 }>;
 
@@ -21,7 +21,7 @@ export const defaultProjectProcessPolicy: ProjectProcessPolicy = {contract: 'fai
   {id:'ready',title:'Ready',responsibility:'Product Owner',gate:'PO Ready: требуется',evidence:'Acceptance criteria, исполнитель, проверка',nextStageId:'in-dev',automation:null},
   {id:'in-dev',title:'In Dev',responsibility:'Разработчик или ИИ-агент',gate:'Явная команда оператора для запуска цепочки ИИ-агента',evidence:'Branch/worktree, PR, локальная проверка',nextStageId:'qa',automation:{agentRole:'developer',afterRoles:['qa'],maxStarts:2,reworkStageId:null}},
   {id:'qa',title:'QA',responsibility:'ИИ-агент',gate:'Автоматическое продолжение явно запущенной цепочки после подтверждённого статуса QA',evidence:'PR, checks, QA evidence',nextStageId:'acceptance',automation:{agentRole:'qa',afterRoles:['developer'],maxStarts:2,reworkStageId:'in-dev'}},
-  {id:'acceptance',title:'Acceptance',responsibility:'Product Owner',gate:'PO gate в Done: требуется',evidence:'QA evidence, staging deploy, smoke-test',nextStageId:'done',automation:null},
+  {id:'acceptance',title:'Acceptance',responsibility:'Product Owner',gate:'Точное production-подтверждение перед DevOps',evidence:'QA evidence и production-подтверждение Product Owner',nextStageId:'done',automation:{agentRole:'devops',afterRoles:['qa'],maxStarts:1,reworkStageId:'qa'}},
   {id:'done',title:'Done',responsibility:'Product Owner',gate:'Терминальное состояние',evidence:'Явная приёмка результата',nextStageId:null,automation:null}
 ]};
 
@@ -44,14 +44,14 @@ export const parseProjectProcessPolicy = (value: unknown): ProjectProcessPolicy 
     if (stage.automation !== undefined && stage.automation !== null) {
       if (typeof stage.automation !== 'object' || Array.isArray(stage.automation)) return null;
       const configured = stage.automation as Record<string, unknown>;
-      if (!['manager','developer','qa'].includes(String(configured.agentRole)) ||
+      if (!['manager','developer','qa','devops'].includes(String(configured.agentRole)) ||
         !Array.isArray(configured.afterRoles) || configured.afterRoles.length === 0 || configured.afterRoles.length > 2 ||
-        !configured.afterRoles.every((role) => ['manager','developer','qa'].includes(String(role))) ||
+        !configured.afterRoles.every((role) => ['manager','developer','qa','devops'].includes(String(role))) ||
         !Number.isInteger(configured.maxStarts) || (configured.maxStarts as number) < 1 || (configured.maxStarts as number) > 5) return null;
       if (configured.reworkStageId !== undefined && configured.reworkStageId !== null &&
         !isBoundedId(configured.reworkStageId)) return null;
-      automation = {agentRole: configured.agentRole as 'manager'|'developer'|'qa',
-        afterRoles: configured.afterRoles as ('manager'|'developer'|'qa')[],
+      automation = {agentRole: configured.agentRole as 'manager'|'developer'|'qa'|'devops',
+        afterRoles: configured.afterRoles as ('manager'|'developer'|'qa'|'devops')[],
         maxStarts: configured.maxStarts as number, reworkStageId: configured.reworkStageId as string | null ?? null};
     }
     stages.push({...stage, automation} as unknown as ProjectProcessStage);

@@ -11,6 +11,7 @@ import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, c
   executeAgentSubmissionTransaction, readActiveProjectContext, readAgentRoutingPolicy,
   executeAutonomousPmTransaction,finishAutonomousPmAttempt,listActiveAutonomousPmAttempts,
   hasActiveAgentAttempt,
+  readApprovedProductionEvidence,
   readActiveProjectExecutionMode,readActiveProjectProcessPolicy, readProjectMessengerDeliveryBinding,
   resolveAgentSubmissionBinding, type Database} from '@fai-control-plane/db';
 import {defaultAgentStageInstructions, composeAgentTerminalNotification, continueExplicitAgentChain,
@@ -219,6 +220,7 @@ export const createWorker = (database: Database = createDatabase()) => {
       readFreshSnapshot: (context) => tracker.readSnapshot(context.bindingId, null),
       persistSnapshot: stores.snapshots.replace,
       resolveActiveContext: ({actorId, projectId}) => readActiveProjectContext(database, actorId, projectId),
+      resolveProductionApproval: (input) => readApprovedProductionEvidence(database, input),
       repository,
       delivery: agentDelivery,
       composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: project.projectId,

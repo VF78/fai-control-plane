@@ -1,8 +1,8 @@
-import type {AgentDeliveryPort, AgentExecutorCatalog, AgentExecutorResult, AgentRoutingPolicy, MessengerDeliveryInput, TrackerSnapshot} from '@fai-control-plane/domain';
+import type {AgentDeliveryPort, AgentExecutorCatalog, AgentExecutorResult, AgentRole, AgentRoutingPolicy, MessengerDeliveryInput, TrackerSnapshot} from '@fai-control-plane/domain';
 
 export type AgentAttemptRecord = Readonly<{
   workspaceId: string; projectId: string; actorId: string; itemId: string; issueId: string;
-  role: 'manager'|'developer'|'qa'; retryOf?: string|null;
+  role: AgentRole; retryOf?: string|null;
   itemTitle: string | null; itemUrl: string | null;
   deliveryReference: string; correlationId: string; status: 'started'|'completed'|'failed';
   failureCode?: string|null;

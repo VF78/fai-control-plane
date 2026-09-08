@@ -27,4 +27,13 @@ describe('project process policy', () => {
     ]})).toBeNull();
   });
 
+  it('accepts a human-gated DevOps stage without making it an automatic chain step', () => {
+    const policy = parseProjectProcessPolicy({contract:'fai.project-process.v1',stages:[
+      {id:'acceptance',title:'Acceptance',responsibility:'Owner',gate:'Production approval',evidence:'QA',nextStageId:'done',
+        automation:{agentRole:'devops',afterRoles:['qa'],maxStarts:1,reworkStageId:null}},
+      {id:'done',title:'Done',responsibility:'Owner',gate:'Done',evidence:'Production',nextStageId:null}
+    ]});
+    expect(policy?.stages[0]?.automation?.agentRole).toBe('devops');
+  });
+
 });

@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {
   actorForSession,createStores,executeAgentSubmissionTransaction,projectHermesExecutorCatalog,readActiveProjectContext,
+  readApprovedProductionEvidence,
   readAgentRoutingPolicy,readProjectAgentProfile,readProjectHermesRuntimeBinding,readProjectProcessPolicy,
   readProjectTrackerCapabilities,resolveAgentSubmissionBinding,type Database
 } from '@fai-control-plane/db';
@@ -54,6 +55,8 @@ const assignment=async(database:Database,actorId:string,projectId:string,deliver
   readFreshSnapshot:()=>read.readSnapshot(context.bindingId,context.cursor),persistSnapshot:stores.snapshots.replace,
   resolveActiveContext:({actorId:requester,projectId:project}:Readonly<{actorId:string;projectId:string}>)=>
     readActiveProjectContext(database,requester,project),repository,delivery,
+  resolveProductionApproval:(input:Readonly<{projectId:string;itemId:string;issueId:string;version:string}>)=>
+    readApprovedProductionEvidence(database,input),
   composeAcceptedNotification:async(item:TrackerItemFact,idempotencyKey:string):Promise<MessengerDeliveryInput>=>({
     projectId:context.projectId,contour:'trusted-main',channelReference:'telegram:internal',
     text:`ИИ-агент принял задачу: ${item.title} — ${item.url}`,idempotencyKey}),transaction:{execute:(input:Parameters<

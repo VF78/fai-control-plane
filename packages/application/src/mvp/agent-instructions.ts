@@ -1,4 +1,4 @@
-export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa') => role === 'manager'
+export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa'|'devops') => role === 'manager'
   ? {constraints: [
     'Plan only the exact receipt-bound tracker item; do not select or create unrelated work.',
     'Do not implement, merge, release, deploy, or access production.',
@@ -17,7 +17,7 @@ export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa') 
   ], acceptanceCriteria: [
     'Record delivery evidence in the referenced tracker item or review request.',
     'The result requests the next stage configured by the project process policy.'
-  ]} : {constraints: [
+  ]} : role === 'qa' ? {constraints: [
     'Work only on the referenced tracker item and bound repository.',
     'Do not merge, release, deploy, or access production.',
     'Invoke the configured CLI once in the existing item worktree with the exact model and effort. It first reviews the unchanged referenced review request and prior evidence independently, then runs only missing acceptance/risk checks.',
@@ -27,4 +27,13 @@ export const defaultAgentStageInstructions = (role: 'manager'|'developer'|'qa') 
   ], acceptanceCriteria: [
     'Record the independently reviewed commit, QA evidence, and any localized QA fix in the referenced tracker item or review request.',
     'The result requests the configured rework or next stage after QA.'
+  ]} : {constraints: [
+    'Work only on the referenced tracker item and bound repository.',
+    'Perform only the production operation covered by the exact approval in this request.',
+    'Use the project-configured DevOps tools directly; f(AI) Control is not a deployment broker.',
+    'Verify the resulting provider and production facts, record concise evidence, and move the same item to the configured next stage.',
+    'Stop and report a blocker without repeated attempts if required access or the approved target is unavailable.'
+  ], acceptanceCriteria: [
+    'The approved production operation and its verification evidence are recorded on the referenced tracker item.',
+    'The result requests the configured next stage only after successful verification.'
   ]};
