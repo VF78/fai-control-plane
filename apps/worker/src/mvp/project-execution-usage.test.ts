@@ -1,4 +1,4 @@
-import {mkdtemp,mkdir,writeFile,rm,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,rm,symlink,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach,describe,expect,it,vi} from 'vitest';
@@ -49,10 +49,11 @@ describe('existing worker usage integration',()=>{
     const record=vi.fn(async()=>{throw new Error('SQL failed');});
     await expect(captureProjectExecutionUsage(database,scope,{...ports(),record})).resolves.toBeUndefined();
   });
-  it('reads actual fixture files through the accepted parser and retains only metadata',async()=>{
-    const root=await mkdtemp(join(tmpdir(),'fai-usage-fixture-'));directories.push(root);
+  it.each([{}, {timestamp:'2026-09-08T13:00:00Z'}, {timestamp:'2026-09-08T13:00:00Z',ordinal:0}])(
+    'reads native envelope headers %j through to task-attributed persistence, retaining only metadata',async header=>{
+    const root=await realpath(await mkdtemp(join(tmpdir(),'fai-usage-fixture-')));directories.push(root);
     const sessions=join(root,'codex-home/sessions/2026/09/08');await mkdir(sessions,{recursive:true});
-    const line=(type:string,payload:unknown)=>JSON.stringify({type,payload});const marker='UNRETAINED_FIXTURE_CONTENT';
+    const line=(type:string,payload:unknown)=>JSON.stringify({...header,type,payload});const marker='UNRETAINED_FIXTURE_CONTENT';
     await writeFile(join(sessions,'rollout-2026-09-08-session.jsonl'),[
       line('session_meta',{id:'session',cwd:sample.cwd,source:{subagent:{thread_spawn:{parent_thread_id:'parent'}}},instructions:marker}),
       line('turn_context',{model:'gpt-6-astra',effort:'medium',prompt:marker}),
@@ -65,7 +66,9 @@ describe('existing worker usage integration',()=>{
     const local={...scope,runtime:{...scope.runtime,agentCredentialRef:{locator:join(root,'secrets/agent')}}};
     await captureProjectExecutionUsage(database,local,{tasks:async()=>tasks,record,samples:readProjectUsageSamples});
     expect(record).toHaveBeenCalledOnce();expect(JSON.stringify(record.mock.calls)).not.toContain(marker);
-    expect(record).toHaveBeenCalledWith(database,local,expect.objectContaining({itemId:'telegram-task',totals:sample.usage.totals}));
+    expect(record).toHaveBeenCalledWith(database,local,expect.objectContaining({itemId:'telegram-task',
+      sessionReference:'session',parentSessionReference:'parent',contexts:sample.usage.contexts,
+      totals:sample.usage.totals,reasons:['session-coverage-unknown']}));
   });
   it('runs capture from the existing observation tick even with no local attempts and isolates its failure',async()=>{
     vi.stubEnv('FCP_WORKSPACE_ID','workspace');

@@ -3,7 +3,7 @@ import {open,opendir,realpath} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {createInterface} from 'node:readline';
 import {listExecutionUsageTasks,recordExecutionUsage,type Database,type ExecutionUsage} from '@fai-control-plane/db';
-import {parseNativeUsage,type NativeExecutionUsage} from './native-execution-usage.ts';
+import {nativeEnvelopeType,parseNativeUsage,type NativeExecutionUsage} from './native-execution-usage.ts';
 
 type Runtime=Readonly<{runtimeId:string;workspacePath:string;agentCredentialRef:Readonly<{locator:string}>}>;
 type Scope=Readonly<{workspaceId:string;projectId:string;repositoryUrl:string;runtime:Runtime}>;
@@ -54,7 +54,7 @@ export async function* readProjectUsageSamples(root:string,deadline:number):Asyn
         let cwd:string|null=null;let seen=false;let conflicting=false;
         async function* metadata(){
           for await(const line of lines){
-            if(line.length<=4_194_304&&/^\s*\{\s*(?:"timestamp"\s*:\s*"[^"\n]*"\s*,\s*)?"type"\s*:\s*"session_meta"/.test(line)){
+            if(line.length<=4_194_304&&nativeEnvelopeType(line)==='session_meta'){
               try{
                 const payload=object(object(JSON.parse(line)).payload);
                 const path=typeof payload.cwd==='string'&&/^\/[-A-Za-z0-9_./]{1,511}$/.test(payload.cwd)?payload.cwd:null;
