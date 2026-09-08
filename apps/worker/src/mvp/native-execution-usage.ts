@@ -33,7 +33,13 @@ const count = (v: unknown): number | null => Number.isSafeInteger(v) && (v as nu
 const emptyTotals = (): NativeUsageTotals => ({input:null,cachedInput:null,output:null,reasoningOutput:null,total:null});
 const keys = ['input','cachedInput','output','reasoningOutput','total'] as const;
 
-/** Native envelopes put timestamp/type before payload. Select event types before decoding;
+/** Read only native envelope headers, including the ordinal emitted by newer CLIs.
+ * Share this selector with cwd extraction so identity and task linkage cannot diverge.
+ */
+export const nativeEnvelopeType = (line: string): string | null =>
+  /^\s*\{\s*(?:(?:"timestamp"\s*:\s*"[^"\n]*"|"ordinal"\s*:\s*[0-9]+)\s*,\s*)*"type"\s*:\s*"([a-z_]+)"/.exec(line.slice(0,256))?.[1] ?? null;
+
+/** Native envelopes put timestamp/ordinal/type before payload. Select event types before decoding;
  * message/tool envelopes are skipped, never returned. The optional session_meta envelope
  * contributes only session/parent IDs; all remaining metadata fields are discarded.
  *
@@ -50,7 +56,7 @@ export const parseNativeUsage = async (lines: AsyncIterable<string> | Iterable<s
       if (typeof line !== 'string') { reasons.add('malformed-envelope'); continue; }
       if (line.length > 4_194_304) { reasons.add('oversized-event'); continue; }
       if (line.trim() === '') continue;
-      const type = /^\s*\{\s*(?:"timestamp"\s*:\s*"[^"\n]*"\s*,\s*)?"type"\s*:\s*"([a-z_]+)"/.exec(line)?.[1];
+      const type = nativeEnvelopeType(line);
       if (!type) { reasons.add('malformed-envelope'); continue; }
       if (!['session_meta','turn_context','event_msg'].includes(type)) continue;
       // Native token_count puts its discriminator first. Never inspect message contents.
