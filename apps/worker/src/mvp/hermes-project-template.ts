@@ -11,7 +11,7 @@ auxiliary:
   free_only: true
 timeouts:
   tools:
-    sequential_call: 1860
+    sequential_call: 660
 terminal:
   backend: local
   cwd: ${yamlString(request.artifact.workspacePath)}
