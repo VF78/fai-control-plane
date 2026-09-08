@@ -19,12 +19,15 @@ description: Authoritative project-manager and bounded Codex execution policy fo
 - Use one fresh `codex exec` for each Dev, QA or DevOps artifact. Never use a second Hermes or pass full chat history.
 - Write the task file with the native file tool, then invoke Codex as one direct terminal command.
   Do not wrap task-file preparation or result reading in Python/Node/shell scripts, encoded payloads or compound commands.
-- Inside this project container invoke Codex with `--dangerously-bypass-approvals-and-sandbox --ephemeral`.
+- Inside this project container invoke Codex with `--dangerously-bypass-approvals-and-sandbox`.
   Container isolation is already provided; nested `read-only`/`workspace-write` sandboxes fail with `bwrap` here.
+  Run the terminal call in the foreground with `timeout=1800`; the command returns immediately when Codex finishes.
   Pass the configured model and reasoning as real CLI arguments, for example:
-  `codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral -m "$model" -c "model_reasoning_effort=\"$effort\"" -C "$issue_worktree" -o "$result_file" - < "$task_file"`.
+  `codex exec --dangerously-bypass-approvals-and-sandbox -m "$model" -c "model_reasoning_effort=\"$effort\"" -C "$issue_worktree" -o "$result_file" - < "$task_file"`.
   Use Standard service tier; never enable Fast. Read the exit status from the terminal result and the output file
   with the native file tool before assessing completion.
+- If the terminal call times out, do not start another Codex invocation. Preserve the same worktree and report the
+  timeout and current Codex session so that the same session can be resumed after coordination.
 - Send Codex only the exact issue, acceptance criteria, repository path, AGENTS.md, required files and compact context excerpts.
 - Read `.fai-context/process.json` and `.fai-context/routing.json` in the configured workspace.
   Each file contains `version` and `policy`; verify versions against the task request before execution.
