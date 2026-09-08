@@ -77,7 +77,9 @@ describe('persistent project policy materialization',()=>{
       expect(source).toContain('never starts replacement work');
       expect(source).toContain('QA evaluates only the acceptance criteria');
       expect(source).toContain('require a Control Plane attempt or outbox record');
-      expect(source).toContain('foreground with `timeout=1800`');
+      expect(source).toContain('foreground with\n  `timeout=600`');
+      expect(source).toContain('roughly 3–7 minutes');
+      expect(source).toContain('do not blindly repeat the\n  identical invocation');
       expect(source).toContain(`-c 'service_tier="default"'`);
       expect(source).not.toContain('--ephemeral');
       const paths=[`${root}/data/skills/fai-project-operator/SKILL.md`,

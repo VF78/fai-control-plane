@@ -161,7 +161,7 @@ export const projectGatewayContainerSpec=(request:ProjectRuntimeProvisioningRequ
   const client=request.messengerBindings?.client?.status==='interactive'?request.messengerBindings.client:null;
   const env=['HOME=/opt/data','CODEX_HOME=/opt/data/codex-home','API_SERVER_ENABLED=true','API_SERVER_HOST=0.0.0.0',
     'API_SERVER_PORT=8642','HERMES_DASHBOARD=1','HERMES_PROVIDER=openai-codex',
-    'HERMES_MODEL=gpt-5.6-terra','TERMINAL_TIMEOUT=1800','TERMINAL_MAX_FOREGROUND_TIMEOUT=1800',
+    'HERMES_MODEL=gpt-5.6-terra','TERMINAL_TIMEOUT=600','TERMINAL_MAX_FOREGROUND_TIMEOUT=600',
     'HERMES_GITHUB_REPOSITORY_TOKEN_FILE=/run/secrets/github-token',
     'HERMES_API_SERVER_KEY_FILE=/run/secrets/agent-delivery',
     'HERMES_DASHBOARD_USERNAME_FILE=/run/secrets/dashboard-username','HERMES_DASHBOARD_PASSWORD_FILE=/run/secrets/dashboard-password',

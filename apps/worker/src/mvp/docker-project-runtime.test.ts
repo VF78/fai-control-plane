@@ -30,8 +30,8 @@ describe('direct project Docker adapter boundary',()=>{
     const configs=[renderProjectHermesConfig(request('project','fresh-project')),
       await readFile('infra/hermes-project/profile-template/config.yaml','utf8')];
     for(const [index,config] of configs.entries()){
-      // The outer native tool deadline must outlast the 1800s terminal call.
-      expect(config).toContain('timeouts:\n  tools:\n    sequential_call: 1860\n');
+      // The outer native tool deadline must outlast the 600s terminal call.
+      expect(config).toContain('timeouts:\n  tools:\n    sequential_call: 660\n');
       const native=config.match(/^toolsets:\n((?:  - [^\n]+\n)+)/m)![1]!
         .trim().split('\n').map(line=>line.trim().slice(2));
       const api=config.match(/^  api_server:\n((?:    - [^\n]+\n)+)/m)![1]!
@@ -71,8 +71,8 @@ describe('direct project Docker adapter boundary',()=>{
     expect(spec).not.toHaveProperty('Entrypoint');expect(spec).not.toHaveProperty('User');
     expect(spec.Cmd).toEqual(['sleep','infinity']);
     expect(spec.Env).toContain('HERMES_DASHBOARD=1');
-    expect(spec.Env).toContain('TERMINAL_TIMEOUT=1800');
-    expect(spec.Env).toContain('TERMINAL_MAX_FOREGROUND_TIMEOUT=1800');
+    expect(spec.Env).toContain('TERMINAL_TIMEOUT=600');
+    expect(spec.Env).toContain('TERMINAL_MAX_FOREGROUND_TIMEOUT=600');
     expect(spec.Healthcheck.Test.join(' ')).toContain("'HOME':'/opt/data/home'");
     expect(spec.Healthcheck.Test.join(' ')).toContain("['gh','auth','status']");
     expect(spec.Env.some((value)=>value.startsWith('HERMES_GATEWAY_NO_SUPERVISE='))).toBe(false);

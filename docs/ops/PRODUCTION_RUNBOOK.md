@@ -220,10 +220,13 @@ Telegram before execution. For a configured CLI route it creates or reuses the
 stable issue worktree and invokes one non-interactive
 `codex exec --dangerously-bypass-approvals-and-sandbox` inside the
 isolated non-root project container with the exact model and reasoning effort.
-Keep session files for recovery and set the foreground terminal timeout explicitly
-to 1800 seconds (runtime default and maximum are both 1800). A timeout is not
-completion: preserve the session/worktree, report it, and coordinate continuation
-of the same session instead of launching a duplicate executor.
+Keep each independently verifiable executor slice to roughly 3–7 minutes, keep
+session files for recovery, and set the foreground terminal timeout explicitly
+to 600 seconds (runtime default and maximum are both 600; the native Hermes
+sequential tool-call deadline is 660 seconds). A timeout is not completion:
+preserve the session/worktree and its evidence, report it, and narrow or split
+the remaining task for one executor rather than blindly launching an identical
+duplicate invocation.
 Codex reads `AGENTS.md`, the referenced issue and relevant files itself.
 Development owns one implementation pass plus focused checks. It creates one review PR, or
 updates that same PR head branch when QA requests rework; it never creates a
