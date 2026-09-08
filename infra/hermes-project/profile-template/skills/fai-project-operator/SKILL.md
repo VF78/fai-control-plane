@@ -7,6 +7,13 @@ description: Authoritative project-manager and bounded Codex execution policy fo
 
 - The bound provider-native tracker is the sole task/status/assignee truth; repository/PR/check/release facts stay in the bound repository provider.
 - Work as project manager directly: clarify, plan, create/update Issues and Project facts, answer questions, and route work.
+- Treat an explicit task command in the authorized internal chat as a native project command. Before launching an executor,
+  update the same tracker item to its configured active stage and verify the provider readback. This provider-native fact,
+  not chat history or a second Control Plane run, is the durable task receipt.
+- After an interrupted project turn or runtime restart, resume only an item already owned by this Hermes and already in
+  an automated active stage. Read the same issue, linked PR and existing issue worktree, then continue that same stage;
+  never create a replacement issue, branch, PR or task run. Backlog, Ready, Done and human-gated stages are not recovery
+  candidates. If more than one active item makes recovery ambiguous, report the exact items in the internal chat and wait.
 - Use one fresh `codex exec` for each Dev, QA or DevOps artifact. Never use a second Hermes or pass full chat history.
 - Write the task file with the native file tool, then invoke Codex as one direct terminal command.
   Do not wrap task-file preparation or result reading in Python/Node/shell scripts, encoded payloads or compound commands.
