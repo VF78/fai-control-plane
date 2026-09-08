@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import type {AgentDeliveryPort, AgentExecutorCatalog, AgentRole, AgentRoleRequest, AgentRoutingPolicy, MessengerDeliveryInput, ProjectProcessPolicy, ProjectRole, RepositoryReadPort, SourceReference, TrackerItemFact, TrackerSnapshot} from '@fai-control-plane/domain';
+import type {AgentDeliveryPort, AgentExecutorCatalog, AgentRole, AgentRoleRequest, AgentRoutingPolicy, ApprovalEvidence, MessengerDeliveryInput, ProjectProcessPolicy, ProjectRole, RepositoryReadPort, SourceReference, TrackerItemFact, TrackerSnapshot} from '@fai-control-plane/domain';
 import {assertAgentRoutingPolicyAvailable, validateAgentRoleRequest} from '@fai-control-plane/domain';
 
 export type AgentSubmissionContext = Readonly<{
@@ -19,6 +19,8 @@ export type AgentSubmissionPorts = Readonly<{
   readFreshSnapshot(context: AgentSubmissionContext): Promise<TrackerSnapshot>;
   persistSnapshot(snapshot: TrackerSnapshot): Promise<void>;
   resolveActiveContext(input: Readonly<{actorId: string; projectId: string}>): Promise<SourceReference | null>;
+  resolveProductionApproval(input: Readonly<{projectId: string; itemId: string; issueId: string;
+    version: string}>): Promise<ApprovalEvidence | null>;
   repository: RepositoryReadPort;
   delivery: AgentDeliveryPort;
   composeAcceptedNotification(item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput>;
@@ -73,8 +75,6 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
     !bounded(command.root.sourceReference, 512) || !bounded(command.root.commandIdempotencyKey, 512))) {
     throw new Error('agent_request_invalid');
   }
-  // Production execution remains behind exact approval and is not exposed by this browser seam.
-  if (command.role === 'devops') throw new Error('agent_submit_denied');
   const context = await ports.resolveContext({actorId: command.actorId, projectId: command.projectId});
   if (context === null || !['project_owner', 'operator'].includes(context.requesterRole)) {
     throw new Error('agent_submit_denied');
@@ -118,6 +118,9 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
   const successTargetTitle = processStage.nextStageId === null ? null : processById.get(processStage.nextStageId)?.title ?? null;
   const reworkId = processStage.automation?.reworkStageId ?? null;
   const reworkTargetTitle = reworkId === null ? null : processById.get(reworkId)?.title ?? null;
+  const approval = command.role === 'devops' ? await ports.resolveProductionApproval({projectId: context.projectId,
+    itemId: item.itemId, issueId: item.issueId, version: item.version}) : null;
+  if (command.role === 'devops' && approval === null) throw new Error('agent_submit_denied');
   const normalized = {projectId: context.projectId, repositoryId: context.repository.id,
     itemId: item.itemId, observedVersion: item.version, role: command.role,
     processPolicyVersion: context.processPolicyVersion, processStageId: processStage.id,
@@ -135,7 +138,7 @@ export const submitExplicitAgent = async (command: AgentSubmissionCommand, ports
     projectItem: {id: item.itemId, projectId: context.projectId, issueId: item.issueId,
       title: item.title, url: item.url},
     observedVersion: item.version, sources, constraints: command.constraints,
-    acceptanceCriteria: command.acceptanceCriteria, approval: null,
+    acceptanceCriteria: command.acceptanceCriteria, approval,
     routing: {policyVersion: context.routingPolicyVersion, policy: context.routingPolicy,
       classification: 'runtime-classification-required'},
     process: {policyVersion: context.processPolicyVersion, stageId: processStage.id, stageTitle: processStage.title,

@@ -31,6 +31,7 @@ import {
   readProjectDocumentPayload,
   readProjectArchitectureProposal,
   readActiveProjectContext,
+  readApprovedProductionEvidence,
   refreshProjectContext,
   saveAgentRoutingPolicy,
   saveProjectExecutionMode,
@@ -113,6 +114,8 @@ const githubAssignment = async (database: ReturnType<typeof getDatabase>, actorI
     readFreshSnapshot: () => read.readSnapshot(context.bindingId, context.cursor), persistSnapshot: stores.snapshots.replace,
     resolveActiveContext: ({actorId, projectId}: Readonly<{actorId: string; projectId: string}>) =>
       readActiveProjectContext(database, actorId, projectId),
+    resolveProductionApproval: (input: Readonly<{projectId: string; itemId: string; issueId: string; version: string}>) =>
+      readApprovedProductionEvidence(database, input),
     composeAcceptedNotification: async (item: TrackerItemFact, idempotencyKey: string): Promise<MessengerDeliveryInput> => ({projectId: context.projectId,
       contour: 'trusted-main', channelReference: 'telegram:internal',
       text: `ИИ-агент принял задачу: ${item.title} — ${item.url}`, idempotencyKey}),

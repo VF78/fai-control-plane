@@ -4,6 +4,7 @@ import {readProjectAgentProfile, readLatestCompactProjectContext} from './projec
 import {readActiveProjectDocumentSet} from './project-documents.ts';
 import type {
   ApprovalKind,
+  ApprovalEvidence,
   AgentExecutorCatalog,
   AgentRoutingPolicy,
   AutonomousPmResult,
@@ -344,6 +345,26 @@ export const listApprovalEvidenceViews = async (
      where m.actor_id=$1 and m.active=true order by a.decided_at desc`, [actorId]
   );
   return result.rows.map((row) => ({...row, decidedAt: row.decidedAt.toISOString()}));
+};
+
+export const readApprovedProductionEvidence = async (database: Database, input: Readonly<{
+  projectId: string; itemId: string; issueId: string; version: string;
+}>): Promise<ApprovalEvidence | null> => {
+  const result = await database.query<{
+    id: string; projectId: string; actorId: string; kind: ApprovalEvidence['kind'];
+    decision: ApprovalEvidence['decision']; targetReference: string; targetUrl: string;
+    targetVersion: string; decidedAt: Date; idempotencyKey: string;
+  }>(`select id,project_id as "projectId",actor_id as "actorId",kind,decision,
+      target_reference as "targetReference",target_url as "targetUrl",target_version as "targetVersion",
+      decided_at as "decidedAt",idempotency_key as "idempotencyKey"
+    from approval_evidence
+    where project_id=$1 and kind='production'
+      and target_reference=any($2::text[]) and target_version=$3
+    order by decided_at desc limit 1`, [input.projectId, [input.itemId, input.issueId], input.version]);
+  const row = result.rows[0];
+  return row === undefined || row.decision !== 'approved' ? null : {id: row.id, projectId: row.projectId, actorId: row.actorId,
+    kind: row.kind, decision: row.decision, target: {id: row.targetReference, url: row.targetUrl,
+      version: row.targetVersion}, decidedAt: row.decidedAt.toISOString(), idempotencyKey: row.idempotencyKey};
 };
 
 export const findActorByExternalIdentity = async (
@@ -1262,7 +1283,7 @@ export const finishAutonomousPmAttempt=async(database:Database,attempt:Autonomou
 export const createAgentAttemptStore = (database: Database, projectId: string | null = null): AgentAttemptStore => ({
   async resolve(input) {
     const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
-      itemTitle: string | null; itemUrl: string | null; issueId: string; role: 'manager'|'developer'|'qa'; retryOf: string|null;
+      itemTitle: string | null; itemUrl: string | null; issueId: string; role: 'manager'|'developer'|'qa'|'devops'; retryOf: string|null;
       successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
       routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
       deliveryReference: string; correlationId: string; status: 'started'|'completed'|'failed'; occurredAt: Date}>(
@@ -1294,7 +1315,7 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
   },
   async listActive(limit) {
     const result = await database.query<{workspaceId: string; projectId: string; actorId: string; itemId: string;
-      itemTitle: string | null; itemUrl: string | null; issueId: string; role: 'manager'|'developer'|'qa'; retryOf: string|null;
+      itemTitle: string | null; itemUrl: string | null; issueId: string; role: 'manager'|'developer'|'qa'|'devops'; retryOf: string|null;
       successTargetTitle: string|null; reworkTargetTitle: string|null; expectedOwnerOptionId: string;
       routingPolicy: AgentRoutingPolicy; executorCatalog: AgentExecutorCatalog;
       deliveryReference: string; correlationId: string; status: 'started'|'failed'; failureCode: string|null; occurredAt: Date}>(

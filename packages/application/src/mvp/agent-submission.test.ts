@@ -32,6 +32,7 @@ const ports = (role: 'project_owner'|'operator'|'contributor' = 'operator'): Age
     processPolicyVersion: 'b'.repeat(64), processPolicy}),
   readFreshSnapshot: async () => snapshot, persistSnapshot: async () => undefined,
   resolveActiveContext: async () => activeContext,
+  resolveProductionApproval: async () => null,
   repository: {readRepository: async () => ({repositoryId: 'R_repo',
     url: 'https://github.com/VF78/fai-control-plane', defaultBranch: 'main', defaultBranchSha: 'a'.repeat(40),
     observedAt: '2026-08-15T10:00:00.000Z'})},
@@ -96,8 +97,23 @@ describe('explicit agent submission', () => {
     }
   });
 
-  it('never exposes the devops/production role on this seam', async () => {
-    await expect(submitExplicitAgent({...command, role: 'devops'}, ports('project_owner')))
+  it('submits DevOps only with approved production evidence for the current provider version', async () => {
+    const base = ports('project_owner');
+    const acceptanceItem = {...task, statusOptionId: 'acceptance', statusOptionName: 'Acceptance'};
+    const acceptancePolicy = {contract: 'fai.project-process.v1' as const, stages: [{id:'acceptance',title:'Acceptance',
+      responsibility:'Owner',gate:'Production approval',evidence:'QA',nextStageId:'done',
+      automation:{agentRole:'devops' as const,afterRoles:['qa' as const],maxStarts:1,reworkStageId:'qa'}},
+    {id:'qa',title:'QA',responsibility:'QA',gate:'QA',evidence:'Evidence',nextStageId:'acceptance',automation:null},
+    {id:'done',title:'Done',responsibility:'Owner',gate:'Done',evidence:'Production',nextStageId:null,automation:null}]};
+    const devops = {...command, role: 'devops' as const};
+    const value: AgentSubmissionPorts = {...base,
+      resolveContext: async (input) => ({...(await base.resolveContext(input))!, processPolicy: acceptancePolicy}),
+      readFreshSnapshot: async () => ({...snapshot, items: [acceptanceItem]}),
+      resolveProductionApproval: async (input) => ({id:'approval',projectId:input.projectId,kind:'production',
+        decision:'approved',actorId:'owner',target:{id:input.itemId,url:acceptanceItem.url,version:input.version},
+        decidedAt:'2026-08-15T10:00:00.000Z',idempotencyKey:'approval-key'})};
+    await expect(submitExplicitAgent(devops, value)).resolves.toMatchObject({status:'completed'});
+    await expect(submitExplicitAgent(devops, {...value, resolveProductionApproval: async () => null}))
       .rejects.toThrow('agent_submit_denied');
   });
 

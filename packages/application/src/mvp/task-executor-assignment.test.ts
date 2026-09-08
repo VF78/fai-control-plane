@@ -15,7 +15,9 @@ const processPolicy = {contract:'fai.project-process.v1' as const,stages:[
     automation:{agentRole:'developer' as const,afterRoles:['qa' as const],maxStarts:2,reworkStageId:null}},
   {id:'qa',title:'QA',responsibility:'Agent',gate:'Review',evidence:'Checks',nextStageId:'acceptance',
     automation:{agentRole:'qa' as const,afterRoles:['developer' as const],maxStarts:2,reworkStageId:'dev'}},
-  {id:'acceptance',title:'Acceptance',responsibility:'Owner',gate:'Accept',evidence:'Approval',nextStageId:null,automation:null}
+  {id:'acceptance',title:'Acceptance',responsibility:'Owner',gate:'Production approval',evidence:'Approval',nextStageId:'done',
+    automation:{agentRole:'devops' as const,afterRoles:['qa' as const],maxStarts:1,reworkStageId:'qa'}},
+  {id:'done',title:'Done',responsibility:'Owner',gate:'Done',evidence:'Production',nextStageId:null,automation:null}
 ]};
 
 const ports = (failStart = false, initialStatus = 'Ready', initialBlocked = false, initialOwner: string|null = null) => {
@@ -28,11 +30,13 @@ const ports = (failStart = false, initialStatus = 'Ready', initialBlocked = fals
     resolveContext: async () => ({workspaceId: 'workspace', projectId: 'project', requesterRole: 'operator', bindingId: 'binding', repository: {id: 'repo', url: 'https://github.com/acme/repo'}, agentTrackerOwnerOptionId: 'hermes', doneStatusOptionId: 'done', routingPolicyVersion: createHash('sha256').update(JSON.stringify(defaultAgentRoutingPolicy)).digest('hex'), routingPolicy: defaultAgentRoutingPolicy, executorCatalog: {'codex-cli': {available: true, models: ['gpt-5.6-terra', 'gpt-5.6-sol']}, 'claude-code-cli': {available: false, models: []}}, processPolicyVersion:'b'.repeat(64), processPolicy}),
     readFreshSnapshot: async () => snapshot(), persistSnapshot: async () => undefined,
     resolveActiveContext: async () => activeContext,
+    resolveProductionApproval: async () => null,
     agentInstructions: (role) => role === 'developer'
       ? {constraints: ['Do not merge, release, deploy, or access production.', 'Move this same Project item from In Dev to QA and verify it after implementation.'],
         acceptanceCriteria: ['Record delivery evidence.', 'The same Project item is confirmed in QA.']}
-      : {constraints: ['Do not merge, release, deploy, or access production.', 'Move this same Project item from QA to In Dev for rework, otherwise QA to Acceptance, then verify it.'],
-        acceptanceCriteria: ['Record delivery evidence.', 'The same Project item is confirmed in In Dev or Acceptance.']},
+      : role === 'qa' ? {constraints: ['Do not merge, release, deploy, or access production.', 'Move this same Project item from QA to In Dev for rework, otherwise QA to Acceptance, then verify it.'],
+        acceptanceCriteria: ['Record delivery evidence.', 'The same Project item is confirmed in In Dev or Acceptance.']}
+      : {constraints:['Perform the exact approved deployment.'],acceptanceCriteria:['Verify production and move to Done.']},
     repository: {readRepository: async () => ({repositoryId: 'repo', url: 'https://github.com/acme/repo',
       defaultBranch: 'main', defaultBranchSha: 'a'.repeat(40), observedAt: '2026-08-24T00:00:00.000Z'})},
     composeAcceptedNotification: async (item, idempotencyKey) => ({projectId: item.projectId,
@@ -87,11 +91,24 @@ describe('task executor assignment', () => {
     await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'human', candidate: {id: 'U_1', login: 'octo'}}}, broken)).rejects.toThrow('task_executor_conflict');
   });
 
-  it('denies Hermes on Acceptance before delivery', async () => {
-    const value = ports(); const baseRead = value.value.readFreshSnapshot;
-    const acceptance: TaskExecutorAssignmentPorts = {...value.value, readFreshSnapshot: async (context) => { const snapshot = await baseRead(context); return {...snapshot, items: [{...snapshot.items[0]!, statusOptionName: 'Acceptance'}]}; }};
-    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'}}, acceptance)).rejects.toThrow('task_executor_unavailable');
+  it('denies Hermes on Acceptance without production approval', async () => {
+    const value = ports(false,'Acceptance',false,'hermes');
+    await expect(assignTaskExecutor({actorId: 'actor', projectId: 'project', projectItemId: 'item', executor: {kind: 'agent'}}, value.value)).rejects.toThrow('agent_submit_denied');
     expect(value.delivery).not.toHaveBeenCalled();
+  });
+
+  it('starts approved DevOps from Acceptance without rewriting the approved provider version', async () => {
+    const value = ports(false,'Acceptance',false,'hermes');
+    const start = vi.spyOn(value.value.tracker,'startExecutor');
+    const approved: TaskExecutorAssignmentPorts = {...value.value, resolveProductionApproval: async (input) => ({
+      id:'approval',projectId:input.projectId,kind:'production',decision:'approved',actorId:'owner',
+      target:{id:input.itemId,url:base.items[0]!.url,version:input.version},decidedAt:'2026-08-24T00:00:00.000Z',
+      idempotencyKey:'production-approval'})};
+    await expect(assignTaskExecutor({actorId:'actor',projectId:'project',projectItemId:'item',executor:{kind:'agent'}},approved))
+      .resolves.toMatchObject({status:'started'});
+    expect(start).not.toHaveBeenCalled();
+    expect(value.delivery).toHaveBeenCalledWith(expect.objectContaining({role:'devops',
+      approval:expect.objectContaining({kind:'production',decision:'approved',target:expect.objectContaining({version:'github:updated-at:v1'})})}));
   });
 
   it.each(['In Dev', 'QA'])('starts Hermes in %s without changing the current stage', async (stage) => {

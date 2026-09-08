@@ -30,4 +30,12 @@ describe('bounded policy-driven agent continuation', () => {
       instructions: () => ({constraints: ['qa'], acceptanceCriteria: ['evidence']}),
       ports: {} as never})).resolves.toBe('not-authorized');
   });
+
+  it('never starts DevOps automatically from the chain', async () => {
+    const resolveActor = vi.fn();
+    await expect(continueExplicitAgentChain({projectId:'project',item,
+      stage:{agentRole:'devops',afterRoles:['qa'],maxStarts:1},stores:{resolveActor},
+      instructions:vi.fn(),ports:{} as never})).resolves.toBe('not-authorized');
+    expect(resolveActor).not.toHaveBeenCalled();
+  });
 });

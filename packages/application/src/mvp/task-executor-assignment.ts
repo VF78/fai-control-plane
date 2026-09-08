@@ -4,7 +4,7 @@ import type {AgentSubmissionContext, AgentSubmissionPorts} from './agent-submiss
 import {submitExplicitAgent} from './agent-submission.ts';
 
 export type TaskExecutor = Readonly<{kind: 'human'; candidate: Readonly<{id: string; login: string}>}> | Readonly<{kind: 'agent'}>;
-type AgentTaskRole = Extract<AgentRole, 'manager' | 'developer' | 'qa'>;
+type AgentTaskRole = Extract<AgentRole, 'manager' | 'developer' | 'qa' | 'devops'>;
 export type TaskExecutorAssignmentCommand = Readonly<{actorId: string; projectId: string; projectItemId: string; executor: TaskExecutor;
   retry?: Readonly<{deliveryReference: string; nonce: string; confirmUnobservableFailure?: boolean}>;
   root?: Readonly<{chainReference: string; sourceReference: string; commandIdempotencyKey: string}>}>;
@@ -91,17 +91,20 @@ export const assignTaskExecutor = async (
     }
   }
 
-  try {
-    await ports.tracker.startExecutor({itemId: item.itemId, issueId: item.issueId, expectedVersion: item.version,
-      expectedStage: item.statusOptionName, targetStage: target.title, expectedBlocked,
-      executor: executor.kind === 'human' ? {kind: 'human', candidate: executor.candidate}
-        : {kind: 'agent', ownerOptionId: context.agentTrackerOwnerOptionId}});
-  } catch (error) {
-    await refresh(ports, context).catch(() => undefined);
-    throw error;
+  const alreadyAssignedAgent = executor.kind === 'agent' && target.title === item.statusOptionName &&
+    item.ownerOptionId === context.agentTrackerOwnerOptionId && item.assigneeIds.length === 0 && expectedBlocked === false;
+  if (!alreadyAssignedAgent) {
+    try {
+      await ports.tracker.startExecutor({itemId: item.itemId, issueId: item.issueId, expectedVersion: item.version,
+        expectedStage: item.statusOptionName, targetStage: target.title, expectedBlocked,
+        executor: executor.kind === 'human' ? {kind: 'human', candidate: executor.candidate}
+          : {kind: 'agent', ownerOptionId: context.agentTrackerOwnerOptionId}});
+    } catch (error) {
+      await refresh(ports, context).catch(() => undefined);
+      throw error;
+    }
   }
-  const verifiedSnapshot = await refresh(ports, context);
-  const verified = itemFor(verifiedSnapshot, context, command.projectItemId);
+  const verified = alreadyAssignedAgent ? item : itemFor(await refresh(ports, context), context, command.projectItemId);
   const expectedStage = target.title;
   const assignmentConfirmed = executor.kind === 'human'
     ? verified.ownerOptionId === null && verified.assignees.length === 1 && verified.assignees[0]?.login === executor.candidate.login
