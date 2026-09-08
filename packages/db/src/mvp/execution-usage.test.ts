@@ -24,7 +24,7 @@ const fixture=()=>{
   const locks=new Map<string,Promise<void>>();
   const calls:Array<{sql:string;values:unknown[]}>=[];
   const projects=new Map([[projectA,workspaceA],[projectB,workspaceB]]);
-  const submitted=new Map([[projectA,new Set(['task-a','task-other'])],[projectB,new Set(['task-b'])]]);
+  const tracked=new Map([[projectA,new Set(['task-a','task-other'])],[projectB,new Set(['task-b'])]]);
   const memberships=new Map([['actor-a',new Set([projectA])],['actor-b',new Set([projectB])]]);
   let failAt=''; let forceReceiptConflict=false;
   const release=vi.fn();
@@ -42,7 +42,7 @@ const fixture=()=>{
           locks.set(key,previous.then(()=>current)); await previous;unlock=resolve;
         }else if(sql.startsWith('select 1 from projects')){
           const [project,workspace,item]=values as [string,string,string|null];
-          const allowed=projects.get(project)===workspace && (item===null || submitted.get(project)?.has(item));
+          const allowed=projects.get(project)===workspace && (item===null || tracked.get(project)?.has(item));
           return {rows:allowed?[{allowed:1}]:[],rowCount:allowed?1:0};
         }else if(sql.startsWith('select details')){
           const [project,workspace,reference]=values;
@@ -162,7 +162,8 @@ describe('existing-storage execution usage observations',()=>{
     f.memberships.delete('actor-a');expect((await readExecutionUsage(f.database,'actor-a',projectA)).sessions).toEqual([]);
     const authorization=f.calls.find(c=>c.sql.startsWith('select 1 from projects'))!.sql;
     expect(authorization).toContain('p.id=$1 and p.workspace_id=$2');
-    expect(authorization).toContain('a.project_id=p.id');expect(authorization).toContain("a.action='agent.submit'");
+    expect(authorization).toContain('b.project_id=p.id');expect(authorization).toContain("fact->>'itemId'=$3");
+    expect(authorization).not.toContain('agent.submit');
     const prior=f.calls.find(c=>c.sql.startsWith('select details'))!.sql;
     expect(prior).toContain('project_id=$1 and workspace_id=$2');expect(prior).toContain('target_reference=$3');
     const read=f.calls.find(c=>c.sql.startsWith('select distinct'))!.sql;

@@ -79,7 +79,7 @@ export type ExecutionUsageWriteResult = 'recorded' | 'duplicate' | 'invalid' | '
 
 /** Internal observation command: workspace/project scope comes from trusted composition.
  * Existing project/session advisory lock serializes read/merge/write; receipt uniqueness
- * commits exactly one audit revision. Item identity is checked against existing submissions.
+ * commits exactly one audit revision. Item identity is checked against confirmed tracker facts.
  * Audit is append-only; its latest revision is the logical session upsert. Only changed,
  * bounded metadata is retained with existing receipts/audit; no new retention lifecycle.
  * Failure is a result, not an exception that can enter task recovery.
@@ -92,11 +92,16 @@ export const recordExecutionUsage = async (database: Database, scope: Readonly<{
   try {
     client = await database.connect();
     await client.query('begin');
+    await client.query("set local statement_timeout='2000ms'");
+    await client.query("set local lock_timeout='250ms'");
     const reference = `usage:${digest([normalized.provider,normalized.sessionReference])}`;
     await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [JSON.stringify([scope.projectId,reference])]);
     const authorized = await client.query(`select 1 from projects p where p.id=$1 and p.workspace_id=$2
-      and ($3::text is null or exists(select 1 from audit_events a where a.project_id=p.id
-        and a.workspace_id=p.workspace_id and a.action='agent.submit' and a.target_reference=$3))`,
+      and ($3::text is null or exists(select 1 from tracker_bindings b
+        join lateral (select facts from tracker_snapshots where binding_id=b.id and error_code is null
+          order by observed_at desc limit 1) s on true
+        cross join lateral jsonb_array_elements(s.facts->'items') fact
+        where b.project_id=p.id and b.enabled=true and fact->>'itemId'=$3))`,
     [scope.projectId,scope.workspaceId,normalized.itemId]);
     if (authorized.rows.length !== 1) { await client.query('rollback'); return 'denied'; }
     const existing = await client.query<{details: {usage: unknown; revision: number}}>(
@@ -153,4 +158,25 @@ export const readExecutionUsage = async (database: Database, actorId: string, pr
   } catch {
     return {sessions:[],combinedTotal:null,completeness:'unknown' as const,aggregation:'unknown' as const,availability:'unavailable' as const};
   }
+};
+
+/** Current confirmed tracker facts, independent of task entry channel or local submit receipts. */
+export const listExecutionUsageTasks = async (database: Database, scope: Readonly<{
+  workspaceId:string;projectId:string;repositoryUrl:string
+}>): Promise<readonly {itemId:string;url:string}[]> => {
+  const client=await database.connect();
+  try {
+    await client.query('begin read only');
+    await client.query("set local statement_timeout='2000ms'");
+    await client.query("set local lock_timeout='250ms'");
+    const result = await client.query<{itemId:string;url:string}>(`select fact->>'itemId' as "itemId",fact->>'url' as url
+    from projects p join tracker_bindings b on b.project_id=p.id
+    join lateral (select facts from tracker_snapshots where binding_id=b.id and error_code is null
+      order by observed_at desc limit 1) s on true cross join lateral jsonb_array_elements(s.facts->'items') fact
+    where p.id=$1 and p.workspace_id=$2 and b.repository_url=$3 and b.enabled=true`,
+    [scope.projectId,scope.workspaceId,scope.repositoryUrl]);
+    await client.query('commit');return result.rows;
+  } catch {
+    await client.query('rollback');throw new Error('execution_usage_tracker_unavailable');
+  } finally {client.release();}
 };

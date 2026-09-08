@@ -28,7 +28,7 @@ const database=(sharedChat=false,sharedLocator=false)=>{
 
 describe('dedicated project Hermes runtime binding',()=>{
   it('exposes all supported Codex profiles only with a configured runtime',async()=>{
-    const [binding]=await listProjectHermesRuntimeBindings(database());
+    const [binding]=await listProjectHermesRuntimeBindings(database(),'workspace');
     expect(projectHermesExecutorCatalog(binding)['codex-cli']).toEqual({available:true,
       models:['gpt-5.6-terra','gpt-5.6-sol','gpt-6-astra','gpt-5.6-luna']});
     for(const absent of [null,undefined])expect(projectHermesExecutorCatalog(absent)['codex-cli'])
