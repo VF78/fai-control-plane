@@ -69,6 +69,8 @@ describe('direct project Docker adapter boundary',()=>{
     expect(spec).not.toHaveProperty('Entrypoint');expect(spec).not.toHaveProperty('User');
     expect(spec.Cmd).toEqual(['sleep','infinity']);
     expect(spec.Env).toContain('HERMES_DASHBOARD=1');
+    expect(spec.Env).toContain('TERMINAL_TIMEOUT=1800');
+    expect(spec.Env).toContain('TERMINAL_MAX_FOREGROUND_TIMEOUT=1800');
     expect(spec.Healthcheck.Test.join(' ')).toContain("'HOME':'/opt/data/home'");
     expect(spec.Healthcheck.Test.join(' ')).toContain("['gh','auth','status']");
     expect(spec.Env.some((value)=>value.startsWith('HERMES_GATEWAY_NO_SUPERVISE='))).toBe(false);
