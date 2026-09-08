@@ -1324,7 +1324,10 @@ export const createAgentAttemptStore = (database: Database, projectId: string | 
            and a.id=(select latest.id from audit_events latest where latest.project_id=a.project_id
              and latest.target_reference=a.target_reference and latest.action='agent.submit'
              order by latest.occurred_at desc limit 1)))
-       order by (terminal.details is not null),a.occurred_at asc limit $1`, [limit, projectId]);
+       order by (terminal.details is not null),
+         case when terminal.details is null then a.occurred_at end asc,
+         case when terminal.details is not null then a.occurred_at end desc
+       limit $1`, [limit, projectId]);
     return result.rows.map((row) => ({...row, occurredAt: row.occurredAt.toISOString()}));
   },
   async finish(input) {
