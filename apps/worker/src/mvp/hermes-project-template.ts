@@ -9,6 +9,9 @@ model:
   default: gpt-5.6-terra
 auxiliary:
   free_only: true
+timeouts:
+  tools:
+    sequential_call: 1860
 terminal:
   backend: local
   cwd: ${yamlString(request.artifact.workspacePath)}
