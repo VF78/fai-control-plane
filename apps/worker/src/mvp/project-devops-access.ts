@@ -3,6 +3,9 @@ import {readProjectHermesRuntimeBinding,saveProjectDevopsAccess,type Database,ty
 import {assertProjectRuntimeOwnership,dockerSocketRequest,type DockerRequest} from './docker-project-runtime.ts';
 import {devopsContainerDirectory,writeDevopsFiles,type DevopsInput} from './project-devops-files.ts';
 
+const execPollIntervalMs=250;
+const execPollAttempts=56;
+
 /** Fixed setup probes, never an arbitrary command endpoint. Output (including cloud tokens) is discarded. */
 export const probeDevopsAccess=async(runtime:Pick<ProjectHermesRuntimeBinding,'runtimeId'|'projectId'|'workspaceId'>,cloud:DevopsInput['cloud'],
   docker:DockerRequest=dockerSocketRequest(undefined,15_000)):Promise<Pick<ProjectDevopsAccess,'ssh'|'cloudStatus'>>=>{
@@ -19,8 +22,14 @@ export const probeDevopsAccess=async(runtime:Pick<ProjectHermesRuntimeBinding,'r
     const id=(JSON.parse(created.body.toString()) as {Id?:string}).Id;if(!id)return false;
     const started=await docker('POST',`/exec/${encodeURIComponent(id)}/start`,{Detach:false,Tty:false});
     if(started.status!==200)return false;
-    const inspected=await docker('GET',`/exec/${encodeURIComponent(id)}/json`);
-    return inspected.status===200&&(JSON.parse(inspected.body.toString()) as {ExitCode?:number}).ExitCode===0;
+    for(let attempt=0;attempt<execPollAttempts;attempt++){
+      const inspected=await docker('GET',`/exec/${encodeURIComponent(id)}/json`);
+      if(inspected.status!==200)return false;
+      const state=JSON.parse(inspected.body.toString()) as {Running?:boolean;ExitCode?:number};
+      if(!state.Running)return state.ExitCode===0;
+      if(attempt<execPollAttempts-1)await new Promise<void>(resolve=>setTimeout(resolve,execPollIntervalMs));
+    }
+    return false;
   };
   const ssh=await probe(['ssh','-F',`${devopsContainerDirectory}/ssh_config`,'project','true']);
   const cloudStatus=cloud==='none'?'not_selected':await probe(['yc','--config',`${devopsContainerDirectory}/yandex.yaml`,'iam','create-token'])?'configured':'error';
