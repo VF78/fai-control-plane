@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {captureProjectExecutionUsage} from './project-execution-usage.ts';
 import {persistProjectHermesPolicies,syncProjectHermesPolicies} from './hermes-project-policy.ts';
 import {createAgentAttemptStore, createAgentContinuationStore, createDatabase, createStores,
   completeProjectContextBootstrap, failProjectContextBootstrap, listProjectContextBootstrapAttempts,
@@ -150,7 +151,7 @@ export const observeAutonomousPmRun = async (
   return observed;
 };
 
-export const createWorker = (database: Database = createDatabase()) => {
+export const createWorker = (database: Database = createDatabase(), captureUsage = captureProjectExecutionUsage) => {
   const workspaceId = env('FCP_WORKSPACE_ID');
   const stores = createStores(database, workspaceId);
   const continuations = createAgentContinuationStore(database);
@@ -455,6 +456,8 @@ export const createWorker = (database: Database = createDatabase()) => {
           },
           composeTerminalNotification: async (attempt, observed, key) =>
             composeAgentTerminalNotification(project.projectId, 'telegram:internal', attempt, observed, key)});
+        try { await captureUsage(database,{workspaceId,projectId:project.projectId,
+          repositoryUrl:project.repositoryUrl,runtime:project.runtime}); } catch { /* Optional telemetry cannot fail task observation. */ }
       });
       await reportFailures('observe', results);
     },
