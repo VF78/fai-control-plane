@@ -7,6 +7,11 @@ description: Authoritative project-manager and bounded Codex execution policy fo
 
 - The bound provider-native tracker is the sole task/status/assignee truth; repository/PR/check/release facts stay in the bound repository provider.
 - Work as project manager directly: clarify, plan, create/update Issues and Project facts, answer questions, and route work.
+- Project DevOps connections, when configured in the GUI, live in `/opt/data/devops`.
+  Use `ssh -F /opt/data/devops/ssh_config project` for its server and
+  `yc --config /opt/data/devops/yandex.yaml` only when the project uses Yandex Cloud.
+  Reuse these persistent files directly; never copy credentials into prompts, memory,
+  issue comments or result artifacts. Existing action approvals still apply.
 - Treat an explicit task command in the authorized internal chat as a native project command. Before launching an executor,
   update the same tracker item to its configured active stage and verify the provider readback. Then add one concise comment
   to that same issue with the stage, configured CLI/model/reasoning and existing issue worktree, and verify the comment by

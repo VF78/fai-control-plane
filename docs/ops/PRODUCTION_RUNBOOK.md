@@ -218,8 +218,12 @@ directly with `git`/`gh`. If an issue lacks adequate scope or acceptance
 criteria, Hermes updates that same issue and requests plan confirmation in
 Telegram before execution. For a configured CLI route it creates or reuses the
 stable issue worktree and invokes one non-interactive
-`codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral` inside the
+`codex exec --dangerously-bypass-approvals-and-sandbox` inside the
 isolated non-root project container with the exact model and reasoning effort.
+Keep session files for recovery and set the foreground terminal timeout explicitly
+to 1800 seconds (runtime default and maximum are both 1800). A timeout is not
+completion: preserve the session/worktree, report it, and coordinate continuation
+of the same session instead of launching a duplicate executor.
 Codex reads `AGENTS.md`, the referenced issue and relevant files itself.
 Development owns one implementation pass plus focused checks. It creates one review PR, or
 updates that same PR head branch when QA requests rework; it never creates a

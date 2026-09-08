@@ -56,7 +56,18 @@ describe('project setup state',()=>{
       runtimeSetup:{telegramConfigured:true,status:'ready'},trackerPreparation:{status:'ready'},
       wizardProgress:{processConfirmed:true,teamSkipped:false,communicationsSkipped:false}};
     expect(projectSetupGroups(prepared,true,true,false)).toMatchObject({
-      groups:[true,false,true,true,true,true],setup:{complete:false,nextStep:8}});
+      groups:[true,false,true,true,true,false],setup:{complete:false,nextStep:8}});
+  });
+
+  it('requires verified SSH before the first task, with cloud optional',()=>{
+    const prepared={evidence:{people:[{active:true},{active:true}]},
+      runtimeSetup:{telegramConfigured:true,status:'ready'},trackerPreparation:{status:'ready'},
+      wizardProgress:{processConfirmed:true,teamSkipped:false,communicationsSkipped:false}};
+    expect(projectSetupGroups(prepared,true,true,true).setup).toMatchObject({complete:false,nextStep:9});
+    const configured={...prepared,runtimeSetup:{...prepared.runtimeSetup,devops:{ssh:'configured',cloudStatus:'not_selected'}}};
+    expect(projectSetupGroups(configured,true,true,true)).toMatchObject({complete:6,setup:{complete:true,nextStep:10}});
+    expect(projectSetupGroups({...configured,runtimeSetup:{...configured.runtimeSetup,
+      devops:{ssh:'configured',cloudStatus:'error'}}},true,true,true).setup.complete).toBe(false);
   });
 
   it('keeps the shared calculation outside the client component boundary',async()=>{

@@ -1,6 +1,6 @@
 type ProjectSetupInput=Readonly<{
   evidence:Readonly<{people:readonly Readonly<{active:boolean}>[]}>|null;
-  runtimeSetup:Readonly<{telegramConfigured:boolean;status:string}>|null;
+  runtimeSetup:Readonly<{telegramConfigured:boolean;status:string;devops?:Readonly<{ssh:string;cloudStatus:string}>|null}>|null;
   config?:Readonly<{channels:Readonly<{internal:Readonly<{configured:boolean}>}>}>;
   trackerPreparation:Readonly<{status:string}>|null;
   wizardProgress:Readonly<{processConfirmed:boolean;teamSkipped:boolean;communicationsSkipped:boolean}>|null;
@@ -25,11 +25,14 @@ export const projectActiveDocuments=<T extends Readonly<{kind:string}>>(sources:
 };
 
 export const projectSetupGroups=(item:ProjectSetupInput,documentsReady:boolean,contextCurrent:boolean,trackerBound:boolean)=>{
-  const current=projectSetupState(item,documentsReady,contextCurrent);const states=[...current.states,trackerBound];
-  const setup=trackerBound?{...current,states}:{...current,states,complete:false,nextStep:8};
+  const current=projectSetupState(item,documentsReady,contextCurrent);
+  const devopsReady=item.runtimeSetup?.devops?.ssh==='configured'&&item.runtimeSetup.devops.cloudStatus!=='error';
+  const states=[...current.states,trackerBound,devopsReady];
+  const setup=trackerBound?{...current,states,complete:current.complete&&devopsReady,
+    nextStep:current.complete?(devopsReady?10:9):current.nextStep}:{...current,states,complete:false,nextStep:8};
   const communicationsSkipped=item.wizardProgress?.communicationsSkipped===true&&states[4]!==true;
   const groups=[states[0]===true,trackerBound,states[1]===true,
     states[4]===true||communicationsSkipped,states[5]===true&&states[6]===true,
-    states[2]===true&&states[3]===true&&states[7]===true] as const;
+    states[2]===true&&states[3]===true&&states[7]===true&&devopsReady] as const;
   return {setup,groups,communicationsSkipped,complete:groups.filter(Boolean).length};
 };

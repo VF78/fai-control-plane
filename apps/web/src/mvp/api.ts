@@ -194,7 +194,7 @@ export const projectRuntimeSetup=async(request:Request,projectId:string):Promise
       {headers:{'cache-control':'no-store'}});
     if(request.method!=='POST')return new Response(null,{status:405,headers:{allow:'GET, POST'}});
     requireCsrf(request);const body=await json(request);const action=string(body.action,32);
-    if(!['connect_messenger','install'].includes(action))throw new Error('body_invalid');
+    if(!['connect_messenger','install','configure_devops'].includes(action))throw new Error('body_invalid');
     const endpoint=new URL(process.env.FCP_WORKER_INTERNAL_URL??'http://worker:3001');
     if(endpoint.toString()!=='http://worker:3001/')throw new Error('project_runtime_unavailable');
     const response=await fetch(new URL(`/project-runtime/${encodeURIComponent(projectId)}`,endpoint),{method:'POST',

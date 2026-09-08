@@ -73,6 +73,11 @@ semantics or schema.
   compaction, leave a compact issue handoff and continue in a fresh chat.
 - The managing chat owns scope, Project truth, decisions, integration review,
   product acceptance gates and release decisions.
+- Coordinate ownership with Hermes before taking over its active issue or changing
+  its runtime, tools or execution policy: notify it in the internal chat, obtain
+  its stop/handoff acknowledgement, and verify its executor has stopped. Preserve
+  the worktree and session. After changes, report the exact new state and explicitly
+  hand work back; never let manager and Hermes implement the same issue concurrently.
 - Work directly only when it is roughly 10–15 minutes, at most three files and
   one verification surface. Otherwise use exactly one fresh executor for the
   bounded slice:

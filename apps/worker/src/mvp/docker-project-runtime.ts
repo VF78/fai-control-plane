@@ -7,13 +7,14 @@ import {prepareProjectHermesAssets} from './hermes-project-template.ts';
 
 type DockerResponse=Readonly<{status:number;body:Buffer}>;
 export type DockerRequest=(method:string,path:string,body?:unknown)=>Promise<DockerResponse>;
-export const dockerSocketRequest=(socketPath=process.env.FCP_DOCKER_SOCKET??'/var/run/docker.sock'):DockerRequest=>
+export const dockerSocketRequest=(socketPath=process.env.FCP_DOCKER_SOCKET??'/var/run/docker.sock',timeoutMs?:number):DockerRequest=>
   (method,path,body)=>new Promise((resolve,reject)=>{const payload=body===undefined?null:Buffer.from(JSON.stringify(body));
     const request=httpRequest({socketPath,path:`/v1.45${path}`,method,headers:payload===null?{}:{
       'content-type':'application/json','content-length':String(payload.byteLength)}},(response)=>{
       const chunks:Buffer[]=[];response.on('data',(chunk)=>chunks.push(Buffer.from(chunk)));
       response.on('end',()=>resolve({status:response.statusCode??500,body:Buffer.concat(chunks)}));
-    });request.on('error',reject);if(payload!==null)request.write(payload);request.end();});
+    });request.on('error',reject);if(timeoutMs!==undefined)request.setTimeout(timeoutMs,()=>request.destroy(new Error('docker_engine_timeout')));
+    if(payload!==null)request.write(payload);request.end();});
 
 const json=<T>(response:DockerResponse):T=>JSON.parse(response.body.toString('utf8')) as T;
 const expect=(response:DockerResponse,statuses:readonly number[])=>{if(!statuses.includes(response.status))
