@@ -9,6 +9,31 @@ ROOT = pathlib.Path(__file__).parents[3]
 
 
 class DeploymentContractTest(unittest.TestCase):
+    def test_release_checks_disk_before_mutations(self):
+        script = (ROOT / "scripts/deploy-prod.sh").read_text()
+        check = script.split("check_build_capacity() {", 1)[1].split("\n}\n", 1)[0]
+        contract = script.split("check_host_contract() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(contract.index("check_build_capacity"), contract.index("git rev-parse"))
+        for available, expected in (("4194304", 0), ("1677721", 1), ("", 1), ("unknown", 1)):
+            for low_path in ("/checkout", "/var/lib/docker"):
+                harness = f'''
+deploy_root=/checkout
+fail() {{ echo "$1" >&2; exit 1; }}
+df() {{
+  echo 'Filesystem 1024-blocks Used Available Capacity Mounted'
+  if [[ "${{@: -1}}" == '{low_path}' ]]; then
+    echo 'disk 9999999 100 {available} 1% /'
+  else
+    echo 'disk 9999999 100 8388608 1% /'
+  fi
+}}
+check_build_capacity() {{{check}
+}}
+check_build_capacity
+'''
+                result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_retired_global_hermes_contour_cannot_return(self):
         root_compose = (ROOT / "compose.yaml").read_text()
         local_environment = (ROOT / ".env.example").read_text()

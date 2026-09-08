@@ -60,6 +60,10 @@ Protected neighbours include:
 Never run host-wide Docker/system cleanup, Compose `down`, package upgrades,
 filesystem cleanup or Nginx rewrites during a Control Plane release.
 
+Release preflight requires at least 4 GiB available on the checkout and Docker
+filesystems before building. This is build headroom, not an automatic cleanup:
+if insufficient, remove only verified obsolete project artifacts before retrying.
+
 ### Sprintbox — transport edge
 
 - SSH: `root@185.251.88.44`.

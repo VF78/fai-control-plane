@@ -180,9 +180,22 @@ render_target_environment() {
   ' "$environment_file"
 }
 
+check_build_capacity() {
+  local path available_kib
+  # Reserve build headroom before any release mutation; never prune neighbours.
+  for path in "$deploy_root" /var/lib/docker; do
+    available_kib=$(df -Pk -- "$path" | awk 'NR == 2 { print $4 }') ||
+      fail "cannot read free disk space: $path"
+    [[ "$available_kib" =~ ^[0-9]+$ ]] || fail "invalid free disk space: $path"
+    (( available_kib >= 4194304 )) ||
+      fail "insufficient build space at $path: need 4 GiB free; clean only verified project artifacts before retrying"
+  done
+}
+
 check_host_contract() {
   local remote_main secret_name secret_path source
   local -a current_compose
+  check_build_capacity
   [[ $(git rev-parse --show-toplevel) == "$deploy_root" ]] || fail 'checkout is not the isolated MVP directory'
   [[ -z $(git status --porcelain) ]] || fail 'checkout is not clean'
   [[ $(git remote get-url origin) == "$repository" ]] || fail 'origin is not the approved repository'
