@@ -75,6 +75,8 @@ describe('persistent project policy materialization',()=>{
       expect(source).toContain('verify the comment by');
       expect(source).toContain('Treat configured workspace and issue-worktree paths as absolute');
       expect(source).toContain('never starts replacement work');
+      expect(source).toContain('QA evaluates only the acceptance criteria');
+      expect(source).toContain('require a Control Plane attempt or outbox record');
       const paths=[`${root}/data/skills/fai-project-operator/SKILL.md`,
         `${root}/data/profiles/internal/skills/fai-project-operator/SKILL.md`];
       for(const path of paths){

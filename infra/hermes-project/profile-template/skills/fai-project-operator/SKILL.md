@@ -36,6 +36,10 @@ description: Authoritative project-manager and bounded Codex execution policy fo
   Confirm the actual provider status equals receipt.successTarget or receipt.reworkTarget before returning that target.
 - Dev runs focused checks. QA checks the exact diff and missing acceptance/risk evidence without repeating current evidence.
   When safe, QA fixes a bounded defect in the same task and rechecks; otherwise it returns a precise blocker.
+- QA evaluates only the acceptance criteria in the issue and its approved decisions. Never add live fault injection or
+  require an evidence source that the task does not specify.
+- For native internal-chat work, use the provider-read-back stage and issue launch/result comments as receipts; never
+  require a Control Plane attempt or outbox record. For a Control Plane start, use its existing attempt receipt instead.
 - A CLI launch/environment error is not a defect in the deliverable. Correct a known invocation error in the same stage
   and rerun only the unperformed check. If the environment remains unavailable, report that technical blocker with
   the current stage unchanged; return to Dev only for an actual deliverable defect needing development.
