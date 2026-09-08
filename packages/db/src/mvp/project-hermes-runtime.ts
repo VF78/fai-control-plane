@@ -189,7 +189,7 @@ const unavailableExecutorCatalog:AgentExecutorCatalog={
   'codex-cli':{available:false,models:[]},'claude-code-cli':{available:false,models:[]}
 };
 export const projectHermesExecutorCatalog=(runtime:ProjectHermesRuntimeBinding|null|undefined):AgentExecutorCatalog=>runtime===null||runtime===undefined
-  ?unavailableExecutorCatalog:{'codex-cli':{available:true,models:['gpt-5.6-terra','gpt-5.6-sol']},
+  ?unavailableExecutorCatalog:{'codex-cli':{available:true,models:['gpt-5.6-terra','gpt-5.6-sol','gpt-6-astra','gpt-5.6-luna']},
     'claude-code-cli':{available:false,models:[]}};
 
 export type ProjectHermesRuntimeSetupView = Readonly<{
