@@ -56,7 +56,7 @@ describe.skipIf(!enabled)('isolated PostgreSQL usage SQL smoke',()=>{
     expect(await recordExecutionUsage(db,scope,{...value,sessionReference:'unattributed',itemId:null,
       totals:{input:null,cachedInput:null,output:null,reasoningOutput:null,total:null},completeness:'unknown'})).toBe('recorded');
     const result=await readExecutionUsage(db,actorId,projectId);
-    expect(result.sessions).toHaveLength(3);expect(result.combinedTotal).toBeNull();
+    expect(result.sessions).toHaveLength(3);expect(result.combinedTotal).toBe(240);
     expect(result.sessions.find(s=>s.sessionReference==='child')?.parentSessionReference).toBe('session');
     expect(await recordExecutionUsage(db,{workspaceId,projectId:otherProject},{...value,itemId:'other-task'})).toBe('recorded');
     expect((await readExecutionUsage(db,actorId,otherProject)).sessions).toEqual([]);

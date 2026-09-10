@@ -1,4 +1,4 @@
-import {listProjectHermesRuntimeBindings,listProjectOperatorEvidenceViews,listProjectSourceViews,listWorkspaceHumanActors,projectHermesExecutorCatalog,readAgentRoutingPolicy,readProjectAgentProfile,readProjectAgentSubmissionView,readProjectContextStatus,readProjectExecutionMode,readProjectHermesRuntimeSetup,readProjectMembershipRole,readProjectMessengerBindings,readProjectProcessPolicy,readProjectTrackerCapabilities,readProjectTrackerPreparation,readProjectWizardProgress,type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
+import {readExecutionUsage,listProjectHermesRuntimeBindings,listProjectOperatorEvidenceViews,listProjectSourceViews,listWorkspaceHumanActors,projectHermesExecutorCatalog,readAgentRoutingPolicy,readProjectAgentProfile,readProjectAgentSubmissionView,readProjectContextStatus,readProjectExecutionMode,readProjectHermesRuntimeSetup,readProjectMembershipRole,readProjectMessengerBindings,readProjectProcessPolicy,readProjectTrackerCapabilities,readProjectTrackerPreparation,readProjectWizardProgress,type ProjectOperatorEvidenceSection} from '@fai-control-plane/db';
 import {defaultAgentRoutingPolicy} from '@fai-control-plane/domain';
 import {Dashboard,Process,Tasks} from './phase-a-ui.tsx';
 import {executorFact} from './phase-a-view.ts';
@@ -8,19 +8,20 @@ import {PhaseB,type PhaseBView} from './phase-b-ui.tsx';
 import {getDatabase} from './runtime.ts';
 import {readWorkspace} from './workspace-data.ts';
 
-export async function OverviewPage(){const workspace=await readWorkspace();return workspace.projects===null?null:<Dashboard projects={workspace.projects}/>;}
+export async function OverviewPage(){const workspace=await readWorkspace();if(workspace.projects===null||workspace.session===null)return null;const actorId=workspace.session.actorId;const projects=await Promise.all(workspace.projects.map(async project=>{const {combinedTotal,taskTotals}=await readExecutionUsage(getDatabase(),actorId,project.id);return {...project,usage:{combinedTotal,taskTotals}};}));return <Dashboard projects={projects}/>;}
 
 export async function TasksPage({project:projectSlug,task,filter}:Readonly<{project?:string;task?:string;filter?:string}>){
   const workspace=await readWorkspace();if(workspace.session===null||workspace.projects===null)return null;
   const {projects,session}=workspace;const database=getDatabase();
   const invalidProject=projectSlug!==undefined&&!projects.some((project)=>project.slug===projectSlug);
   const selected=invalidProject?null:projects.find((project)=>project.slug===projectSlug)??projects[0]??null;
-  const [trackerCapabilities,run,role]=selected===null?[null,null,null] as const:await Promise.all([
+  const [trackerCapabilities,run,role,usage]=selected===null?[null,null,null,null] as const:await Promise.all([
     readProjectTrackerCapabilities(database,session.actorId,selected.id),
     task===undefined?Promise.resolve(null):readProjectAgentSubmissionView(database,session.actorId,selected.id,task),
-    readProjectMembershipRole(database,session.actorId,selected.id)
+    readProjectMembershipRole(database,session.actorId,selected.id),
+    readExecutionUsage(database,session.actorId,selected.id)
   ]);
-  return <Tasks projects={projects} project={selected} task={task} filter={filter} hermesOwnerOptionId={trackerCapabilities?.agentOwnerOptionId} invalidProject={invalidProject} canManage={role==='project_owner'||role==='operator'} executorControl={(item)=>selected===null?null:<TaskExecutorControl key={`${run?.deliveryReference??item.itemId}:${run?.status??'none'}`} projectId={selected.id} currentExecutor={executorFact(item,trackerCapabilities?.agentOwnerOptionId)} confirmedRun={run} task={{itemId:item.itemId,status:item.statusOptionName,blocked:item.blocked}}/>}/>;
+  return <Tasks projects={projects} project={selected===null?null:{...selected,usage:{combinedTotal:usage?.combinedTotal??null,taskTotals:usage?.taskTotals??{}}}} task={task} filter={filter} hermesOwnerOptionId={trackerCapabilities?.agentOwnerOptionId} invalidProject={invalidProject} canManage={role==='project_owner'||role==='operator'} executorControl={(item)=>selected===null?null:<TaskExecutorControl key={`${run?.deliveryReference??item.itemId}:${run?.status??'none'}`} projectId={selected.id} currentExecutor={executorFact(item,trackerCapabilities?.agentOwnerOptionId)} confirmedRun={run} task={{itemId:item.itemId,status:item.statusOptionName,blocked:item.blocked}}/>}/>;
 }
 
 export async function ProcessPage(){

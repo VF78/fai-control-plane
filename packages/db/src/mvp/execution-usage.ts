@@ -134,6 +134,54 @@ export const recordExecutionUsage = async (database: Database, scope: Readonly<{
   } finally { try { client?.release(); } catch { /* Optional observation must not block processing. */ } }
 };
 
+export type ExecutionUsageSummary = Readonly<{combinedTotal:number|null; taskTotals:Readonly<Record<string,number|null>>}>;
+
+/** Lower bound of observed tokens. Cumulative revisions are merged, related sessions
+ * contribute their maximum (child inclusion is unknown), independent families add.
+ * No task lifecycle filter: QA, rework and unsuccessful attempts still consume tokens.
+ */
+export const summarizeExecutionUsage = (observations: readonly ExecutionUsage[]): ExecutionUsageSummary => {
+  const sessions = new Map<string,ExecutionUsage>();
+  const key = (provider:string,reference:string) => JSON.stringify([provider,reference]);
+  for (const observation of observations) {
+    const normalized = normalizeExecutionUsage(observation);
+    if (normalized === null) continue;
+    const id = key(normalized.provider,normalized.sessionReference);
+    const prior = sessions.get(id);
+    const merged = mergeExecutionUsage(prior ?? null,normalized);
+    sessions.set(id,merged ?? {...prior!,reasons:[...prior!.reasons,'identity-conflict']});
+  }
+  const parents = new Map<string,string>();
+  const root = (id:string):string => { const parent=parents.get(id); if(parent===undefined)return id; const result=root(parent);parents.set(id,result);return result; };
+  const join = (a:string,b:string) => { const left=root(a),right=root(b);if(left!==right)parents.set(left,right); };
+  for (const [id,session] of sessions) if(session.parentSessionReference!==null)join(id,key(session.provider,session.parentSessionReference));
+  const families = new Map<string,ExecutionUsage[]>();
+  for(const [id,session] of sessions){const family=root(id);families.set(family,[...(families.get(family)??[]),session]);}
+  let combinedTotal:number|null=null;
+  const providerTotals=new Map<string,number>();
+  const uncertainTotals=new Map<string,number>();
+  const taskTotals:Record<string,number|null>=Object.create(null);
+  const add=(a:number|null,b:number)=>a===null?b:a+b;
+  for(const family of families.values()){
+    if(family.some(s=>s.reasons.includes('identity-conflict')))continue;
+    const totals=family.flatMap(s=>s.totals.total===null?[]:[s.totals.total]);
+    if(totals.length===0)continue;
+    const total=Math.max(...totals);
+    const provider=family[0]!.provider;
+    if(family.some(s=>s.reasons.includes('parent-identity-unknown'))){
+      uncertainTotals.set(provider,Math.max(uncertainTotals.get(provider)??0,total));continue;
+    }
+    providerTotals.set(provider,(providerTotals.get(provider)??0)+total);
+    const item=family[0]!.itemId;
+    if(item!==null && family.every(s=>s.itemId===item && !s.reasons.includes('parent-identity-unknown')))
+      taskTotals[item]=add(taskTotals[item]??null,total);
+  }
+  for(const provider of new Set([...providerTotals.keys(),...uncertainTotals.keys()]))
+    combinedTotal=add(combinedTotal,Math.max(providerTotals.get(provider)??0,uncertainTotals.get(provider)??0));
+  for(const item of Object.keys(taskTotals))if(!Number.isSafeInteger(taskTotals[item]))taskTotals[item]=null;
+  return {combinedTotal:Number.isSafeInteger(combinedTotal)?combinedTotal:null,taskTotals};
+};
+
 /** Membership-scoped latest samples, never sums of audit history or parent/child totals.
  * Task identity stays on each session; absent/unattributed/auxiliary usage is not zero.
  */
@@ -153,10 +201,10 @@ export const readExecutionUsage = async (database: Database, actorId: string, pr
       if (usage === null || !(row.observedAt instanceof Date) || !Number.isFinite(row.observedAt.getTime())) invalid = true;
       else sessions.push({...usage,observedAt:row.observedAt.toISOString()});
     }
-    return {sessions,combinedTotal:null,completeness:sessions.length === 0 ? 'unknown' as const : 'incomplete' as const,
+    return {sessions,...summarizeExecutionUsage(sessions),completeness:sessions.length === 0 ? 'unknown' as const : 'incomplete' as const,
       aggregation:'unknown' as const,availability:invalid ? 'partial' as const : 'available' as const};
   } catch {
-    return {sessions:[],combinedTotal:null,completeness:'unknown' as const,aggregation:'unknown' as const,availability:'unavailable' as const};
+    return {sessions:[],combinedTotal:null,taskTotals:{} as Readonly<Record<string,number|null>>,completeness:'unknown' as const,aggregation:'unknown' as const,availability:'unavailable' as const};
   }
 };
 

@@ -82,6 +82,7 @@ export type ProjectRow = Readonly<{
 }>;
 
 export type ProjectTaskView = ProjectRow & Readonly<{
+  usage?: Readonly<{combinedTotal:number|null;taskTotals:Readonly<Record<string,number|null>>}>;
   tracker: Readonly<{
     provider?: string | null;
     configured?: boolean;

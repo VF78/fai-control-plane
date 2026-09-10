@@ -9,9 +9,28 @@ const usage = (input=100,cached=80,output=20,reasoning=5) => event('event_msg',{
 const session = (id='session-1',parent?:string) => event('session_meta',{id,
   ...(parent === undefined ? {} : {source:{subagent:{thread_spawn:{parent_thread_id:parent}}}})});
 const fixture = [session(),context(),usage()];
+const threadUsage = (input:number,output:number,threadId='session-1') => event('token_usage_record',{
+  thread_id:threadId,thread_token_usage:{input_tokens:input,cached_input_tokens:0,
+    output_tokens:output,reasoning_output_tokens:0,total_tokens:input+output}});
 const expected = {input:100,cachedInput:80,output:20,reasoningOutput:5,total:120};
 
 describe('standalone native execution usage metadata',()=>{
+  it('uses native thread totals across turn resets without adding duplicate streams or observations',async()=>{
+    const lines=[...fixture,threadUsage(100,20),usage(10,0,2,0),threadUsage(110,22),
+      threadUsage(110,22),usage(30,0,4,0),threadUsage(130,24)];
+    const result=await parseNativeUsage(lines);
+    expect(result.totals.total).toBe(154);
+    expect(await parseNativeUsage(lines)).toEqual(result);
+  });
+  it('rejects unrelated thread records and incomplete/decreasing native samples',async()=>{
+    const result=await parseNativeUsage([...fixture,threadUsage(200,40),threadUsage(999,99,'other'),
+      event('token_usage_record',{thread_id:'session-1',thread_token_usage:{total_tokens:9999}}),
+      threadUsage(150,30)]);
+    expect(result.totals.total).toBe(240);
+    expect(result.reasons).toContain('usage-invalid');
+    expect(result.reasons).toContain('usage-decreased');
+    expect(result.reasons).toContain('usage-partial');
+  });
   it('keeps one cumulative sample on repeat ingestion and repeated native events',async()=>{
     const first = await parseNativeUsage(fixture);
     expect(await parseNativeUsage(fixture)).toEqual(first);

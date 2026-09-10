@@ -36,7 +36,7 @@ describe('sections-first operator navigation', () => {
     expect(selector).toContain('onClick={close}');
     expect(page).toContain('const selected=invalidProject?null:projects.find');
     expect(page).toContain('??projects[0]??null');
-    expect(page).toContain('<Tasks projects={projects} project={selected}');
+    expect(page).toContain('<Tasks projects={projects} project={selected===null?null:{...selected,usage:');
   });
 });
 
