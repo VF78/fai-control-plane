@@ -58,7 +58,7 @@ describe('portfolio Phase A pages', () => {
   });
 
   it('renders scan-first project sections with one project-qualified agent action', async () => {
-    const [view,page]=await Promise.all([source(),readFile(new URL('./workspace-pages.tsx',import.meta.url),'utf8')]);
+    const [view,page,controls]=await Promise.all([source(),readFile(new URL('./workspace-pages.tsx',import.meta.url),'utf8'),readFile(new URL('./operator-controls.tsx',import.meta.url),'utf8')]);
     expect(view).toContain('export function ProcessRail');
     expect(view).toContain('export function Process({projects}');
     expect(view).toContain('projects.map((item)=><ProcessProjectSection item={item}');
@@ -74,6 +74,15 @@ describe('portfolio Phase A pages', () => {
     expect(view).not.toContain('Настройка ИИ-агента</summary>');
     expect(view).not.toContain('Контекст ИИ-агента</summary>');
     expect(page).toContain('const processProjects=await Promise.all(projects.map');
+    expect(page).toContain('readProjectAgentProfile(database,session.actorId,project.id)');
+    expect(page).toContain('readActiveProjectContext(database,session.actorId,project.id)');
+    expect(page).not.toContain('readProjectContextStatus(database,session.actorId,project.id)');
+    expect(controls).toContain('href={`/projects?setup=${encodeURIComponent(projectSlug)}`}');
+    expect(controls).not.toContain('/context/refresh');
+    expect(controls).toContain("profile.status==='configuring'?'configuring'");
+    expect(controls).toContain("profile.status==='awaiting_architecture'?'approval'");
+    expect(controls).toContain("['Контекст настраивается'");
+    expect(controls).toContain("['Требует подтверждения'");
   });
 });
 
