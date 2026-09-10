@@ -97,7 +97,7 @@ describe('existing-storage execution usage observations',()=>{
     expect(await recordExecutionUsage(f.database,scope,higher())).toBe('duplicate');
     const result=await readExecutionUsage(f.database,'actor-a',projectA);
     expect(result.sessions).toHaveLength(1);expect(result.sessions[0]?.totals).toEqual(higher().totals);
-    expect(result.combinedTotal).toBeNull();expect(result.aggregation).toBe('unknown');
+    expect(result.combinedTotal).toBe(240);expect(result.aggregation).toBe('unknown');
     expect(f.audits.map(a=>a.details.revision)).toEqual([1,2]);
   });
   it('preserves the higher sample on stale replay, records incompleteness once, and allows recovery',async()=>{
@@ -147,7 +147,7 @@ describe('existing-storage execution usage observations',()=>{
     const f=fixture();await recordExecutionUsage(f.database,scope,higher());
     await recordExecutionUsage(f.database,scope,sample({sessionReference:'child',parentSessionReference:'session'}));
     const result=await readExecutionUsage(f.database,'actor-a',projectA);
-    expect(result.sessions).toHaveLength(2);expect(result.combinedTotal).toBeNull();
+    expect(result.sessions).toHaveLength(2);expect(result.combinedTotal).toBe(240);
     expect(result.sessions.every(s=>s.aggregation==='unknown'&&s.reasons.includes('child-inclusion-unknown'))).toBe(true);
   });
   it('separates identical provider/session IDs by project and checks workspace, task and membership scope',async()=>{

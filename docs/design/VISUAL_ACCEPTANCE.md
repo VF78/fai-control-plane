@@ -60,7 +60,11 @@ The Product Owner approved the exact PR 2 rendered package on 2026-08-31 with:
 `UI-APPROVED: Shell + Login + Задачи + Обзор + Процесс PR 2`
 
 The Process refresh was approved on 2026-08-31 with exact `UI-APPROVED:`.
-Its 33 deterministic snapshots are stored under
+The task/project token-total extension was approved on 2026-09-10 with
+`UI-APPROVED: #356`. It adds task-detail and unknown-usage states and updates
+only the approved Tasks/Overview surfaces; amounts are synthetic fixture data.
+
+Its 39 deterministic snapshots are stored under
 `apps/web/tests/visual/golden/shell-login-tasks-overview-process/`. They cover
 1440x900, 1280x800 and 390x844 for Login, Overview, Tasks, stale Tasks, empty
 Tasks, configured/unconfigured/read-only Process, the agent-routing dialog and

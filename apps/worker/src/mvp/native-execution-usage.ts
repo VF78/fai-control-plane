@@ -48,7 +48,8 @@ export const nativeEnvelopeType = (line: string): string | null =>
  */
 export const parseNativeUsage = async (lines: AsyncIterable<string> | Iterable<string>): Promise<NativeExecutionUsage> => {
   let sessionReference: string | null = null; let parentSessionReference: string | null = null;
-  let identityConflict = false; let totals = emptyTotals(); let latestContext: NativeUsageContext | null = null;
+  let identityConflict = false; let totals = emptyTotals(); let threadTotals = emptyTotals();
+  let latestContext: NativeUsageContext | null = null;
   const reasons = new Set<NativeUsageReason>(['session-coverage-unknown']);
   const contexts: NativeUsageContext[] = [];
   try {
@@ -58,7 +59,7 @@ export const parseNativeUsage = async (lines: AsyncIterable<string> | Iterable<s
       if (line.trim() === '') continue;
       const type = nativeEnvelopeType(line);
       if (!type) { reasons.add('malformed-envelope'); continue; }
-      if (!['session_meta','turn_context','event_msg'].includes(type)) continue;
+      if (!['session_meta','turn_context','event_msg','token_usage_record'].includes(type)) continue;
       // Native token_count puts its discriminator first. Never inspect message contents.
       if (type === 'event_msg' && !/"payload"\s*:\s*\{\s*"type"\s*:\s*"token_count"/.test(line.slice(0,256))) continue;
       let value: Record<string,unknown>;
@@ -80,8 +81,15 @@ export const parseNativeUsage = async (lines: AsyncIterable<string> | Iterable<s
         if (!contexts.some(c => c.model === context.model && c.effort === context.effort)) {
           if (contexts.length < 32) contexts.push(context); else reasons.add('contexts-truncated');
         }
-      } else if (p.type === 'token_count') {
-        const u = object(object(p.info).total_token_usage);
+      } else if (type === 'token_usage_record' || p.type === 'token_count') {
+        const threadSample = type === 'token_usage_record';
+        // Native per-thread counters survive turn resets. Never add them to the
+        // older turn-scoped token_count stream or to individual response usage.
+        if (threadSample && (sessionReference === null || p.thread_id !== sessionReference)) {
+          reasons.add('usage-invalid'); continue;
+        }
+        const previous = threadSample ? threadTotals : totals;
+        const u = object(threadSample ? p.thread_token_usage : object(p.info).total_token_usage);
         const raw = [u.input_tokens,u.cached_input_tokens,u.output_tokens,u.reasoning_output_tokens,u.total_tokens];
         const next: NativeUsageTotals = {input:count(raw[0]),cachedInput:count(raw[1]),output:count(raw[2]),
           reasoningOutput:count(raw[3]),total:count(raw[4])};
@@ -91,19 +99,21 @@ export const parseNativeUsage = async (lines: AsyncIterable<string> | Iterable<s
           next.input !== null && next.output !== null && next.total !== null && next.input + next.output !== next.total) {
           reasons.add('usage-invalid'); continue;
         }
-        if (keys.some(k => totals[k] !== null && next[k] !== null && next[k]! < totals[k]!)) {
+        if (keys.some(k => previous[k] !== null && next[k] !== null && next[k]! < previous[k]!)) {
           reasons.add('usage-decreased'); continue;
         }
         if (keys.some(k => next[k] === null)) {
           reasons.add('usage-partial');
           // Preserve a previous coherent sample; do not synthesize a sample by filling gaps.
-          if (keys.every(k => totals[k] === null)) totals = next;
+          if (!threadSample && keys.every(k => totals[k] === null)) totals = next;
           continue;
         }
-        totals = next;
+        if (threadSample) threadTotals = next;
+        else totals = next;
       }
     }
   } catch { reasons.add('source-unavailable'); }
+  if (threadTotals.total !== null) totals = threadTotals;
   if (contexts.length === 0) reasons.add('context-missing');
   if (keys.every(k => totals[k] === null)) reasons.add('usage-missing');
   // A concatenation of different sessions cannot supply one meaningful session total.
