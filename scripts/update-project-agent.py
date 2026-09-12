@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 
 
 WORKER = "fai-control-plane-mvp-worker-1"
@@ -43,6 +44,18 @@ class Docker:
 
     def inspect(self, name):
         return self.request("GET", f"/containers/{name}/json")
+
+    def running_worker_name(self):
+        labels = ["com.docker.compose.project=fai-control-plane-mvp",
+                  "com.docker.compose.service=worker"]
+        filters = urllib.parse.quote(json.dumps({"label": labels}, separators=(",", ":")))
+        values = self.request("GET", f"/containers/json?all=0&filters={filters}")
+        if len(values) != 1 or len(values[0].get("Names", [])) != 1:
+            raise RuntimeError("expected exactly one running production worker")
+        name = values[0]["Names"][0]
+        if not re.fullmatch(r"/[A-Za-z0-9_.-]{1,128}", name):
+            raise RuntimeError("production worker has an unsafe Docker name")
+        return name[1:]
 
     def stop(self, name):
         self.request("POST", f"/containers/{name}/stop?t=30")
@@ -129,9 +142,9 @@ def owned_gateway(value, name):
     return root
 
 
-def owned_worker(value):
+def owned_worker(value, name):
     labels = value.get("Config", {}).get("Labels", {})
-    if (value.get("Name") != "/" + WORKER
+    if (value.get("Name") != "/" + name
             or labels.get("com.docker.compose.project") != "fai-control-plane-mvp"
             or labels.get("com.docker.compose.service") != "worker"
             or not value.get("State", {}).get("Running")):
@@ -197,16 +210,16 @@ def verify_replacement(docker, name, image, original):
         raise RuntimeError("replacement image, mounts or networks do not match")
 
 
-def perform_update(docker, gateway, gateway_value, worker_value, image, tag, backup, probe, idle=lambda _: None):
+def perform_update(docker, gateway, worker, gateway_value, worker_value, image, tag, backup, probe, idle=lambda _: None):
     """Fail closed after native startup: keep backups stopped, never duplicate bots."""
     suffix = backup.name
     old_gateway = gateway + "-" + suffix
-    old_worker = WORKER + "-" + suffix
+    old_worker = worker + "-" + suffix
     gateway_spec = replacement_spec(gateway_value, image)
     worker_spec = replacement_spec(worker_value, worker_value["Image"], {
         "FCP_PROJECT_HERMES_IMAGE": tag, "FCP_PROJECT_HERMES_IMAGE_ID": image})
     refresh_worker = worker_spec["Env"] != worker_value["Config"]["Env"]
-    docker.stop(WORKER)  # Recovery cannot restart the old gateway during the switch.
+    docker.stop(worker)  # Recovery cannot restart the old gateway during the switch.
     gateway_stopped = False
     gateway_renamed = False
     replacement_started = False
@@ -225,17 +238,17 @@ def perform_update(docker, gateway, gateway_value, worker_value, image, tag, bac
         verify_replacement(docker, gateway, image, gateway_value)
         probe(gateway)
         if refresh_worker:
-            replace(docker, WORKER, old_worker, worker_spec)
-            verify_replacement(docker, WORKER, worker_value["Image"], worker_value)
+            replace(docker, worker, old_worker, worker_spec)
+            verify_replacement(docker, worker, worker_value["Image"], worker_value)
         else:
-            docker.start(WORKER)
-            docker.healthy(WORKER)
+            docker.start(worker)
+            docker.healthy(worker)
     except Exception:
         if replacement_started:
             # Its startup may have changed native state. Preserve both containers/data.
             docker.stop(gateway)
             try:
-                docker.stop(WORKER)
+                docker.stop(worker)
             except Exception:
                 pass  # It can still have its rollback name if creation failed.
         elif gateway_stopped:
@@ -309,9 +322,10 @@ def main():
                              (repo / pins[0]).read_text()).group(1)
     docker = Docker()
     gateway = docker.inspect(args.gateway)
-    worker = docker.inspect(WORKER)
+    worker_name = docker.running_worker_name()
+    worker = docker.inspect(worker_name)
     root = owned_gateway(gateway, args.gateway)
-    owned_worker(worker)
+    owned_worker(worker, worker_name)
     baseline = native_status(args.gateway)
     require_idle(baseline)
     required_platforms = connected_platforms(baseline)
@@ -343,7 +357,7 @@ def main():
         raise RuntimeError("native API/messenger connections did not recover")
     # Building can take minutes; abort if another operator replaced either target.
     if (docker.inspect(args.gateway)["Id"] != gateway["Id"]
-            or docker.inspect(WORKER)["Id"] != worker["Id"]):
+            or docker.inspect(worker_name)["Id"] != worker["Id"]):
         raise RuntimeError("runtime changed during image build; rerun against current state")
     if gateway["Image"] == image:
         values = dict(entry.split("=", 1) for entry in worker["Config"]["Env"])
@@ -354,7 +368,7 @@ def main():
         print("Agent and shared worker image pins are already current; no changes.")
         return
     print("Stopping the worker and selected gateway; preserving project state", flush=True)
-    old_gateway, old_worker = perform_update(docker, args.gateway, gateway, worker, image, tag, backup, probe,
+    old_gateway, old_worker = perform_update(docker, args.gateway, worker_name, gateway, worker, image, tag, backup, probe,
                                             lambda name: require_idle(native_status(name)))
     print(f"Agent healthy; future installs use {image}. Backup: {backup.path}. "
           f"Stopped rollback gateway: {old_gateway}; {old_worker}.")
