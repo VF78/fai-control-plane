@@ -2,6 +2,7 @@ import copy
 import importlib.util
 from pathlib import Path
 import unittest
+import urllib.parse
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
@@ -78,6 +79,17 @@ class Backup:
 
 
 class ProjectAgentUpdateTest(unittest.TestCase):
+    def test_discovers_only_the_running_compose_worker(self):
+        docker = update.Docker()
+        with patch.object(docker, "request", return_value=[{"Names": ["/prefix_worker-1"]}]) as request:
+            self.assertEqual(docker.running_worker_name(), "prefix_worker-1")
+        path = request.call_args.args[1]
+        self.assertIn("/containers/json?all=0&filters=", path)
+        self.assertIn("com.docker.compose.project", urllib.parse.unquote(path))
+        with patch.object(docker, "request", return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, "exactly one"):
+                docker.running_worker_name()
+
     def test_anonymous_writable_volume_aborts_before_stopping_containers(self):
         docker = FakeDocker()
         value = docker.values["fai-test-gateway"]
@@ -120,6 +132,7 @@ class ProjectAgentUpdateTest(unittest.TestCase):
 
     def execute(self, docker, backup=None, probe=lambda _: None):
         return update.perform_update(docker, "fai-test-gateway",
+                                     update.WORKER,
                                      copy.deepcopy(docker.values["fai-test-gateway"]),
                                      copy.deepcopy(docker.values[update.WORKER]),
                                      "sha256:new", "new-tag", backup or Backup(docker), probe)
@@ -251,7 +264,7 @@ class ProjectAgentUpdateTest(unittest.TestCase):
         value = container(update.WORKER, True)
         value["Config"]["Labels"]["com.docker.compose.project"] = "protected-neighbour"
         with self.assertRaisesRegex(RuntimeError, "ownership"):
-            update.owned_worker(value)
+            update.owned_worker(value, update.WORKER)
 
     def test_native_status_uses_public_dashboard_status_without_credentials(self):
         response = b'{"gateway_running":true,"gateway_busy":false}'
