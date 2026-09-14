@@ -1,5 +1,11 @@
 # f(AI) Control Plane
 
+> **Approved target, not current deployment:** f(AI) is moving to Paperclip
+> Core + native GUI + one `fai-control` extension ([ADR 0007](docs/adr/0007-paperclip-core-and-extension.md), [epic #399](https://github.com/VF78/fai-control-plane/issues/399)).
+> The instructions below describe the existing thin Control Plane, which stays
+> deployed until a separately approved cutover; do not treat them as a mandate
+> to extend its legacy architecture.
+
 Internal MVP supervising multiple projects through GitHub Project and one
 project-scoped Hermes per project.
 
@@ -102,8 +108,8 @@ release, deploy и production остаются отдельными действ
 pnpm verify:mvp
 ```
 
-Current product authority and acceptance are defined by GitHub issue #158,
-ADR 0006 and the live `f(AI) Studio` Project. Historical ADRs and legacy
-branches are not active product scope. Production uses the fail-closed
+The currently deployed product is documented by historical ADR 0006; approved
+future direction and migration gates are [ADR 0007](docs/adr/0007-paperclip-core-and-extension.md) and live [epic #399](https://github.com/VF78/fai-control-plane/issues/399). Production
+uses the fail-closed
 `scripts/deploy-prod.sh` flow documented in `docs/ops/PRODUCTION_RUNBOOK.md`;
 merge and deployment always require separate approval.

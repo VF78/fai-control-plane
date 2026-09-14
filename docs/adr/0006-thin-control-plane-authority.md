@@ -1,5 +1,9 @@
 # ADR 0006: Thin Control Plane over GitHub Project and Hermes
 
+> Historical/current deployment record: this ADR describes the deployed thin
+> Control Plane until an explicit cutover. New target architecture is ADR 0007.
+> It does not prohibit the approved Paperclip-native tracker direction.
+
 - Status: Accepted and implemented by the thin 16-table MVP
 - Date: 2026-08-12
 - Issue: #158
