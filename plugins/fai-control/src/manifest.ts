@@ -10,6 +10,7 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["connector", "ui"],
   capabilities: [
     "projects.read",
+    "access.members.read",
     "plugin.state.read",
     "plugin.state.write",
     "ui.detailTab.register",
@@ -26,6 +27,13 @@ const manifest: PaperclipPluginManifestV1 = {
         id: "repository-binding",
         displayName: "Repository",
         exportName: "ProjectRepositoryTab",
+        entityTypes: ["project"]
+      },
+      {
+        type: "detailTab",
+        id: "team-roles",
+        displayName: "Team & roles",
+        exportName: "ProjectTeamRolesTab",
         entityTypes: ["project"]
       }
     ]

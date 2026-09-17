@@ -23,6 +23,12 @@ it does not impose a new global task policy on Core. Agent setup and task
 execution remain native responsibilities. External tracker integration is not
 provided by this package.
 
+The Team & roles tab reads native Paperclip human memberships and records only
+semantic Owner, PM, Executor and Client representative associations for a
+project. It neither changes membership nor sends an invitation. A client
+representative association never creates a `viewer` membership: restricted
+client-chat access is a later dedicated setup step.
+
 ## Local Core and package path
 
 The only verified development target is Paperclip `v2026.831.1`, commit

@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useHostNavigation, usePluginAction, usePluginData, type PluginDetailTabProps } from "@paperclipai/plugin-sdk/ui";
 import { createRepositoryBinding, normalizeGitHubBranch, normalizeGitHubRepositoryUrl,
   type ProjectRepositoryBindingView, type RepositoryBinding } from "../repository-binding.js";
+import { projectTeamRoles, type ProjectTeamRole, type ProjectTeamRoleView } from "../team-roles.js";
 
 const panelStyle = {display: "grid", gap: "16px", maxWidth: "760px"} as const;
 const cardStyle = {
@@ -131,6 +132,74 @@ export function ProjectRepositoryTab({ context }: PluginDetailTabProps) {
           </>
         ) : <p>Apply the native repository and branch, then verify repository access before creating the first task here.</p>}
         <p>Project agent setup is still required before tasks can run.</p>
+      </div>
+      {message ? <p role="status">{message}</p> : null}
+    </section>
+  );
+}
+
+const teamRoleLabels: Record<ProjectTeamRole, string> = {
+  owner: "Owner",
+  pm: "PM",
+  executor: "Executor",
+  client_representative: "Client representative"
+};
+
+export function ProjectTeamRolesTab({ context }: PluginDetailTabProps) {
+  const [assignments, setAssignments] = useState<Partial<Record<ProjectTeamRole, string>>>({});
+  const [dirty, setDirty] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const team = usePluginData<ProjectTeamRoleView>("project-team-roles", {companyId: context.companyId, projectId: context.entityId});
+  const save = usePluginAction("save-project-team-roles");
+  const hostNavigation = useHostNavigation();
+
+  useEffect(() => {
+    if (team.data && !dirty) setAssignments(team.data.mapping.assignments);
+  }, [team.data, dirty]);
+
+  async function saveRoles(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage(null);
+    setPending(true);
+    try {
+      await save({projectId: context.entityId, assignments});
+      team.refresh();
+      setDirty(false);
+      setMessage("Project roles were saved. Native Paperclip access was not changed.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Project roles could not be saved.");
+    } finally { setPending(false); }
+  }
+
+  if (team.loading) return <p>Loading native team members…</p>;
+  if (team.error) return <p role="alert">{team.error.message}</p>;
+
+  const activeMembers = team.data?.members.filter((member) => member.status === "active") ?? [];
+  return (
+    <section aria-label="Team and roles" style={panelStyle}>
+      <h2>Team and roles</h2>
+      <div style={cardStyle}>
+        <p>Paperclip company membership is authoritative. This page stores project responsibility labels only; it never grants access, changes native roles, or sends invitations.</p>
+        <a {...hostNavigation.linkProps("/company/settings/members")}>Manage native members and invitations</a>
+        {team.data?.members.length === 0 ? <p role="status">No native human membership is available for this board. In local-trusted mode the Board can have no membership record; add or manage people in Paperclip before assigning project roles.</p> : null}
+      </div>
+      <form style={cardStyle} onSubmit={(event) => void saveRoles(event)}>
+        <h3>Project responsibility</h3>
+        {projectTeamRoles.map((role) => (
+          <label key={role}>{teamRoleLabels[role]}
+            <select style={inputStyle} disabled={pending || activeMembers.length === 0} value={assignments[role] ?? ""}
+              onChange={(event) => { setDirty(true); setAssignments((current) => ({...current, [role]: event.target.value || undefined})); }}>
+              <option value="">Unassigned</option>
+              {activeMembers.map((member) => <option key={member.id} value={member.id}>{member.principalId} · {member.membershipRole ?? "no native role"}</option>)}
+            </select>
+          </label>
+        ))}
+        <button style={buttonStyle} type="submit" disabled={pending || activeMembers.length === 0}>{pending ? "Saving roles…" : "Save project roles"}</button>
+      </form>
+      <div style={cardStyle}>
+        <h3>Client representative</h3>
+        <p>A client representative label does not create a Paperclip viewer account or grant project access. Restricted client chat access is configured separately and is not available in this setup step yet.</p>
       </div>
       {message ? <p role="status">{message}</p> : null}
     </section>

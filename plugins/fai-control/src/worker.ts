@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { createRepositoryBinding, normalizeGitHubBranch, normalizeGitHubRepositoryUrl, parseRepositoryBinding,
   type ProjectRepositoryBindingView, type RepositoryAccess, type RepositoryBinding } from "./repository-binding.js";
+import { createProjectTeamRoleMapping, parseProjectTeamRoleMapping, projectTeamRoleView,
+  type ProjectTeamRoleView } from "./team-roles.js";
 
 const execFileAsync = promisify(execFile);
 const stateKey = (projectId: string) => ({
@@ -17,6 +19,12 @@ const accessStateKey = (projectId: string) => ({
   scopeId: projectId,
   namespace: "repository",
   stateKey: "access"
+});
+const teamRolesStateKey = (projectId: string) => ({
+  scopeKind: "project" as const,
+  scopeId: projectId,
+  namespace: "team",
+  stateKey: "roles"
 });
 
 function inputString(params: Record<string, unknown>, key: string): string {
@@ -74,6 +82,15 @@ async function bindingView(ctx: PluginContext, projectId: string, companyId: str
   }};
 }
 
+async function teamRolesView(ctx: PluginContext, projectId: string, companyId: string): Promise<ProjectTeamRoleView> {
+  await requireProject(ctx, projectId, companyId);
+  const [members, stored] = await Promise.all([
+    ctx.access.members.list({companyId}),
+    ctx.state.get(teamRolesStateKey(projectId))
+  ]);
+  return projectTeamRoleView(members, parseProjectTeamRoleMapping(stored));
+}
+
 async function verifyWithNativeGit(binding: RepositoryBinding): Promise<RepositoryAccess> {
   const command = process.env.FAI_GIT_BIN ||
     (process.platform === "darwin" && existsSync("/Library/Developer/CommandLineTools/usr/bin/git")
@@ -101,6 +118,11 @@ const plugin = definePlugin({
       const projectId = inputString(params, "projectId");
       const companyId = inputString(params, "companyId");
       return await bindingView(ctx, projectId, companyId);
+    });
+    ctx.data.register("project-team-roles", async (params) => {
+      const projectId = inputString(params, "projectId");
+      const companyId = inputString(params, "companyId");
+      return await teamRolesView(ctx, projectId, companyId);
     });
 
     ctx.actions.register("save-project-repository-binding", async (params, context) => {
@@ -137,6 +159,16 @@ const plugin = definePlugin({
         access
       });
       return await bindingView(ctx, projectId, companyId);
+    });
+
+    ctx.actions.register("save-project-team-roles", async (params, context) => {
+      const projectId = inputString(params, "projectId");
+      const companyId = actionCompany(params, context);
+      await requireProject(ctx, projectId, companyId);
+      const members = await ctx.access.members.list({companyId});
+      const mapping = createProjectTeamRoleMapping(params, members);
+      await ctx.state.set(teamRolesStateKey(projectId), mapping);
+      return await teamRolesView(ctx, projectId, companyId);
     });
   },
   async onHealth() {
