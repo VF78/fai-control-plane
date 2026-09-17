@@ -1,0 +1,37 @@
+{
+  "name": "@vf78/fai-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Paperclip-native repository binding for f(AI) projects",
+  "packageManager": "pnpm@9.15.4",
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "build": "node ./esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "dev": "node ./esbuild.config.mjs --watch"
+  },
+  "pnpm": {
+    "overrides": {
+      "@paperclipai/shared": "file:.paperclip-sdk/paperclipai-shared-0.3.1.tgz"
+    }
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "file:.paperclip-sdk/paperclipai-plugin-sdk-1.0.0.tgz",
+    "@paperclipai/shared": "file:.paperclip-sdk/paperclipai-shared-0.3.1.tgz",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "esbuild": "^0.28.2",
+    "react": "^19.2.8",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
