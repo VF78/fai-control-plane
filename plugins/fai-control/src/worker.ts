@@ -6,6 +6,8 @@ import { createRepositoryBinding, normalizeGitHubBranch, normalizeGitHubReposito
   type ProjectRepositoryBindingView, type RepositoryAccess, type RepositoryBinding } from "./repository-binding.js";
 import { createProjectTeamRoleMapping, parseProjectTeamRoleMapping, projectTeamRoleView,
   type ProjectTeamRoleView } from "./team-roles.js";
+import { addProjectDocument, missingMandatoryDocuments, parseProjectDocumentState, prepareProjectContext,
+  type ProjectDocumentState } from "./project-documents.js";
 
 const execFileAsync = promisify(execFile);
 const stateKey = (projectId: string) => ({
@@ -26,6 +28,26 @@ const teamRolesStateKey = (projectId: string) => ({
   namespace: "team",
   stateKey: "roles"
 });
+const documentsStateKey = (projectId: string) => ({
+  scopeKind: "project" as const,
+  scopeId: projectId,
+  namespace: "documents",
+  stateKey: "register"
+});
+const documentMutationTails = new Map<string, Promise<void>>();
+
+async function serializeDocumentMutation<T>(projectId: string, task: () => Promise<T>): Promise<T> {
+  const previous = documentMutationTails.get(projectId) ?? Promise.resolve();
+  let release: (() => void) | undefined;
+  const current = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
+  documentMutationTails.set(projectId, current);
+  await previous;
+  try { return await task(); }
+  finally {
+    release?.();
+    if (documentMutationTails.get(projectId) === current) documentMutationTails.delete(projectId);
+  }
+}
 
 function inputString(params: Record<string, unknown>, key: string): string {
   const value = params[key];
@@ -91,6 +113,30 @@ async function teamRolesView(ctx: PluginContext, projectId: string, companyId: s
   return projectTeamRoleView(members, parseProjectTeamRoleMapping(stored));
 }
 
+export type ProjectDocumentsView = Readonly<{
+  state: ProjectDocumentState;
+  missingMandatory: readonly ("passport" | "specification")[];
+  contextStale: boolean;
+}>;
+
+async function documentsView(ctx: PluginContext, projectId: string, companyId: string): Promise<ProjectDocumentsView> {
+  await requireProject(ctx, projectId, companyId);
+  const state = parseProjectDocumentState(await ctx.state.get(documentsStateKey(projectId)));
+  return {state, missingMandatory: missingMandatoryDocuments(state), contextStale: state.context !== null && state.context.documentRevision !== state.revision};
+}
+
+function expectedVersion(params: Record<string, unknown>): number {
+  const version = params.expectedVersion;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 0) throw new Error("document_version_required");
+  return version;
+}
+
+function idempotencyKey(params: Record<string, unknown>): string {
+  const key = params.idempotencyKey;
+  if (typeof key !== "string" || !/^[A-Za-z0-9:_-]{1,120}$/.test(key)) throw new Error("idempotency_key_invalid");
+  return key;
+}
+
 async function verifyWithNativeGit(binding: RepositoryBinding): Promise<RepositoryAccess> {
   const command = process.env.FAI_GIT_BIN ||
     (process.platform === "darwin" && existsSync("/Library/Developer/CommandLineTools/usr/bin/git")
@@ -123,6 +169,11 @@ const plugin = definePlugin({
       const projectId = inputString(params, "projectId");
       const companyId = inputString(params, "companyId");
       return await teamRolesView(ctx, projectId, companyId);
+    });
+    ctx.data.register("project-documents", async (params) => {
+      const projectId = inputString(params, "projectId");
+      const companyId = inputString(params, "companyId");
+      return await documentsView(ctx, projectId, companyId);
     });
 
     ctx.actions.register("save-project-repository-binding", async (params, context) => {
@@ -169,6 +220,36 @@ const plugin = definePlugin({
       const mapping = createProjectTeamRoleMapping(params, members);
       await ctx.state.set(teamRolesStateKey(projectId), mapping);
       return await teamRolesView(ctx, projectId, companyId);
+    });
+    ctx.actions.register("record-project-document", async (params, context) => {
+      const projectId = inputString(params, "projectId");
+      const companyId = actionCompany(params, context);
+      return await serializeDocumentMutation(projectId, async () => {
+        await requireProject(ctx, projectId, companyId);
+        const asset = params.asset;
+        if (!asset || typeof asset !== "object" || (asset as {companyId?: unknown}).companyId !== companyId) throw new Error("native_asset_company_mismatch");
+        const state = parseProjectDocumentState(await ctx.state.get(documentsStateKey(projectId)));
+        const key = idempotencyKey(params);
+        if (!state.receipts[key] && expectedVersion(params) !== state.revision) throw new Error("document_version_conflict_refresh_required");
+        const category = params.category;
+        if (category !== "passport" && category !== "specification" && category !== "architecture" && category !== "other") throw new Error("document_category_invalid");
+        const satisfies = Array.isArray(params.satisfies) ? params.satisfies : [];
+        const next = addProjectDocument(state, {category, satisfies: satisfies as never[], asset, extraction: params.extraction, idempotencyKey: key, now: new Date().toISOString()});
+        if (next !== state) await ctx.state.set(documentsStateKey(projectId), next);
+        return await documentsView(ctx, projectId, companyId);
+      });
+    });
+    ctx.actions.register("prepare-project-document-context", async (params, context) => {
+      const projectId = inputString(params, "projectId");
+      const companyId = actionCompany(params, context);
+      return await serializeDocumentMutation(projectId, async () => {
+        await requireProject(ctx, projectId, companyId);
+        const state = parseProjectDocumentState(await ctx.state.get(documentsStateKey(projectId)));
+        if (expectedVersion(params) !== state.revision) throw new Error("document_version_conflict_refresh_required");
+        const next = prepareProjectContext(state, new Date().toISOString());
+        await ctx.state.set(documentsStateKey(projectId), next);
+        return await documentsView(ctx, projectId, companyId);
+      });
     });
   },
   async onHealth() {
