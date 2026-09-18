@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Separate first-install release boundary; legacy deployment stays intact.
+if [[ ${FCP_PAPERCLIP_RELEASE:-0} == 1 ]]; then
+  exec "$(dirname -- "$0")/deploy-paperclip-prod.sh" "$@"
+fi
+
 readonly deploy_root=/opt/fai-control-plane-mvp
 readonly environment_file=/etc/fai-control-plane-mvp/production.env
 readonly compose_file="$deploy_root/infra/production/compose.yaml"

@@ -13,6 +13,12 @@ const container = (component: "auth" | "gateway") => {
   const spec = runtimeSpec(runtime, component, image.Id);
   return {Image: image.Id, Config: {...spec, Entrypoint: component === "auth" ? ["/usr/local/bin/fai-project-device-auth"] : ["/init"]}, HostConfig: spec.HostConfig, State: {Running: true}, NetworkSettings: {Ports: {"8642/tcp": [{HostIp: "127.0.0.1", HostPort: "42000"}]}}};
 };
+test("gateway keeps image s6 as PID1 and bootstraps its mapped persistent user", () => {
+  const spec = runtimeSpec(runtime, "gateway", image.Id);
+  expect(spec.HostConfig.Init).toBe(false);
+  expect(spec.Env).toEqual(expect.arrayContaining(["HERMES_UID=10000", "HERMES_GID=10000", "HERMES_GATEWAY_BOOTSTRAP_STATE=running", "API_SERVER_ENABLED=true"]));
+  expect(runtimeSpec(runtime, "auth", image.Id).HostConfig.Init).toBe(true);
+});
 test("missing exact pinned image is explicit and does not mutate Docker", async () => {
   const engine = vi.fn<Docker>(async () => response(404));
   expect((await installRuntime(runtime, engine)).status).toBe("image_missing");
@@ -40,6 +46,7 @@ test("install creates exact owned resources and returns only the device challeng
 });
 test("restart rejects foreign labels, changed image or persistent mounts before mutation", async () => {
   for (const mutated of [
+    {...container("gateway"), HostConfig: {...container("gateway").HostConfig, Init: true}},
     {...container("gateway"), Image: `sha256:${"b".repeat(64)}`},
     {...container("gateway"), HostConfig: {Binds: [], NetworkMode: `${runtime.runtimeId}-network`}},
     {...container("gateway"), Config: {Labels: {...labels(runtime, "gateway"), "fai.control-plane.project-id": "foreign"}}}
