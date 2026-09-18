@@ -37,7 +37,8 @@ export async function inspectOwned(runtime: ProjectRuntime, component: string, e
   const desired = runtimeSpec(runtime, component === "auth" ? "auth" : "gateway", image.Id);
   if (container.Image !== image.Id || JSON.stringify(container.Config?.Cmd) !== JSON.stringify(desired.Cmd) ||
       JSON.stringify(container.Config?.Entrypoint) !== JSON.stringify(component === "auth" ? ["/usr/local/bin/fai-project-device-auth"] : image.Config?.Entrypoint) ||
-      !desired.Env.every(value => container.Config?.Env?.includes(value))) throw new Error("hermes_runtime_spec_conflict");
+      !desired.Env.every(value => container.Config?.Env?.includes(value)) ||
+      Boolean(container.HostConfig?.Init) !== desired.HostConfig.Init) throw new Error("hermes_runtime_spec_conflict");
   const binds = container.HostConfig?.Binds;
   if (!Array.isArray(binds) || JSON.stringify([...binds].sort()) !== JSON.stringify([...desired.HostConfig.Binds].sort()) || container.HostConfig.NetworkMode !== `${runtime.runtimeId}-network`) throw new Error("hermes_persistent_mount_conflict");
   return container;
@@ -66,10 +67,10 @@ async function filePresent(path: string) {try {const stat = await lstat(path); r
 export const runtimeSpec = (runtime: ProjectRuntime, component: "auth" | "gateway", imageId: string) => ({
   Image: imageId,
   ...(component === "auth" ? {User: "10000:10000", Entrypoint: ["/usr/local/bin/fai-project-device-auth"], Cmd: []} : {Cmd: ["sleep", "infinity"], WorkingDir: runtime.runtimeWorkspace}),
-  Env: ["HOME=/opt/data", "CODEX_HOME=/opt/data/codex-home", ...(component === "gateway" ? ["API_SERVER_ENABLED=true", "API_SERVER_HOST=0.0.0.0", "API_SERVER_PORT=8642", "HERMES_API_SERVER_KEY_FILE=/run/secrets/agent-delivery", "HERMES_GITHUB_REPOSITORY_TOKEN_FILE=/run/secrets/github-token"] : [])],
+  Env: ["HOME=/opt/data", "CODEX_HOME=/opt/data/codex-home", ...(component === "gateway" ? ["HERMES_UID=10000", "HERMES_GID=10000", "HERMES_GATEWAY_BOOTSTRAP_STATE=running", "API_SERVER_ENABLED=true", "API_SERVER_HOST=0.0.0.0", "API_SERVER_PORT=8642", "HERMES_API_SERVER_KEY_FILE=/run/secrets/agent-delivery", "HERMES_GITHUB_REPOSITORY_TOKEN_FILE=/run/secrets/github-token"] : [])],
   Labels: labels(runtime, component),
   ExposedPorts: component === "gateway" ? {"8642/tcp": {}} : {},
-  HostConfig: {NetworkMode: `${runtime.runtimeId}-network`, Binds: [`${runtime.root}/data:/opt/data`, `${runtime.root}/codex-home:/opt/data/codex-home`, ...(component === "gateway" ? [`${runtime.root}/secrets/agent-delivery:/run/secrets/agent-delivery:ro`, `${runtime.root}/secrets/github-token:/run/secrets/github-token:ro`, `${runtime.root}/secrets/ssh-private-key:/opt/data/home/.ssh/id_ed25519:ro`, `${runtime.root}/secrets/ssh-known-hosts:/opt/data/home/.ssh/known_hosts:ro`] : [])], Memory: 1_073_741_824, NanoCpus: 1_000_000_000, PidsLimit: 256, Init: true, RestartPolicy: {Name: component === "gateway" ? "unless-stopped" : "no"}, ...(component === "gateway" ? {PortBindings: {"8642/tcp": [{HostIp: "127.0.0.1", HostPort: ""}]}} : {})}
+  HostConfig: {NetworkMode: `${runtime.runtimeId}-network`, Binds: [`${runtime.root}/data:/opt/data`, `${runtime.root}/codex-home:/opt/data/codex-home`, ...(component === "gateway" ? [`${runtime.root}/secrets/agent-delivery:/run/secrets/agent-delivery:ro`, `${runtime.root}/secrets/github-token:/run/secrets/github-token:ro`, `${runtime.root}/secrets/ssh-private-key:/opt/data/home/.ssh/id_ed25519:ro`, `${runtime.root}/secrets/ssh-known-hosts:/opt/data/home/.ssh/known_hosts:ro`] : [])], Memory: 1_073_741_824, NanoCpus: 1_000_000_000, PidsLimit: 256, Init: component === "auth", RestartPolicy: {Name: component === "gateway" ? "unless-stopped" : "no"}, ...(component === "gateway" ? {PortBindings: {"8642/tcp": [{HostIp: "127.0.0.1", HostPort: ""}]}} : {})}
 });
 export async function checkRuntime(runtime: ProjectRuntime, engine: Docker = docker): Promise<RuntimeCheck> {
   const gateway = await inspectOwned(runtime, "gateway", engine);

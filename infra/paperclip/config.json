@@ -1,0 +1,11 @@
+{
+  "$meta": {"version": 1, "updatedAt": "2026-09-18T00:00:00.000Z", "source": "configure"},
+  "database": {"mode": "postgres", "backup": {"enabled": false}},
+  "logging": {"mode": "file", "logDir": "/var/lib/paperclip/logs"},
+  "server": {"deploymentMode": "authenticated", "exposure": "public", "host": "127.0.0.1", "port": 13010, "serveUi": true, "allowedHostnames": ["app.f-ai.studio"]},
+  "auth": {"baseUrlMode": "explicit", "publicBaseUrl": "https://app.f-ai.studio", "disableSignUp": true},
+  "storage": {"provider": "local_disk", "localDisk": {"baseDir": "/var/lib/paperclip/storage"}},
+  "secrets": {"provider": "local_encrypted", "strictMode": true, "localEncrypted": {"keyFilePath": "/var/lib/paperclip/instances/default/secrets/master.key"}},
+  "telemetry": {"enabled": false},
+  "updates": {"checkEnabled": false}
+}

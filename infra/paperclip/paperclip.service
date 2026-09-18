@@ -1,0 +1,27 @@
+[Unit]
+Description=Paperclip Core with f(AI) plugin
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=fai-paperclip
+Group=fai-paperclip
+SupplementaryGroups=docker
+WorkingDirectory=/opt/fai-paperclip/current/core
+Environment=PATH=/opt/fai-paperclip/current/toolchain/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/paperclip
+EnvironmentFile=/etc/fai-paperclip/active.env
+ExecStart=/opt/fai-paperclip/current/toolchain/bin/node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/paperclip /var/lib/fai-control/hermes
+
+[Install]
+WantedBy=multi-user.target

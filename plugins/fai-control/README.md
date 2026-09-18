@@ -12,8 +12,9 @@ state or interpolated into a shell.
 
 The plugin does not create Paperclip projects, issues, memberships, approvals,
 agents, schedules, or database tables. Those stay native Core responsibilities.
-It does not configure a Hermes or QA runtime. A later slice can add supported
-native adapter configuration and collect its runtime evidence on a real task.
+The setup wizard configures one project-scoped persistent Hermes gateway agent
+through native Core services and owns its scoped host lifecycle. Independent QA
+uses a separate native `codex_local` identity and a human acceptance gate.
 The UI applies repository/ref changes through Core's authenticated, audited
 workspace REST API and checks the returned values before saving matching
 verification metadata. The SDK reads the authoritative workspace. The task
@@ -62,9 +63,11 @@ Set `FAI_GIT_BIN` only when the local Paperclip worker needs a non-default nativ
 Git executable; the macOS development path automatically prefers Command Line
 Tools Git and sets `GIT_TERMINAL_PROMPT=0` for verification.
 
-### Persistent Hermes connection (operator-provisioned host)
+### Persistent Hermes setup (operator-approved host)
 
-Setup stage 4 connects an **existing** native `hermes_gateway` agent. It stages
+Setup stage 4 can connect an existing native `hermes_gateway` agent or install
+a project-scoped runtime, show a device-auth challenge, check repository access,
+and request an ownership-checked restart. It stages
 current compact document context into its persistent workspace; it does not
 launch a task or claim Hermes has read it. The native agent remains the owner of
 execution and chats. Context includes the approved Dev CLI / separate native
@@ -90,9 +93,17 @@ identity, revision and context version; a stale request preserves confirmed stat
 Credential-file presence checks neither read nor return credential values and do
 not prove remote repository/SSH authorization.
 
-Still required for full installation acceptance: project-scoped host provisioning
-of the retained Hermes image and persistent mounts, native gateway secret reference,
-Codex/ChatGPT device authentication (no paid API), actual repository/SSH access
-checks, and an ownership-checked restart/recovery. Installation, auth and restart
-controls are intentionally absent until that host contract is implemented. No live
-runtime, VPS or protected neighbour has been changed by this slice.
+Controls are present, but file presence and a running container do not prove an
+operational authenticated gateway or a useful task. Full acceptance still requires
+real device authentication, authenticated gateway access, approved context delivery,
+repository/SSH authorization, persistence across restart, independent native QA,
+and human acceptance in an explicitly approved disposable project.
+
+For the separately approved production pilot, use
+[`PAPERCLIP_RELEASE_RUNBOOK.md`](../../docs/ops/PAPERCLIP_RELEASE_RUNBOOK.md).
+Core remains the pinned, unchanged upstream source. The native host process is
+required because lifecycle operations use `/var/run/docker.sock`, host-owned
+`/var/lib/fai-control/hermes`, and gateway loopback URLs. The retained image uses
+s6 as PID 1: gateway containers disable Docker Init, map Hermes UID/GID to 10000,
+and set `HERMES_GATEWAY_BOOTSTRAP_STATE=running` for a fresh volume. The image
+respects saved stopped state. The separate device-auth process keeps Docker Init.
