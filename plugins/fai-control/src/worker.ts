@@ -11,6 +11,7 @@ import { createProjectTeamRoleMapping, parseProjectTeamRoleMapping, projectTeamR
   type ProjectTeamRoleView } from "./team-roles.js";
 import { addProjectDocument, missingMandatoryDocuments, parseProjectDocumentState, prepareProjectContext,
   type ProjectDocumentState } from "./project-documents.js";
+import { createProjectChatsState, parseProjectChatsState, projectChatsView, type ProjectChatsView } from "./project-chats.js";
 
 import { hostBinding, assertNativeHermes, persistHermesContext, checkHermesAccess, parseHermesSetup, type HermesSetupView } from "./project-hermes.js";
 
@@ -41,6 +42,7 @@ const documentsStateKey = (projectId: string) => ({
 });
 const hermesBindingKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "host-binding"});
 const hermesStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "setup"});
+const chatsStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "chats", stateKey: "configuration"});
 async function projectHostBinding(ctx: PluginContext, companyId: string, projectId: string, agentId: string) {
   const config = await ctx.config.get(companyId);
   const bindings = config.hermesHostBindings as Record<string, unknown> | undefined;
@@ -170,6 +172,11 @@ async function documentsView(ctx: PluginContext, projectId: string, companyId: s
   return {state, missingMandatory: missingMandatoryDocuments(state), contextStale: state.context !== null && state.context.documentRevision !== state.revision};
 }
 
+async function chatsView(ctx: PluginContext, projectId: string, companyId: string): Promise<ProjectChatsView> {
+  await requireProject(ctx, projectId, companyId);
+  return projectChatsView(parseProjectChatsState(await ctx.state.get(chatsStateKey(projectId))));
+}
+
 function expectedVersion(params: Record<string, unknown>): number {
   const version = params.expectedVersion;
   if (typeof version !== "number" || !Number.isInteger(version) || version < 0) throw new Error("document_version_required");
@@ -294,6 +301,7 @@ const plugin = definePlugin({
       const companyId = inputString(params, "companyId");
       return await documentsView(ctx, projectId, companyId);
     });
+    ctx.data.register("project-hermes-chats", async (params) => chatsView(ctx, inputString(params, "projectId"), inputString(params, "companyId")));
 
     ctx.actions.register("save-project-repository-binding", async (params, context) => {
       const projectId = inputString(params, "projectId");
@@ -339,6 +347,17 @@ const plugin = definePlugin({
       const mapping = createProjectTeamRoleMapping(params, members);
       await ctx.state.set(teamRolesStateKey(projectId), mapping);
       return await teamRolesView(ctx, projectId, companyId);
+    });
+    ctx.actions.register("save-project-hermes-chats", async (params, context) => {
+      const projectId = inputString(params, "projectId");
+      const companyId = actionCompany(params, context);
+      await requireHostOperator(ctx, context, companyId);
+      await requireProject(ctx, projectId, companyId);
+      const current = parseProjectChatsState(await ctx.state.get(chatsStateKey(projectId)));
+      if (params.expectedRevision !== current.revision) throw new Error("chat_configuration_conflict_refresh_required");
+      const next = createProjectChatsState(params, current);
+      await ctx.state.set(chatsStateKey(projectId), next);
+      return chatsView(ctx, projectId, companyId);
     });
     ctx.actions.register("record-project-document", async (params, context) => {
       const projectId = inputString(params, "projectId");

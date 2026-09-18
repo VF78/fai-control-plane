@@ -6,6 +6,7 @@ import { projectTeamRoles, type ProjectTeamRole, type ProjectTeamRoleView } from
 import { projectDocumentCategories, type ProjectDocumentCategory } from "../project-document-contract.js";
 import type { RuntimeCheck } from "../hermes-lifecycle.js";
 import type { HermesSetupView } from "../project-hermes.js";
+import type { ProjectChatsView } from "../project-chats.js";
 import { mergeHermesInstructions } from "../hermes-instructions.js";
 import type { ProjectDocumentsView } from "../worker.js";
 import { extractBrowserDocument } from "./document-extract.js";
@@ -267,6 +268,73 @@ function ProjectHermesPanel({context}: PluginDetailTabProps) {
 const setupSteps = ["Project and repository", "Tracker and process", "Documents", "Agent, context, and access", "Team and chats", "Verification and first task"] as const;
 function setupDraftKey(companyId: string | null, projectId: string): string { return `fai:setup:step:${companyId ?? "unknown"}:${projectId}`; }
 
+function csvIds(value: string): string[] { return value.split(",").map((entry) => entry.trim()).filter(Boolean); }
+
+export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
+  const chats = usePluginData<ProjectChatsView>("project-hermes-chats", {companyId: context.companyId, projectId: context.entityId});
+  const save = usePluginAction("save-project-hermes-chats");
+  const [internalEnabled, setInternalEnabled] = useState(false);
+  const [internalChatId, setInternalChatId] = useState("");
+  const [internalParticipants, setInternalParticipants] = useState("");
+  const [clientProvider, setClientProvider] = useState<"deferred" | "telegram" | "element">("deferred");
+  const [clientTelegramChatId, setClientTelegramChatId] = useState("");
+  const [clientTelegramParticipants, setClientTelegramParticipants] = useState("");
+  const [clientElementHomeserver, setClientElementHomeserver] = useState("");
+  const [clientElementRoomReference, setClientElementRoomReference] = useState("");
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const state = chats.data?.state;
+    if (!state) return;
+    setInternalEnabled(state.internal !== null);
+    setInternalChatId(state.internal?.chatId ?? "");
+    setInternalParticipants(state.internal?.participantIds.join(", ") ?? "");
+    setClientProvider(state.client?.provider ?? "deferred");
+    setClientTelegramChatId(state.client?.provider === "telegram" ? state.client.telegram.chatId : "");
+    setClientTelegramParticipants(state.client?.provider === "telegram" ? state.client.telegram.participantIds.join(", ") : "");
+    setClientElementHomeserver(state.client?.provider === "element" ? state.client.element.homeserver : "");
+    setClientElementRoomReference(state.client?.provider === "element" ? state.client.element.roomReference : "");
+  }, [chats.data]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!chats.data || pending) return;
+    setPending(true); setMessage(null);
+    try {
+      await save({companyId: context.companyId, projectId: context.entityId, expectedRevision: chats.data.state.revision,
+        internalEnabled, internalChatId, internalParticipantIds: csvIds(internalParticipants), clientProvider,
+        clientTelegramChatId, clientTelegramParticipantIds: csvIds(clientTelegramParticipants), clientElementHomeserver, clientElementRoomReference});
+      chats.refresh();
+      setMessage("Метаданные каналов сохранены. Доставка остаётся отключённой, пока оператор не подготовит host-only привязку Hermes.");
+    } catch (error) {setMessage(error instanceof Error ? error.message : "Не удалось сохранить настройку чатов.");}
+    finally {setPending(false);}
+  }
+
+  if (chats.loading) return <p>Загрузка настроек Hermes-чата…</p>;
+  if (chats.error || !chats.data) return <p role="alert">{chats.error?.message ?? "Настройки Hermes-чата недоступны."}</p>;
+  return <section aria-label="Hermes chats" style={panelStyle}>
+    <div style={cardStyle}><h2>Чаты Hermes</h2><p>Hermes остаётся единственным владельцем входящих сообщений и постоянных сессий. Эта форма не принимает токены, пароли или ссылки на секреты: они остаются в host-only конфигурации.</p>
+      <p role="status">Ожидает host-настройку: {chats.data.reason}</p></div>
+    <form style={cardStyle} onSubmit={(event) => void submit(event)}>
+      <h3>Внутренний Telegram</h3>
+      <label><input type="checkbox" checked={internalEnabled} disabled={pending} onChange={(event) => setInternalEnabled(event.target.checked)} /> Настроить внутренний контур</label>
+      {internalEnabled ? <><label>ID чата Telegram<input style={inputStyle} required value={internalChatId} disabled={pending} inputMode="numeric" onChange={(event) => setInternalChatId(event.target.value)} /></label>
+        <label>ID внутренних участников через запятую<input style={inputStyle} required value={internalParticipants} disabled={pending} inputMode="numeric" onChange={(event) => setInternalParticipants(event.target.value)} /></label></> : <p>Внутренний канал пока не задан и не считается готовым.</p>}
+      <h3>Клиентский контур</h3>
+      <label>Канал клиента<select style={inputStyle} value={clientProvider} disabled={pending} onChange={(event) => setClientProvider(event.target.value as "deferred" | "telegram" | "element")}><option value="deferred">Отложить</option><option value="telegram">Telegram</option><option value="element">Matrix / Element</option></select></label>
+      {clientProvider === "telegram" ? <><label>ID клиентского чата Telegram<input style={inputStyle} required value={clientTelegramChatId} disabled={pending} inputMode="numeric" onChange={(event) => setClientTelegramChatId(event.target.value)} /></label>
+        <label>ID представителей клиента через запятую<input style={inputStyle} required value={clientTelegramParticipants} disabled={pending} inputMode="numeric" onChange={(event) => setClientTelegramParticipants(event.target.value)} /></label><p>Внутренние участники наследуются host-настройкой; отдельный профиль клиента не получает внутренний контекст или инструменты.</p></> : null}
+      {clientProvider === "element" ? <><label>Homeserver Matrix<input style={inputStyle} required type="url" value={clientElementHomeserver} disabled={pending} placeholder="https://matrix.example" onChange={(event) => setClientElementHomeserver(event.target.value)} /></label>
+        <label>Точная ссылка или ID комнаты<input style={inputStyle} required value={clientElementRoomReference} disabled={pending} placeholder="!room:matrix.example" onChange={(event) => setClientElementRoomReference(event.target.value)} /></label><p>Участниками комнаты управляет клиент. Этот контур не хранит member allowlist.</p></> : null}
+      <button style={buttonStyle} type="submit" disabled={pending}>{pending ? "Сохранение…" : "Сохранить метаданные каналов"}</button>
+    </form>
+    {message ? <p role="status">{message}</p> : null}
+  </section>;
+}
+
+export function ProjectHermesChatsTab(props: PluginDetailTabProps) { return <ProjectHermesChatsPanel {...props} />; }
+
 export function ProjectSetupWizardTab({context}: PluginDetailTabProps) {
   const [step, setStep] = useState(0);
   const [stepHydrated, setStepHydrated] = useState(false);
@@ -286,7 +354,7 @@ export function ProjectSetupWizardTab({context}: PluginDetailTabProps) {
       {step === 1 ? unavailable("Tracker and process setup") : null}
       {step === 2 ? <ProjectDocumentsPanel context={context} /> : null}
       {step === 3 ? <ProjectHermesPanel context={context} /> : null}
-      {step === 4 ? <><ProjectTeamRolesTab context={context} />{unavailable("Project chat setup")}</> : null}
+      {step === 4 ? <><ProjectTeamRolesTab context={context} /><ProjectHermesChatsPanel context={context} /></> : null}
       {step === 5 ? unavailable("Verification and first-task setup") : null}
     </div>
   </section>;

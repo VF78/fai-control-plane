@@ -69,6 +69,13 @@ const manifest: PaperclipPluginManifestV1 = {
         displayName: "Documents",
         exportName: "ProjectDocumentsTab",
         entityTypes: ["project"]
+      },
+      {
+        type: "detailTab",
+        id: "hermes-chats",
+        displayName: "Chats",
+        exportName: "ProjectHermesChatsTab",
+        entityTypes: ["project"]
       }
     ]
   }
