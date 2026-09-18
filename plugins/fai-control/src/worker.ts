@@ -1,3 +1,6 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { projectRuntime, checkRuntime, installRuntime, restartRuntime, verifyRuntimeRepository } from "./hermes-lifecycle.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
@@ -8,6 +11,8 @@ import { createProjectTeamRoleMapping, parseProjectTeamRoleMapping, projectTeamR
   type ProjectTeamRoleView } from "./team-roles.js";
 import { addProjectDocument, missingMandatoryDocuments, parseProjectDocumentState, prepareProjectContext,
   type ProjectDocumentState } from "./project-documents.js";
+
+import { hostBinding, assertNativeHermes, persistHermesContext, checkHermesAccess, parseHermesSetup, type HermesSetupView } from "./project-hermes.js";
 
 const execFileAsync = promisify(execFile);
 const stateKey = (projectId: string) => ({
@@ -34,6 +39,40 @@ const documentsStateKey = (projectId: string) => ({
   namespace: "documents",
   stateKey: "register"
 });
+const hermesBindingKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "host-binding"});
+const hermesStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "setup"});
+async function projectHostBinding(ctx: PluginContext, companyId: string, projectId: string, agentId: string) {
+  const config = await ctx.config.get(companyId);
+  const bindings = config.hermesHostBindings as Record<string, unknown> | undefined;
+  if (bindings && Object.entries(bindings).some(([id, raw]) => id !== projectId && raw && typeof raw === "object" && (raw as {agentId?: unknown}).agentId === agentId)) throw new Error("hermes_identity_shared_between_projects");
+  const stored = await ctx.state.get(hermesBindingKey(projectId));
+  return hostBinding(stored ?? bindings?.[projectId], companyId, projectId, agentId);
+}
+async function hermesView(ctx: PluginContext, projectId: string, companyId: string): Promise<HermesSetupView> {
+  await requireProject(ctx, projectId, companyId);
+  const state = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+  const docs = parseProjectDocumentState(await ctx.state.get(documentsStateKey(projectId)));
+  const base = {state, contextStale: !docs.context || docs.context.documentRevision !== docs.revision || state?.contextVersion !== docs.context.version, hostConfigured: false, connected: false, access: {oauth: false, github: false, ssh: false}, reason: null};
+  if (!state) {
+    const config = await ctx.config.get(companyId);
+    const candidate = (await ctx.state.get(hermesBindingKey(projectId)) ?? (config.hermesHostBindings as Record<string, unknown> | undefined)?.[projectId]) as {agentId?: unknown} | undefined;
+    try {
+      if (typeof candidate?.agentId === "string") {
+        const binding = await projectHostBinding(ctx, companyId, projectId, candidate.agentId);
+        assertNativeHermes(await ctx.agents.get(binding.agentId, companyId), binding);
+        await checkHermesAccess(binding);
+        base.hostConfigured = true;
+      }
+    } catch { /* an incomplete host entry never enables connection */ }
+    return base;
+  }
+  try {
+    const binding = await projectHostBinding(ctx, companyId, projectId, state.agentId);
+    base.hostConfigured = true;
+    assertNativeHermes(await ctx.agents.get(state.agentId, companyId), binding);
+    return {...base, connected: true, access: await checkHermesAccess(binding)};
+  } catch {return {...base, reason: "Hermes identity, host ownership, or context pointer needs operator verification."};}
+}
 const documentMutationTails = new Map<string, Promise<void>>();
 
 async function serializeDocumentMutation<T>(projectId: string, task: () => Promise<T>): Promise<T> {
@@ -67,6 +106,12 @@ function actionCompany(params: Record<string, unknown>, context: PluginPerformAc
   if (!companyId) throw new Error("company_scope_required");
   if (typeof params.companyId === "string" && params.companyId !== companyId) throw new Error("company_scope_mismatch");
   return companyId;
+}
+
+async function requireHostOperator(ctx: PluginContext, context: PluginPerformActionContext, companyId: string) {
+  if (context.actor.type !== "user" || !context.actor.userId) throw new Error("hermes_host_admin_required");
+  const members = await ctx.access.members.list({companyId});
+  if (!members.some(member => member.principalType === "user" && member.principalId === context.actor.userId && member.status === "active" && ["owner", "admin"].includes(member.membershipRole ?? ""))) throw new Error("hermes_host_admin_required");
 }
 
 async function readBinding(ctx: PluginContext, projectId: string): Promise<RepositoryBinding | null> {
@@ -160,6 +205,80 @@ async function verifyWithNativeGit(binding: RepositoryBinding): Promise<Reposito
 
 const plugin = definePlugin({
   async setup(ctx) {
+    ctx.data.register("project-hermes-runtime", async (params) => {
+      const companyId = inputString(params, "companyId"); const projectId = inputString(params, "projectId");
+      await requireProject(ctx, projectId, companyId);
+      const runtime = projectRuntime(companyId, projectId);
+      const agents = await ctx.agents.list({companyId});
+      const candidates = agents.filter(agent => agent.name === `${runtime.runtimeId} Hermes` && agent.adapterType === "hermes_gateway" && agent.status !== "terminated");
+      if (candidates.length > 1) throw new Error("hermes_duplicate_identity_operator_action_required");
+      return {...await checkRuntime(runtime), nativeAgentId: candidates[0]?.id ?? null};
+    });
+    ctx.actions.register("install-project-hermes-runtime", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
+      await requireHostOperator(ctx, context, companyId);
+      await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, () => installRuntime(projectRuntime(companyId, projectId)));
+    });
+    ctx.actions.register("restart-project-hermes-runtime", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
+      await requireHostOperator(ctx, context, companyId);
+      await requireProject(ctx, projectId, companyId);
+      const state = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+      if (!state || params.expectedRevision !== state.revision) throw new Error("hermes_version_conflict_refresh_required");
+      const agent = await ctx.agents.get(state.agentId, companyId);
+      if (!agent || agent.status !== "paused") throw new Error("hermes_pause_native_agent_before_restart");
+      return serializeDocumentMutation(projectId, () => restartRuntime(projectRuntime(companyId, projectId)));
+    });
+    ctx.actions.register("verify-project-hermes-repository", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
+      await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
+      const binding = await readBinding(ctx, projectId);
+      if (!binding) throw new Error("repository_binding_not_configured");
+      return serializeDocumentMutation(projectId, () => verifyRuntimeRepository(projectRuntime(companyId, projectId), binding.repositoryUrl, binding.ref));
+    });
+    ctx.actions.register("connect-installed-project-hermes", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId"); const agentId = inputString(params, "agentId");
+      await requireHostOperator(ctx, context, companyId);
+      await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+        const current = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+        if (current && current.agentId !== agentId) throw new Error("hermes_persistent_identity_conflict");
+        const checked = await checkRuntime(projectRuntime(companyId, projectId));
+        if (checked.status !== "running" || !checked.runtime.apiBaseUrl) throw new Error("hermes_running_gateway_required");
+        const binding = hostBinding({...checked.runtime, agentId}, companyId, projectId, agentId);
+        const agent = await ctx.agents.get(agentId, companyId);
+        assertNativeHermes(agent, binding);
+        if (agent?.name !== `${binding.runtimeWorkspace.split("/").at(-1)} Hermes`) throw new Error("hermes_native_project_name_mismatch");
+        const markerPath = join(binding.root, ".fai-project.json");
+        const marker = JSON.parse(await readFile(markerPath, "utf8"));
+        if (marker.companyId !== companyId || marker.projectId !== projectId || (marker.agentId && marker.agentId !== agentId)) throw new Error("hermes_workspace_ownership_conflict");
+        await writeFile(markerPath, JSON.stringify({...marker, agentId}), {mode: 0o600});
+        await ctx.state.set(hermesBindingKey(projectId), binding);
+        return hermesView(ctx, projectId, companyId);
+      });
+    });
+    ctx.data.register("project-hermes-setup", async (params) => hermesView(ctx, inputString(params, "projectId"), inputString(params, "companyId")));
+    ctx.actions.register("apply-project-hermes-context", async (params, context) => {
+      const projectId = inputString(params, "projectId");
+      const companyId = actionCompany(params, context);
+      return serializeDocumentMutation(projectId, async () => {
+        await requireHostOperator(ctx, context, companyId);
+      await requireProject(ctx, projectId, companyId);
+        const current = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+        const agentId = inputString(params, "agentId");
+        if (current && current.agentId !== agentId) throw new Error("hermes_persistent_identity_conflict");
+        if (params.expectedRevision !== (current?.revision ?? 0)) throw new Error("hermes_version_conflict_refresh_required");
+        const binding = await projectHostBinding(ctx, companyId, projectId, agentId);
+        assertNativeHermes(await ctx.agents.get(agentId, companyId), binding);
+        const docs = parseProjectDocumentState(await ctx.state.get(documentsStateKey(projectId)));
+        if (!docs.context || docs.context.documentRevision !== docs.revision || missingMandatoryDocuments(docs).length) throw new Error("hermes_current_context_required");
+        if (params.contextVersion !== docs.context.version) throw new Error("hermes_context_version_conflict");
+        await persistHermesContext(binding, docs.context);
+        if (current?.contextVersion !== docs.context.version) await ctx.state.set(hermesStateKey(projectId), {agentId, revision: (current?.revision ?? 0) + 1, contextVersion: docs.context.version});
+        return hermesView(ctx, projectId, companyId);
+      });
+    });
     ctx.data.register("project-repository-binding", async (params) => {
       const projectId = inputString(params, "projectId");
       const companyId = inputString(params, "companyId");

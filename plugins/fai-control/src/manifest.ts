@@ -10,12 +10,32 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["connector", "ui"],
   capabilities: [
     "projects.read",
+    "agents.read",
     "access.members.read",
     "plugin.state.read",
     "plugin.state.write",
     "ui.detailTab.register",
     "ui.action.register"
   ],
+  instanceConfigSchema: {
+    type: "object",
+    properties: {
+      hermesHostBindings: {
+        type: "object",
+        description: "Operator-provisioned project host references. No credential values. Root must be /var/lib/fai-control/hermes/<companyId>/<projectId>.",
+        additionalProperties: {
+          type: "object",
+          required: ["companyId", "projectId", "agentId", "root", "apiBaseUrl", "runtimeWorkspace"],
+          additionalProperties: false,
+          properties: {
+            companyId: {type: "string"}, projectId: {type: "string"}, agentId: {type: "string"},
+            root: {type: "string"}, apiBaseUrl: {type: "string"}, runtimeWorkspace: {type: "string"}
+          }
+        }
+      }
+    },
+    additionalProperties: false
+  },
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"
