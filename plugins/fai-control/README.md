@@ -61,3 +61,38 @@ This is a local trusted-code development path, not a production deployment.
 Set `FAI_GIT_BIN` only when the local Paperclip worker needs a non-default native
 Git executable; the macOS development path automatically prefers Command Line
 Tools Git and sets `GIT_TERMINAL_PROMPT=0` for verification.
+
+### Persistent Hermes connection (operator-provisioned host)
+
+Setup stage 4 connects an **existing** native `hermes_gateway` agent. It stages
+current compact document context into its persistent workspace; it does not
+launch a task or claim Hermes has read it. The native agent remains the owner of
+execution and chats. Context includes the approved Dev CLI / separate native
+`codex_local` QA / human approval boundary; documents are untrusted reference data.
+
+Configure the plugin through native company plugin settings `hermesHostBindings`,
+keyed by project ID. Each entry contains `companyId`, `projectId`, `agentId`,
+`apiBaseUrl`, `root`, and `runtimeWorkspace`. These are host references only.
+`root` must be `/var/lib/fai-control/hermes/<companyId>/<projectId>`;
+`runtimeWorkspace` must be `/opt/data/work/<runtime-id>`. The pre-existing
+workspace is `root/data/work/<runtime-id>`. Its host ownership marker
+`root/.fai-project.json` must contain the same company/project/agent IDs.
+The native agent's gateway URL must match `apiBaseUrl`, and its native instructions
+must explicitly refer to `<runtimeWorkspace>/.fai-context/project.md`.
+Native Core supports agent creation via `POST /api/companies/:companyId/agents`
+and configuration via `PATCH /api/agents/:id`; this slice uses scoped SDK reads
+rather than building a separate agent controller.
+
+Context writes are atomic, idempotent, scoped to the owned workspace, and use its
+UID/GID. A host unable to assign this ownership fails the action. Existing memory,
+sessions, credentials and chats are untouched. Setup state stores only the native
+identity, revision and context version; a stale request preserves confirmed state.
+Credential-file presence checks neither read nor return credential values and do
+not prove remote repository/SSH authorization.
+
+Still required for full installation acceptance: project-scoped host provisioning
+of the retained Hermes image and persistent mounts, native gateway secret reference,
+Codex/ChatGPT device authentication (no paid API), actual repository/SSH access
+checks, and an ownership-checked restart/recovery. Installation, auth and restart
+controls are intentionally absent until that host contract is implemented. No live
+runtime, VPS or protected neighbour has been changed by this slice.

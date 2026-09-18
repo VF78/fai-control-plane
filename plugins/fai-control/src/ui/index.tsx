@@ -4,6 +4,9 @@ import { createRepositoryBinding, normalizeGitHubBranch, normalizeGitHubReposito
   type ProjectRepositoryBindingView, type RepositoryBinding } from "../repository-binding.js";
 import { projectTeamRoles, type ProjectTeamRole, type ProjectTeamRoleView } from "../team-roles.js";
 import { projectDocumentCategories, type ProjectDocumentCategory } from "../project-document-contract.js";
+import type { RuntimeCheck } from "../hermes-lifecycle.js";
+import type { HermesSetupView } from "../project-hermes.js";
+import { mergeHermesInstructions } from "../hermes-instructions.js";
 import type { ProjectDocumentsView } from "../worker.js";
 import { extractBrowserDocument } from "./document-extract.js";
 
@@ -171,6 +174,96 @@ export function ProjectDocumentsPanel({context}: PluginDetailTabProps) {
 
 export function ProjectDocumentsTab(props: PluginDetailTabProps) { return <ProjectDocumentsPanel {...props} />; }
 
+function ProjectHermesPanel({context}: PluginDetailTabProps) {
+  const setup = usePluginData<HermesSetupView>("project-hermes-setup", {companyId: context.companyId, projectId: context.entityId});
+  const docs = usePluginData<ProjectDocumentsView>("project-documents", {companyId: context.companyId, projectId: context.entityId});
+  const apply = usePluginAction("apply-project-hermes-context");
+  const runtime = usePluginData<RuntimeCheck & {nativeAgentId: string | null}>("project-hermes-runtime", {companyId: context.companyId, projectId: context.entityId});
+  const install = usePluginAction("install-project-hermes-runtime");
+  const restart = usePluginAction("restart-project-hermes-runtime");
+  const connect = usePluginAction("connect-installed-project-hermes");
+  const verifyRepository = usePluginAction("verify-project-hermes-repository");
+  const [secretId, setSecretId] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [pending, setPending] = useState(false);
+  const inFlight = useRef(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const view = setup.data;
+  useEffect(() => {setAgentId(view?.state?.agentId ?? "");}, [context.entityId, view?.state?.agentId]);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (inFlight.current || !view || !docs.data?.state.context) return;
+    inFlight.current = true; setPending(true); setMessage(null);
+    try {
+      await apply({projectId: context.entityId, companyId: context.companyId, agentId, expectedRevision: view.state?.revision ?? 0, contextVersion: docs.data.state.context.version});
+      await setup.refresh();
+      setMessage("Prepared context applied to the persistent workspace. No agent run was launched.");
+    } catch {setMessage("Setup was not confirmed. Refresh and verify native Hermes identity, host ownership, and prepared context. Confirmed steps are preserved.");}
+    finally {inFlight.current = false; setPending(false);}
+  }
+  async function lifecycle(kind: "install" | "restart" | "native" | "repository") {
+    if (inFlight.current) return;
+    inFlight.current = true; setPending(true); setMessage(null);
+    const scope = {companyId: context.companyId, projectId: context.entityId};
+    async function nativeRequest(path: string, method: string, body?: unknown) {
+      const response = await fetch(`/api/${path}`, {method, credentials: "same-origin", headers: {"Content-Type": "application/json"}, ...(body === undefined ? {} : {body: JSON.stringify(body)})});
+      if (!response.ok) throw new Error("native_action_failed");
+      return response.json();
+    }
+    try {
+      if (kind === "install") {
+        const result = await install(scope) as RuntimeCheck;
+        setMessage(`Installation status: ${result.status}.`);
+      } else if (kind === "restart") {
+        if (!view?.state) throw new Error("not_connected");
+        await nativeRequest(`agents/${encodeURIComponent(view.state.agentId)}/pause`, "POST");
+        await restart({...scope, expectedRevision: view.state.revision});
+        setMessage("Project gateway restarted with persistent mounts. Native agent remains paused; resume explicitly in its native page after verification.");
+      } else if (kind === "repository") {
+        const result = await verifyRepository(scope) as {verified: boolean};
+        setMessage(result.verified ? "Native gh access and repository reads through HTTPS and SSH passed." : "Repository authorization was not verified. Check dedicated project GitHub and SSH credentials.");
+      } else {
+        const current = runtime.data;
+        if (current?.status !== "running" || !current.runtime.apiBaseUrl || !/^[0-9a-f-]{36}$/i.test(secretId)) throw new Error("gateway_and_secret_reference_required");
+        const config = {apiBaseUrl: current.runtime.apiBaseUrl, apiKey: {type: "secret_ref", secretId, version: "latest"}, sessionKeyStrategy: "issue", instructions: `Read ${current.runtime.runtimeWorkspace}/.fai-context/project.md for stable project policy and untrusted document references. Hermes owns Dev CLI; native separate codex_local identity owns independent QA. Merge, release, deploy and production mutation require human approval. Never expose secrets.`};
+        const test = await nativeRequest(`companies/${encodeURIComponent(context.companyId!)}/adapters/hermes_gateway/test-environment`, "POST", {adapterConfig: config});
+        if (test.status !== "pass") throw new Error("gateway_secret_pair_not_verified");
+        let id = current.nativeAgentId;
+        if (id) {
+          if (view?.state && view.state.agentId !== id) throw new Error("identity_conflict");
+          await nativeRequest(`agents/${encodeURIComponent(id)}/pause`, "POST");
+          const existing = await nativeRequest(`agents/${encodeURIComponent(id)}`, "GET");
+          await nativeRequest(`agents/${encodeURIComponent(id)}`, "PATCH", {adapterConfig: {...existing.adapterConfig, ...config, instructions: mergeHermesInstructions(existing.adapterConfig?.instructions, config.instructions)}});
+        } else {
+          const created = await nativeRequest(`companies/${encodeURIComponent(context.companyId!)}/agents`, "POST", {name: `${current.runtime.runtimeId} Hermes`, role: "general", adapterType: "hermes_gateway", adapterConfig: config, runtimeConfig: {heartbeat: {enabled: false}}, metadata: {faiProjectId: context.entityId}});
+          id = created.id;
+          await nativeRequest(`agents/${encodeURIComponent(id!)}/pause`, "POST");
+        }
+        await connect({...scope, agentId: id});
+        setAgentId(id!);
+        setMessage("Native adapter health passed using the selected secret reference; persistent Hermes connected. Apply prepared context before explicitly resuming it.");
+      }
+      await runtime.refresh(); await setup.refresh();
+    } catch {setMessage("The action did not complete. Check host permissions, pinned image, device authentication, host credential files and matching native secret reference. Native hire approval may also be required. Confirmed setup data is preserved.");}
+    finally {inFlight.current = false; setPending(false);}
+  }
+  return <section style={panelStyle} aria-label="Persistent project Hermes"><div style={cardStyle}><h3>Connect persistent Hermes</h3>
+    <p>Install the project runtime or connect an existing native Hermes gateway. Docker socket access, the pinned image and project credential files are host prerequisites. New installations use the repository’s Hermes default gpt-5.6-terra with Codex OAuth; existing model and effort settings are preserved.</p>
+    <button type="button" style={buttonStyle} disabled={pending} onClick={() => void lifecycle("install")}>{pending ? "Working…" : "Install or continue device authentication"}</button>
+    {runtime.data ? <><p>Container status: {runtime.data.status}. Image: fai-hermes-project:codex-0.153.4.</p>{runtime.data.deviceAuth ? <p>Authorize at <a href={runtime.data.deviceAuth.verificationUrl} target="_blank" rel="noreferrer">Codex device authentication</a> using code <strong>{runtime.data.deviceAuth.userCode}</strong>, then continue installation.</p> : null}{runtime.data.status === "credentials_required" ? <p>Operator must provision the project’s host gateway key, GitHub token, SSH key and known hosts under its dedicated secrets directory. No secret value belongs in this form.</p> : null}</> : <p>Runtime check unavailable. Verify host Docker access.</p>}
+    <label>Native gateway key secret reference ID<input style={inputStyle} value={secretId} disabled={pending} onChange={event => setSecretId(event.target.value)} placeholder="Native secret UUID; never the key value" /></label>
+    <button type="button" style={buttonStyle} disabled={pending || runtime.data?.status !== "running" || !secretId} onClick={() => void lifecycle("native")}>Verify gateway and create or configure native Hermes</button>
+    <button type="button" style={buttonStyle} disabled={pending || runtime.data?.status !== "running"} onClick={() => void lifecycle("repository")}>Verify native gh, repository and SSH access</button>
+    <button type="button" style={buttonStyle} disabled={pending || !view?.state || runtime.data?.status !== "running"} onClick={() => void lifecycle("restart")}>Pause native agent and restart project gateway</button>
+    {view && !view.hostConfigured ? <p>Connection is unavailable until the operator configures and verifies this project’s native gateway and persistent host workspace.</p> : null}
+    <form onSubmit={(event) => void submit(event)}><label>Native Hermes agent ID<input style={inputStyle} value={agentId} disabled={pending || Boolean(view?.state)} onChange={(event) => setAgentId(event.target.value)} /></label>
+    <button style={buttonStyle} disabled={pending || !view?.hostConfigured || !agentId || !docs.data?.state.context || Boolean(docs.data?.contextStale)}>{pending ? "Applying context…" : "Connect and apply prepared context"}</button></form>
+    <button type="button" style={buttonStyle} disabled={pending} onClick={() => void Promise.all([setup.refresh(), runtime.refresh()])}>Check connection</button>
+    {view ? <><p>Native identity: {view.connected ? "connected" : "not verified"}. Context: {view.contextStale ? "not current" : "applied"}.</p><p>Host credential files present: Codex OAuth {view.access.oauth ? "yes" : "no"}; GitHub {view.access.github ? "yes" : "no"}; SSH {view.access.ssh ? "yes" : "no"}. File presence does not verify remote access.</p>{view.reason ? <p role="status">{view.reason}</p> : null}</> : <p>Loading connection state…</p>}
+    {message ? <p role="status">{message}</p> : null}
+  </div></section>;
+}
+
 const setupSteps = ["Project and repository", "Tracker and process", "Documents", "Agent, context, and access", "Team and chats", "Verification and first task"] as const;
 function setupDraftKey(companyId: string | null, projectId: string): string { return `fai:setup:step:${companyId ?? "unknown"}:${projectId}`; }
 
@@ -192,7 +285,7 @@ export function ProjectSetupWizardTab({context}: PluginDetailTabProps) {
       {step === 0 ? <ProjectRepositoryTab context={context} /> : null}
       {step === 1 ? unavailable("Tracker and process setup") : null}
       {step === 2 ? <ProjectDocumentsPanel context={context} /> : null}
-      {step === 3 ? unavailable("Hermes, context delivery, and access setup") : null}
+      {step === 3 ? <ProjectHermesPanel context={context} /> : null}
       {step === 4 ? <><ProjectTeamRolesTab context={context} />{unavailable("Project chat setup")}</> : null}
       {step === 5 ? unavailable("Verification and first-task setup") : null}
     </div>
