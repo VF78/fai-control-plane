@@ -53,7 +53,7 @@ export async function prepareHost(runtime: ProjectRuntime) {
   try {stored = JSON.parse(await readFile(marker, "utf8"));} catch (error) {if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("hermes_workspace_ownership_conflict");}
   if (stored && (stored.companyId !== runtime.companyId || stored.projectId !== runtime.projectId)) throw new Error("hermes_workspace_ownership_conflict");
   if (!stored) await writeFile(marker, JSON.stringify({companyId: runtime.companyId, projectId: runtime.projectId, runtimeId: runtime.runtimeId}), {flag: "wx", mode: 0o600});
-  for (const suffix of ["data", "data/work", `data/work/${runtime.runtimeId}`, "codex-home", "secrets"]) {
+  for (const suffix of ["data", "data/home", "data/home/.ssh", "data/work", `data/work/${runtime.runtimeId}`, "codex-home", "secrets"]) {
     const directory = join(runtime.root, suffix); await mkdir(directory, {recursive: true, mode: 0o700});
     if (await realpath(directory) !== directory) throw new Error("hermes_symlink_forbidden");
     await chmod(directory, 0o700); await chown(directory, 10000, 10000);
@@ -114,20 +114,27 @@ export async function restartRuntime(runtime: ProjectRuntime, engine: Docker = d
   return checkRuntime(runtime, engine);
 }
 
-export async function verifyRuntimeRepository(runtime: ProjectRuntime, httpsUrl: string, ref: string, engine: Docker = docker) {
+const pause = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+export async function verifyRuntimeRepository(runtime: ProjectRuntime, httpsUrl: string, ref: string, engine: Docker = docker, wait: (milliseconds: number) => Promise<void> = pause) {
   if (!await inspectOwned(runtime, "gateway", engine)) throw new Error("hermes_runtime_not_installed");
   const repository = normalizeGitHubRepositoryUrl(httpsUrl);
   if (!/^refs\/heads\/[A-Za-z0-9_./-]+$/.test(ref)) throw new Error("hermes_repository_binding_invalid");
   const sshUrl = `git@github.com:${repository.owner}/${repository.repository}.git`;
   const created = await engine("POST", `/containers/${name(runtime, "gateway")}/exec`, {
     User: "10000:10000", AttachStdout: false, AttachStderr: false,
-    Env: ["HOME=/opt/data/home", "GH_CONFIG_DIR=/opt/data/home/.config/gh", "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"],
+    Env: ["HOME=/opt/data/home", "GH_CONFIG_DIR=/opt/data/home/.config/gh", "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -i /opt/data/home/.ssh/id_ed25519 -o UserKnownHostsFile=/opt/data/home/.ssh/known_hosts -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"],
     Cmd: ["timeout", "15", "sh", "-c", 'gh auth status >/dev/null 2>&1 && git ls-remote --exit-code "$1" "$3" >/dev/null 2>&1 && git ls-remote --exit-code "$2" "$3" >/dev/null 2>&1', "fai-repository-check", httpsUrl, sshUrl, ref]
   }); expect(created.status, [201]);
   const id = JSON.parse(created.body.toString()).Id;
   if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) throw new Error("hermes_exec_identity_invalid");
-  const started = await engine("POST", `/exec/${id}/start`, {Detach: false, Tty: false}); expect(started.status, [200]);
-  const checked = await engine("GET", `/exec/${id}/json`); expect(checked.status, [200]);
-  const result = JSON.parse(checked.body.toString());
-  return {verified: result.Running === false && result.ExitCode === 0, checkedAt: new Date().toISOString()};
+  const started = await engine("POST", `/exec/${id}/start`, {Detach: true, Tty: false}); expect(started.status, [200]);
+  const deadline = Date.now() + 17_000;
+  do {
+    const checked = await engine("GET", `/exec/${id}/json`); expect(checked.status, [200]);
+    const result = JSON.parse(checked.body.toString());
+    if (result.Running === false) return {verified: result.ExitCode === 0, checkedAt: new Date().toISOString()};
+    if (Date.now() >= deadline) break;
+    await wait(Math.min(100, Math.max(0, deadline - Date.now())));
+  } while (Date.now() < deadline);
+  return {verified: false, checkedAt: new Date().toISOString()};
 }

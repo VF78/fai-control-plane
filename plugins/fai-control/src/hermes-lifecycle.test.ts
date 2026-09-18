@@ -5,7 +5,8 @@ vi.mock("node:fs/promises", () => ({
   lstat: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});}),
   readFile: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});})
 }));
-import { checkRuntime, installRuntime, inspectOwned, labels, projectRuntime, restartRuntime, runtimeSpec, verifyRuntimeRepository, type Docker } from "./hermes-lifecycle.js";
+import { mkdir } from "node:fs/promises";
+import { checkRuntime, installRuntime, inspectOwned, labels, prepareHost, projectRuntime, restartRuntime, runtimeSpec, verifyRuntimeRepository, type Docker } from "./hermes-lifecycle.js";
 const runtime = projectRuntime("company", "project");
 const image = {Id: `sha256:${"a".repeat(64)}`, Config: {Entrypoint: ["/init"]}};
 const response = (status: number, body: unknown = {}) => ({status, body: Buffer.from(typeof body === "string" ? body : JSON.stringify(body))});
@@ -18,6 +19,10 @@ test("gateway keeps image s6 as PID1 and bootstraps its mapped persistent user",
   expect(spec.HostConfig.Init).toBe(false);
   expect(spec.Env).toEqual(expect.arrayContaining(["HERMES_UID=10000", "HERMES_GID=10000", "HERMES_GATEWAY_BOOTSTRAP_STATE=running", "API_SERVER_ENABLED=true"]));
   expect(runtimeSpec(runtime, "auth", image.Id).HostConfig.Init).toBe(true);
+});
+test("new project runtime owns the SSH mount parent before Docker creates a gateway", async () => {
+  await prepareHost(runtime);
+  expect(vi.mocked(mkdir)).toHaveBeenCalledWith(`${runtime.root}/data/home/.ssh`, {recursive: true, mode: 0o700});
 });
 test("missing exact pinned image is explicit and does not mutate Docker", async () => {
   const engine = vi.fn<Docker>(async () => response(404));
@@ -76,6 +81,35 @@ test("canonical repository URL verifies HTTPS and SSH without requiring .git", a
   expect((await verifyRuntimeRepository(runtime, "https://github.com/VF78/fai-control-plane", "refs/heads/main", engine)).verified).toBe(true);
   const command = (engine.mock.calls.find(([, path]) => path.endsWith("/exec"))?.[2] as {Cmd: string[]}).Cmd;
   expect(command.slice(-3)).toEqual(["https://github.com/VF78/fai-control-plane", "git@github.com:VF78/fai-control-plane.git", "refs/heads/main"]);
+  expect(engine.mock.calls.find(([, path]) => path.endsWith("/start"))?.[2]).toEqual({Detach: true, Tty: false});
+});
+test("repository verification waits for terminal exec state", async () => {
+  const id = "d".repeat(64); let inspections = 0;
+  const engine = vi.fn<Docker>(async (_, path) => {
+    if (path.startsWith("/images/")) return response(200, image);
+    if (path.endsWith("/exec")) return response(201, {Id: id});
+    if (path.endsWith("/start")) return response(200);
+    if (path === `/exec/${id}/json`) return response(200, inspections++ === 0 ? {Running: true, ExitCode: null} : {Running: false, ExitCode: 0});
+    return response(200, container("gateway"));
+  });
+  expect((await verifyRuntimeRepository(runtime, "https://github.com/VF78/fai-control-plane", "refs/heads/main", engine, async () => {})).verified).toBe(true);
+  expect(inspections).toBe(2);
+});
+test("repository verification fails closed when exec never finishes", async () => {
+  const id = "e".repeat(64);
+  vi.useFakeTimers();
+  try {
+    const engine = vi.fn<Docker>(async (_, path) => {
+      if (path.startsWith("/images/")) return response(200, image);
+      if (path.endsWith("/exec")) return response(201, {Id: id});
+      if (path.endsWith("/start")) return response(200);
+      if (path === `/exec/${id}/json`) return response(200, {Running: true, ExitCode: 0});
+      return response(200, container("gateway"));
+    });
+    const result = verifyRuntimeRepository(runtime, "https://github.com/VF78/fai-control-plane", "refs/heads/main", engine);
+    await vi.advanceTimersByTimeAsync(17_000);
+    expect((await result).verified).toBe(false);
+  } finally {vi.useRealTimers();}
 });
 
 test("native instruction retry preserves original text and uses real newlines", async () => {
