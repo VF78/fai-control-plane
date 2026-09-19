@@ -410,7 +410,7 @@ function ProjectSetupReadinessPanel({context}: PluginDetailTabProps) {
     tracker: tracker.data,
     documentsReady: documents.data.missingMandatory.length === 0 && !documents.data.contextStale && documents.data.state.context !== null,
     hermesReady: hermes.data.connected && !hermes.data.contextStale && hermes.data.access.oauth && hermes.data.access.github && hermes.data.access.ssh,
-    teamReady: Object.keys(team.data.mapping.assignments).length > 0,
+    teamReady: ["owner", "pm", "executor"].every((role) => Boolean(team.data!.mapping.assignments[role as ProjectTeamRole])),
     chatsReady: (chats.data.state.internal !== null || chats.data.state.client !== null) && chats.data.nativeCapability === "configuration_verified"
   });
   const rows: readonly [string, boolean, string][] = [

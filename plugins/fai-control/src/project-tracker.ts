@@ -28,7 +28,7 @@ export function parseTracker(value: unknown): TrackerBinding {
   return {...clean, revision: v.revision, externalProjectId: typeof v.externalProjectId === "string" && /^PVT_[A-Za-z0-9_-]+$/.test(v.externalProjectId) ? v.externalProjectId : null,
     readback: readback && ["verified", "unverified"].includes(readback.status) && typeof readback.checkedAt === "string" && typeof readback.repositoryUrl === "string" && typeof readback.projectId === "string" ? {status: readback.status, checkedAt: readback.checkedAt, repositoryUrl: readback.repositoryUrl, projectId: readback.projectId} : null};
 }
-export function trackerReady(binding: TrackerBinding) { return binding.mode === "internal"; }
+export function trackerReady(binding: TrackerBinding) { return binding.mode === "internal" && binding.revision > 0; }
 
 /** A successful GitHub readback confirms credentials only. No external write connector exists yet. */
 export function recordTrackerReadback(current: TrackerBinding, expectedRevision: number, repositoryUrl: string, result: TrackerReadback): TrackerBinding {
