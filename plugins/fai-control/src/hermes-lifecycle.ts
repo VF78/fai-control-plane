@@ -200,6 +200,19 @@ async function runDetachedExec(runtime: ProjectRuntime, payload: Record<string, 
   return waitForExec(engine, id);
 }
 
+/** Sends one bounded notification through the existing internal Hermes profile.
+ * This is a direct platform command: it neither starts an agent run nor invokes a model. */
+export async function sendInternalTelegramNotification(runtime: ProjectRuntime, chatId: string, message: string, engine: Docker = docker) {
+  if (!/^-?\d{1,20}$/.test(chatId) || message.length === 0 || message.length > 1_000 || message.includes("\0")) throw new Error("hermes_notification_invalid");
+  const owned = await inspectOwned(runtime, "gateway", engine);
+  if (!owned?.State?.Running) throw new Error("hermes_runtime_not_running");
+  const result = await runDetachedExec(runtime, {
+    Env: ["HERMES_HOME=/opt/data/profiles/internal"],
+    Cmd: ["timeout", "15", "hermes", "send", "--quiet", "--to", `telegram:${chatId}`, message]
+  }, engine);
+  if (result.ExitCode !== 0) throw new Error("hermes_notification_delivery_failed");
+}
+
 export async function verifyRuntimeRepository(runtime: ProjectRuntime, httpsUrl: string, ref: string, engine: Docker = docker) {
   if (!await inspectOwned(runtime, "gateway", engine)) throw new Error("hermes_runtime_not_installed");
   const repository = normalizeGitHubRepositoryUrl(httpsUrl);

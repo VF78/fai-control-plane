@@ -5,7 +5,7 @@ vi.mock("node:fs/promises", () => ({
   lstat: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});}),
   readFile: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});})
 }));
-import { checkRuntime, initializeHostGithubCredential, installRuntime, inspectOwned, labels, prepareHost, projectRuntime, restartRuntime, runtimeSpec, verifyRuntimeRepository, verifyRuntimeTracker, writeHostGithubCredential, type Docker } from "./hermes-lifecycle.js";
+import { checkRuntime, initializeHostGithubCredential, installRuntime, inspectOwned, labels, prepareHost, projectRuntime, restartRuntime, runtimeSpec, sendInternalTelegramNotification, verifyRuntimeRepository, verifyRuntimeTracker, writeHostGithubCredential, type Docker } from "./hermes-lifecycle.js";
 const runtime = projectRuntime("company", "project");
 const image = {Id: `sha256:${"a".repeat(64)}`, Config: {Entrypoint: ["/init"]}};
 const response = (status: number, body: unknown = {}) => ({status, body: Buffer.from(typeof body === "string" ? body : JSON.stringify(body))});
@@ -122,6 +122,21 @@ test("tracker readback uses detached polling and never exposes native output", a
   const payload = engine.mock.calls.find(([, path]) => path.endsWith("/exec"))?.[2] as {AttachStdout: boolean; AttachStderr: boolean; Cmd: string[]};
   expect(payload).toMatchObject({AttachStdout: false, AttachStderr: false});
   expect(payload.Cmd.join(" ")).not.toContain("--jq .id");
+});
+
+test("internal status send uses the owned Hermes profile and reports a non-zero exit without output", async () => {
+  const id = "e".repeat(64);
+  const engine = vi.fn<Docker>(async (_, path) => {
+    if (path.startsWith("/images/")) return response(200, image);
+    if (path.endsWith("/exec")) return response(201, {Id: id});
+    if (path.endsWith("/start")) return response(200, "must-not-escape");
+    if (path === `/exec/${id}/json`) return response(200, {Running: false, ExitCode: 1});
+    return response(200, container("gateway"));
+  });
+  await expect(sendInternalTelegramNotification(runtime, "-1001", "Paperclip status", engine)).rejects.toThrow("hermes_notification_delivery_failed");
+  const payload = engine.mock.calls.find(([, path]) => path.endsWith("/exec"))?.[2] as {Env: string[]; Cmd: string[]; AttachStdout: boolean; AttachStderr: boolean};
+  expect(payload).toMatchObject({Env: ["HERMES_HOME=/opt/data/profiles/internal"], AttachStdout: false, AttachStderr: false});
+  expect(payload.Cmd).toEqual(["timeout", "15", "hermes", "send", "--quiet", "--to", "telegram:-1001", "Paperclip status"]);
 });
 
 test("native instruction retry preserves original text and uses real newlines", async () => {

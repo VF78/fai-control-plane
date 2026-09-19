@@ -10,10 +10,12 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["connector", "ui"],
   capabilities: [
     "projects.read",
+    "issues.read",
     "agents.read",
     "access.members.read",
     "plugin.state.read",
     "plugin.state.write",
+    "events.subscribe",
     "ui.detailTab.register",
     "ui.action.register"
   ],

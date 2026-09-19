@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { renderHermesContext } from "./hermes-instructions.js";
 import { readChatRuntime, writeChatRuntime, chatSecretFiles } from "./hermes-chats-runtime.js";
-import { docker, inspectOwned, projectRuntime, checkRuntime, installRuntime, restartRuntime, verifyRuntimeRepository, verifyRuntimeTracker } from "./hermes-lifecycle.js";
+import { docker, inspectOwned, projectRuntime, checkRuntime, installRuntime, restartRuntime, sendInternalTelegramNotification, verifyRuntimeRepository, verifyRuntimeTracker } from "./hermes-lifecycle.js";
 import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { createRepositoryBinding, normalizeGitHubBranch, normalizeGitHubRepositoryUrl, parseRepositoryBinding,
   type ProjectRepositoryBindingView, type RepositoryAccess, type RepositoryBinding } from "./repository-binding.js";
@@ -15,6 +15,7 @@ import { createProjectChatsState, parseProjectChatsState, projectChatsView, type
 import { verifyWithNativeGit } from "./native-git.js";
 import { assertProjectQa, parseProjectQaState, selectProjectQaCandidate, type ProjectQaView, type QaAgent } from "./project-qa.js";
 import { verifyProjectQaInstructions } from "./project-qa-runtime.js";
+import { canonicalStatusTransition, parseStatusDeliveryState, recordStatusDelivery, statusDeliveryKey, statusNotificationMessage } from "./status-notifications.js";
 
 import { hostBinding, assertNativeHermes, persistHermesContext, checkHermesAccess, parseHermesRepositoryVerification, parseHermesSetup, refreshHermesRepositoryVerification, type HermesSetupView } from "./project-hermes.js";
 
@@ -48,6 +49,7 @@ const hermesRepositoryKey = (projectId: string) => ({scopeKind: "project" as con
 const qaStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "qa", stateKey: "identity"});
 const trackerStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "tracker", stateKey: "binding"});
 const chatsStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "chats", stateKey: "configuration"});
+const statusDeliveryStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "notifications", stateKey: "status-deliveries"});
 async function projectHostBinding(ctx: PluginContext, companyId: string, projectId: string, agentId: string) {
   const config = await ctx.config.get(companyId);
   const bindings = config.hermesHostBindings as Record<string, unknown> | undefined;
@@ -102,6 +104,7 @@ async function qaView(ctx: PluginContext, projectId: string, companyId: string):
   } catch {return {state, candidateAgentId, configured: false, reason: "QA identity, loaded instructions, or its project-scoped native policy needs operator verification."};}
 }
 const documentMutationTails = new Map<string, Promise<void>>();
+const statusNotificationTails = new Map<string, Promise<void>>();
 
 async function serializeDocumentMutation<T>(projectId: string, task: () => Promise<T>): Promise<T> {
   const previous = documentMutationTails.get(projectId) ?? Promise.resolve();
@@ -114,6 +117,16 @@ async function serializeDocumentMutation<T>(projectId: string, task: () => Promi
     release?.();
     if (documentMutationTails.get(projectId) === current) documentMutationTails.delete(projectId);
   }
+}
+
+async function serializeStatusNotification<T>(projectId: string, task: () => Promise<T>): Promise<T> {
+  const previous = statusNotificationTails.get(projectId) ?? Promise.resolve();
+  let release: (() => void) | undefined;
+  const current = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
+  statusNotificationTails.set(projectId, current);
+  await previous;
+  try { return await task(); }
+  finally { release?.(); if (statusNotificationTails.get(projectId) === current) statusNotificationTails.delete(projectId); }
 }
 
 function inputString(params: Record<string, unknown>, key: string): string {
@@ -230,6 +243,37 @@ function idempotencyKey(params: Record<string, unknown>): string {
 
 const plugin = definePlugin({
   async setup(ctx) {
+    ctx.events.on("issue.updated", async (event) => {
+      if (event.entityType !== "issue" || !event.entityId) return;
+      const issue = await ctx.issues.get(event.entityId, event.companyId);
+      if (!issue?.projectId) return;
+      await serializeStatusNotification(issue.projectId, async () => {
+        if (canonicalStatusTransition(event.payload, issue) === null) return;
+        const chats = parseProjectChatsState(await ctx.state.get(chatsStateKey(issue.projectId!)));
+        const setup = parseHermesSetup(await ctx.state.get(hermesStateKey(issue.projectId!)));
+        const docs = parseProjectDocumentState(await ctx.state.get(documentsStateKey(issue.projectId!)));
+        if (!chats.internal || !setup || !docs.context || docs.context.documentRevision !== docs.revision || setup.contextVersion !== docs.context.version) return;
+        const binding = await projectHostBinding(ctx, event.companyId, issue.projectId!, setup.agentId);
+        assertNativeHermes(await ctx.agents.get(setup.agentId, event.companyId), binding);
+        if (!await readChatRuntime(binding, chats, docs.context.version)) return;
+        const runtime = await checkRuntime(projectRuntime(event.companyId, issue.projectId!));
+        if (runtime.status !== "running" || runtime.runtime.apiBaseUrl !== binding.apiBaseUrl) return;
+        const key = statusDeliveryKey(issue.id, event.eventId);
+        const current = parseStatusDeliveryState(await ctx.state.get(statusDeliveryStateKey(issue.projectId!)));
+        if (current.receipts[key]?.status === "delivered") return;
+        const attemptedAt = new Date().toISOString();
+        await ctx.state.set(statusDeliveryStateKey(issue.projectId!), recordStatusDelivery(current, key, {issueId: issue.id, eventId: event.eventId, status: "attempted", at: attemptedAt}));
+        try {
+          await sendInternalTelegramNotification(runtime.runtime, chats.internal.chatId, statusNotificationMessage(issue));
+          const after = parseStatusDeliveryState(await ctx.state.get(statusDeliveryStateKey(issue.projectId!)));
+          await ctx.state.set(statusDeliveryStateKey(issue.projectId!), recordStatusDelivery(after, key, {issueId: issue.id, eventId: event.eventId, status: "delivered", at: new Date().toISOString()}));
+        } catch (error) {
+          const after = parseStatusDeliveryState(await ctx.state.get(statusDeliveryStateKey(issue.projectId!)));
+          await ctx.state.set(statusDeliveryStateKey(issue.projectId!), recordStatusDelivery(after, key, {issueId: issue.id, eventId: event.eventId, status: "failed", at: new Date().toISOString()}));
+          throw error;
+        }
+      });
+    });
     ctx.data.register("project-tracker", async (params) => {
       await requireProject(ctx, inputString(params, "projectId"), inputString(params, "companyId"));
       return parseTracker(await ctx.state.get(trackerStateKey(inputString(params, "projectId"))));
