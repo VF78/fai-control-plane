@@ -142,7 +142,7 @@ export async function verifyRuntimeRepository(runtime: ProjectRuntime, httpsUrl:
   if (!/^refs\/heads\/[A-Za-z0-9_./-]+$/.test(ref)) throw new Error("hermes_repository_binding_invalid");
   const sshUrl = `git@github.com:${repository.owner}/${repository.repository}.git`;
   const result = await runDetachedExec(runtime, {
-    Env: ["HOME=/opt/data/home", "GH_CONFIG_DIR=/opt/data/home/.config/gh", "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"],
+    Env: ["HOME=/opt/data/home", "GH_CONFIG_DIR=/opt/data/home/.config/gh", "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -i /opt/data/home/.ssh/id_ed25519 -o UserKnownHostsFile=/opt/data/home/.ssh/known_hosts -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"],
     Cmd: ["timeout", "15", "sh", "-c", 'gh auth status >/dev/null 2>&1 && git ls-remote --exit-code "$1" "$3" >/dev/null 2>&1 && git ls-remote --exit-code "$2" "$3" >/dev/null 2>&1', "fai-repository-check", httpsUrl, sshUrl, ref]
   }, engine);
   return {verified: result.Running === false && result.ExitCode === 0, checkedAt: new Date().toISOString()};
