@@ -145,7 +145,7 @@ export function ProjectDocumentsPanel({context}: PluginDetailTabProps) {
   return <section aria-label="Documents and context" style={panelStyle}>
     <div style={cardStyle}>
       <h2>Documents and context</h2>
-      <p>Passport and specification are required; one combined file can satisfy both. Architecture is optional and can remain pending Hermes proposal and approval. Originals stay in native Paperclip assets; this tab keeps only versions, source links, and bounded readable context.</p>
+      <p>Passport and specification are required; one combined file can satisfy both. Architecture is optional and can remain pending Hermes proposal and approval. Originals stay in native f(AI) Control assets; this tab keeps only versions, source links, and bounded readable context.</p>
       {view.missingMandatory.length ? <p role="alert">Required: {view.missingMandatory.map((category) => documentLabels[category]).join(" and ")}.</p> : <p role="status">Required documents are present.</p>}
       {view.state.context ? <p role="status">Context {view.state.context.version.slice(0, 12)} · {view.contextStale ? "refresh required after document revision" : "current"}.</p> : <p>Context has not been prepared yet.</p>}
     </div>
@@ -319,7 +319,7 @@ export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
   return <section aria-label="Hermes chats" style={panelStyle}>
     <div style={cardStyle}><h2>Чаты Hermes</h2><p>Hermes остаётся единственным владельцем входящих сообщений и постоянных сессий. Эта форма не принимает токены, пароли или ссылки на секреты: они остаются в host-only конфигурации.</p>
       <p role="status">{chats.data.nativeCapability === "configuration_verified" ? "Конфигурация проверена: " : "Ожидает настройки: "}{chats.data.reason}</p>
-      <p>Оператор размещает файлы в /var/lib/fai-control/hermes/{context.companyId}/{context.entityId}/secrets/: {chats.data.secretFiles?.join(", ") || "каналы отложены"}. Только обычные файлы, владелец root или UID Hermes, права 0600; значения не вводятся в Paperclip. Перед применением приостановите нативного агента Hermes.</p>
+      <p>Оператор размещает файлы в /var/lib/fai-control/hermes/{context.companyId}/{context.entityId}/secrets/: {chats.data.secretFiles?.join(", ") || "каналы отложены"}. Только обычные файлы, владелец root или UID Hermes, права 0600; значения не вводятся в f(AI) Control. Перед применением приостановите нативного агента Hermes.</p>
       <button style={buttonStyle} type="button" disabled={pending || chats.data.expectedHermesRevision === undefined} onClick={() => {
         if (!chats.data) return;
         setPending(true); setMessage(null);
@@ -367,7 +367,7 @@ function ProjectTrackerPanel({context}: PluginDetailTabProps) {
     setPending("save"); setMessage(null);
     try {
       await save({projectId: context.entityId, expectedRevision: tracker.data.revision, mode, externalProjectUrl, requireTeam, requireChats});
-      tracker.refresh(); setMessage(mode === "internal" ? "Внутренние задачи Paperclip выбраны как единственный источник исполнения." : "Внешний GitHub Project сохранён. Его бизнес-поля остаются внешней истиной.");
+      tracker.refresh(); setMessage(mode === "internal" ? "Внутренние задачи f(AI) Control выбраны как единственный источник исполнения." : "Внешний GitHub Project сохранён. Его бизнес-поля остаются внешней истиной.");
     } catch {setMessage("Настройки трекера не сохранены. Обновите данные и проверьте обязательный репозиторий.");}
     finally {setPending(null);}
   }
@@ -382,10 +382,10 @@ function ProjectTrackerPanel({context}: PluginDetailTabProps) {
   if (tracker.error || !tracker.data) return <p role="alert">Настройки трекера недоступны.</p>;
   const verified = tracker.data.readback?.status === "verified";
   return <section aria-label="Task tracker" style={panelStyle}>
-    <div style={cardStyle}><h2>Таск-трекер и процесс</h2><p>Репозиторий обязателен. Paperclip владеет нативными задачами и исполнением; подключённый GitHub Project остаётся внешней истиной бизнес-полей, а Paperclip показывает только связанное исполнение.</p></div>
+    <div style={cardStyle}><h2>Таск-трекер и процесс</h2><p>Репозиторий обязателен. f(AI) Control владеет нативными задачами и исполнением; подключённый GitHub Project остаётся внешней истиной бизнес-полей, а f(AI) Control показывает только связанное исполнение.</p></div>
     <form style={cardStyle} onSubmit={(event) => void submit(event)}>
-      <label>Источник задач<select style={inputStyle} value={mode} disabled={pending !== null} onChange={(event) => setMode(event.target.value as "internal" | "external")}><option value="internal">Внутренние задачи Paperclip</option><option value="external">Внешний GitHub Project</option></select></label>
-      {mode === "external" ? <label>URL GitHub Project<input style={inputStyle} required type="url" value={externalProjectUrl} placeholder="https://github.com/users/owner/projects/1" disabled={pending !== null} onChange={(event) => setExternalProjectUrl(event.target.value)} /></label> : <p>Нативные задачи Paperclip готовы для исполнения после остальных проверок.</p>}
+      <label>Источник задач<select style={inputStyle} value={mode} disabled={pending !== null} onChange={(event) => setMode(event.target.value as "internal" | "external")}><option value="internal">Внутренние задачи f(AI) Control</option><option value="external">Внешний GitHub Project</option></select></label>
+      {mode === "external" ? <label>URL GitHub Project<input style={inputStyle} required type="url" value={externalProjectUrl} placeholder="https://github.com/users/owner/projects/1" disabled={pending !== null} onChange={(event) => setExternalProjectUrl(event.target.value)} /></label> : <p>Нативные задачи f(AI) Control готовы для исполнения после остальных проверок.</p>}
       <label><input type="checkbox" checked={requireTeam} disabled={pending !== null} onChange={(event) => setRequireTeam(event.target.checked)} /> Требовать назначенные ответственности команды перед стартом</label>
       <label><input type="checkbox" checked={requireChats} disabled={pending !== null} onChange={(event) => setRequireChats(event.target.checked)} /> Требовать подтверждённые чаты Hermes перед стартом</label>
       <button style={buttonStyle} type="submit" disabled={pending !== null}>{pending === "save" ? "Сохранение…" : "Сохранить трекер"}</button>
@@ -415,13 +415,13 @@ function ProjectSetupReadinessPanel({context}: PluginDetailTabProps) {
   });
   const rows: readonly [string, boolean, string][] = [
     ["Репозиторий", readiness.repositoryReady, "Репозиторий и ветка совпадают с нативным workspace, доступ подтверждён."],
-    ["Трекер", readiness.trackerReady, tracker.data.mode === "internal" ? "Внутренние задачи Paperclip готовы." : "Внешний GitHub Project может быть проверен только чтением; запись и нативная связь задачи ожидают коннектор."],
+    ["Трекер", readiness.trackerReady, tracker.data.mode === "internal" ? "Внутренние задачи f(AI) Control готовы." : "Внешний GitHub Project может быть проверен только чтением; запись и нативная связь задачи ожидают коннектор."],
     ["Документы и контекст", readiness.documentsReady, "Паспорт и спецификация загружены, текущий контекст подготовлен."],
     ["Постоянный Hermes", readiness.hermesReady, "Подтверждены подключение, OAuth, GitHub и SSH credentials."],
     ["Команда", readiness.teamReady, tracker.data.requireTeam ? "Требование трекера: назначьте ответственность команды." : "По текущей настройке трекера необязательно."],
     ["Чаты", readiness.chatsReady, tracker.data.requireChats ? "Требование трекера: подтвердите конфигурацию чатов на host." : "По текущей настройке трекера необязательно."]
   ];
-  return <section aria-label="Setup readiness" style={panelStyle}><div style={cardStyle}><h2>Проверка и первая задача</h2><p>{readiness.ready ? "Проект готов. Создайте первую нативную задачу Paperclip и задайте явный независимый QA и человеческое approval в самой задаче." : "Проект ещё не готов. Исправьте пункты со статусом «ожидает»; проверка не создаёт задачу и не меняет процесс."}</p></div>
+  return <section aria-label="Setup readiness" style={panelStyle}><div style={cardStyle}><h2>Проверка и первая задача</h2><p>{readiness.ready ? "Проект готов. Создайте первую нативную задачу f(AI) Control и задайте явный независимый QA и человеческое approval в самой задаче." : "Проект ещё не готов. Исправьте пункты со статусом «ожидает»; проверка не создаёт задачу и не меняет процесс."}</p></div>
     <div style={cardStyle}>{rows.map(([label, ready, detail]) => <div key={label}><strong>{label}: {ready ? "готово" : "ожидает"}</strong><p>{detail}</p></div>)}</div>
     {readiness.ready ? <div style={cardStyle}><h3>Первая нативная задача</h3><p>В задаче явно назначьте Hermes исполнителем, независимую нативную QA-проверку и human approval. Плагин не подставляет идентификаторы агента и не создаёт политику за оператора.</p><a {...navigation.linkProps(`/projects/${context.entityId}/issues/new`)}>Новая задача</a><a {...navigation.linkProps(`/projects/${context.entityId}/issues`)}>Открыть задачи проекта</a></div> : null}
   </section>;
@@ -569,7 +569,7 @@ export function ProjectRepositoryTab({ context }: PluginDetailTabProps) {
         <h3>First task</h3>
         {taskReady ? (
           <>
-            <p>Create the first task in this Paperclip project. Keep its branch, pull request, and result references with the task.</p>
+            <p>Create the first task in this f(AI) Control project. Keep its branch, pull request, and result references with the task.</p>
             <a {...hostNavigation.linkProps(`/projects/${context.entityId}/issues`)}>Open project tasks</a>
           </>
         ) : <p>Apply the native repository and branch, then verify repository access before creating the first task here.</p>}
@@ -616,7 +616,7 @@ export function ProjectTeamRolesTab({ context }: PluginDetailTabProps) {
       await save({projectId: context.entityId, assignments});
       team.refresh();
       setDirty(false); localStorage.removeItem(`fai:team:draft:${context.companyId ?? "unknown"}:${context.entityId}`);
-      setMessage("Project roles were saved. Native Paperclip access was not changed.");
+      setMessage("Project roles were saved. Native f(AI) Control access was not changed.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Project roles could not be saved.");
     } finally { setPending(false); }
@@ -630,9 +630,9 @@ export function ProjectTeamRolesTab({ context }: PluginDetailTabProps) {
     <section aria-label="Team and roles" style={panelStyle}>
       <h2>Team and roles</h2>
       <div style={cardStyle}>
-        <p>Paperclip company membership is authoritative. This page stores project responsibility labels only; it never grants access, changes native roles, or sends invitations.</p>
+        <p>f(AI) Control company membership is authoritative. This page stores project responsibility labels only; it never grants access, changes native roles, or sends invitations.</p>
         <a {...hostNavigation.linkProps("/company/settings/members")}>Manage native members and invitations</a>
-        {team.data?.members.length === 0 ? <p role="status">No native human membership is available for this board. In local-trusted mode the Board can have no membership record; add or manage people in Paperclip before assigning project roles.</p> : null}
+        {team.data?.members.length === 0 ? <p role="status">No native human membership is available for this board. In local-trusted mode the Board can have no membership record; add or manage people in f(AI) Control before assigning project roles.</p> : null}
       </div>
       <form style={cardStyle} onSubmit={(event) => void saveRoles(event)}>
         <h3>Project responsibility</h3>
@@ -649,7 +649,7 @@ export function ProjectTeamRolesTab({ context }: PluginDetailTabProps) {
       </form>
       <div style={cardStyle}>
         <h3>Client representative</h3>
-        <p>A client representative label does not create a Paperclip viewer account or grant project access. Restricted client chat access is configured separately and is not available in this setup step yet.</p>
+        <p>A client representative label does not create an f(AI) Control viewer account or grant project access. Restricted client chat access is configured separately and is not available in this setup step yet.</p>
       </div>
       {message ? <p role="status">{message}</p> : null}
     </section>
