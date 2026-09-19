@@ -1,9 +1,9 @@
 import {expect, test} from "vitest";
-import {assertProjectQa, isProjectQaCandidate, parseProjectQaState, projectQaInstructions, projectQaInstructionsDisposition, selectProjectQaCandidate} from "./project-qa.js";
+import {assertProjectQa, isProjectQaCandidate, parseProjectQaState, projectCodexHome, projectQaInstructions, projectQaInstructionsDisposition, selectProjectQaCandidate} from "./project-qa.js";
 import {verifyProjectQaInstructions} from "./project-qa-runtime.js";
 
 const agent = {id: "qa", companyId: "company", role: "qa", adapterType: "codex_local", status: "paused",
-  adapterConfig: {dangerouslyBypassApprovalsAndSandbox: false, instructionsBundleMode: "managed", instructionsRootPath: "/root/companies/company/agents/qa/instructions", instructionsEntryFile: "AGENTS.md", instructionsFilePath: "/root/companies/company/agents/qa/instructions/AGENTS.md"},
+  adapterConfig: {dangerouslyBypassApprovalsAndSandbox: false, env: {CODEX_HOME: {type: "plain", value: "/var/lib/fai-control/hermes/company/project/codex-home"}}, instructionsBundleMode: "managed", instructionsRootPath: "/root/companies/company/agents/qa/instructions", instructionsEntryFile: "AGENTS.md", instructionsFilePath: "/root/companies/company/agents/qa/instructions/AGENTS.md"},
   runtimeConfig: {heartbeat: {enabled: false, maxConcurrentRuns: 1}},
   metadata: {faiProjectId: "project", faiRole: "qa", faiQaPolicyVersion: 1}};
 
@@ -14,10 +14,17 @@ test("accepts only a distinct project-scoped QA identity with bounded native run
   expect(() => assertProjectQa({...agent, metadata: {...agent.metadata, faiProjectId: "other"}}, "company", "project", "hermes")).toThrow();
   expect(() => assertProjectQa({...agent, runtimeConfig: {heartbeat: {enabled: false, maxConcurrentRuns: 20}}}, "company", "project", "hermes")).toThrow("runtime_policy_invalid");
   expect(() => assertProjectQa({...agent, adapterConfig: {...agent.adapterConfig, dangerouslyBypassApprovalsAndSandbox: true}}, "company", "project", "hermes")).toThrow("adapter_policy_invalid");
+  expect(() => assertProjectQa({...agent, adapterConfig: {...agent.adapterConfig, env: {CODEX_HOME: {type: "plain", value: "/var/lib/fai-control/hermes/company/other/codex-home"}}}}, "company", "project", "hermes")).toThrow("login_scope_invalid");
   expect(() => assertProjectQa({...agent, adapterConfig: {...agent.adapterConfig, extraArgs: ["--sandbox", "danger-full-access"]}}, "company", "project", "hermes")).toThrow("adapter_policy_invalid");
   expect(selectProjectQaCandidate([agent], "project")?.id).toBe("qa");
   expect(selectProjectQaCandidate([{...agent, metadata: null}], "project")).toBeNull();
   expect(() => selectProjectQaCandidate([agent, {...agent, id: "qa-2"}], "project")).toThrow("duplicate_identity");
+});
+
+test("derives one isolated Codex login home per project", () => {
+  expect(projectCodexHome("company", "project-a")).toBe("/var/lib/fai-control/hermes/company/project-a/codex-home");
+  expect(projectCodexHome("company", "project-b")).not.toBe(projectCodexHome("company", "project-a"));
+  expect(() => projectCodexHome("company", "../other")).toThrow("identity_invalid");
 });
 
 test("state and actual loaded instructions remain project scoped", async () => {

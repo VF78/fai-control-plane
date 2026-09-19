@@ -1,5 +1,10 @@
 export const projectQaPolicyVersion = 2;
 
+export function projectCodexHome(companyId: string, projectId: string): string {
+  if (![companyId, projectId].every((value) => /^[A-Za-z0-9-]+$/.test(value))) throw new Error("project_codex_home_identity_invalid");
+  return `/var/lib/fai-control/hermes/${companyId}/${projectId}/codex-home`;
+}
+
 export type ProjectQaState = Readonly<{agentId: string; revision: number}>;
 export type ProjectQaView = Readonly<{
   state: ProjectQaState | null;
@@ -52,6 +57,9 @@ export function assertProjectQa(agent: QaAgent | null, companyId: string, projec
   const heartbeat = agent.runtimeConfig?.heartbeat as Record<string, unknown> | undefined;
   if (heartbeat?.enabled !== false || heartbeat.maxConcurrentRuns !== 1) throw new Error("project_qa_runtime_policy_invalid");
   if (agent.adapterConfig?.dangerouslyBypassApprovalsAndSandbox !== false) throw new Error("project_qa_adapter_policy_invalid");
+  const env = agent.adapterConfig?.env as Record<string, unknown> | undefined;
+  const codexHome = env?.CODEX_HOME as Record<string, unknown> | undefined;
+  if (codexHome?.type !== "plain" || codexHome.value !== projectCodexHome(companyId, projectId)) throw new Error("project_qa_codex_login_scope_invalid");
   const extraArgs = agent.adapterConfig?.extraArgs;
   if (agent.adapterConfig?.sandbox === "danger-full-access" || (Array.isArray(extraArgs) && extraArgs.some((value, index) =>
     value === "--yolo" || value === "--dangerously-bypass-approvals-and-sandbox" || value === "--sandbox=danger-full-access" || (value === "--sandbox" && extraArgs[index + 1] === "danger-full-access")

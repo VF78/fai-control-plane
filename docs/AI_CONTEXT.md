@@ -39,6 +39,9 @@ pre-create it or start the acceptance task on their behalf. Upload documents
 are in docs/project/. Live findings/status remain in the active tracker.
 This development project uses internal Telegram only; no client channel.
 The future commercial project will configure its own restricted Element profile.
+Each project has its own Codex subscription login. Its Hermes/Developer and
+project QA share that project's isolated Codex home; never seed it from a
+company-global or another project's login.
 
 ## Acceptance and operations
 

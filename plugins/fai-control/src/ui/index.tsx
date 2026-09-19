@@ -10,7 +10,7 @@ import type { ProjectChatsView } from "../project-chats.js";
 import type { TrackerBinding } from "../project-tracker.js";
 import { projectSetupReadiness } from "../project-setup-readiness.js";
 import { mergeHermesInstructions } from "../hermes-instructions.js";
-import { projectQaInstructions, projectQaInstructionsDisposition, projectQaPolicyVersion, type ProjectQaView } from "../project-qa.js";
+import { projectCodexHome, projectQaInstructions, projectQaInstructionsDisposition, projectQaPolicyVersion, type ProjectQaView } from "../project-qa.js";
 import type { ProjectDocumentsView } from "../worker.js";
 import { extractBrowserDocument } from "./document-extract.js";
 
@@ -290,8 +290,9 @@ export function ProjectQaPanel({context}: PluginDetailTabProps) {
     setPending(true); setMessage(null);
     try {
       let agentId = qa.data.candidateAgentId;
+      const codexHome = projectCodexHome(context.companyId, context.entityId);
       if (!agentId) {
-        const adapterConfig = {engine: "cli", command: "/opt/fai-paperclip/tools/codex/node_modules/.bin/codex", model: "gpt-5.6-terra", modelReasoningEffort: "medium", dangerouslyBypassApprovalsAndSandbox: false};
+        const adapterConfig = {engine: "cli", command: "/opt/fai-paperclip/tools/codex/node_modules/.bin/codex", model: "gpt-5.6-terra", modelReasoningEffort: "medium", dangerouslyBypassApprovalsAndSandbox: false, env: {CODEX_HOME: {type: "plain", value: codexHome}, OPENAI_API_KEY: {type: "plain", value: ""}}};
         const created = await request(`companies/${encodeURIComponent(context.companyId)}/agents`, "POST", {
           name: `Project ${context.entityId.slice(0, 8)} QA`, role: "qa", adapterType: "codex_local",
           adapterConfig,
@@ -312,14 +313,15 @@ export function ProjectQaPanel({context}: PluginDetailTabProps) {
         }
         const instructionsDisposition = projectQaInstructionsDisposition(currentInstructions, instructions);
         const existing = await request(`agents/${encodeURIComponent(agentId)}`, "GET") as {adapterConfig?: unknown; runtimeConfig?: unknown; metadata?: unknown};
-        const adapterConfig = existing.adapterConfig && typeof existing.adapterConfig === "object" && !Array.isArray(existing.adapterConfig) ? existing.adapterConfig : {};
+        const adapterConfig = existing.adapterConfig && typeof existing.adapterConfig === "object" && !Array.isArray(existing.adapterConfig) ? existing.adapterConfig as Record<string, unknown> : {};
         const runtimeConfig = existing.runtimeConfig && typeof existing.runtimeConfig === "object" && !Array.isArray(existing.runtimeConfig) ? existing.runtimeConfig as Record<string, unknown> : {};
         const heartbeat = runtimeConfig.heartbeat && typeof runtimeConfig.heartbeat === "object" && !Array.isArray(runtimeConfig.heartbeat) ? runtimeConfig.heartbeat : {};
         const modelProfiles = runtimeConfig.modelProfiles && typeof runtimeConfig.modelProfiles === "object" && !Array.isArray(runtimeConfig.modelProfiles) ? runtimeConfig.modelProfiles as Record<string, unknown> : undefined;
         const cheap = modelProfiles?.cheap && typeof modelProfiles.cheap === "object" && !Array.isArray(modelProfiles.cheap) ? modelProfiles.cheap as Record<string, unknown> : undefined;
         const normalizedRuntimeConfig = {...runtimeConfig, ...(modelProfiles ? {modelProfiles: {...modelProfiles, ...(cheap ? {cheap: {...cheap, adapterConfig: cheap.adapterConfig && typeof cheap.adapterConfig === "object" && !Array.isArray(cheap.adapterConfig) ? cheap.adapterConfig : {}}} : {})}} : {}), heartbeat: {...heartbeat, enabled: false, maxConcurrentRuns: 1}};
         const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata) ? existing.metadata : {};
-        const nextAdapterConfig = {...adapterConfig, dangerouslyBypassApprovalsAndSandbox: false};
+        const env = adapterConfig.env && typeof adapterConfig.env === "object" && !Array.isArray(adapterConfig.env) ? adapterConfig.env : {};
+        const nextAdapterConfig = {...adapterConfig, dangerouslyBypassApprovalsAndSandbox: false, env: {...env, CODEX_HOME: {type: "plain", value: codexHome}, OPENAI_API_KEY: {type: "plain", value: ""}}};
         await request(`agents/${encodeURIComponent(agentId)}`, "PATCH", {role: "qa",
           adapterConfig: nextAdapterConfig,
           runtimeConfig: normalizedRuntimeConfig,
@@ -327,7 +329,7 @@ export function ProjectQaPanel({context}: PluginDetailTabProps) {
         if (instructionsDisposition === "write") await request(`agents/${encodeURIComponent(agentId)}/instructions-bundle/file`, "PUT", {path: "AGENTS.md", content: instructions});
       }
       await connect({companyId: context.companyId, projectId: context.entityId, agentId, expectedRevision: qa.data.state?.revision ?? 0});
-      qa.refresh(); setMessage("Project-specific Codex QA configuration is verified. CLI/auth capability is confirmed by the first real review task; select this reviewer explicitly.");
+      qa.refresh(); setMessage("Project QA uses this project's Codex login. CLI/quota capability is confirmed by the first real review task; select this reviewer explicitly.");
     } catch (error) {
       qa.refresh(); setMessage(error instanceof Error && error.message === "project_qa_instructions_conflict" ? "Existing QA has a different AGENTS.md. It was not overwritten; review it in the native agent page." : "QA setup was not completed. Resolve duplicate identity, native hire approval, or agent configuration and retry.");
     } finally {setPending(false);}
@@ -335,7 +337,7 @@ export function ProjectQaPanel({context}: PluginDetailTabProps) {
   if (qa.loading) return <p>Loading project QA…</p>;
   if (qa.error || !qa.data) return <p role="alert">{qa.error?.message ?? "Project QA state is unavailable."}</p>;
   return <section aria-label="Independent project QA" style={panelStyle}><div style={cardStyle}><h2>Independent project QA</h2>
-    <p>This project uses its own native Codex CLI QA identity. The plugin records the project association and installs QA-only instructions; metadata is not a filesystem access boundary, so each review must use the task’s Core-provided project workspace and explicit reviewer selection.</p>
+    <p>This project uses its own native Codex CLI QA identity and the same project-specific Codex login as its Hermes. Credentials are never inherited from another project. The plugin records the project association and installs QA-only instructions; metadata is not a filesystem access boundary, so each review must use the task’s Core-provided project workspace and explicit reviewer selection.</p>
     <p role="status">{qa.data.configured ? `Configured QA: ${qa.data.state?.agentId}` : qa.data.reason ?? "No project QA is configured."}</p>
     <button type="button" style={buttonStyle} disabled={pending || qa.data.configured} onClick={() => void configure()}>{pending ? "Configuring…" : qa.data.candidateAgentId ? "Verify and bind existing project QA" : "Create project QA"}</button>
     {message ? <p role="status">{message}</p> : null}

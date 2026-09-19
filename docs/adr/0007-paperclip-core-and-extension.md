@@ -117,6 +117,9 @@ only native editable status. External Project sync is deferred.
 Each project has its own `codex_local` QA identity with project-scoped native
 instructions, no heartbeat and one concurrent run. It stays distinct from that
 project's Hermes, which keeps PM, Dev CLI orchestration, DevOps and chats.
+Hermes/Developer and QA share only that project's isolated Codex login; every
+project performs its own device authentication. No company-global Codex login
+is seeded or copied between projects.
 Reviewer selection and human approval remain explicit native task actions; the
 plugin does not invent default review policy. QA may correct only deterministic
 lint/format defects with no behavior, public-copy or test-expectation change;
