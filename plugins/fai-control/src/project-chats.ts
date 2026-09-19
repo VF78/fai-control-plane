@@ -14,7 +14,10 @@ export type ProjectChatsState = Readonly<{
 
 export type ProjectChatsView = Readonly<{
   state: ProjectChatsState;
-  nativeCapability: "host_messenger_binding_required";
+  nativeCapability: "host_messenger_binding_required" | "configuration_verified";
+  expectedHermesRevision?: number;
+  contextVersion?: string;
+  secretFiles?: readonly string[];
   reason: string;
 }>;
 
@@ -47,8 +50,10 @@ function element(value: unknown): ElementChat | null {
     if (typeof candidate.homeserver !== "string" || candidate.homeserver.length > 300 || typeof candidate.roomReference !== "string" || candidate.roomReference.length > 700) return null;
     const homeserver = new URL(candidate.homeserver);
     if (homeserver.protocol !== "https:" || homeserver.username || homeserver.password || homeserver.search || homeserver.hash || homeserver.pathname !== "/") return null;
-    if (!/^(?:!|#|https:\/\/)/.test(candidate.roomReference)) return null;
-    return {homeserver: homeserver.toString().replace(/\/$/, ""), roomReference: candidate.roomReference};
+    let room = candidate.roomReference;
+    if (room.startsWith("https://matrix.to/#/")) room = decodeURIComponent(room.slice("https://matrix.to/#/".length).split("?")[0]);
+    if (!/^![A-Za-z0-9._~-]+:[A-Za-z0-9.-]+(?::[0-9]+)?$/.test(room)) return null;
+    return {homeserver: homeserver.toString().replace(/\/$/, ""), roomReference: room};
   } catch { return null; }
 }
 
@@ -90,5 +95,5 @@ export function createProjectChatsState(input: unknown, prior: ProjectChatsState
 }
 
 export function projectChatsView(state: ProjectChatsState): ProjectChatsView {
-  return {state, nativeCapability: "host_messenger_binding_required", reason: "Native Hermes supports persistent multiplex profiles, but this runtime has no managed host messenger binding for its credential files, allowlists, and owned profile configuration. Saved channel metadata remains pending and does not enable chat delivery."};
+  return {state, nativeCapability: "host_messenger_binding_required", reason: "Настройка сохранена, но текущая конфигурация Hermes ещё не подтверждена. Подготовьте host-файлы, актуальный контекст и примените сохранённые каналы. Отложенные каналы не считаются готовыми."};
 }

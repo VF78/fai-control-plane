@@ -273,6 +273,7 @@ function csvIds(value: string): string[] { return value.split(",").map((entry) =
 export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
   const chats = usePluginData<ProjectChatsView>("project-hermes-chats", {companyId: context.companyId, projectId: context.entityId});
   const save = usePluginAction("save-project-hermes-chats");
+  const apply = usePluginAction("apply-project-hermes-chats");
   const [internalEnabled, setInternalEnabled] = useState(false);
   const [internalChatId, setInternalChatId] = useState("");
   const [internalParticipants, setInternalParticipants] = useState("");
@@ -306,7 +307,7 @@ export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
         internalEnabled, internalChatId, internalParticipantIds: csvIds(internalParticipants), clientProvider,
         clientTelegramChatId, clientTelegramParticipantIds: csvIds(clientTelegramParticipants), clientElementHomeserver, clientElementRoomReference});
       chats.refresh();
-      setMessage("Метаданные каналов сохранены. Доставка остаётся отключённой, пока оператор не подготовит host-only привязку Hermes.");
+      setMessage("Метаданные сохранены. Действующая конфигурация Hermes изменится после применения сохранённых каналов.");
     } catch (error) {setMessage(error instanceof Error ? error.message : "Не удалось сохранить настройку чатов.");}
     finally {setPending(false);}
   }
@@ -315,7 +316,16 @@ export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
   if (chats.error || !chats.data) return <p role="alert">{chats.error?.message ?? "Настройки Hermes-чата недоступны."}</p>;
   return <section aria-label="Hermes chats" style={panelStyle}>
     <div style={cardStyle}><h2>Чаты Hermes</h2><p>Hermes остаётся единственным владельцем входящих сообщений и постоянных сессий. Эта форма не принимает токены, пароли или ссылки на секреты: они остаются в host-only конфигурации.</p>
-      <p role="status">Ожидает host-настройку: {chats.data.reason}</p></div>
+      <p role="status">{chats.data.nativeCapability === "configuration_verified" ? "Конфигурация проверена: " : "Ожидает настройки: "}{chats.data.reason}</p>
+      <p>Оператор размещает файлы в /var/lib/fai-control/hermes/{context.companyId}/{context.entityId}/secrets/: {chats.data.secretFiles?.join(", ") || "каналы отложены"}. Только обычные файлы, владелец root или UID Hermes, права 0600; значения не вводятся в Paperclip. Перед применением приостановите нативного агента Hermes.</p>
+      <button style={buttonStyle} type="button" disabled={pending || chats.data.expectedHermesRevision === undefined} onClick={() => {
+        if (!chats.data) return;
+        setPending(true); setMessage(null);
+        void apply({companyId: context.companyId, projectId: context.entityId, expectedRevision: chats.data.state.revision, expectedHermesRevision: chats.data.expectedHermesRevision, contextVersion: chats.data.contextVersion})
+          .then(() => {chats.refresh(); setMessage("Настройки прочитаны с host; проверьте ответ Hermes в каждом канале.");})
+          .catch(() => {setMessage("Настройки не применены. Проверьте файлы секретов, состояние агента и привязку host. После ошибки Hermes может оставаться остановленным."); chats.refresh();})
+          .finally(() => setPending(false));
+      }}>Применить сохранённые каналы и перезапустить Hermes</button></div>
     <form style={cardStyle} onSubmit={(event) => void submit(event)}>
       <h3>Внутренний Telegram</h3>
       <label><input type="checkbox" checked={internalEnabled} disabled={pending} onChange={(event) => setInternalEnabled(event.target.checked)} /> Настроить внутренний контур</label>
