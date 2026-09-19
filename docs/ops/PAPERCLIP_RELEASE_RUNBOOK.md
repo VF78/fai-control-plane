@@ -163,3 +163,77 @@ Verify native unauthenticated API denial, signup denial, owner login, plugin set
 Core health commit, and protected-service health via scoped checks. Inspect the
 existing public HTTPS route without editing Nginx. A later update, rollback,
 data migration or removal needs its own reviewed resource/diff/approval slice.
+
+## Internal MVP acceptance preflight (required operator evidence)
+
+Host preflight above checks infrastructure only. Before declaring an internal MVP
+usable, record these checks against the exact plugin commit, Core pin and printed
+configuration digest in the release issue. An unchecked gate is a blocker, not a
+waiver or a successful setup projection. Reuse evidence only for unchanged inputs.
+
+| Gate | Required native/readback evidence |
+| --- | --- |
+| Owner/auth/plugin | Native owner login, unauthenticated denial, one enabled plugin, clean-project GUI setup |
+| GitHub | Native workspace repository/ref and actual private repository access from Hermes; no credentials in evidence |
+| Tracker/process | Explicit internal Paperclip mode, native issue ID, configured process; external mode remains blocked pending accepted write connector |
+| Documents/context | Required passport/specification, native document IDs and revisions, compact context version and actual Hermes use |
+| One persistent Hermes | Company/project/agent IDs, device login, authenticated gateway, same workspace/session identity after one controlled recovery; no duplicate run |
+| Team | Native member IDs with explicit Owner/PM/Executor associations; deferred optional roles shown accurately |
+| Chats | Explicitly deferred optional contours, or approved exact binding and live delivery evidence; saved config is not delivery |
+| Useful task | One native issue/run, useful PR/result, separate native QA agent/run and human acceptance reference |
+| Safety | Legacy controller has no ownership of that item; protected services healthy before/after; DevOps writes separately approved |
+| Usage | Available native usage/cost and explicit unknowns; nested account analysis is not an MVP gate |
+
+Internal-only acceptance may defer chats explicitly. It cannot satisfy #406's
+full Telegram assignment/notification or external tracker replacement gates.
+QA provider quota exhaustion blocks real QA until reset and a successful native
+QA result; mocked success cannot waive it. Chat IDs and live transport remain
+unaccepted until tested on the approved contour. No public activation is implied.
+Public activation requires the same exact release evidence plus Vladimir's
+acceptance and its separate digest approval. Never stop an old production
+controller as an implicit part of this first-install script.
+
+## Native identity mapping and data boundary
+
+Maintain a minimal private release mapping: source configuration reference →
+native company/project ID; repository URL/ref → native workspace ID; document
+reference/version → native document ID/context hash; person → native membership
+ID/semantic role; project runtime reference → native Hermes agent ID/owned host
+root; QA identity → separate native agent ID; optional chat binding reference →
+project contour. Include only approved references/IDs and versions, never tokens,
+private keys, OAuth data, raw documents, message history or old task/run history.
+Credential files remain host-owned and are reauthorized for the exact native
+runtime; no blind legacy database import. Internal issues are newly native;
+external issue linkage must wait for the connector's authoritative mapping.
+
+## Deferred source removal proposal — no deletion in this slice
+
+After exact acceptance and separate cutover approval, prepare a reviewed deletion
+diff limited to these replaced source paths:
+
+- `apps/web/` and `apps/worker/`: legacy shell/pages/API and second controller.
+- `packages/application/`, `packages/domain/`, `packages/db/`: legacy orchestration,
+  receipts/scheduler/business storage and their own fixtures/tests, after checking
+  no retained connector/policy imports them.
+- `infra/compose/`, `infra/production/`, root `compose.yaml` (if tracked): only
+  legacy application deployment wiring after rollback retention is decided.
+- `scripts/verify-mvp.sh`: legacy verification entry after root script rewiring.
+
+This is a path-scoped proposal, not a recursive removal command or accepted
+file-level deletion diff. Generate that diff from the exact accepted release
+and review retained imports first. Root package/workspace/lock/lint/test config
+needs surgical dependency rewiring, never wholesale deletion. Retain
+`packages/integrations/` pending connector extraction review; retain all of
+`infra/hermes-project/` (plugin build copies client connector assets),
+`plugins/fai-control/`, `infra/paperclip/`, Paperclip bootstrap/run/release scripts,
+policy/skill files and historical acceptance evidence. Keep `deploy-prod.sh`
+as the approved entry; remove its legacy branch only in the accepted cutover
+slice. No compatibility facade or parallel production controller is added.
+
+Host legacy data, runtime roots, credentials, service units and retained releases
+are excluded from this source proposal. Marketing, MSA, ASCON and VPN are
+excluded entirely. Rollback/data retention and freeing an occupied13010 require
+an explicit separate plan; the current script fails closed instead of stopping
+another service. PR #407 remains a separate documentation integration input:
+this slice uses its ADR/AGENTS/context baseline with implementation notes, and
+must be reconciled once at integration rather than overwriting its changes.

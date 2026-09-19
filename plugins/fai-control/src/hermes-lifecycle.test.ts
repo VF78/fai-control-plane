@@ -5,7 +5,7 @@ vi.mock("node:fs/promises", () => ({
   lstat: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});}),
   readFile: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});})
 }));
-import { checkRuntime, installRuntime, inspectOwned, labels, projectRuntime, restartRuntime, runtimeSpec, verifyRuntimeRepository, type Docker } from "./hermes-lifecycle.js";
+import { checkRuntime, installRuntime, inspectOwned, labels, projectRuntime, restartRuntime, runtimeSpec, verifyRuntimeRepository, verifyRuntimeTracker, type Docker } from "./hermes-lifecycle.js";
 const runtime = projectRuntime("company", "project");
 const image = {Id: `sha256:${"a".repeat(64)}`, Config: {Entrypoint: ["/init"]}};
 const response = (status: number, body: unknown = {}) => ({status, body: Buffer.from(typeof body === "string" ? body : JSON.stringify(body))});
@@ -43,6 +43,8 @@ test("install creates exact owned resources and returns only the device challeng
   expect(created?.[2]).toMatchObject({Image: image.Id, Labels: labels(runtime, "auth")});
   expect(engine.mock.calls.every(([, path]) => !path.includes("prune") && !path.includes("containers/json"))).toBe(true);
   expect(JSON.stringify(checked)).not.toContain("noise");
+  const {mkdir} = await import("node:fs/promises");
+  expect(vi.mocked(mkdir).mock.calls.some(([path]) => path === `${runtime.root}/data/home/.ssh`)).toBe(true);
 });
 test("restart rejects foreign labels, changed image or persistent mounts before mutation", async () => {
   for (const mutated of [
@@ -76,6 +78,23 @@ test("canonical repository URL verifies HTTPS and SSH without requiring .git", a
   expect((await verifyRuntimeRepository(runtime, "https://github.com/VF78/fai-control-plane", "refs/heads/main", engine)).verified).toBe(true);
   const command = (engine.mock.calls.find(([, path]) => path.endsWith("/exec"))?.[2] as {Cmd: string[]}).Cmd;
   expect(command.slice(-3)).toEqual(["https://github.com/VF78/fai-control-plane", "git@github.com:VF78/fai-control-plane.git", "refs/heads/main"]);
+  expect((engine.mock.calls.find(([, path]) => path.endsWith("/start"))?.[2] as {Detach: boolean}).Detach).toBe(true);
+});
+
+test("tracker readback uses detached polling and never exposes native output", async () => {
+  const id = "d".repeat(64);
+  const engine = vi.fn<Docker>(async (method, path) => {
+    if (path.startsWith("/images/")) return response(200, image);
+    if (path.endsWith("/exec")) return response(201, {Id: id});
+    if (path.endsWith("/start")) return response(200, "PVT_must_not_escape");
+    if (path === `/exec/${id}/json`) return response(200, {Running: false, ExitCode: 0});
+    return response(200, container("gateway"));
+  });
+  const readback = await verifyRuntimeTracker(runtime, "https://github.com/VF78/fai-control-plane", "https://github.com/users/VF78/projects/1", engine);
+  expect(readback).toMatchObject({verified: true, projectId: null});
+  const payload = engine.mock.calls.find(([, path]) => path.endsWith("/exec"))?.[2] as {AttachStdout: boolean; AttachStderr: boolean; Cmd: string[]};
+  expect(payload).toMatchObject({AttachStdout: false, AttachStderr: false});
+  expect(payload.Cmd.join(" ")).not.toContain("--jq .id");
 });
 
 test("native instruction retry preserves original text and uses real newlines", async () => {

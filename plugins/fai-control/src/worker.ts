@@ -1,6 +1,9 @@
+import {configureTracker, parseTracker, recordTrackerReadback} from "./project-tracker.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { projectRuntime, checkRuntime, installRuntime, restartRuntime, verifyRuntimeRepository } from "./hermes-lifecycle.js";
+import { renderHermesContext } from "./hermes-instructions.js";
+import { readChatRuntime, writeChatRuntime, chatSecretFiles } from "./hermes-chats-runtime.js";
+import { docker, inspectOwned, projectRuntime, checkRuntime, installRuntime, restartRuntime, verifyRuntimeRepository, verifyRuntimeTracker } from "./hermes-lifecycle.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
@@ -11,6 +14,7 @@ import { createProjectTeamRoleMapping, parseProjectTeamRoleMapping, projectTeamR
   type ProjectTeamRoleView } from "./team-roles.js";
 import { addProjectDocument, missingMandatoryDocuments, parseProjectDocumentState, prepareProjectContext,
   type ProjectDocumentState } from "./project-documents.js";
+import { createProjectChatsState, parseProjectChatsState, projectChatsView, type ProjectChatsView } from "./project-chats.js";
 
 import { hostBinding, assertNativeHermes, persistHermesContext, checkHermesAccess, parseHermesSetup, type HermesSetupView } from "./project-hermes.js";
 
@@ -41,6 +45,8 @@ const documentsStateKey = (projectId: string) => ({
 });
 const hermesBindingKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "host-binding"});
 const hermesStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "setup"});
+const trackerStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "tracker", stateKey: "binding"});
+const chatsStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "chats", stateKey: "configuration"});
 async function projectHostBinding(ctx: PluginContext, companyId: string, projectId: string, agentId: string) {
   const config = await ctx.config.get(companyId);
   const bindings = config.hermesHostBindings as Record<string, unknown> | undefined;
@@ -170,6 +176,24 @@ async function documentsView(ctx: PluginContext, projectId: string, companyId: s
   return {state, missingMandatory: missingMandatoryDocuments(state), contextStale: state.context !== null && state.context.documentRevision !== state.revision};
 }
 
+async function chatsView(ctx: PluginContext, projectId: string, companyId: string): Promise<ProjectChatsView> {
+  await requireProject(ctx, projectId, companyId);
+  const state = parseProjectChatsState(await ctx.state.get(chatsStateKey(projectId)));
+  const view = {...projectChatsView(state), secretFiles: chatSecretFiles(state)};
+  const setup = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+  if (!setup) return view;
+  const docs = parseProjectDocumentState(await ctx.state.get(documentsStateKey(projectId)));
+  if (!docs.context || docs.context.documentRevision !== docs.revision || setup.contextVersion !== docs.context.version) return view;
+  const base = {...view, expectedHermesRevision: setup.revision, contextVersion: docs.context.version};
+  try {
+    const binding = await projectHostBinding(ctx, companyId, projectId, setup.agentId);
+    assertNativeHermes(await ctx.agents.get(setup.agentId, companyId), binding);
+    const runtime = await checkRuntime(projectRuntime(companyId, projectId));
+    if ((state.internal || state.client) && runtime.status === "running" && runtime.runtime.apiBaseUrl === binding.apiBaseUrl && await readChatRuntime(binding, state, docs.context.version)) return {...base, nativeCapability: "configuration_verified", reason: "Конфигурация профилей прочитана с host, Hermes запущен. Доставка требует проверки сообщением. Создание клиентских задач недоступно до привязки трекера."};
+  } catch { /* Never expose filesystem or provider errors containing private data. */ }
+  return base;
+}
+
 function expectedVersion(params: Record<string, unknown>): number {
   const version = params.expectedVersion;
   if (typeof version !== "number" || !Number.isInteger(version) || version < 0) throw new Error("document_version_required");
@@ -205,6 +229,33 @@ async function verifyWithNativeGit(binding: RepositoryBinding): Promise<Reposito
 
 const plugin = definePlugin({
   async setup(ctx) {
+    ctx.data.register("project-tracker", async (params) => {
+      await requireProject(ctx, inputString(params, "projectId"), inputString(params, "companyId"));
+      return parseTracker(await ctx.state.get(trackerStateKey(inputString(params, "projectId"))));
+    });
+    ctx.actions.register("save-project-tracker", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
+      await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+        if (!await readBinding(ctx, projectId)) throw new Error("repository_required");
+        const binding = configureTracker(params, parseTracker(await ctx.state.get(trackerStateKey(projectId))));
+        await ctx.state.set(trackerStateKey(projectId), binding); return binding;
+      });
+    });
+    ctx.actions.register("verify-project-tracker", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
+      await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+        const binding = parseTracker(await ctx.state.get(trackerStateKey(projectId)));
+        if (params.expectedRevision !== binding.revision) throw new Error("tracker_revision_conflict");
+        const repository = await bindingView(ctx, projectId, companyId);
+        if (!repository.binding || !repository.nativeWorkspace.matchesBinding || !binding.externalProjectUrl) throw new Error("tracker_repository_or_project_required");
+        let readback: Awaited<ReturnType<typeof verifyRuntimeTracker>> = {verified: false, projectId: null, checkedAt: new Date().toISOString()};
+        try { readback = await verifyRuntimeTracker(projectRuntime(companyId, projectId), repository.binding.repositoryUrl, binding.externalProjectUrl); } catch { /* replace stale success with bounded failure */ }
+        const next = recordTrackerReadback(binding, params.expectedRevision as number, repository.binding.repositoryUrl, readback);
+        await ctx.state.set(trackerStateKey(projectId), next); return next;
+      });
+    });
     ctx.data.register("project-hermes-runtime", async (params) => {
       const companyId = inputString(params, "companyId"); const projectId = inputString(params, "projectId");
       await requireProject(ctx, projectId, companyId);
@@ -294,6 +345,7 @@ const plugin = definePlugin({
       const companyId = inputString(params, "companyId");
       return await documentsView(ctx, projectId, companyId);
     });
+    ctx.data.register("project-hermes-chats", async (params) => chatsView(ctx, inputString(params, "projectId"), inputString(params, "companyId")));
 
     ctx.actions.register("save-project-repository-binding", async (params, context) => {
       const projectId = inputString(params, "projectId");
@@ -339,6 +391,50 @@ const plugin = definePlugin({
       const mapping = createProjectTeamRoleMapping(params, members);
       await ctx.state.set(teamRolesStateKey(projectId), mapping);
       return await teamRolesView(ctx, projectId, companyId);
+    });
+    ctx.actions.register("apply-project-hermes-chats", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
+      await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+        const state = parseProjectChatsState(await ctx.state.get(chatsStateKey(projectId)));
+        const setup = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+        const docs = parseProjectDocumentState(await ctx.state.get(documentsStateKey(projectId)));
+        if (!setup || params.expectedHermesRevision !== setup.revision || params.expectedRevision !== state.revision) throw new Error("chat_configuration_conflict_refresh_required");
+        if (!docs.context || docs.context.documentRevision !== docs.revision || missingMandatoryDocuments(docs).length || setup.contextVersion !== docs.context.version || params.contextVersion !== docs.context.version) throw new Error("hermes_current_context_required");
+        const binding = await projectHostBinding(ctx, companyId, projectId, setup.agentId);
+        const agent = await ctx.agents.get(setup.agentId, companyId);
+        assertNativeHermes(agent, binding);
+        if (agent?.status !== "paused") throw new Error("hermes_pause_native_agent_before_restart");
+        const contextPath = join(binding.root, "data", "work", binding.runtimeWorkspace.split("/").at(-1)!, ".fai-context/project.md");
+        if (await readFile(contextPath, "utf8") !== renderHermesContext(docs.context)) throw new Error("hermes_current_context_required");
+        const runtime = projectRuntime(companyId, projectId);
+        const checked = await checkRuntime(runtime);
+        if (checked.runtime.apiBaseUrl !== binding.apiBaseUrl) throw new Error("hermes_gateway_binding_mismatch");
+        if (!await inspectOwned(runtime, "gateway", docker)) throw new Error("hermes_runtime_not_installed");
+        // Stop the same owned gateway before changing multiple files. Failure leaves it stopped.
+        const stopped = await docker("POST", `/containers/${runtime.runtimeId}-gateway/stop?t=10`);
+        if (![204, 304].includes(stopped.status)) throw new Error("hermes_docker_operation_failed");
+        try { await writeChatRuntime(binding, state, docs.context.version); }
+        catch { throw new Error("chat_apply_failed_gateway_stopped_check_host_contract"); }
+        const readbackAgent = await ctx.agents.get(setup.agentId, companyId);
+        assertNativeHermes(readbackAgent, binding);
+        if (readbackAgent?.status !== "paused") throw new Error("hermes_pause_native_agent_before_restart");
+        await restartRuntime(runtime);
+        return chatsView(ctx, projectId, companyId);
+      });
+    });
+    ctx.actions.register("save-project-hermes-chats", async (params, context) => {
+      const projectId = inputString(params, "projectId");
+      const companyId = actionCompany(params, context);
+      await requireHostOperator(ctx, context, companyId);
+      await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+      const current = parseProjectChatsState(await ctx.state.get(chatsStateKey(projectId)));
+      if (params.expectedRevision !== current.revision) throw new Error("chat_configuration_conflict_refresh_required");
+      const next = createProjectChatsState(params, current);
+      await ctx.state.set(chatsStateKey(projectId), next);
+      return chatsView(ctx, projectId, companyId);
+      });
     });
     ctx.actions.register("record-project-document", async (params, context) => {
       const projectId = inputString(params, "projectId");
