@@ -253,7 +253,7 @@ function ProjectHermesPanel({context}: PluginDetailTabProps) {
   return <section style={panelStyle} aria-label="Persistent project Hermes"><div style={cardStyle}><h3>Connect persistent Hermes</h3>
     <p>Install the project runtime or connect an existing native Hermes gateway. Docker socket access, the pinned image and project credential files are host prerequisites. New installations use the repository’s Hermes default gpt-5.6-terra with Codex OAuth; existing model and effort settings are preserved.</p>
     <button type="button" style={buttonStyle} disabled={pending} onClick={() => void lifecycle("install")}>{pending ? "Working…" : "Install or continue device authentication"}</button>
-    {runtime.data ? <><p>Container status: {runtime.data.status}. Image: fai-hermes-project:codex-0.153.4.</p>{runtime.data.deviceAuth ? <p>Authorize at <a href={runtime.data.deviceAuth.verificationUrl} target="_blank" rel="noreferrer">Codex device authentication</a> using code <strong>{runtime.data.deviceAuth.userCode}</strong>, then continue installation.</p> : null}{runtime.data.status === "credentials_required" ? <p>Operator must provision the project’s host gateway key, GitHub token, SSH key and known hosts under its dedicated secrets directory. No secret value belongs in this form.</p> : null}</> : <p>Runtime check unavailable. Verify host Docker access.</p>}
+    {runtime.data ? <><p>Container status: {runtime.data.status}. Image: fai-hermes-project:codex-0.153.4.</p>{runtime.data.deviceAuth ? <p>Authorize at <a href={runtime.data.deviceAuth.verificationUrl} target="_blank" rel="noreferrer">Codex device authentication</a> using code <strong>{runtime.data.deviceAuth.userCode}</strong>, then continue installation.</p> : null}{runtime.data.status === "credentials_required" ? <p>The installer reuses the f(AI) Control service account’s existing GitHub credential once when available. Operator must still provision the project gateway key, SSH key and known hosts under its dedicated secrets directory. No secret value belongs in this form, and an existing project credential is never replaced.</p> : null}</> : <p>Runtime check unavailable. Verify host Docker access.</p>}
     <label>Native gateway key secret reference ID<input style={inputStyle} value={secretId} disabled={pending} onChange={event => setSecretId(event.target.value)} placeholder="Native secret UUID; never the key value" /></label>
     <button type="button" style={buttonStyle} disabled={pending || runtime.data?.status !== "running" || !secretId} onClick={() => void lifecycle("native")}>Verify gateway and create or configure native Hermes</button>
     <button type="button" style={buttonStyle} disabled={pending || runtime.data?.status !== "running"} onClick={() => void lifecycle("repository")}>Verify native gh, repository and SSH access</button>
@@ -276,6 +276,7 @@ export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
   const chats = usePluginData<ProjectChatsView>("project-hermes-chats", {companyId: context.companyId, projectId: context.entityId});
   const save = usePluginAction("save-project-hermes-chats");
   const apply = usePluginAction("apply-project-hermes-chats");
+  const connect = usePluginAction("connect-installed-project-hermes");
   const [internalEnabled, setInternalEnabled] = useState(false);
   const [internalChatId, setInternalChatId] = useState("");
   const [internalParticipants, setInternalParticipants] = useState("");
@@ -324,7 +325,19 @@ export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
         if (!chats.data) return;
         setPending(true); setMessage(null);
         void apply({companyId: context.companyId, projectId: context.entityId, expectedRevision: chats.data.state.revision, expectedHermesRevision: chats.data.expectedHermesRevision, contextVersion: chats.data.contextVersion})
-          .then(() => {chats.refresh(); setMessage("Настройки прочитаны с host; проверьте ответ Hermes в каждом канале.");})
+          .then(async (result) => {
+            const applied = result as ProjectChatsView;
+            if (applied.gatewayReconnect) {
+              const agentResponse = await fetch(`/api/agents/${encodeURIComponent(applied.gatewayReconnect.agentId)}`, {credentials: "same-origin"});
+              const agent = await agentResponse.json() as {adapterConfig?: unknown};
+              if (!agentResponse.ok) throw new Error("native_agent_read_failed");
+              if (!agent.adapterConfig || typeof agent.adapterConfig !== "object" || Array.isArray(agent.adapterConfig)) throw new Error("native_agent_config_invalid");
+              const update = await fetch(`/api/agents/${encodeURIComponent(applied.gatewayReconnect.agentId)}`, {method: "PATCH", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({adapterConfig: {...agent.adapterConfig, apiBaseUrl: applied.gatewayReconnect.apiBaseUrl}})});
+              if (!update.ok) throw new Error("native_agent_endpoint_update_failed");
+              await connect({companyId: context.companyId, projectId: context.entityId, agentId: applied.gatewayReconnect.agentId});
+            }
+            chats.refresh(); setMessage("Настройки прочитаны с host; проверьте ответ Hermes в каждом канале.");
+          })
           .catch(() => {setMessage("Настройки не применены. Проверьте файлы секретов, состояние агента и привязку host. После ошибки Hermes может оставаться остановленным."); chats.refresh();})
           .finally(() => setPending(false));
       }}>Применить сохранённые каналы и перезапустить Hermes</button></div>
@@ -409,7 +422,7 @@ function ProjectSetupReadinessPanel({context}: PluginDetailTabProps) {
     repositoryReady: repository.data.binding?.access.status === "verified" && repository.data.nativeWorkspace.matchesBinding,
     tracker: tracker.data,
     documentsReady: documents.data.missingMandatory.length === 0 && !documents.data.contextStale && documents.data.state.context !== null,
-    hermesReady: hermes.data.connected && !hermes.data.contextStale && hermes.data.access.oauth && hermes.data.access.github && hermes.data.access.ssh,
+    hermesReady: hermes.data.connected && !hermes.data.contextStale && hermes.data.repositoryVerified && hermes.data.access.oauth && hermes.data.access.github && hermes.data.access.ssh,
     teamReady: ["owner", "pm", "executor"].every((role) => Boolean(team.data!.mapping.assignments[role as ProjectTeamRole])),
     chatsReady: (chats.data.state.internal !== null || chats.data.state.client !== null) && chats.data.nativeCapability === "configuration_verified"
   });
@@ -417,13 +430,13 @@ function ProjectSetupReadinessPanel({context}: PluginDetailTabProps) {
     ["Репозиторий", readiness.repositoryReady, "Репозиторий и ветка совпадают с нативным workspace, доступ подтверждён."],
     ["Трекер", readiness.trackerReady, tracker.data.mode === "internal" ? "Внутренние задачи f(AI) Control готовы." : "Внешний GitHub Project может быть проверен только чтением; запись и нативная связь задачи ожидают коннектор."],
     ["Документы и контекст", readiness.documentsReady, "Паспорт и спецификация загружены, текущий контекст подготовлен."],
-    ["Постоянный Hermes", readiness.hermesReady, "Подтверждены подключение, OAuth, GitHub и SSH credentials."],
+    ["Постоянный Hermes", readiness.hermesReady, "Подтверждены подключение и чтение репозитория из Hermes. Файлы OAuth, GitHub и SSH присутствуют; работоспособность OAuth проверяется реальным запуском."],
     ["Команда", readiness.teamReady, tracker.data.requireTeam ? "Требование трекера: назначьте ответственность команды." : "По текущей настройке трекера необязательно."],
     ["Чаты", readiness.chatsReady, tracker.data.requireChats ? "Требование трекера: подтвердите конфигурацию чатов на host." : "По текущей настройке трекера необязательно."]
   ];
   return <section aria-label="Setup readiness" style={panelStyle}><div style={cardStyle}><h2>Проверка и первая задача</h2><p>{readiness.ready ? "Проект готов. Создайте первую нативную задачу f(AI) Control и задайте явный независимый QA и человеческое approval в самой задаче." : "Проект ещё не готов. Исправьте пункты со статусом «ожидает»; проверка не создаёт задачу и не меняет процесс."}</p></div>
     <div style={cardStyle}>{rows.map(([label, ready, detail]) => <div key={label}><strong>{label}: {ready ? "готово" : "ожидает"}</strong><p>{detail}</p></div>)}</div>
-    {readiness.ready ? <div style={cardStyle}><h3>Первая нативная задача</h3><p>В задаче явно назначьте Hermes исполнителем, независимую нативную QA-проверку и human approval. Плагин не подставляет идентификаторы агента и не создаёт политику за оператора.</p><a {...navigation.linkProps(`/projects/${context.entityId}/issues/new`)}>Новая задача</a><a {...navigation.linkProps(`/projects/${context.entityId}/issues`)}>Открыть задачи проекта</a></div> : null}
+    {readiness.ready ? <div style={cardStyle}><h3>Первая нативная задача</h3><p>Откройте задачи проекта и используйте нативное действие New Task. В задаче явно назначьте Hermes исполнителем, независимую нативную QA-проверку и human approval. Плагин не подставляет идентификаторы агента и не создаёт политику за оператора.</p><a {...navigation.linkProps(`/projects/${context.entityId}/issues`)}>Открыть задачи и создать новую</a></div> : null}
   </section>;
 }
 

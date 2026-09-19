@@ -1,11 +1,11 @@
 import { expect, test, vi } from "vitest";
 vi.mock("node:fs/promises", () => ({
-  chmod: vi.fn(), chown: vi.fn(), mkdir: vi.fn(), writeFile: vi.fn(),
+  chmod: vi.fn(), chown: vi.fn(), mkdir: vi.fn(), unlink: vi.fn(), writeFile: vi.fn(),
   realpath: vi.fn(async (value: string) => value),
   lstat: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});}),
   readFile: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});})
 }));
-import { checkRuntime, installRuntime, inspectOwned, labels, projectRuntime, restartRuntime, runtimeSpec, verifyRuntimeRepository, verifyRuntimeTracker, type Docker } from "./hermes-lifecycle.js";
+import { checkRuntime, initializeHostGithubCredential, installRuntime, inspectOwned, labels, prepareHost, projectRuntime, restartRuntime, runtimeSpec, verifyRuntimeRepository, verifyRuntimeTracker, writeHostGithubCredential, type Docker } from "./hermes-lifecycle.js";
 const runtime = projectRuntime("company", "project");
 const image = {Id: `sha256:${"a".repeat(64)}`, Config: {Entrypoint: ["/init"]}};
 const response = (status: number, body: unknown = {}) => ({status, body: Buffer.from(typeof body === "string" ? body : JSON.stringify(body))});
@@ -36,15 +36,42 @@ test("install creates exact owned resources and returns only the device challeng
     if (path.includes("/logs?")) return response(200, "noise that must not be returned https://auth.openai.com/codex/device ABCD-EFGH");
     return response(404);
   });
-  const checked = await installRuntime(runtime, engine);
+  const github = vi.fn(async () => false);
+  const checked = await installRuntime(runtime, engine, github);
   expect(checked.status).toBe("auth_required");
   expect(checked.deviceAuth).toEqual({verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-EFGH"});
   const created = engine.mock.calls.find(([method, path]) => method === "POST" && path.includes("/containers/create"));
   expect(created?.[2]).toMatchObject({Image: image.Id, Labels: labels(runtime, "auth")});
   expect(engine.mock.calls.every(([, path]) => !path.includes("prune") && !path.includes("containers/json"))).toBe(true);
   expect(JSON.stringify(checked)).not.toContain("noise");
+  expect(github).toHaveBeenCalledWith(runtime);
   const {mkdir} = await import("node:fs/promises");
   expect(vi.mocked(mkdir).mock.calls.some(([path]) => path === `${runtime.root}/data/home/.ssh`)).toBe(true);
+});
+
+test("host preparation attempts central GitHub reuse without replacing project state", async () => {
+  const initialize = vi.fn(async () => true);
+  await prepareHost(runtime, initialize);
+  expect(initialize).toHaveBeenCalledOnce();
+});
+test("central GitHub reuse writes only a new private project credential", async () => {
+  const helper = vi.fn(async () => Buffer.from(`protocol=https\nhost=github.com\nusername=x-access-token\npassword=ghp_${"a".repeat(40)}\n\n`));
+  expect(await writeHostGithubCredential(`${runtime.root}/secrets/github-token`, helper)).toBe(true);
+  expect(helper).toHaveBeenCalledWith("protocol=https\nhost=github.com\n\n");
+  const {writeFile, chown} = await import("node:fs/promises");
+  expect(vi.mocked(writeFile)).toHaveBeenCalledWith(`${runtime.root}/secrets/github-token`, `ghp_${"a".repeat(40)}\n`, {flag: "wx", mode: 0o600});
+  const writeCredential = vi.fn(async () => true);
+  expect(await initializeHostGithubCredential(runtime, writeCredential)).toBe(true);
+  expect(vi.mocked(chown)).toHaveBeenCalledWith(`${runtime.root}/secrets/github-token`, 10000, 10000);
+});
+test("central GitHub reuse never reads or replaces an existing project credential", async () => {
+  const {lstat, writeFile} = await import("node:fs/promises");
+  vi.mocked(lstat).mockResolvedValueOnce({isFile: () => true} as never);
+  const writes = vi.mocked(writeFile).mock.calls.length;
+  const writeCredential = vi.fn(async () => true);
+  expect(await initializeHostGithubCredential(runtime, writeCredential)).toBe(false);
+  expect(writeCredential).not.toHaveBeenCalled();
+  expect(vi.mocked(writeFile).mock.calls).toHaveLength(writes);
 });
 test("restart rejects foreign labels, changed image or persistent mounts before mutation", async () => {
   for (const mutated of [

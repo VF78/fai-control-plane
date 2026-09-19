@@ -46,7 +46,8 @@ async function verifyFiles(binding: HermesHostBinding, m: Manifest) {
   for (const [path, digest] of Object.entries(m.files)) {
     const full = await safePath(binding.root, `data/${path}`);
     const stat = await lstat(full);
-    if (!stat.isFile() || stat.uid !== owner.uid || stat.gid !== owner.gid || (stat.mode & 0o077) !== 0 || hash(await readFile(full, "utf8")) !== digest) throw new Error("chat_managed_state_conflict");
+    const unsafePermissions = path === "config.yaml" ? (stat.mode & 0o037) !== 0 : (stat.mode & 0o077) !== 0;
+    if (!stat.isFile() || stat.uid !== owner.uid || stat.gid !== owner.gid || unsafePermissions || hash(await readFile(full, "utf8")) !== digest) throw new Error("chat_managed_state_conflict");
   }
 }
 export async function readChatRuntime(binding: HermesHostBinding, state: ProjectChatsState, contextVersion: string) {

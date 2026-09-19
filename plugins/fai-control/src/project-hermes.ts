@@ -6,7 +6,8 @@ import type { ProjectDocumentContext } from "./project-documents.js";
 
 export type HermesHostBinding = {companyId: string; projectId: string; agentId: string; root: string; apiBaseUrl: string; runtimeWorkspace: string};
 export type HermesSetupState = {agentId: string; revision: number; contextVersion: string | null};
-export type HermesSetupView = {state: HermesSetupState | null; contextStale: boolean; hostConfigured: boolean; connected: boolean; access: {oauth: boolean; github: boolean; ssh: boolean}; reason: string | null};
+export type HermesRepositoryVerification = {repositoryUrl: string; ref: string; verified: boolean; checkedAt: string};
+export type HermesSetupView = {state: HermesSetupState | null; contextStale: boolean; hostConfigured: boolean; connected: boolean; repositoryVerified: boolean; access: {oauth: boolean; github: boolean; ssh: boolean}; reason: string | null};
 export function hostBinding(raw: unknown, companyId: string, projectId: string, agentId: string, baseRoot = "/var/lib/fai-control/hermes"): HermesHostBinding {
   if (!/^[a-zA-Z0-9-]+$/.test(companyId) || !/^[a-zA-Z0-9-]+$/.test(projectId)) throw new Error("hermes_scope_invalid");
   if (!raw || typeof raw !== "object") throw new Error("hermes_host_binding_required");
@@ -62,4 +63,23 @@ export function parseHermesSetup(raw: unknown): HermesSetupState | null {
   const value = raw as Record<string, unknown>;
   if (typeof value.agentId !== "string" || !Number.isInteger(value.revision) || Number(value.revision) < 1 || (value.contextVersion !== null && typeof value.contextVersion !== "string")) return null;
   return value as HermesSetupState;
+}
+
+export function parseHermesRepositoryVerification(raw: unknown): HermesRepositoryVerification | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Partial<HermesRepositoryVerification>;
+  if (typeof value.repositoryUrl !== "string" || typeof value.ref !== "string" || typeof value.verified !== "boolean" || typeof value.checkedAt !== "string") return null;
+  return value as HermesRepositoryVerification;
+}
+
+export async function refreshHermesRepositoryVerification(
+  repository: Readonly<{repositoryUrl: string; ref: string}>,
+  verify: () => Promise<Readonly<{verified: boolean; checkedAt: string}>>,
+  persist: (value: HermesRepositoryVerification) => Promise<void>,
+  attemptedAt = new Date().toISOString()
+) {
+  await persist({...repository, verified: false, checkedAt: attemptedAt});
+  const result = await verify();
+  await persist({...repository, verified: result.verified, checkedAt: result.checkedAt});
+  return result;
 }
