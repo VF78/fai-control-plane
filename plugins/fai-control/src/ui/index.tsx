@@ -7,6 +7,8 @@ import { projectDocumentCategories, type ProjectDocumentCategory } from "../proj
 import type { RuntimeCheck } from "../hermes-lifecycle.js";
 import type { HermesSetupView } from "../project-hermes.js";
 import type { ProjectChatsView } from "../project-chats.js";
+import type { TrackerBinding } from "../project-tracker.js";
+import { projectSetupReadiness } from "../project-setup-readiness.js";
 import { mergeHermesInstructions } from "../hermes-instructions.js";
 import type { ProjectDocumentsView } from "../worker.js";
 import { extractBrowserDocument } from "./document-extract.js";
@@ -345,6 +347,86 @@ export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
 
 export function ProjectHermesChatsTab(props: PluginDetailTabProps) { return <ProjectHermesChatsPanel {...props} />; }
 
+function ProjectTrackerPanel({context}: PluginDetailTabProps) {
+  const tracker = usePluginData<TrackerBinding>("project-tracker", {companyId: context.companyId, projectId: context.entityId});
+  const save = usePluginAction("save-project-tracker");
+  const verify = usePluginAction("verify-project-tracker");
+  const [mode, setMode] = useState<"internal" | "external">("internal");
+  const [externalProjectUrl, setExternalProjectUrl] = useState("");
+  const [requireTeam, setRequireTeam] = useState(false);
+  const [requireChats, setRequireChats] = useState(false);
+  const [pending, setPending] = useState<"save" | "verify" | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!tracker.data) return;
+    setMode(tracker.data.mode); setExternalProjectUrl(tracker.data.externalProjectUrl ?? "");
+    setRequireTeam(tracker.data.requireTeam); setRequireChats(tracker.data.requireChats);
+  }, [tracker.data]);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!tracker.data) return;
+    setPending("save"); setMessage(null);
+    try {
+      await save({projectId: context.entityId, expectedRevision: tracker.data.revision, mode, externalProjectUrl, requireTeam, requireChats});
+      tracker.refresh(); setMessage(mode === "internal" ? "Внутренние задачи Paperclip выбраны как единственный источник исполнения." : "Внешний GitHub Project сохранён. Его бизнес-поля остаются внешней истиной.");
+    } catch {setMessage("Настройки трекера не сохранены. Обновите данные и проверьте обязательный репозиторий.");}
+    finally {setPending(null);}
+  }
+  async function verifyExternal() {
+    if (!tracker.data) return;
+    setPending("verify"); setMessage(null);
+    try { await verify({projectId: context.entityId, expectedRevision: tracker.data.revision}); tracker.refresh(); setMessage("Доступ Hermes к GitHub Project проверен только чтением. Связь с нативной задачей ещё ожидает отдельного коннектора записи."); }
+    catch {setMessage("Проверка не подтвердила внешний трекер. Конфигурация сохранена, но не готова.");}
+    finally {setPending(null);}
+  }
+  if (tracker.loading) return <p>Загрузка трекера…</p>;
+  if (tracker.error || !tracker.data) return <p role="alert">Настройки трекера недоступны.</p>;
+  const verified = tracker.data.readback?.status === "verified";
+  return <section aria-label="Task tracker" style={panelStyle}>
+    <div style={cardStyle}><h2>Таск-трекер и процесс</h2><p>Репозиторий обязателен. Paperclip владеет нативными задачами и исполнением; подключённый GitHub Project остаётся внешней истиной бизнес-полей, а Paperclip показывает только связанное исполнение.</p></div>
+    <form style={cardStyle} onSubmit={(event) => void submit(event)}>
+      <label>Источник задач<select style={inputStyle} value={mode} disabled={pending !== null} onChange={(event) => setMode(event.target.value as "internal" | "external")}><option value="internal">Внутренние задачи Paperclip</option><option value="external">Внешний GitHub Project</option></select></label>
+      {mode === "external" ? <label>URL GitHub Project<input style={inputStyle} required type="url" value={externalProjectUrl} placeholder="https://github.com/users/owner/projects/1" disabled={pending !== null} onChange={(event) => setExternalProjectUrl(event.target.value)} /></label> : <p>Нативные задачи Paperclip готовы для исполнения после остальных проверок.</p>}
+      <label><input type="checkbox" checked={requireTeam} disabled={pending !== null} onChange={(event) => setRequireTeam(event.target.checked)} /> Требовать назначенные ответственности команды перед стартом</label>
+      <label><input type="checkbox" checked={requireChats} disabled={pending !== null} onChange={(event) => setRequireChats(event.target.checked)} /> Требовать подтверждённые чаты Hermes перед стартом</label>
+      <button style={buttonStyle} type="submit" disabled={pending !== null}>{pending === "save" ? "Сохранение…" : "Сохранить трекер"}</button>
+    </form>
+    {tracker.data.mode === "external" ? <div style={cardStyle}><p>{verified ? "GitHub Project подтверждён чтением Hermes." : "GitHub Project ещё не подтверждён Hermes."}</p><p>Коннектор записи и нативная связь задачи пока не реализованы, поэтому внешний режим остаётся в ожидании и не открывает запуск задач.</p><button style={buttonStyle} type="button" disabled={pending !== null} onClick={() => void verifyExternal()}>{pending === "verify" ? "Проверка…" : "Проверить доступ Hermes только чтением"}</button></div> : null}
+    {message ? <p role="status">{message}</p> : null}
+  </section>;
+}
+
+function ProjectSetupReadinessPanel({context}: PluginDetailTabProps) {
+  const repository = usePluginData<ProjectRepositoryBindingView>("project-repository-binding", {companyId: context.companyId, projectId: context.entityId});
+  const tracker = usePluginData<TrackerBinding>("project-tracker", {companyId: context.companyId, projectId: context.entityId});
+  const documents = usePluginData<ProjectDocumentsView>("project-documents", {companyId: context.companyId, projectId: context.entityId});
+  const hermes = usePluginData<HermesSetupView>("project-hermes-setup", {companyId: context.companyId, projectId: context.entityId});
+  const team = usePluginData<ProjectTeamRoleView>("project-team-roles", {companyId: context.companyId, projectId: context.entityId});
+  const chats = usePluginData<ProjectChatsView>("project-hermes-chats", {companyId: context.companyId, projectId: context.entityId});
+  const navigation = useHostNavigation();
+  if (repository.loading || tracker.loading || documents.loading || hermes.loading || team.loading || chats.loading) return <p>Проверка готовности…</p>;
+  if (!repository.data || !tracker.data || !documents.data || !hermes.data || !team.data || !chats.data) return <p role="alert">Не удалось собрать подтверждённые факты готовности.</p>;
+  const readiness = projectSetupReadiness({
+    repositoryReady: repository.data.binding?.access.status === "verified" && repository.data.nativeWorkspace.matchesBinding,
+    tracker: tracker.data,
+    documentsReady: documents.data.missingMandatory.length === 0 && !documents.data.contextStale && documents.data.state.context !== null,
+    hermesReady: hermes.data.connected && !hermes.data.contextStale && hermes.data.access.oauth && hermes.data.access.github && hermes.data.access.ssh,
+    teamReady: Object.keys(team.data.mapping.assignments).length > 0,
+    chatsReady: (chats.data.state.internal !== null || chats.data.state.client !== null) && chats.data.nativeCapability === "configuration_verified"
+  });
+  const rows: readonly [string, boolean, string][] = [
+    ["Репозиторий", readiness.repositoryReady, "Репозиторий и ветка совпадают с нативным workspace, доступ подтверждён."],
+    ["Трекер", readiness.trackerReady, tracker.data.mode === "internal" ? "Внутренние задачи Paperclip готовы." : "Внешний GitHub Project может быть проверен только чтением; запись и нативная связь задачи ожидают коннектор."],
+    ["Документы и контекст", readiness.documentsReady, "Паспорт и спецификация загружены, текущий контекст подготовлен."],
+    ["Постоянный Hermes", readiness.hermesReady, "Подтверждены подключение, OAuth, GitHub и SSH credentials."],
+    ["Команда", readiness.teamReady, tracker.data.requireTeam ? "Требование трекера: назначьте ответственность команды." : "По текущей настройке трекера необязательно."],
+    ["Чаты", readiness.chatsReady, tracker.data.requireChats ? "Требование трекера: подтвердите конфигурацию чатов на host." : "По текущей настройке трекера необязательно."]
+  ];
+  return <section aria-label="Setup readiness" style={panelStyle}><div style={cardStyle}><h2>Проверка и первая задача</h2><p>{readiness.ready ? "Проект готов. Создайте первую нативную задачу Paperclip и задайте явный независимый QA и человеческое approval в самой задаче." : "Проект ещё не готов. Исправьте пункты со статусом «ожидает»; проверка не создаёт задачу и не меняет процесс."}</p></div>
+    <div style={cardStyle}>{rows.map(([label, ready, detail]) => <div key={label}><strong>{label}: {ready ? "готово" : "ожидает"}</strong><p>{detail}</p></div>)}</div>
+    {readiness.ready ? <div style={cardStyle}><h3>Первая нативная задача</h3><p>В задаче явно назначьте Hermes исполнителем, независимую нативную QA-проверку и human approval. Плагин не подставляет идентификаторы агента и не создаёт политику за оператора.</p><a {...navigation.linkProps(`/projects/${context.entityId}/issues/new`)}>Новая задача</a><a {...navigation.linkProps(`/projects/${context.entityId}/issues`)}>Открыть задачи проекта</a></div> : null}
+  </section>;
+}
+
 export function ProjectSetupWizardTab({context}: PluginDetailTabProps) {
   const [step, setStep] = useState(0);
   const [stepHydrated, setStepHydrated] = useState(false);
@@ -354,18 +436,17 @@ export function ProjectSetupWizardTab({context}: PluginDetailTabProps) {
     setStepHydrated(true);
   }, [context.companyId, context.entityId]);
   useEffect(() => { if (stepHydrated) localStorage.setItem(setupDraftKey(context.companyId, context.entityId), String(step)); }, [context.companyId, context.entityId, step, stepHydrated]);
-  const unavailable = (label: string) => <div style={cardStyle}><p role="status">{label} is not available yet. This wizard does not configure it or mark it ready.</p></div>;
   return <section aria-label="Project setup" style={panelStyle}>
     <div style={cardStyle}><h2>Project setup</h2><p>One resumable native setup path. Current progress is saved locally per company and project; uploaded documents resume from project-scoped plugin state.</p>
       <div role="tablist" aria-label="Setup stages" style={{display: "flex", flexWrap: "wrap", gap: "8px", minWidth: 0}}>{setupSteps.map((label, index) => <button key={label} style={{...buttonStyle, background: step === index ? "var(--accent, var(--card, transparent))" : buttonStyle.background, borderColor: step === index ? "var(--accent, var(--border))" : undefined, color: step === index ? "var(--accent-foreground, inherit)" : buttonStyle.color, fontWeight: step === index ? 700 : 400}} role="tab" aria-selected={step === index} type="button" onClick={() => setStep(index)}>{index + 1}. {label}</button>)}</div>
     </div>
     <div role="tabpanel">
       {step === 0 ? <ProjectRepositoryTab context={context} /> : null}
-      {step === 1 ? unavailable("Tracker and process setup") : null}
+      {step === 1 ? <ProjectTrackerPanel context={context} /> : null}
       {step === 2 ? <ProjectDocumentsPanel context={context} /> : null}
       {step === 3 ? <ProjectHermesPanel context={context} /> : null}
       {step === 4 ? <><ProjectTeamRolesTab context={context} /><ProjectHermesChatsPanel context={context} /></> : null}
-      {step === 5 ? unavailable("Verification and first-task setup") : null}
+      {step === 5 ? <ProjectSetupReadinessPanel context={context} /> : null}
     </div>
   </section>;
 }

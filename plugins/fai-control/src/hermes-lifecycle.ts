@@ -1,4 +1,5 @@
 import { normalizeGitHubRepositoryUrl } from "./repository-binding.js";
+import { githubProject } from "./project-tracker.js";
 import { request } from "node:http";
 import { chmod, chown, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -53,7 +54,7 @@ export async function prepareHost(runtime: ProjectRuntime) {
   try {stored = JSON.parse(await readFile(marker, "utf8"));} catch (error) {if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("hermes_workspace_ownership_conflict");}
   if (stored && (stored.companyId !== runtime.companyId || stored.projectId !== runtime.projectId)) throw new Error("hermes_workspace_ownership_conflict");
   if (!stored) await writeFile(marker, JSON.stringify({companyId: runtime.companyId, projectId: runtime.projectId, runtimeId: runtime.runtimeId}), {flag: "wx", mode: 0o600});
-  for (const suffix of ["data", "data/work", `data/work/${runtime.runtimeId}`, "codex-home", "secrets"]) {
+  for (const suffix of ["data", "data/home", "data/home/.ssh", "data/work", `data/work/${runtime.runtimeId}`, "codex-home", "secrets"]) {
     const directory = join(runtime.root, suffix); await mkdir(directory, {recursive: true, mode: 0o700});
     if (await realpath(directory) !== directory) throw new Error("hermes_symlink_forbidden");
     await chmod(directory, 0o700); await chown(directory, 10000, 10000);
@@ -114,20 +115,48 @@ export async function restartRuntime(runtime: ProjectRuntime, engine: Docker = d
   return checkRuntime(runtime, engine);
 }
 
+async function waitForExec(engine: Docker, id: string) {
+  const deadline = Date.now() + 18_000;
+  for (;;) {
+    const checked = await engine("GET", `/exec/${id}/json`); expect(checked.status, [200]);
+    const result = JSON.parse(checked.body.toString());
+    if (result.Running === false) return result as {Running: false; ExitCode: number};
+    if (Date.now() >= deadline) throw new Error("hermes_exec_timeout");
+    await new Promise<void>(resolve => setTimeout(resolve, 100));
+  }
+}
+
+async function runDetachedExec(runtime: ProjectRuntime, payload: Record<string, unknown>, engine: Docker) {
+  const created = await engine("POST", `/containers/${name(runtime, "gateway")}/exec`, {
+    ...payload, User: "10000:10000", AttachStdout: false, AttachStderr: false
+  }); expect(created.status, [201]);
+  const id = JSON.parse(created.body.toString()).Id;
+  if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) throw new Error("hermes_exec_identity_invalid");
+  const started = await engine("POST", `/exec/${id}/start`, {Detach: true, Tty: false}); expect(started.status, [200]);
+  return waitForExec(engine, id);
+}
+
 export async function verifyRuntimeRepository(runtime: ProjectRuntime, httpsUrl: string, ref: string, engine: Docker = docker) {
   if (!await inspectOwned(runtime, "gateway", engine)) throw new Error("hermes_runtime_not_installed");
   const repository = normalizeGitHubRepositoryUrl(httpsUrl);
   if (!/^refs\/heads\/[A-Za-z0-9_./-]+$/.test(ref)) throw new Error("hermes_repository_binding_invalid");
   const sshUrl = `git@github.com:${repository.owner}/${repository.repository}.git`;
-  const created = await engine("POST", `/containers/${name(runtime, "gateway")}/exec`, {
-    User: "10000:10000", AttachStdout: false, AttachStderr: false,
+  const result = await runDetachedExec(runtime, {
     Env: ["HOME=/opt/data/home", "GH_CONFIG_DIR=/opt/data/home/.config/gh", "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"],
     Cmd: ["timeout", "15", "sh", "-c", 'gh auth status >/dev/null 2>&1 && git ls-remote --exit-code "$1" "$3" >/dev/null 2>&1 && git ls-remote --exit-code "$2" "$3" >/dev/null 2>&1', "fai-repository-check", httpsUrl, sshUrl, ref]
-  }); expect(created.status, [201]);
-  const id = JSON.parse(created.body.toString()).Id;
-  if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) throw new Error("hermes_exec_identity_invalid");
-  const started = await engine("POST", `/exec/${id}/start`, {Detach: false, Tty: false}); expect(started.status, [200]);
-  const checked = await engine("GET", `/exec/${id}/json`); expect(checked.status, [200]);
-  const result = JSON.parse(checked.body.toString());
+  }, engine);
   return {verified: result.Running === false && result.ExitCode === 0, checkedAt: new Date().toISOString()};
+}
+
+/** Read-only host diagnostic in the existing persistent Hermes executor; never a GitHub mutation broker. */
+export async function verifyRuntimeTracker(runtime: ProjectRuntime, repositoryUrl: string, projectUrl: string, engine: Docker = docker) {
+  const project = githubProject(projectUrl);
+  const repository = normalizeGitHubRepositoryUrl(repositoryUrl);
+  const owned = await inspectOwned(runtime, "gateway", engine);
+  if (!owned?.State?.Running) throw new Error("hermes_runtime_not_running");
+  const result = await runDetachedExec(runtime, {
+    Env: ["HOME=/opt/data/home", "GH_CONFIG_DIR=/opt/data/home/.config/gh", "GH_PROMPT_DISABLED=1"],
+    Cmd: ["timeout", "15", "sh", "-c", 'gh repo view "$1" --json nameWithOwner >/dev/null 2>&1 && gh project view "$2" --owner "$3" >/dev/null 2>&1', "fai-tracker-check", `${repository.owner}/${repository.repository}`, project.number, project.owner]
+  }, engine);
+  return {verified: result.Running === false && result.ExitCode === 0, projectId: null, checkedAt: new Date().toISOString()};
 }

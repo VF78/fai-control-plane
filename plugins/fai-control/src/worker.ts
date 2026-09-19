@@ -1,8 +1,9 @@
+import {configureTracker, parseTracker, recordTrackerReadback} from "./project-tracker.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { renderHermesContext } from "./hermes-instructions.js";
 import { readChatRuntime, writeChatRuntime, chatSecretFiles } from "./hermes-chats-runtime.js";
-import { docker, inspectOwned, projectRuntime, checkRuntime, installRuntime, restartRuntime, verifyRuntimeRepository } from "./hermes-lifecycle.js";
+import { docker, inspectOwned, projectRuntime, checkRuntime, installRuntime, restartRuntime, verifyRuntimeRepository, verifyRuntimeTracker } from "./hermes-lifecycle.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
@@ -44,6 +45,7 @@ const documentsStateKey = (projectId: string) => ({
 });
 const hermesBindingKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "host-binding"});
 const hermesStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "setup"});
+const trackerStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "tracker", stateKey: "binding"});
 const chatsStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "chats", stateKey: "configuration"});
 async function projectHostBinding(ctx: PluginContext, companyId: string, projectId: string, agentId: string) {
   const config = await ctx.config.get(companyId);
@@ -227,6 +229,33 @@ async function verifyWithNativeGit(binding: RepositoryBinding): Promise<Reposito
 
 const plugin = definePlugin({
   async setup(ctx) {
+    ctx.data.register("project-tracker", async (params) => {
+      await requireProject(ctx, inputString(params, "projectId"), inputString(params, "companyId"));
+      return parseTracker(await ctx.state.get(trackerStateKey(inputString(params, "projectId"))));
+    });
+    ctx.actions.register("save-project-tracker", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
+      await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+        if (!await readBinding(ctx, projectId)) throw new Error("repository_required");
+        const binding = configureTracker(params, parseTracker(await ctx.state.get(trackerStateKey(projectId))));
+        await ctx.state.set(trackerStateKey(projectId), binding); return binding;
+      });
+    });
+    ctx.actions.register("verify-project-tracker", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
+      await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+        const binding = parseTracker(await ctx.state.get(trackerStateKey(projectId)));
+        if (params.expectedRevision !== binding.revision) throw new Error("tracker_revision_conflict");
+        const repository = await bindingView(ctx, projectId, companyId);
+        if (!repository.binding || !repository.nativeWorkspace.matchesBinding || !binding.externalProjectUrl) throw new Error("tracker_repository_or_project_required");
+        let readback: Awaited<ReturnType<typeof verifyRuntimeTracker>> = {verified: false, projectId: null, checkedAt: new Date().toISOString()};
+        try { readback = await verifyRuntimeTracker(projectRuntime(companyId, projectId), repository.binding.repositoryUrl, binding.externalProjectUrl); } catch { /* replace stale success with bounded failure */ }
+        const next = recordTrackerReadback(binding, params.expectedRevision as number, repository.binding.repositoryUrl, readback);
+        await ctx.state.set(trackerStateKey(projectId), next); return next;
+      });
+    });
     ctx.data.register("project-hermes-runtime", async (params) => {
       const companyId = inputString(params, "companyId"); const projectId = inputString(params, "projectId");
       await requireProject(ctx, projectId, companyId);
