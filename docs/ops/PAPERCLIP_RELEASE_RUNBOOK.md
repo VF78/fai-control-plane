@@ -161,8 +161,13 @@ FCP_APPROVED_PAPERCLIP_ACTIVATION=accepted-native-auth-plugin-hermes-qa \
 
 Verify native unauthenticated API denial, signup denial, owner login, plugin setup,
 Core health commit, and protected-service health via scoped checks. Inspect the
-existing public HTTPS route without editing Nginx. A later update, rollback,
-data migration or removal needs its own reviewed resource/diff/approval slice.
+existing public HTTPS route without editing Nginx. The upstream must receive
+exactly one Host and X-Forwarded-Proto header. Do not combine `proxy_params`
+(which already sets forwarded headers on the VPS) with duplicate explicit
+headers: an `https, https` value breaks native authentication. Do not redeploy
+the legacy Nginx template over the reviewed public route. A later update,
+rollback, data migration or removal needs its own reviewed resource/diff/approval
+slice; the first-install command is not an in-place upgrade command.
 
 ## Internal MVP acceptance preflight (required operator evidence)
 
