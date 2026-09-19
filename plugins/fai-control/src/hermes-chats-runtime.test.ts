@@ -21,6 +21,8 @@ describe("host-owned native chat profiles", () => {
   it("reads back restricted scopes, preserves sessions and config, and keeps secrets off the manifest", async () => {
     const f = await fixture(); await f.apply();
     expect(await readChatRuntime(f.binding, f.state, "v1")).toBe(true);
+    await chmod(join(f.root, "data/config.yaml"), 0o640);
+    expect(await readChatRuntime(f.binding, f.state, "v1")).toBe(true);
     expect(await readChatRuntime(f.binding, {...f.state, revision: 2}, "v1")).toBe(false);
     expect(await readFile(join(f.root, "data/config.yaml"), "utf8")).toContain("preserved-model");
     expect(await readFile(join(f.root, "data/profiles/client/.env"), "utf8")).toContain("TELEGRAM_ALLOWED_USERS=43,42");

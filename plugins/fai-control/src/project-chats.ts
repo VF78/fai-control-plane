@@ -19,6 +19,7 @@ export type ProjectChatsView = Readonly<{
   contextVersion?: string;
   secretFiles?: readonly string[];
   reason: string;
+  gatewayReconnect?: Readonly<{agentId: string; apiBaseUrl: string}>;
 }>;
 
 const emptyState = (): ProjectChatsState => ({contract: "fai.project-chats.v1", revision: 0, internal: null, client: null});

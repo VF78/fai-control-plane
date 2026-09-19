@@ -1,11 +1,11 @@
 import { expect, test, vi } from "vitest";
 vi.mock("node:fs/promises", () => ({
-  chmod: vi.fn(), chown: vi.fn(), mkdir: vi.fn(), writeFile: vi.fn(),
+  chmod: vi.fn(), chown: vi.fn(), mkdir: vi.fn(), unlink: vi.fn(), writeFile: vi.fn(),
   realpath: vi.fn(async (value: string) => value),
   lstat: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});}),
   readFile: vi.fn(async () => {throw Object.assign(new Error(), {code: "ENOENT"});})
 }));
-import { checkRuntime, installRuntime, inspectOwned, labels, projectRuntime, restartRuntime, runtimeSpec, verifyRuntimeRepository, verifyRuntimeTracker, type Docker } from "./hermes-lifecycle.js";
+import { checkRuntime, initializeHostGithubCredential, installRuntime, inspectOwned, labels, prepareHost, projectRuntime, restartRuntime, runtimeSpec, sendInternalTelegramNotification, verifyRuntimeRepository, verifyRuntimeTracker, writeHostGithubCredential, type Docker } from "./hermes-lifecycle.js";
 const runtime = projectRuntime("company", "project");
 const image = {Id: `sha256:${"a".repeat(64)}`, Config: {Entrypoint: ["/init"]}};
 const response = (status: number, body: unknown = {}) => ({status, body: Buffer.from(typeof body === "string" ? body : JSON.stringify(body))});
@@ -36,15 +36,42 @@ test("install creates exact owned resources and returns only the device challeng
     if (path.includes("/logs?")) return response(200, "noise that must not be returned https://auth.openai.com/codex/device ABCD-EFGH");
     return response(404);
   });
-  const checked = await installRuntime(runtime, engine);
+  const github = vi.fn(async () => false);
+  const checked = await installRuntime(runtime, engine, github);
   expect(checked.status).toBe("auth_required");
   expect(checked.deviceAuth).toEqual({verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-EFGH"});
   const created = engine.mock.calls.find(([method, path]) => method === "POST" && path.includes("/containers/create"));
   expect(created?.[2]).toMatchObject({Image: image.Id, Labels: labels(runtime, "auth")});
   expect(engine.mock.calls.every(([, path]) => !path.includes("prune") && !path.includes("containers/json"))).toBe(true);
   expect(JSON.stringify(checked)).not.toContain("noise");
+  expect(github).toHaveBeenCalledWith(runtime);
   const {mkdir} = await import("node:fs/promises");
   expect(vi.mocked(mkdir).mock.calls.some(([path]) => path === `${runtime.root}/data/home/.ssh`)).toBe(true);
+});
+
+test("host preparation attempts central GitHub reuse without replacing project state", async () => {
+  const initialize = vi.fn(async () => true);
+  await prepareHost(runtime, initialize);
+  expect(initialize).toHaveBeenCalledOnce();
+});
+test("central GitHub reuse writes only a new private project credential", async () => {
+  const helper = vi.fn(async () => Buffer.from(`protocol=https\nhost=github.com\nusername=x-access-token\npassword=ghp_${"a".repeat(40)}\n\n`));
+  expect(await writeHostGithubCredential(`${runtime.root}/secrets/github-token`, helper)).toBe(true);
+  expect(helper).toHaveBeenCalledWith("protocol=https\nhost=github.com\n\n");
+  const {writeFile, chown} = await import("node:fs/promises");
+  expect(vi.mocked(writeFile)).toHaveBeenCalledWith(`${runtime.root}/secrets/github-token`, `ghp_${"a".repeat(40)}\n`, {flag: "wx", mode: 0o600});
+  const writeCredential = vi.fn(async () => true);
+  expect(await initializeHostGithubCredential(runtime, writeCredential)).toBe(true);
+  expect(vi.mocked(chown)).toHaveBeenCalledWith(`${runtime.root}/secrets/github-token`, 10000, 10000);
+});
+test("central GitHub reuse never reads or replaces an existing project credential", async () => {
+  const {lstat, writeFile} = await import("node:fs/promises");
+  vi.mocked(lstat).mockResolvedValueOnce({isFile: () => true} as never);
+  const writes = vi.mocked(writeFile).mock.calls.length;
+  const writeCredential = vi.fn(async () => true);
+  expect(await initializeHostGithubCredential(runtime, writeCredential)).toBe(false);
+  expect(writeCredential).not.toHaveBeenCalled();
+  expect(vi.mocked(writeFile).mock.calls).toHaveLength(writes);
 });
 test("restart rejects foreign labels, changed image or persistent mounts before mutation", async () => {
   for (const mutated of [
@@ -97,6 +124,21 @@ test("tracker readback uses detached polling and never exposes native output", a
   expect(payload.Cmd.join(" ")).not.toContain("--jq .id");
 });
 
+test("internal status send uses the owned Hermes profile and reports a non-zero exit without output", async () => {
+  const id = "e".repeat(64);
+  const engine = vi.fn<Docker>(async (_, path) => {
+    if (path.startsWith("/images/")) return response(200, image);
+    if (path.endsWith("/exec")) return response(201, {Id: id});
+    if (path.endsWith("/start")) return response(200, "must-not-escape");
+    if (path === `/exec/${id}/json`) return response(200, {Running: false, ExitCode: 1});
+    return response(200, container("gateway"));
+  });
+  await expect(sendInternalTelegramNotification(runtime, "-1001", "Paperclip status", engine)).rejects.toThrow("hermes_notification_delivery_failed");
+  const payload = engine.mock.calls.find(([, path]) => path.endsWith("/exec"))?.[2] as {Env: string[]; Cmd: string[]; AttachStdout: boolean; AttachStderr: boolean};
+  expect(payload).toMatchObject({Env: ["HERMES_HOME=/opt/data/profiles/internal"], AttachStdout: false, AttachStderr: false});
+  expect(payload.Cmd).toEqual(["timeout", "15", "hermes", "send", "--quiet", "--to", "telegram:-1001", "Paperclip status"]);
+});
+
 test("native instruction retry preserves original text and uses real newlines", async () => {
   const {mergeHermesInstructions, renderHermesContext} = await import("./hermes-instructions.js");
   const original = "Approved project instructions.\nKeep existing memory.";
@@ -108,6 +150,8 @@ test("native instruction retry preserves original text and uses real newlines", 
   expect(mergeHermesInstructions(added, added)).toBe(added);
   const context = renderHermesContext({contract: "fai.project-context.v1", version: "v1", documentRevision: 1, preparedAt: "now", sourceDocumentIds: [], content: "Approved requirements."});
   expect(context).toContain("# Project execution policy\nHermes owns");
+  expect(context).toContain("sets responsibleUserId, and sets maxReviewRounds=2");
+  expect(context).toContain("Configure missing fields through the authorized native API and read them back");
   expect(context).toContain("\n\n# Prepared project context\nVersion: v1\n\nApproved requirements.\n");
   expect(context).not.toContain("\\n");
 });

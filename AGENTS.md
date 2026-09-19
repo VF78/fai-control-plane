@@ -18,11 +18,11 @@
 
 ## Product direction
 
-ADR 0006 describes the deployed thin Control Plane and remains in force until
-an explicit, separately approved cutover. New planning and implementation use
+ADR 0006 is historical. The approved public cutover has deployed the native
+Core/GUI; retained legacy source is not an active controller. Work uses
 epic #399 and ADR 0007: **Paperclip Core + native GUI + one `fai-control`
 plugin**. ADR 0007 is the canonical target contract, including preserved
-commercial requirements and spike gates. Do not create a duplicate core,
+commercial requirements and real-task acceptance gates. Do not create a duplicate core,
 fork/copy Paperclip without approval, or silently change CLI-orchestration or
 independent-QA ownership.
 

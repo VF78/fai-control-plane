@@ -3,10 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { renderHermesContext } from "./hermes-instructions.js";
 import { readChatRuntime, writeChatRuntime, chatSecretFiles } from "./hermes-chats-runtime.js";
-import { docker, inspectOwned, projectRuntime, checkRuntime, installRuntime, restartRuntime, verifyRuntimeRepository, verifyRuntimeTracker } from "./hermes-lifecycle.js";
-import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { promisify } from "node:util";
+import { docker, inspectOwned, projectRuntime, checkRuntime, installRuntime, restartRuntime, sendInternalTelegramNotification, verifyRuntimeRepository, verifyRuntimeTracker } from "./hermes-lifecycle.js";
 import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { createRepositoryBinding, normalizeGitHubBranch, normalizeGitHubRepositoryUrl, parseRepositoryBinding,
   type ProjectRepositoryBindingView, type RepositoryAccess, type RepositoryBinding } from "./repository-binding.js";
@@ -15,10 +12,13 @@ import { createProjectTeamRoleMapping, parseProjectTeamRoleMapping, projectTeamR
 import { addProjectDocument, missingMandatoryDocuments, parseProjectDocumentState, prepareProjectContext,
   type ProjectDocumentState } from "./project-documents.js";
 import { createProjectChatsState, parseProjectChatsState, projectChatsView, type ProjectChatsView } from "./project-chats.js";
+import { verifyWithNativeGit } from "./native-git.js";
+import { assertProjectQa, parseProjectQaState, selectProjectQaCandidate, type ProjectQaView, type QaAgent } from "./project-qa.js";
+import { verifyProjectQaInstructions } from "./project-qa-runtime.js";
+import { canonicalStatusTransition, parseStatusDeliveryState, recordStatusDelivery, statusDeliveryKey, statusNotificationMessage } from "./status-notifications.js";
 
-import { hostBinding, assertNativeHermes, persistHermesContext, checkHermesAccess, parseHermesSetup, type HermesSetupView } from "./project-hermes.js";
+import { hostBinding, assertNativeHermes, persistHermesContext, checkHermesAccess, parseHermesRepositoryVerification, parseHermesSetup, refreshHermesRepositoryVerification, type HermesSetupView } from "./project-hermes.js";
 
-const execFileAsync = promisify(execFile);
 const stateKey = (projectId: string) => ({
   scopeKind: "project" as const,
   scopeId: projectId,
@@ -45,8 +45,11 @@ const documentsStateKey = (projectId: string) => ({
 });
 const hermesBindingKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "host-binding"});
 const hermesStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "setup"});
+const hermesRepositoryKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "repository-verification"});
+const qaStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "qa", stateKey: "identity"});
 const trackerStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "tracker", stateKey: "binding"});
 const chatsStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "chats", stateKey: "configuration"});
+const statusDeliveryStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "notifications", stateKey: "status-deliveries"});
 async function projectHostBinding(ctx: PluginContext, companyId: string, projectId: string, agentId: string) {
   const config = await ctx.config.get(companyId);
   const bindings = config.hermesHostBindings as Record<string, unknown> | undefined;
@@ -58,7 +61,10 @@ async function hermesView(ctx: PluginContext, projectId: string, companyId: stri
   await requireProject(ctx, projectId, companyId);
   const state = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
   const docs = parseProjectDocumentState(await ctx.state.get(documentsStateKey(projectId)));
-  const base = {state, contextStale: !docs.context || docs.context.documentRevision !== docs.revision || state?.contextVersion !== docs.context.version, hostConfigured: false, connected: false, access: {oauth: false, github: false, ssh: false}, reason: null};
+  const repository = await readBinding(ctx, projectId);
+  const repositoryCheck = parseHermesRepositoryVerification(await ctx.state.get(hermesRepositoryKey(projectId)));
+  const repositoryVerified = Boolean(repository && repositoryCheck?.verified && repositoryCheck.repositoryUrl === repository.repositoryUrl && repositoryCheck.ref === repository.ref);
+  const base = {state, contextStale: !docs.context || docs.context.documentRevision !== docs.revision || state?.contextVersion !== docs.context.version, hostConfigured: false, connected: false, repositoryVerified, access: {oauth: false, github: false, ssh: false}, reason: null};
   if (!state) {
     const config = await ctx.config.get(companyId);
     const candidate = (await ctx.state.get(hermesBindingKey(projectId)) ?? (config.hermesHostBindings as Record<string, unknown> | undefined)?.[projectId]) as {agentId?: unknown} | undefined;
@@ -79,7 +85,26 @@ async function hermesView(ctx: PluginContext, projectId: string, companyId: stri
     return {...base, connected: true, access: await checkHermesAccess(binding)};
   } catch {return {...base, reason: "Hermes identity, host ownership, or context pointer needs operator verification."};}
 }
+
+async function qaView(ctx: PluginContext, projectId: string, companyId: string): Promise<ProjectQaView> {
+  await requireProject(ctx, projectId, companyId);
+  const state = parseProjectQaState(await ctx.state.get(qaStateKey(projectId)));
+  const agents = await ctx.agents.list({companyId});
+  const candidate = selectProjectQaCandidate(agents as QaAgent[], projectId);
+  const candidateAgentId = candidate?.id ?? null;
+  if (!state) return {state: null, candidateAgentId, configured: false, reason: candidateAgentId ? "Project QA is available to verify and bind." : null};
+  const hermes = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+  try {
+    if (!hermes) throw new Error("project_qa_requires_hermes");
+    const agent = await ctx.agents.get(state.agentId, companyId);
+    assertProjectQa(agent as QaAgent | null, companyId, projectId, hermes.agentId);
+    await verifyProjectQaInstructions(agent as QaAgent, projectId);
+    if (candidateAgentId !== state.agentId) throw new Error("project_qa_binding_mismatch");
+    return {state, candidateAgentId, configured: true, reason: null};
+  } catch {return {state, candidateAgentId, configured: false, reason: "QA identity, loaded instructions, or its project-scoped native policy needs operator verification."};}
+}
 const documentMutationTails = new Map<string, Promise<void>>();
+const statusNotificationTails = new Map<string, Promise<void>>();
 
 async function serializeDocumentMutation<T>(projectId: string, task: () => Promise<T>): Promise<T> {
   const previous = documentMutationTails.get(projectId) ?? Promise.resolve();
@@ -92,6 +117,16 @@ async function serializeDocumentMutation<T>(projectId: string, task: () => Promi
     release?.();
     if (documentMutationTails.get(projectId) === current) documentMutationTails.delete(projectId);
   }
+}
+
+async function serializeStatusNotification<T>(projectId: string, task: () => Promise<T>): Promise<T> {
+  const previous = statusNotificationTails.get(projectId) ?? Promise.resolve();
+  let release: (() => void) | undefined;
+  const current = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
+  statusNotificationTails.set(projectId, current);
+  await previous;
+  try { return await task(); }
+  finally { release?.(); if (statusNotificationTails.get(projectId) === current) statusNotificationTails.delete(projectId); }
 }
 
 function inputString(params: Record<string, unknown>, key: string): string {
@@ -206,29 +241,39 @@ function idempotencyKey(params: Record<string, unknown>): string {
   return key;
 }
 
-async function verifyWithNativeGit(binding: RepositoryBinding): Promise<RepositoryAccess> {
-  const command = process.env.FAI_GIT_BIN ||
-    (process.platform === "darwin" && existsSync("/Library/Developer/CommandLineTools/usr/bin/git")
-      ? "/Library/Developer/CommandLineTools/usr/bin/git" : "git");
-  try {
-    await execFileAsync(command, ["ls-remote", "--exit-code", binding.repositoryUrl, binding.ref], {
-      timeout: 20_000,
-      maxBuffer: 4 * 1024,
-      env: {...process.env, GIT_TERMINAL_PROMPT: "0"}
-    });
-    return {status: "verified", checkedAt: new Date().toISOString()};
-  } catch (error) {
-    const code = typeof error === "object" && error !== null && "code" in error ? (error as {code?: unknown}).code : undefined;
-    return {
-      status: "unverified",
-      checkedAt: new Date().toISOString(),
-      reason: code === "ENOENT" ? "git_unavailable" : code === "ETIMEDOUT" ? "verification_timeout" : "access_denied_or_ref_missing"
-    };
-  }
-}
-
 const plugin = definePlugin({
   async setup(ctx) {
+    ctx.events.on("issue.updated", async (event) => {
+      if (event.entityType !== "issue" || !event.entityId) return;
+      const issue = await ctx.issues.get(event.entityId, event.companyId);
+      if (!issue?.projectId) return;
+      await serializeStatusNotification(issue.projectId, async () => {
+        if (canonicalStatusTransition(event.payload, issue) === null) return;
+        const chats = parseProjectChatsState(await ctx.state.get(chatsStateKey(issue.projectId!)));
+        const setup = parseHermesSetup(await ctx.state.get(hermesStateKey(issue.projectId!)));
+        const docs = parseProjectDocumentState(await ctx.state.get(documentsStateKey(issue.projectId!)));
+        if (!chats.internal || !setup || !docs.context || docs.context.documentRevision !== docs.revision || setup.contextVersion !== docs.context.version) return;
+        const binding = await projectHostBinding(ctx, event.companyId, issue.projectId!, setup.agentId);
+        assertNativeHermes(await ctx.agents.get(setup.agentId, event.companyId), binding);
+        if (!await readChatRuntime(binding, chats, docs.context.version)) return;
+        const runtime = await checkRuntime(projectRuntime(event.companyId, issue.projectId!));
+        if (runtime.status !== "running" || runtime.runtime.apiBaseUrl !== binding.apiBaseUrl) return;
+        const key = statusDeliveryKey(issue.id, event.eventId);
+        const current = parseStatusDeliveryState(await ctx.state.get(statusDeliveryStateKey(issue.projectId!)));
+        if (current.receipts[key]?.status === "delivered") return;
+        const attemptedAt = new Date().toISOString();
+        await ctx.state.set(statusDeliveryStateKey(issue.projectId!), recordStatusDelivery(current, key, {issueId: issue.id, eventId: event.eventId, status: "attempted", at: attemptedAt}));
+        try {
+          await sendInternalTelegramNotification(runtime.runtime, chats.internal.chatId, statusNotificationMessage(issue));
+          const after = parseStatusDeliveryState(await ctx.state.get(statusDeliveryStateKey(issue.projectId!)));
+          await ctx.state.set(statusDeliveryStateKey(issue.projectId!), recordStatusDelivery(after, key, {issueId: issue.id, eventId: event.eventId, status: "delivered", at: new Date().toISOString()}));
+        } catch (error) {
+          const after = parseStatusDeliveryState(await ctx.state.get(statusDeliveryStateKey(issue.projectId!)));
+          await ctx.state.set(statusDeliveryStateKey(issue.projectId!), recordStatusDelivery(after, key, {issueId: issue.id, eventId: event.eventId, status: "failed", at: new Date().toISOString()}));
+          throw error;
+        }
+      });
+    });
     ctx.data.register("project-tracker", async (params) => {
       await requireProject(ctx, inputString(params, "projectId"), inputString(params, "companyId"));
       return parseTracker(await ctx.state.get(trackerStateKey(inputString(params, "projectId"))));
@@ -265,6 +310,25 @@ const plugin = definePlugin({
       if (candidates.length > 1) throw new Error("hermes_duplicate_identity_operator_action_required");
       return {...await checkRuntime(runtime), nativeAgentId: candidates[0]?.id ?? null};
     });
+    ctx.data.register("project-qa", async (params) => qaView(ctx, inputString(params, "projectId"), inputString(params, "companyId")));
+    ctx.actions.register("connect-project-qa", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId"); const agentId = inputString(params, "agentId");
+      await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+        const current = parseProjectQaState(await ctx.state.get(qaStateKey(projectId)));
+        if (params.expectedRevision !== (current?.revision ?? 0)) throw new Error("project_qa_version_conflict_refresh_required");
+        if (current && current.agentId !== agentId) throw new Error("project_qa_identity_conflict");
+        const hermes = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+        if (!hermes) throw new Error("project_qa_requires_hermes");
+        const agents = await ctx.agents.list({companyId});
+        const candidate = selectProjectQaCandidate(agents as QaAgent[], projectId);
+        if (!candidate || candidate.id !== agentId) throw new Error("project_qa_identity_invalid");
+        assertProjectQa(candidate, companyId, projectId, hermes.agentId);
+        await verifyProjectQaInstructions(candidate, projectId);
+        if (!current) await ctx.state.set(qaStateKey(projectId), {agentId, revision: 1});
+        return qaView(ctx, projectId, companyId);
+      });
+    });
     ctx.actions.register("install-project-hermes-runtime", async (params, context) => {
       const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");
       await requireHostOperator(ctx, context, companyId);
@@ -286,7 +350,11 @@ const plugin = definePlugin({
       await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
       const binding = await readBinding(ctx, projectId);
       if (!binding) throw new Error("repository_binding_not_configured");
-      return serializeDocumentMutation(projectId, () => verifyRuntimeRepository(projectRuntime(companyId, projectId), binding.repositoryUrl, binding.ref));
+      return serializeDocumentMutation(projectId, () => refreshHermesRepositoryVerification(
+        binding,
+        () => verifyRuntimeRepository(projectRuntime(companyId, projectId), binding.repositoryUrl, binding.ref),
+        (value) => ctx.state.set(hermesRepositoryKey(projectId), value)
+      ));
     });
     ctx.actions.register("connect-installed-project-hermes", async (params, context) => {
       const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId"); const agentId = inputString(params, "agentId");
@@ -419,8 +487,9 @@ const plugin = definePlugin({
         const readbackAgent = await ctx.agents.get(setup.agentId, companyId);
         assertNativeHermes(readbackAgent, binding);
         if (readbackAgent?.status !== "paused") throw new Error("hermes_pause_native_agent_before_restart");
-        await restartRuntime(runtime);
-        return chatsView(ctx, projectId, companyId);
+        const restarted = await restartRuntime(runtime);
+        if (!restarted.runtime.apiBaseUrl) throw new Error("hermes_gateway_endpoint_unavailable");
+        return {...await chatsView(ctx, projectId, companyId), gatewayReconnect: {agentId: setup.agentId, apiBaseUrl: restarted.runtime.apiBaseUrl}};
       });
     });
     ctx.actions.register("save-project-hermes-chats", async (params, context) => {

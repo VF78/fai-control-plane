@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hostBinding, assertNativeHermes, contextPointer, persistHermesContext, checkHermesAccess } from "./project-hermes.js";
+import { hostBinding, assertNativeHermes, contextPointer, persistHermesContext, checkHermesAccess, parseHermesRepositoryVerification, refreshHermesRepositoryVerification } from "./project-hermes.js";
 let root = "";
 afterEach(async () => {if (root) await rm(root, {recursive: true, force: true});});
 async function fixture() {
@@ -44,4 +44,19 @@ test("only the existing scoped gateway with explicit context pointer is accepted
   expect(() => assertNativeHermes({...agent, adapterConfig: {}}, binding)).toThrow();
   expect(() => assertNativeHermes({...agent, companyId: "foreign"}, binding)).toThrow();
   expect(() => hostBinding({...binding, root: "/etc"}, "company", "project", "hermes")).toThrow("binding_invalid");
+});
+test("repository verification accepts only a complete scoped readback", () => {
+  const verified = {repositoryUrl: "https://github.com/VF78/project", ref: "refs/heads/main", verified: true, checkedAt: "2026-09-19T00:00:00.000Z"};
+  expect(parseHermesRepositoryVerification(verified)).toEqual(verified);
+  expect(parseHermesRepositoryVerification({...verified, checkedAt: undefined})).toBeNull();
+});
+test("repository verification clears stale success before a failed runtime check", async () => {
+  const records: unknown[] = [];
+  await expect(refreshHermesRepositoryVerification(
+    {repositoryUrl: "https://github.com/VF78/project", ref: "refs/heads/main"},
+    async () => {throw new Error("runtime_unavailable");},
+    async (value) => {records.push(value);},
+    "2026-09-19T00:00:00.000Z"
+  )).rejects.toThrow("runtime_unavailable");
+  expect(records).toEqual([{repositoryUrl: "https://github.com/VF78/project", ref: "refs/heads/main", verified: false, checkedAt: "2026-09-19T00:00:00.000Z"}]);
 });

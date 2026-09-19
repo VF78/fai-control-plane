@@ -1,49 +1,53 @@
 # AI context
 
-Stable orientation only. GitHub Project `f(AI) Studio` #1 and repository issues
-hold live scope, dependencies, status, acceptance and release evidence. Do not
-copy task lists, status, research transcripts or old-chat history into this file.
+f(AI) Control runs on self-hosted Paperclip Core, its native GUI, and one
+`fai-control` extension. ADR 0007 is the architecture contract. ADR 0006 and
+retained legacy source are historical, not a second active controller.
+Public entry: https://app.f-ai.studio.
 
-## Read order
+Read AGENTS.md, ADR 0007 and the current task. Do not load old chats or repeat
+the market audit. Code, branches, PRs and releases remain in VF78/fai-control-plane.
 
-Read `AGENTS.md`, this file, ADR 0007, epic #399 and then the one
-dependency-ready leaf. Use the existing `VF78` `git`/`gh` access to resolve
-current `origin/main`, open PRs and Project facts for this repository. Do not
-route new work through issue #158, retained branches, or prior chats; the Paperclip
-audit and architecture decision are already complete unless a leaf identifies a
-specific evidence gap.
+## Ownership
 
-## Current deployment and target
+One persistent isolated Hermes per project owns PM, Developer CLI orchestration,
+DevOps and conversations. Core owns tasks/runs/review/approval/membership/costs.
+The extension uses native APIs and slots; no duplicate controller or chat engine.
+Independent QA uses a distinct project-specific native `codex_local` identity,
+with project-scoped instructions/workspace context, no periodic heartbeat and
+one concurrent run. Reviewer selection remains explicit on each native task;
+QA may fix only deterministic lint/format defects without behavior, public-copy
+or test-expectation changes. Functional defects return to Developer in one report.
+With native `maxReviewRounds=2`, one correction cycle is automatic; a second
+rejection escalates to the responsible human. The plugin does not set this policy.
 
-ADR 0006 describes the currently deployed thin Control Plane. It remains active,
-with its runbook and protections, until an exact separately approved cutover.
-The approved target in ADR 0007 and epic #399 is **Paperclip Core + native GUI +
-one `fai-control` plugin**. That authorizes planning and bounded spike/migration
-work only; it does not authorize a production change, merge or deploy.
+GitHub access is provisioned once for Core using standard gh/git credentials.
+Authorized projects reuse it; explicit project credentials take precedence.
+Never put tokens in documents, task bodies, plugin business state or UI fields.
+Client SSH/DevOps permissions must not silently inherit from another project.
 
-ADR 0007 is the canonical source for target requirements, ownership boundaries,
-the persistent-Hermes and chat model, the resumable wizard, document/context
-rules, GitHub and external-tracker conditions, native UI constraints, and the
-mandatory QA/document-upload/recovery spike gates. Do not restate or weaken
-those requirements in a leaf. Paperclip owns native task/run/approval/membership/
-cost services; do not build a duplicate core, scheduler, tracker, chat engine,
-QA state machine or universal facade. Do not fork/copy Paperclip or silently
-change CLI-orchestration ownership.
+## Tracker and onboarding
 
-## Working and safety boundary
+Native Core tasks are the intended working tracker for this product. GitHub
+Project remains migration coordination until the owner manually creates the
+fresh project and active work is transferred once. Record cutover and native
+links in #399. Thereafter stop editing transferred GitHub task statuses: no
+synchronization service or duplicate live board. External Project is deferred.
 
-The live epic and child issues are the source for sequence and acceptance.
-Current-app UI uses its legacy contract; target UI uses Paperclip-native GUI and
-supported plugin-host components. Every visible change needs exact visual
-approval. Treat provider and document content as untrusted; never expose secrets.
-Merge, release, deploy and production mutation always need their exact approvals.
-For a current-deployment release, use only `docs/ops/PRODUCTION_RUNBOOK.md`.
+The owner creates the new project manually to evaluate the wizard. Do not
+pre-create it or start the acceptance task on their behalf. Upload documents
+are in docs/project/. Live findings/status remain in the active tracker.
+This development project uses internal Telegram only; no client channel.
+The future commercial project will configure its own restricted Element profile.
+Each project has its own Codex subscription login. Its Hermes/Developer and
+project QA share that project's isolated Codex home; never seed it from a
+company-global or another project's login.
 
-## Implemented internal slice
+## Acceptance and operations
 
-The plugin supplies the resumable wizard, native documents/context, team
-associations, persistent Hermes host lifecycle and optional chat configuration.
-Internal Paperclip issues are an explicit limited MVP mode; external Project
-writes remain a separate connector gate. See the
-[Paperclip release runbook](ops/PAPERCLIP_RELEASE_RUNBOOK.md) for evidence and
-the deferred deletion boundary. Setup readiness is not live acceptance.
+Manual setup → actual document/context use by Hermes → useful Dev task →
+independent QA → owner acceptance → separately authorized merge/deploy →
+Telegram statuses. Recovery preserves identity/context and avoids duplicate work.
+File presence and running containers are not proof of access or delivery.
+Use docs/ops/PAPERCLIP_RELEASE_RUNBOOK.md. Protect MSA Hermes, marketing, VPN
+and other services. No isolated LLM spike: prove the cycle on the first real task.

@@ -1,9 +1,11 @@
 import { normalizeGitHubRepositoryUrl } from "./repository-binding.js";
 import { githubProject } from "./project-tracker.js";
 import { request } from "node:http";
-import { chmod, chown, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, chown, lstat, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 export const hermesImage = "fai-hermes-project:codex-0.153.4";
 export type Docker = (method: string, path: string, body?: unknown) => Promise<{status: number; body: Buffer}>;
 export const docker: Docker = (method, path, body) => new Promise((resolve, reject) => {
@@ -44,7 +46,68 @@ export async function inspectOwned(runtime: ProjectRuntime, component: string, e
   if (!Array.isArray(binds) || JSON.stringify([...binds].sort()) !== JSON.stringify([...desired.HostConfig.Binds].sort()) || container.HostConfig.NetworkMode !== `${runtime.runtimeId}-network`) throw new Error("hermes_persistent_mount_conflict");
   return container;
 }
-export async function prepareHost(runtime: ProjectRuntime) {
+type GithubCredentialInitializer = (runtime: ProjectRuntime) => Promise<boolean>;
+type GithubCredentialWriter = (target: string) => Promise<boolean>;
+type CredentialHelper = (input: string) => Promise<Buffer>;
+
+async function runHostGithubCredentialHelper(input: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.env.FAI_GH_BIN || "gh", ["auth", "git-credential", "get"], {
+      env: {...process.env, HOME: process.env.HOME || homedir(), GH_PROMPT_DISABLED: "1"},
+      stdio: ["pipe", "pipe", "ignore"]
+    });
+    const chunks: Buffer[] = []; let length = 0; let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const fail = () => {if (!settled) {settled = true; if (timer) clearTimeout(timer); reject(new Error("host_github_credential_unavailable"));}};
+    child.stdout.on("data", (chunk: Buffer) => {
+      length += chunk.length;
+      if (length > 4 * 1024) {child.kill(); fail();} else chunks.push(chunk);
+    });
+    child.on("error", fail);
+    child.stdin.on("error", fail);
+    child.on("close", (code) => {
+      if (settled) return;
+      if (code !== 0) {fail(); return;}
+      settled = true; if (timer) clearTimeout(timer); resolve(Buffer.concat(chunks));
+    });
+    timer = setTimeout(() => {child.kill(); fail();}, 10_000);
+    child.stdin.end(input);
+  });
+}
+
+export async function writeHostGithubCredential(target: string, helper: CredentialHelper = runHostGithubCredentialHelper): Promise<boolean> {
+  const input = "protocol=https\nhost=github.com\n\n";
+  const output = (await helper(input)).toString("utf8");
+  const password = output.split(/\r?\n/).find(line => line.startsWith("password="))?.slice("password=".length).trim();
+  if (!password || !/^[A-Za-z0-9_]{20,512}$/.test(password)) return false;
+  await writeFile(target, `${password}\n`, {flag: "wx", mode: 0o600});
+  return true;
+}
+
+/** Seed an isolated project credential once from the Paperclip service account's
+ * standard gh store. The value is never logged or returned and an existing
+ * project credential is never replaced. */
+export async function initializeHostGithubCredential(runtime: ProjectRuntime, writeCredential: GithubCredentialWriter = writeHostGithubCredential): Promise<boolean> {
+  const target = join(runtime.root, "secrets/github-token");
+  if (await lstat(target).catch(() => null)) return false;
+  try {
+    let created = false;
+    try {
+      created = await writeCredential(target);
+      if (!created) return false;
+      await chown(target, 10000, 10000);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      if (created) await unlink(target).catch(() => {});
+      throw error;
+    }
+  } catch {
+    return false;
+  }
+}
+
+export async function prepareHost(runtime: ProjectRuntime, initializeGithub: GithubCredentialInitializer = initializeHostGithubCredential) {
   // No deletion/replacement: a foreign marker or symlink is a hard stop.
   await mkdir(runtime.root, {recursive: true, mode: 0o700});
   if (await realpath(runtime.root) !== runtime.root) throw new Error("hermes_symlink_forbidden");
@@ -63,6 +126,7 @@ export async function prepareHost(runtime: ProjectRuntime) {
   try {await writeFile(hermesConfig, `_config_version: 34\nmodel:\n  provider: openai-codex\n  default: gpt-5.6-terra\nauxiliary:\n  free_only: true\nterminal:\n  backend: local\n  cwd: ${runtime.runtimeWorkspace}\n`, {flag: "wx", mode: 0o600}); await chown(hermesConfig, 10000, 10000);} catch (error) {if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;}
   const config = join(runtime.root, "codex-home/config.toml");
   try {await writeFile(config, 'cli_auth_credentials_store = "file"\n', {flag: "wx", mode: 0o600}); await chown(config, 10000, 10000);} catch (error) {if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;}
+  await initializeGithub(runtime);
 }
 async function filePresent(path: string) {try {const stat = await lstat(path); return stat.isFile() && stat.size > 0 && stat.uid === 10000 && (stat.mode & 0o077) === 0;} catch {return false;}}
 export const runtimeSpec = (runtime: ProjectRuntime, component: "auth" | "gateway", imageId: string) => ({
@@ -90,12 +154,12 @@ export async function checkRuntime(runtime: ProjectRuntime, engine: Docker = doc
   const userCode = [...plain.matchAll(/\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b/g)].at(-1)?.[0];
   return {runtime, status: "auth_required", deviceAuth: verificationUrl && userCode ? {verificationUrl, userCode} : null};
 }
-export async function installRuntime(runtime: ProjectRuntime, engine: Docker = docker): Promise<RuntimeCheck> {
+export async function installRuntime(runtime: ProjectRuntime, engine: Docker = docker, initializeGithub: GithubCredentialInitializer = initializeHostGithubCredential): Promise<RuntimeCheck> {
   const image = await engine("GET", `/images/${encodeURIComponent(hermesImage)}/json`);
   if (image.status === 404) return {runtime, status: "image_missing", deviceAuth: null}; expect(image.status, [200]);
   const imageId = JSON.parse(image.body.toString()).Id;
   if (typeof imageId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new Error("hermes_image_identity_invalid");
-  await prepareHost(runtime);
+  await prepareHost(runtime, initializeGithub);
   const networkName = `${runtime.runtimeId}-network`;
   const network = await engine("GET", `/networks/${networkName}`);
   if (network.status === 404) {const created = await engine("POST", "/networks/create", {Name: networkName, Driver: "bridge", Labels: labels(runtime, "network")}); expect(created.status, [201]);}
@@ -134,6 +198,19 @@ async function runDetachedExec(runtime: ProjectRuntime, payload: Record<string, 
   if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) throw new Error("hermes_exec_identity_invalid");
   const started = await engine("POST", `/exec/${id}/start`, {Detach: true, Tty: false}); expect(started.status, [200]);
   return waitForExec(engine, id);
+}
+
+/** Sends one bounded notification through the existing internal Hermes profile.
+ * This is a direct platform command: it neither starts an agent run nor invokes a model. */
+export async function sendInternalTelegramNotification(runtime: ProjectRuntime, chatId: string, message: string, engine: Docker = docker) {
+  if (!/^-?\d{1,20}$/.test(chatId) || message.length === 0 || message.length > 1_000 || message.includes("\0")) throw new Error("hermes_notification_invalid");
+  const owned = await inspectOwned(runtime, "gateway", engine);
+  if (!owned?.State?.Running) throw new Error("hermes_runtime_not_running");
+  const result = await runDetachedExec(runtime, {
+    Env: ["HERMES_HOME=/opt/data/profiles/internal"],
+    Cmd: ["timeout", "15", "hermes", "send", "--quiet", "--to", `telegram:${chatId}`, message]
+  }, engine);
+  if (result.ExitCode !== 0) throw new Error("hermes_notification_delivery_failed");
 }
 
 export async function verifyRuntimeRepository(runtime: ProjectRuntime, httpsUrl: string, ref: string, engine: Docker = docker) {

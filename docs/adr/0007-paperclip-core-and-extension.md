@@ -1,10 +1,9 @@
 # ADR 0007: Paperclip Core with one f(AI) extension
 
-- Status: Accepted target; not a production cutover
+- Status: Accepted; public cutover separately authorized and completed; live acceptance pending
 - Date: 2026-09-15
 - Issue: #399
-- Replaces on cutover: the product direction in ADR 0006; ADR 0006 remains the
-  historical record of the deployed Control Plane until then.
+- Replaces: the product direction in ADR 0006, retained as historical context.
 
 ## Context
 
@@ -62,24 +61,24 @@ explicit visual approval.
 ## Open native gates
 
 Paperclip v2026.831.1 skips self-review by the same agent identity. Before
-migration, the spike must prove a real independent QA path with one persistent
+operational acceptance, the first real task must prove an independent QA path with one persistent
 Hermes and independent Codex QA. Do not disguise self-review with names, create
 a second Hermes by role, or build a plugin QA state machine. If native separate
 QA execution identity or a change in CLI-orchestration ownership is required,
 present one concrete option and tradeoff for approval before implementing it.
 
-The spike also pins a compatible core/plugin pair and verifies native document
+Pin a compatible core/plugin pair and verify native document
 upload/reference for DOCX without a base64 workaround; plugin custom routes are
-JSON-only. It verifies a useful task, human gate, controlled recovery and that
-no duplicate launch occurs. Architecture approval does not itself authorize a
+JSON-only. Acceptance covers a useful task, human gate, controlled recovery and
+no duplicate launch. The owner explicitly excluded a separate LLM spike. Architecture approval does not itself authorize a
 production change, merge, deploy or silent reassignment of CLI ownership.
 
 ## Consequences
 
 Migrate in proven slices and remove old GUI/API/controller/persistence paths
 only after their equivalent works. Do not delete mixed runtime/data code merely
-by name. The existing deployment remains unchanged until an explicitly approved
-cutover; protected neighbouring services and credentials are out of scope.
+by name. The public cutover was separately approved and completed; protected
+neighbouring services and credentials remain out of scope.
 Live sequencing, status and acceptance remain in epic #399 and its child
 issues, not this ADR.
 
@@ -92,6 +91,39 @@ Internal issues are explicitly selected; external Project mode cannot be called
 ready until its write connector is accepted. Optional chat configuration does
 not prove transport, notification or client authorization behavior.
 
-README and release operations describe this target while the legacy deployment
-remains protected. No legacy data migration or public activation follows from
-this ADR. The release runbook defines the deferred removal boundary.
+README and release operations describe this target. Cleanup is limited to
+replaced f(AI) runtime/code; the owner authorized its removal without backups.
+A release still requires its own approval and scoped production verification.
+
+## Operational clarification — 2026-09-19
+
+The owner separately authorized the public cutover and old-runtime cleanup.
+Earlier wording about an unchanged legacy deployment records the decision-time
+boundary; it is not the current operational architecture. New releases still
+require their own exact authorization. The owner rejected an isolated LLM spike;
+QA/document/recovery gates are to be proved on the first useful real task.
+
+GitHub credentials are configured centrally at the Core host for reuse by
+authorized projects. Do not require repeated entry per Hermes, expose tokens in
+plugin state, or automatically propagate unrelated client SSH/DevOps access.
+For the development project, internal Telegram is required and client chat is
+not applicable. Element is for the subsequent commercial project.
+
+Native tasks are the selected simple tracker direction. Move active work once
+after owner-led project creation and record the authority cutover in #399.
+Until then GitHub Project tracks migration; afterwards transferred work has
+only native editable status. External Project sync is deferred.
+
+Each project has its own `codex_local` QA identity with project-scoped native
+instructions, no heartbeat and one concurrent run. It stays distinct from that
+project's Hermes, which keeps PM, Dev CLI orchestration, DevOps and chats.
+Hermes/Developer and QA share only that project's isolated Codex login; every
+project performs its own device authentication. No company-global Codex login
+is seeded or copied between projects.
+Reviewer selection and human approval remain explicit native task actions; the
+plugin does not invent default review policy. QA may correct only deterministic
+lint/format defects with no behavior, public-copy or test-expectation change;
+functional defects return to Developer in one consolidated report. Native
+`maxReviewRounds=2` permits one automatic correction cycle, then escalates a
+second rejection to the responsible human. Code audit and live acceptance
+status stay in the Project.
