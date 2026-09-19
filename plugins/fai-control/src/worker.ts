@@ -13,6 +13,8 @@ import { addProjectDocument, missingMandatoryDocuments, parseProjectDocumentStat
   type ProjectDocumentState } from "./project-documents.js";
 import { createProjectChatsState, parseProjectChatsState, projectChatsView, type ProjectChatsView } from "./project-chats.js";
 import { verifyWithNativeGit } from "./native-git.js";
+import { assertProjectQa, parseProjectQaState, selectProjectQaCandidate, type ProjectQaView, type QaAgent } from "./project-qa.js";
+import { verifyProjectQaInstructions } from "./project-qa-runtime.js";
 
 import { hostBinding, assertNativeHermes, persistHermesContext, checkHermesAccess, parseHermesRepositoryVerification, parseHermesSetup, refreshHermesRepositoryVerification, type HermesSetupView } from "./project-hermes.js";
 
@@ -43,6 +45,7 @@ const documentsStateKey = (projectId: string) => ({
 const hermesBindingKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "host-binding"});
 const hermesStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "setup"});
 const hermesRepositoryKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "hermes", stateKey: "repository-verification"});
+const qaStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "qa", stateKey: "identity"});
 const trackerStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "tracker", stateKey: "binding"});
 const chatsStateKey = (projectId: string) => ({scopeKind: "project" as const, scopeId: projectId, namespace: "chats", stateKey: "configuration"});
 async function projectHostBinding(ctx: PluginContext, companyId: string, projectId: string, agentId: string) {
@@ -79,6 +82,24 @@ async function hermesView(ctx: PluginContext, projectId: string, companyId: stri
     assertNativeHermes(await ctx.agents.get(state.agentId, companyId), binding);
     return {...base, connected: true, access: await checkHermesAccess(binding)};
   } catch {return {...base, reason: "Hermes identity, host ownership, or context pointer needs operator verification."};}
+}
+
+async function qaView(ctx: PluginContext, projectId: string, companyId: string): Promise<ProjectQaView> {
+  await requireProject(ctx, projectId, companyId);
+  const state = parseProjectQaState(await ctx.state.get(qaStateKey(projectId)));
+  const agents = await ctx.agents.list({companyId});
+  const candidate = selectProjectQaCandidate(agents as QaAgent[], projectId);
+  const candidateAgentId = candidate?.id ?? null;
+  if (!state) return {state: null, candidateAgentId, configured: false, reason: candidateAgentId ? "Project QA is available to verify and bind." : null};
+  const hermes = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+  try {
+    if (!hermes) throw new Error("project_qa_requires_hermes");
+    const agent = await ctx.agents.get(state.agentId, companyId);
+    assertProjectQa(agent as QaAgent | null, companyId, projectId, hermes.agentId);
+    await verifyProjectQaInstructions(agent as QaAgent, projectId);
+    if (candidateAgentId !== state.agentId) throw new Error("project_qa_binding_mismatch");
+    return {state, candidateAgentId, configured: true, reason: null};
+  } catch {return {state, candidateAgentId, configured: false, reason: "QA identity, loaded instructions, or its project-scoped native policy needs operator verification."};}
 }
 const documentMutationTails = new Map<string, Promise<void>>();
 
@@ -244,6 +265,25 @@ const plugin = definePlugin({
       const candidates = agents.filter(agent => agent.name === `${runtime.runtimeId} Hermes` && agent.adapterType === "hermes_gateway" && agent.status !== "terminated");
       if (candidates.length > 1) throw new Error("hermes_duplicate_identity_operator_action_required");
       return {...await checkRuntime(runtime), nativeAgentId: candidates[0]?.id ?? null};
+    });
+    ctx.data.register("project-qa", async (params) => qaView(ctx, inputString(params, "projectId"), inputString(params, "companyId")));
+    ctx.actions.register("connect-project-qa", async (params, context) => {
+      const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId"); const agentId = inputString(params, "agentId");
+      await requireHostOperator(ctx, context, companyId); await requireProject(ctx, projectId, companyId);
+      return serializeDocumentMutation(projectId, async () => {
+        const current = parseProjectQaState(await ctx.state.get(qaStateKey(projectId)));
+        if (params.expectedRevision !== (current?.revision ?? 0)) throw new Error("project_qa_version_conflict_refresh_required");
+        if (current && current.agentId !== agentId) throw new Error("project_qa_identity_conflict");
+        const hermes = parseHermesSetup(await ctx.state.get(hermesStateKey(projectId)));
+        if (!hermes) throw new Error("project_qa_requires_hermes");
+        const agents = await ctx.agents.list({companyId});
+        const candidate = selectProjectQaCandidate(agents as QaAgent[], projectId);
+        if (!candidate || candidate.id !== agentId) throw new Error("project_qa_identity_invalid");
+        assertProjectQa(candidate, companyId, projectId, hermes.agentId);
+        await verifyProjectQaInstructions(candidate, projectId);
+        if (!current) await ctx.state.set(qaStateKey(projectId), {agentId, revision: 1});
+        return qaView(ctx, projectId, companyId);
+      });
     });
     ctx.actions.register("install-project-hermes-runtime", async (params, context) => {
       const companyId = actionCompany(params, context); const projectId = inputString(params, "projectId");

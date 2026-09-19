@@ -5,6 +5,7 @@ export type ProjectSetupReadinessInput = Readonly<{
   tracker: TrackerBinding;
   documentsReady: boolean;
   hermesReady: boolean;
+  qaReady: boolean;
   teamReady: boolean;
   chatsReady: boolean;
 }>;
@@ -14,6 +15,7 @@ export type ProjectSetupReadiness = Readonly<{
   trackerReady: boolean;
   documentsReady: boolean;
   hermesReady: boolean;
+  qaReady: boolean;
   teamReady: boolean;
   chatsReady: boolean;
   ready: boolean;
@@ -29,8 +31,9 @@ export function projectSetupReadiness(input: ProjectSetupReadinessInput): Projec
     trackerReady: trackerIsReady,
     documentsReady: input.documentsReady,
     hermesReady: input.hermesReady,
+    qaReady: input.qaReady,
     teamReady: teamIsReady,
     chatsReady: chatsAreReady,
-    ready: input.repositoryReady && trackerIsReady && input.documentsReady && input.hermesReady && teamIsReady && chatsAreReady
+    ready: input.repositoryReady && trackerIsReady && input.documentsReady && input.hermesReady && input.qaReady && teamIsReady && chatsAreReady
   };
 }

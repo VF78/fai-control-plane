@@ -13,10 +13,13 @@ the market audit. Code, branches, PRs and releases remain in VF78/fai-control-pl
 One persistent isolated Hermes per project owns PM, Developer CLI orchestration,
 DevOps and conversations. Core owns tasks/runs/review/approval/membership/costs.
 The extension uses native APIs and slots; no duplicate controller or chat engine.
-Independent QA needs a different native identity from the Hermes assignee.
-The proposed economical configuration is one company-level Codex QA identity,
-reused with task-scoped workspace/context and no periodic heartbeat. The final
-process decision and live acceptance belong in the current Project task.
+Independent QA uses a distinct project-specific native `codex_local` identity,
+with project-scoped instructions/workspace context, no periodic heartbeat and
+one concurrent run. Reviewer selection remains explicit on each native task;
+QA may fix only deterministic lint/format defects without behavior, public-copy
+or test-expectation changes. Functional defects return to Developer in one report.
+With native `maxReviewRounds=2`, one correction cycle is automatic; a second
+rejection escalates to the responsible human. The plugin does not set this policy.
 
 GitHub access is provisioned once for Core using standard gh/git credentials.
 Authorized projects reuse it; explicit project credentials take precedence.

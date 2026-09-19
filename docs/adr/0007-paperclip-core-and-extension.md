@@ -114,8 +114,13 @@ after owner-led project creation and record the authority cutover in #399.
 Until then GitHub Project tracks migration; afterwards transferred work has
 only native editable status. External Project sync is deferred.
 
-Proposed review economy: one shared company-level codex_local reviewer with
-task-scoped workspace/session, no timer, and separate identity from each Hermes
-executor. Hermes keeps PM, Dev CLI orchestration, DevOps and chats. Confirm the
-concrete native process before activation; do not silently bypass self-review
-protection. Code audit and live acceptance status stay in the Project.
+Each project has its own `codex_local` QA identity with project-scoped native
+instructions, no heartbeat and one concurrent run. It stays distinct from that
+project's Hermes, which keeps PM, Dev CLI orchestration, DevOps and chats.
+Reviewer selection and human approval remain explicit native task actions; the
+plugin does not invent default review policy. QA may correct only deterministic
+lint/format defects with no behavior, public-copy or test-expectation change;
+functional defects return to Developer in one consolidated report. Native
+`maxReviewRounds=2` permits one automatic correction cycle, then escalates a
+second rejection to the responsible human. Code audit and live acceptance
+status stay in the Project.

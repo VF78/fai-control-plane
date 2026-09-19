@@ -10,6 +10,7 @@ import type { ProjectChatsView } from "../project-chats.js";
 import type { TrackerBinding } from "../project-tracker.js";
 import { projectSetupReadiness } from "../project-setup-readiness.js";
 import { mergeHermesInstructions } from "../hermes-instructions.js";
+import { projectQaInstructions, projectQaInstructionsDisposition, projectQaPolicyVersion, type ProjectQaView } from "../project-qa.js";
 import type { ProjectDocumentsView } from "../worker.js";
 import { extractBrowserDocument } from "./document-extract.js";
 
@@ -238,7 +239,7 @@ function ProjectHermesPanel({context}: PluginDetailTabProps) {
           const existing = await nativeRequest(`agents/${encodeURIComponent(id)}`, "GET");
           await nativeRequest(`agents/${encodeURIComponent(id)}`, "PATCH", {adapterConfig: {...existing.adapterConfig, ...config, instructions: mergeHermesInstructions(existing.adapterConfig?.instructions, config.instructions)}});
         } else {
-          const created = await nativeRequest(`companies/${encodeURIComponent(context.companyId!)}/agents`, "POST", {name: `${current.runtime.runtimeId} Hermes`, role: "general", adapterType: "hermes_gateway", adapterConfig: config, runtimeConfig: {heartbeat: {enabled: false}}, metadata: {faiProjectId: context.entityId}});
+          const created = await nativeRequest(`companies/${encodeURIComponent(context.companyId!)}/agents`, "POST", {name: `${current.runtime.runtimeId} Hermes`, role: "general", adapterType: "hermes_gateway", adapterConfig: config, runtimeConfig: {heartbeat: {enabled: false, maxConcurrentRuns: 1}}, metadata: {faiProjectId: context.entityId}});
           id = created.id;
           await nativeRequest(`agents/${encodeURIComponent(id!)}/pause`, "POST");
         }
@@ -271,6 +272,75 @@ const setupSteps = ["Project and repository", "Tracker and process", "Documents"
 function setupDraftKey(companyId: string | null, projectId: string): string { return `fai:setup:step:${companyId ?? "unknown"}:${projectId}`; }
 
 function csvIds(value: string): string[] { return value.split(",").map((entry) => entry.trim()).filter(Boolean); }
+
+export function ProjectQaPanel({context}: PluginDetailTabProps) {
+  const qa = usePluginData<ProjectQaView>("project-qa", {companyId: context.companyId, projectId: context.entityId});
+  const connect = usePluginAction("connect-project-qa");
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const instructions = projectQaInstructions(context.entityId);
+  async function request(path: string, method: string, body?: unknown) {
+    const response = await fetch(`/api/${path}`, {method, credentials: "same-origin", headers: {"Content-Type": "application/json"}, ...(body === undefined ? {} : {body: JSON.stringify(body)})});
+    const value = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) throw new Error(typeof value.error === "string" ? value.error : "native_qa_action_failed");
+    return value;
+  }
+  async function configure() {
+    if (pending || !qa.data || !context.companyId) return;
+    setPending(true); setMessage(null);
+    try {
+      let agentId = qa.data.candidateAgentId;
+      if (!agentId) {
+        const adapterConfig = {engine: "cli", command: "/opt/fai-paperclip/tools/codex/node_modules/.bin/codex", model: "gpt-5.6-terra", modelReasoningEffort: "medium", dangerouslyBypassApprovalsAndSandbox: false};
+        const created = await request(`companies/${encodeURIComponent(context.companyId)}/agents`, "POST", {
+          name: `Project ${context.entityId.slice(0, 8)} QA`, role: "qa", adapterType: "codex_local",
+          adapterConfig,
+          runtimeConfig: {heartbeat: {enabled: false, maxConcurrentRuns: 1}},
+          instructionsBundle: {entryFile: "AGENTS.md", files: {"AGENTS.md": instructions}},
+          permissions: {canCreateAgents: false, canCreateSkills: false},
+          metadata: {faiProjectId: context.entityId, faiRole: "qa", faiQaPolicyVersion: projectQaPolicyVersion}
+        });
+        if (typeof created.id !== "string") throw new Error("native_qa_create_invalid");
+        agentId = created.id;
+      } else {
+        const fileResponse = await fetch(`/api/agents/${encodeURIComponent(agentId)}/instructions-bundle/file?path=AGENTS.md`, {credentials: "same-origin"});
+        let currentInstructions: string | null = null;
+        if (fileResponse.status !== 404) {
+          const file = await fileResponse.json() as {content?: unknown};
+          if (!fileResponse.ok || typeof file.content !== "string") throw new Error("native_qa_instructions_read_failed");
+          currentInstructions = file.content;
+        }
+        const instructionsDisposition = projectQaInstructionsDisposition(currentInstructions, instructions);
+        const existing = await request(`agents/${encodeURIComponent(agentId)}`, "GET") as {adapterConfig?: unknown; runtimeConfig?: unknown; metadata?: unknown};
+        const adapterConfig = existing.adapterConfig && typeof existing.adapterConfig === "object" && !Array.isArray(existing.adapterConfig) ? existing.adapterConfig : {};
+        const runtimeConfig = existing.runtimeConfig && typeof existing.runtimeConfig === "object" && !Array.isArray(existing.runtimeConfig) ? existing.runtimeConfig as Record<string, unknown> : {};
+        const heartbeat = runtimeConfig.heartbeat && typeof runtimeConfig.heartbeat === "object" && !Array.isArray(runtimeConfig.heartbeat) ? runtimeConfig.heartbeat : {};
+        const modelProfiles = runtimeConfig.modelProfiles && typeof runtimeConfig.modelProfiles === "object" && !Array.isArray(runtimeConfig.modelProfiles) ? runtimeConfig.modelProfiles as Record<string, unknown> : undefined;
+        const cheap = modelProfiles?.cheap && typeof modelProfiles.cheap === "object" && !Array.isArray(modelProfiles.cheap) ? modelProfiles.cheap as Record<string, unknown> : undefined;
+        const normalizedRuntimeConfig = {...runtimeConfig, ...(modelProfiles ? {modelProfiles: {...modelProfiles, ...(cheap ? {cheap: {...cheap, adapterConfig: cheap.adapterConfig && typeof cheap.adapterConfig === "object" && !Array.isArray(cheap.adapterConfig) ? cheap.adapterConfig : {}}} : {})}} : {}), heartbeat: {...heartbeat, enabled: false, maxConcurrentRuns: 1}};
+        const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata) ? existing.metadata : {};
+        const nextAdapterConfig = {...adapterConfig, dangerouslyBypassApprovalsAndSandbox: false};
+        await request(`agents/${encodeURIComponent(agentId)}`, "PATCH", {role: "qa",
+          adapterConfig: nextAdapterConfig,
+          runtimeConfig: normalizedRuntimeConfig,
+          metadata: {...metadata, faiProjectId: context.entityId, faiRole: "qa", faiQaPolicyVersion: projectQaPolicyVersion}});
+        if (instructionsDisposition === "write") await request(`agents/${encodeURIComponent(agentId)}/instructions-bundle/file`, "PUT", {path: "AGENTS.md", content: instructions});
+      }
+      await connect({companyId: context.companyId, projectId: context.entityId, agentId, expectedRevision: qa.data.state?.revision ?? 0});
+      qa.refresh(); setMessage("Project-specific Codex QA configuration is verified. CLI/auth capability is confirmed by the first real review task; select this reviewer explicitly.");
+    } catch (error) {
+      qa.refresh(); setMessage(error instanceof Error && error.message === "project_qa_instructions_conflict" ? "Existing QA has a different AGENTS.md. It was not overwritten; review it in the native agent page." : "QA setup was not completed. Resolve duplicate identity, native hire approval, or agent configuration and retry.");
+    } finally {setPending(false);}
+  }
+  if (qa.loading) return <p>Loading project QA…</p>;
+  if (qa.error || !qa.data) return <p role="alert">{qa.error?.message ?? "Project QA state is unavailable."}</p>;
+  return <section aria-label="Independent project QA" style={panelStyle}><div style={cardStyle}><h2>Independent project QA</h2>
+    <p>This project uses its own native Codex CLI QA identity. The plugin records the project association and installs QA-only instructions; metadata is not a filesystem access boundary, so each review must use the task’s Core-provided project workspace and explicit reviewer selection.</p>
+    <p role="status">{qa.data.configured ? `Configured QA: ${qa.data.state?.agentId}` : qa.data.reason ?? "No project QA is configured."}</p>
+    <button type="button" style={buttonStyle} disabled={pending || qa.data.configured} onClick={() => void configure()}>{pending ? "Configuring…" : qa.data.candidateAgentId ? "Verify and bind existing project QA" : "Create project QA"}</button>
+    {message ? <p role="status">{message}</p> : null}
+  </div></section>;
+}
 
 export function ProjectHermesChatsPanel({context}: PluginDetailTabProps) {
   const chats = usePluginData<ProjectChatsView>("project-hermes-chats", {companyId: context.companyId, projectId: context.entityId});
@@ -413,16 +483,18 @@ function ProjectSetupReadinessPanel({context}: PluginDetailTabProps) {
   const tracker = usePluginData<TrackerBinding>("project-tracker", {companyId: context.companyId, projectId: context.entityId});
   const documents = usePluginData<ProjectDocumentsView>("project-documents", {companyId: context.companyId, projectId: context.entityId});
   const hermes = usePluginData<HermesSetupView>("project-hermes-setup", {companyId: context.companyId, projectId: context.entityId});
+  const qa = usePluginData<ProjectQaView>("project-qa", {companyId: context.companyId, projectId: context.entityId});
   const team = usePluginData<ProjectTeamRoleView>("project-team-roles", {companyId: context.companyId, projectId: context.entityId});
   const chats = usePluginData<ProjectChatsView>("project-hermes-chats", {companyId: context.companyId, projectId: context.entityId});
   const navigation = useHostNavigation();
-  if (repository.loading || tracker.loading || documents.loading || hermes.loading || team.loading || chats.loading) return <p>Проверка готовности…</p>;
-  if (!repository.data || !tracker.data || !documents.data || !hermes.data || !team.data || !chats.data) return <p role="alert">Не удалось собрать подтверждённые факты готовности.</p>;
+  if (repository.loading || tracker.loading || documents.loading || hermes.loading || qa.loading || team.loading || chats.loading) return <p>Проверка готовности…</p>;
+  if (!repository.data || !tracker.data || !documents.data || !hermes.data || !qa.data || !team.data || !chats.data) return <p role="alert">Не удалось собрать подтверждённые факты готовности.</p>;
   const readiness = projectSetupReadiness({
     repositoryReady: repository.data.binding?.access.status === "verified" && repository.data.nativeWorkspace.matchesBinding,
     tracker: tracker.data,
     documentsReady: documents.data.missingMandatory.length === 0 && !documents.data.contextStale && documents.data.state.context !== null,
     hermesReady: hermes.data.connected && !hermes.data.contextStale && hermes.data.repositoryVerified && hermes.data.access.oauth && hermes.data.access.github && hermes.data.access.ssh,
+    qaReady: qa.data.configured,
     teamReady: ["owner", "pm", "executor"].every((role) => Boolean(team.data!.mapping.assignments[role as ProjectTeamRole])),
     chatsReady: (chats.data.state.internal !== null || chats.data.state.client !== null) && chats.data.nativeCapability === "configuration_verified"
   });
@@ -431,10 +503,11 @@ function ProjectSetupReadinessPanel({context}: PluginDetailTabProps) {
     ["Трекер", readiness.trackerReady, tracker.data.mode === "internal" ? "Внутренние задачи f(AI) Control готовы." : "Внешний GitHub Project может быть проверен только чтением; запись и нативная связь задачи ожидают коннектор."],
     ["Документы и контекст", readiness.documentsReady, "Паспорт и спецификация загружены, текущий контекст подготовлен."],
     ["Постоянный Hermes", readiness.hermesReady, "Подтверждены подключение и чтение репозитория из Hermes. Файлы OAuth, GitHub и SSH присутствуют; работоспособность OAuth проверяется реальным запуском."],
+    ["Независимый QA", readiness.qaReady, "Настроена отдельная project-specific codex_local identity: загружены QA-инструкции, heartbeat выключен, разрешён один одновременный запуск. Wizard проверяет native environment перед созданием или обновлением; реальная готовность подтверждается первым review run. Reviewer выбирается явно в задаче."],
     ["Команда", readiness.teamReady, tracker.data.requireTeam ? "Требование трекера: назначьте ответственность команды." : "По текущей настройке трекера необязательно."],
     ["Чаты", readiness.chatsReady, tracker.data.requireChats ? "Требование трекера: подтвердите конфигурацию чатов на host." : "По текущей настройке трекера необязательно."]
   ];
-  return <section aria-label="Setup readiness" style={panelStyle}><div style={cardStyle}><h2>Проверка и первая задача</h2><p>{readiness.ready ? "Проект готов. Создайте первую нативную задачу f(AI) Control и задайте явный независимый QA и человеческое approval в самой задаче." : "Проект ещё не готов. Исправьте пункты со статусом «ожидает»; проверка не создаёт задачу и не меняет процесс."}</p></div>
+  return <section aria-label="Setup readiness" style={panelStyle}><div style={cardStyle}><h2>Проверка и первая задача</h2><p>{readiness.ready ? "Конфигурация собрана. Работоспособность подтверждается первой реальной нативной задачей с явным независимым QA и человеческим approval." : "Проект ещё не готов. Исправьте пункты со статусом «ожидает»; проверка не создаёт задачу и не меняет процесс."}</p></div>
     <div style={cardStyle}>{rows.map(([label, ready, detail]) => <div key={label}><strong>{label}: {ready ? "готово" : "ожидает"}</strong><p>{detail}</p></div>)}</div>
     {readiness.ready ? <div style={cardStyle}><h3>Первая нативная задача</h3><p>Откройте задачи проекта и используйте нативное действие New Task. В задаче явно назначьте Hermes исполнителем, независимую нативную QA-проверку и human approval. Плагин не подставляет идентификаторы агента и не создаёт политику за оператора.</p><a {...navigation.linkProps(`/projects/${context.entityId}/issues`)}>Открыть задачи и создать новую</a></div> : null}
   </section>;
@@ -458,7 +531,7 @@ export function ProjectSetupWizardTab({context}: PluginDetailTabProps) {
       {step === 1 ? <ProjectTrackerPanel context={context} /> : null}
       {step === 2 ? <ProjectDocumentsPanel context={context} /> : null}
       {step === 3 ? <ProjectHermesPanel context={context} /> : null}
-      {step === 4 ? <><ProjectTeamRolesTab context={context} /><ProjectHermesChatsPanel context={context} /></> : null}
+      {step === 4 ? <><ProjectTeamRolesTab context={context} /><ProjectQaPanel context={context} /><ProjectHermesChatsPanel context={context} /></> : null}
       {step === 5 ? <ProjectSetupReadinessPanel context={context} /> : null}
     </div>
   </section>;

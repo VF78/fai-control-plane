@@ -135,6 +135,8 @@ test("native instruction retry preserves original text and uses real newlines", 
   expect(mergeHermesInstructions(added, added)).toBe(added);
   const context = renderHermesContext({contract: "fai.project-context.v1", version: "v1", documentRevision: 1, preparedAt: "now", sourceDocumentIds: [], content: "Approved requirements."});
   expect(context).toContain("# Project execution policy\nHermes owns");
+  expect(context).toContain("sets responsibleUserId, and sets maxReviewRounds=2");
+  expect(context).toContain("Configure missing fields through the authorized native API and read them back");
   expect(context).toContain("\n\n# Prepared project context\nVersion: v1\n\nApproved requirements.\n");
   expect(context).not.toContain("\\n");
 });
