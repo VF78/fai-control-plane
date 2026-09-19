@@ -5,7 +5,7 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: "0.1.0",
   displayName: "f(AI) Control",
-  description: "Connects a Paperclip project to its repository, document context, and team labels.",
+  description: "Connects an f(AI) Control project to its repository, document context, and team labels.",
   author: "VF78",
   categories: ["connector", "ui"],
   capabilities: [
